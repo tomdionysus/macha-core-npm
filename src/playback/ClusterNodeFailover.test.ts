@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { createFakeCluster } from '../test/fakeCluster.js';
-import { createFakePlayer } from '../test/fakePlayer.js';
+import { createFakePlayer } from '../testing/index.js';
 import { PlaybackCoordinator } from './PlaybackCoordinator.js';
 
 /**
@@ -20,7 +20,7 @@ import { PlaybackCoordinator } from './PlaybackCoordinator.js';
 
 const media: MediaSummary = { id: 'macha:movie:1', kind: 'movie', title: 'Movie', mediaIds: ['macha:media'], durationMs: 600_000 };
 const capabilities: PlaybackCapabilities = {
-  platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hls: true, dash: false, hdr: [],
+  platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
 };
 
 describe('Cluster node failover integration', () => {

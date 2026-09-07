@@ -16,7 +16,7 @@ const capabilities: PlaybackCapabilities = {
   videoCodecs: ['h264'],
   audioCodecs: ['aac', 'mp3'],
   containers: ['mp4', 'webm'],
-  hls: true,
+  hlsFmp4: true,
   dash: false,
   hdr: [],
 };
@@ -195,15 +195,17 @@ describe('MachaPlaybackResolver', () => {
 
 
 
-  it('prefers Direct on Samsung while Web remains Auto', async () => {
+  it('asks for Auto on every platform, so the server capability gate is consulted', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
+    // Tizen used to default to Direct, which bypassed the gate on the one
+    // platform it was built for. Regression test for the corrupt picture.
     await resolver.resolve(media, { ...capabilities, platform: 'tizen' });
     const [, samsungInit] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(samsungInit.body))).toEqual(expect.objectContaining({
-      preferences: { mode: 'direct' },
+      preferences: { mode: 'auto' },
     }));
 
     fetchMock.mockClear();
@@ -211,6 +213,21 @@ describe('MachaPlaybackResolver', () => {
     const [, webInit] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(webInit.body))).toEqual(expect.objectContaining({
       preferences: { mode: 'auto' },
+    }));
+  });
+
+  it('still sends an explicit mode when the viewer chose one', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    // The Mode control must keep meaning what it says: an explicit Direct is
+    // the operator's escape hatch when the gate is wrong.
+    await resolver.resolve(media, { ...capabilities, platform: 'tizen' }, undefined, { mode: 'direct' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
+      preferences: { mode: 'direct' },
     }));
   });
 
@@ -260,6 +277,176 @@ describe('MachaPlaybackResolver', () => {
         max_height: 2160,
       }),
     }));
+  });
+
+  it('carries stream level and colour transfer through from the session response', async () => {
+    const response = sessionResponse();
+    // 0.32.12 reports these alongside bit_depth on each video stream.
+    (response as { source: { streams: Record<string, unknown>[] } }).source.streams[0] = {
+      index: 0, type: 'video', codec: 'hevc', profile: 'Main 10', language: '',
+      default: true, forced: false, width: 3840, height: 2160,
+      bit_depth: 10, level: 153, color_transfer: 'smpte2084',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.sourceInfo.streams[0]).toEqual(expect.objectContaining({
+      bitDepth: 10,
+      level: 153,
+      colorTransfer: 'smpte2084',
+    }));
+  });
+
+  it('leaves level and colour transfer undefined on a server that does not report them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.sourceInfo.streams[0].level).toBeUndefined();
+    expect(session.sourceInfo.streams[0].colorTransfer).toBeUndefined();
+  });
+
+  it('reports what was advertised, what the source carries and what was served', async () => {
+    const response = sessionResponse();
+    const typed = response as {
+      source: { streams: Record<string, unknown>[] };
+      output: { video: Record<string, unknown> };
+    };
+    typed.source.streams[0] = {
+      index: 0, type: 'video', codec: 'hevc', profile: 'Main 10', language: '',
+      default: true, forced: false, width: 3840, height: 2160,
+      bit_depth: 10, level: 153, color_transfer: 'smpte2084',
+      dolby_vision_profile: 5, dolby_vision_compatibility: 0,
+    };
+    // 0.32.12's downconvert: the encoder emits 8-bit bt709 regardless of source.
+    typed.output.video = {
+      source_stream: 0, transform: 'transcode', codec: 'h264', profile: 'High',
+      width: 1920, height: 1080, bit_depth: 8, level: 40, color_transfer: 'bt709',
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, { ...capabilities, videoBitDepth: 10, dolbyVision: [5, 8] });
+
+    // Advertised.
+    const sent = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
+    expect(sent.capabilities.dolby_vision).toEqual([5, 8]);
+    // Source: PQ, 10-bit, Dolby Vision profile 5.
+    expect(session.sourceInfo.streams[0]).toEqual(expect.objectContaining({
+      bitDepth: 10, colorTransfer: 'smpte2084', dolbyVisionProfile: 5, dolbyVisionCompatibility: 0,
+    }));
+    // Served: downconverted. The disagreement is the diagnostic.
+    expect(session.output.video).toEqual(expect.objectContaining({
+      transform: 'transcode', bitDepth: 8, colorTransfer: 'bt709', level: 40,
+    }));
+  });
+
+  it('omits an empty Dolby Vision profile list, as silence is not capability', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    await resolver.resolve(media, { ...capabilities, dolbyVision: [] });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
+    expect(body.capabilities).not.toHaveProperty('dolby_vision');
+  });
+
+  it('surfaces advisory capability-contradiction warnings from the server', async () => {
+    const response = sessionResponse();
+    (response as unknown as { warnings: unknown }).warnings = [
+      { code: 'capability_contradiction', field: 'video_bit_depth', message: 'the source video is 10-bit; the client advertised 8' },
+      { code: 'capability_contradiction', field: 'hdr', message: 'the source video is smpte2084; the client advertised none' },
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.warnings).toEqual([
+      { code: 'capability_contradiction', field: 'video_bit_depth', message: 'the source video is 10-bit; the client advertised 8' },
+      { code: 'capability_contradiction', field: 'hdr', message: 'the source video is smpte2084; the client advertised none' },
+    ]);
+  });
+
+  it('reports no warnings against a server too old to send them', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.warnings).toEqual([]);
+  });
+
+  it('drops malformed warnings rather than failing a viewer’s session over advice', async () => {
+    const response = sessionResponse();
+    (response as unknown as { warnings: unknown }).warnings = [
+      null,
+      'not an object',
+      { code: 'capability_contradiction' },
+      { code: 1, field: 'hdr', message: 'x' },
+      { code: 'capability_contradiction', field: 'hdr', message: 'the one good entry' },
+    ];
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.warnings).toEqual([
+      { code: 'capability_contradiction', field: 'hdr', message: 'the one good entry' },
+    ]);
+  });
+
+  it('declares whether the source is a manifest, so a native player need not sniff', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    // The fixture serves application/vnd.apple.mpegurl.
+    expect(session.source.isManifest).toBe(true);
+  });
+
+  it('declares progressive media as not a manifest', async () => {
+    const response = sessionResponse();
+    (response as { stream: Record<string, unknown> }).stream = {
+      mime_type: 'video/mp4', url: '/api/v1/playback/stream/session-1', subtitle_url: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities);
+
+    expect(session.source.isManifest).toBe(false);
+  });
+
+  it('sends hls_ts only when the host answers the question', async () => {
+    // A Response body can only be read once, so mint a fresh one per call.
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(sessionResponse(), 201)));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    await resolver.resolve(media, capabilities);
+    const silent = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
+    expect(silent.capabilities).not.toHaveProperty('hls_ts');
+    // hls_fmp4 is required, so it is always stated — including when false.
+    expect(silent.capabilities.hls_fmp4).toBe(true);
+
+    await resolver.resolve(media, { ...capabilities, hlsFmp4: false, hlsTs: true });
+    const declared = JSON.parse(String(fetchMock.mock.calls[1][1].body)) as { capabilities: Record<string, unknown> };
+    expect(declared.capabilities.hls_fmp4).toBe(false);
+    expect(declared.capabilities.hls_ts).toBe(true);
   });
 
   it('advertises HDR transfers and sample depth when the platform reports them', async () => {

@@ -76,7 +76,7 @@ function media(): MediaSummary {
 
 function capabilities(): PlaybackCapabilities {
   return {
-    platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hls: true, dash: false, hdr: [],
+    platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
   };
 }
 
@@ -85,7 +85,7 @@ function session(overrides: Partial<PlaybackSession> = {}): PlaybackSession {
   const seekMs = overrides.seekMs ?? 0;
   const mimeType = overrides.mimeType ?? (mode === 'direct' ? 'video/mp4' : 'application/vnd.apple.mpegurl');
   const source: PlaybackSource = overrides.source ?? {
-    mediaId: 'm1', url: mode === 'direct' ? '/direct' : `/generation-${seekMs}.m3u8`, mimeType, mode, durationMs: 600_000, sizeBytes: 100_000_000,
+    mediaId: 'm1', url: mode === 'direct' ? '/direct' : `/generation-${seekMs}.m3u8`, mimeType, isManifest: mode !== 'direct', mode, durationMs: 600_000, sizeBytes: 100_000_000,
   };
   return {
     sessionId: 's1', mediaId: 'm1', mode, mimeType, durationMs: 600_000, seekMs,

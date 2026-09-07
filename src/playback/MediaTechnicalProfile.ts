@@ -15,6 +15,12 @@ function normalizedStream(stream: CatalogueMediaProfile['streams'][number] | Pla
     sampleRate: 'sample_rate' in stream ? stream.sample_rate || undefined : stream.sampleRate,
     bitDepth: 'bit_depth' in stream ? stream.bit_depth || undefined : stream.bitDepth,
     bitrate: stream.bitrate || undefined,
+    // Present only on the session response. `bit_depth` is the existing
+    // discriminator for the snake_case catalogue shape.
+    level: 'bit_depth' in stream ? undefined : stream.level,
+    colorTransfer: 'bit_depth' in stream ? undefined : stream.colorTransfer,
+    dolbyVisionProfile: 'bit_depth' in stream ? undefined : stream.dolbyVisionProfile,
+    dolbyVisionCompatibility: 'bit_depth' in stream ? undefined : stream.dolbyVisionCompatibility,
     default: stream.default,
     forced: stream.forced,
   };

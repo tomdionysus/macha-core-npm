@@ -117,7 +117,20 @@ export interface PlaybackCapabilities {
   videoCodecs: VideoCodec[];
   audioCodecs: AudioCodec[];
   containers: string[];
-  hls: boolean;
+  /**
+   * HLS with **fragmented-MP4** segments specifically — not HLS in general.
+   *
+   * The distinction is not pedantry. `canPlayType('application/vnd.apple.
+   * mpegurl')` answers "can you play HLS", which is a different and easier
+   * question: Tizen 3 answers yes to it, then renders fMP4 video while
+   * silently dropping the muxed AAC. A host that maps a general HLS probe
+   * onto this field asserts a capability it never tested, and the failure is
+   * a silent stream rather than an error. The field is named for what the
+   * server reads it as.
+   */
+  hlsFmp4: boolean;
+  /** HLS with MPEG-TS segments, offered by newer servers when `hlsFmp4` is false. */
+  hlsTs?: boolean;
   dash: boolean;
   /**
    * Transfer characteristics the client can actually display, by their
@@ -139,6 +152,15 @@ export interface PlaybackCapabilities {
    * one silently corrected here looks correct and hides the detection bug.
    */
   videoBitDepth?: number;
+  /**
+   * Dolby Vision profile numbers the client decodes (5, 7, 8, ...). Absent or
+   * empty means none — silence is never read as capable.
+   *
+   * Distinct from `hdr` because a profile number answers a question the
+   * transfer name cannot: a set can present PQ perfectly and still fail on a
+   * DV profile whose base layer it cannot use.
+   */
+  dolbyVision?: number[];
 }
 
 export interface MediaTechnicalStream {
@@ -153,6 +175,11 @@ export interface MediaTechnicalStream {
   sampleRate?: number;
   bitDepth?: number;
   bitrate?: number;
+  /** Session-derived only; the immutable catalogue profile does not carry these. */
+  level?: number;
+  colorTransfer?: string;
+  dolbyVisionProfile?: number;
+  dolbyVisionCompatibility?: number;
   default: boolean;
   forced: boolean;
 }
@@ -183,6 +210,14 @@ export interface PlaybackSource {
   url: string;
   subtitleUrl?: string;
   mimeType?: string;
+  /**
+   * True when `url` is a manifest to be parsed, false when it is media bytes
+   * to be decoded. Stated explicitly because native players do not sniff:
+   * hand ExoPlayer an `.m3u8` without declaring it and it parses the
+   * playlist as a media file and reports a source error. Never infer this
+   * from the extension or the mode.
+   */
+  isManifest: boolean;
   mode: PlaybackMode;
   durationMs?: number;
   /** Source byte length when known; enables bounded Direct Play read-ahead. */

@@ -28,7 +28,15 @@ Concretely, a host is expected to supply four small bindings of its own, and the
 - building a `MachaClientConfiguration` from wherever its endpoints come from (`import.meta.env` on the web, app config on native), including whether the build is pinned;
 - resolving its own build target to a `PlatformTarget` and applying it, so `platformTraits` stays single-argument at its call sites;
 - installing `clientDiagnosticsConsole()` wherever a developer can reach it, plus any clipboard affordance;
-- binding `EndpointHealthMonitor` and `createMachaServices` to its own lifecycle and memoization.
+- binding `EndpointHealthMonitor` and `createMachaServices` to its own lifecycle and memoization;
+- **telling the runtime when the host is going away**, by calling `PlaybackRuntime.terminateForPageExit()`. Nothing in the core can decide this, and getting it wrong is invisible from the client: nothing breaks locally, the server keeps holding the session, and with one transcode slot per node the *next* viewer gets a 429. `pagehide` alone is correct for a browser tab and useless on a TV — Tizen suspends or replaces an app without ever firing it, so every redeploy during playback orphans a session. The web client pairs it with `visibilitychange` → hidden, gated on platforms without pointer controls, because a backgrounded browser tab is still legitimately playing while a backgrounded TV app is not. A native host needs its own answer from app state.
+
+## Documentation
+
+Two guides in [`docs/`](docs/README.md) cover the work of bringing the core to a new host:
+
+- **[A headless Macha client](docs/headless-client.md)** — the whole core working with no UI at all: session, cluster discovery, catalogue, playback negotiation. [`docs/examples/headless.mjs`](docs/examples/headless.mjs) is runnable against a real node in one command, and doubles as a server smoke test.
+- **[Writing a player](docs/writing-a-player.md)** — the one interface a host must implement, and the contracts that are not visible in its type signature. Start from `FakePlayer` in `@macha/core/testing`.
 
 ## Installing
 
@@ -64,7 +72,9 @@ const configuration = new MachaClientConfiguration({
 });
 ```
 
-`storage` is a `StorageLike`: `getItem` / `setItem` / `removeItem`, all **synchronous**. On the web that is `localStorage` (which is also the auto-detected default). React Native's `AsyncStorage` is not synchronous, so a native host must hydrate it into memory at start and write through asynchronously behind that interface.
+`storage` is a `StorageLike`: `getItem` / `setItem` / `removeItem`, all **synchronous**. On the web that is `localStorage` (which is also the auto-detected default). React Native's `AsyncStorage` is not synchronous, so a native host must hydrate it into memory at start and write through asynchronously behind that interface — there is a worked implementation in [Async storage on a synchronous interface](docs/async-storage.md).
+
+**Configure the host before constructing any service.** Several module-level singletons (`sessionManager` among them) read the host lazily on first use, so a service built against the default host keeps it. On the web the auto-detected default happens to be the right object and the mistake is invisible; on React Native it means a session cached into a throwaway map and re-minted on every start.
 
 Then bring up the session, the endpoint registry and the services over them:
 
@@ -137,6 +147,12 @@ import type { Platform, Player } from '@macha/core';
 ```
 
 `Player.attach(host)` takes a `PlaybackHost`, which the core treats as opaque — a DOM element on the web, a native view handle or component ref on React Native.
+
+Implementing one is the main cost of a new platform, and several of its contracts are not visible in the types — see **[Writing a player](docs/writing-a-player.md)**. `@macha/core/testing` exports `FakePlayer`, the fixture the core's own playback suites run against, as a working skeleton and a control to test against:
+
+```ts
+import { createFakePlayer } from '@macha/core/testing';
+```
 
 ## Tests
 

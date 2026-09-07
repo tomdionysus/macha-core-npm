@@ -5,6 +5,7 @@ import { parseErrorEnvelope } from '../api/errorEnvelope.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
 import type {
   PlaybackOptions,
+  PlaybackWarning,
   PlaybackPreferencesUpdate,
   PlaybackResolver,
   PlaybackSession,
@@ -28,6 +29,10 @@ interface WireStream {
   sample_rate?: number;
   bit_depth?: number;
   bitrate?: number;
+  level?: number;
+  color_transfer?: string;
+  dolby_vision_profile?: number;
+  dolby_vision_compatibility?: number;
 }
 
 interface WireOutputVideo {
@@ -38,6 +43,9 @@ interface WireOutputVideo {
   width?: number;
   height?: number;
   bitrate?: number;
+  bit_depth?: number;
+  level?: number;
+  color_transfer?: string;
 }
 
 interface WireOutputAudio {
@@ -90,6 +98,7 @@ interface WireSession {
     mime_type: string;
     subtitle_url: string | null;
   };
+  warnings?: Array<{ code?: unknown; field?: unknown; message?: unknown }>;
   options: {
     modes: PlaybackMode[];
     quality_heights: number[];
@@ -131,6 +140,39 @@ export function newPlaybackIdempotencyKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/**
+ * Decided from the served MIME type, which is the server's own statement
+ * about what it is handing over — not from the URL, whose extension is a
+ * convention the server is free to change (0.32.12 turned `master.m3u8`
+ * from a media playlist into a real master playlist without renaming it).
+ */
+const MANIFEST_MIME_TYPES: ReadonlySet<string> = new Set([
+  'application/vnd.apple.mpegurl',
+  'application/x-mpegurl',
+  'audio/mpegurl',
+  'audio/x-mpegurl',
+  'application/dash+xml',
+]);
+
+export function isManifestMimeType(mimeType: string | undefined): boolean {
+  return mimeType !== undefined && MANIFEST_MIME_TYPES.has(mimeType.split(';')[0].trim().toLowerCase());
+}
+
+/**
+ * Defensive because these are advisory: a malformed warning must never cost
+ * a viewer their playback session. Anything unparseable is dropped rather
+ * than surfaced half-formed or thrown.
+ */
+function mapWarnings(warnings: WireSession['warnings']): PlaybackWarning[] {
+  if (!Array.isArray(warnings)) return [];
+  return warnings.flatMap((warning) => {
+    if (!warning || typeof warning !== 'object') return [];
+    const { code, field, message } = warning;
+    if (typeof code !== 'string' || typeof field !== 'string' || typeof message !== 'string') return [];
+    return [{ code, field, message }];
+  });
+}
+
 function mapStream(stream: WireStream): PlaybackStreamInfo {
   return {
     index: stream.index,
@@ -146,6 +188,10 @@ function mapStream(stream: WireStream): PlaybackStreamInfo {
     sampleRate: stream.sample_rate,
     bitDepth: stream.bit_depth,
     bitrate: stream.bitrate,
+    level: stream.level,
+    colorTransfer: stream.color_transfer,
+    dolbyVisionProfile: stream.dolby_vision_profile,
+    dolbyVisionCompatibility: stream.dolby_vision_compatibility,
   };
 }
 
@@ -190,7 +236,8 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       containers: capabilities.containers.join(', '),
       videoCodecs: capabilities.videoCodecs.join(', '),
       audioCodecs: capabilities.audioCodecs.join(', '),
-      hlsFmp4: capabilities.hls,
+      hlsFmp4: capabilities.hlsFmp4,
+      hlsTs: capabilities.hlsTs ?? false,
       maxWidth: capabilities.maxWidth ?? 'none',
       maxHeight: capabilities.maxHeight ?? 'none',
       hdr: capabilities.hdr.length > 0 ? capabilities.hdr.join(', ') : 'not-advertised',
@@ -201,7 +248,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       containers: capabilities.containers,
       video_codecs: capabilities.videoCodecs,
       audio_codecs: capabilities.audioCodecs,
-      hls_fmp4: capabilities.hls,
+      hls_fmp4: capabilities.hlsFmp4,
     };
     if (capabilities.maxWidth !== undefined) wireCapabilities.max_width = capabilities.maxWidth;
     if (capabilities.maxHeight !== undefined) wireCapabilities.max_height = capabilities.maxHeight;
@@ -210,13 +257,32 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     // client that cannot answer honestly should get.
     if (capabilities.hdr.length > 0) wireCapabilities.hdr = capabilities.hdr;
     if (capabilities.videoBitDepth !== undefined) wireCapabilities.video_bit_depth = capabilities.videoBitDepth;
+    if (capabilities.dolbyVision && capabilities.dolbyVision.length > 0) {
+      wireCapabilities.dolby_vision = capabilities.dolbyVision;
+    }
+    if (capabilities.hlsTs !== undefined) wireCapabilities.hls_ts = capabilities.hlsTs;
 
     const body: Record<string, unknown> = {
       item_id: media.id,
       capabilities: wireCapabilities,
       preferences: wirePreferences({
         ...preferences,
-        mode: preferences?.mode ?? (capabilities.platform === 'tizen' ? 'direct' : 'auto'),
+        // Always `auto` unless the viewer asked for something specific.
+        //
+        // Tizen used to default to `direct` here, with no recorded reason.
+        // It predates the server negotiating on capabilities at all, when
+        // `auto` might genuinely have handed a TV something worse. It is now
+        // actively harmful: the server's capability gate is specified for
+        // `auto`, so an explicit `direct` bypasses it, and the one platform
+        // the gate exists for was the only one that never asked for it. That
+        // is how a 10-bit Dolby Vision title reached a Samsung that had just
+        // advertised 8-bit and no HDR, and rendered a corrupt picture.
+        //
+        // A/B tested against a live node with that set's exact capabilities:
+        // a plain H.264 source direct-plays identically under `auto`, and the
+        // PQ source transcodes correctly instead of being copied. `auto`
+        // loses nothing and the special case bought nothing.
+        mode: preferences?.mode ?? 'auto',
       }),
     };
     if (seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(seekMs));
@@ -290,6 +356,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       url: this.streamUrl(wire.stream.url),
       subtitleUrl: wire.stream.subtitle_url ? this.streamUrl(wire.stream.subtitle_url) : undefined,
       mimeType: wire.stream.mime_type,
+      isManifest: isManifestMimeType(wire.stream.mime_type),
       mode: wire.mode,
       durationMs: wire.duration_ms,
       sizeBytes: wire.source.size,
@@ -331,6 +398,9 @@ export class MachaPlaybackResolver implements PlaybackResolver {
           width: wire.output.video.width,
           height: wire.output.video.height,
           bitrate: wire.output.video.bitrate,
+          bitDepth: wire.output.video.bit_depth,
+          level: wire.output.video.level,
+          colorTransfer: wire.output.video.color_transfer,
         } : undefined,
         audio: wire.output.audio ? {
           sourceStream: wire.output.audio.source_stream,
@@ -353,6 +423,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         audio: wire.output.audio?.transform ?? 'omit',
       },
       options,
+      warnings: mapWarnings(wire.warnings),
     };
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@macha/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Generic, platform-independent client core for Macha: server API families, cluster endpoint routing and health, playback resolution and coordination, and persisted client state.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -11,6 +11,7 @@
   "files": [
     "dist",
     "README.md",
+    "docs",
     "LICENSE"
   ],
   "main": "./dist/index.js",
@@ -20,6 +21,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
     },
     "./package.json": "./package.json"
   },

@@ -5,7 +5,7 @@ import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
 
 const media: MediaSummary = { id: 'movie:test', kind: 'movie', title: 'Test', mediaIds: ['macha:media'] };
 const capabilities: PlaybackCapabilities = {
-  platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hls: true, dash: false, hdr: [],
+  platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
 };
 
 function wireSession(id: string) {

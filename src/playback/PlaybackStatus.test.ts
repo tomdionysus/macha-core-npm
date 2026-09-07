@@ -8,7 +8,7 @@ function session(overrides: Partial<PlaybackSession> = {}): PlaybackSession {
     mediaId: 'm1',
     mode: 'remux',
     mimeType: 'application/vnd.apple.mpegurl',
-    source: { mediaId: 'm1', url: '/stream', mimeType: 'application/vnd.apple.mpegurl', mode: 'remux', durationMs: 1000 },
+    source: { mediaId: 'm1', url: '/stream', mimeType: 'application/vnd.apple.mpegurl', isManifest: true, mode: 'remux', durationMs: 1000 },
     durationMs: 1000,
     seekMs: 0,
     preferences: {

@@ -21,7 +21,7 @@ function capabilities(): PlaybackCapabilities {
     videoCodecs: ['h264'],
     audioCodecs: ['aac'],
     containers: ['mp4'],
-    hls: true,
+    hlsFmp4: true,
     dash: false,
     hdr: [],
   };
@@ -31,7 +31,7 @@ function session(media: MediaSummary, sessionId = `session:${media.id}`): Playba
   const source: PlaybackSource = {
     mediaId: media.mediaIds[0] ?? media.id,
     url: `/stream/${sessionId}`,
-    mimeType: 'video/mp4',
+    mimeType: 'video/mp4', isManifest: false,
     mode: 'direct',
     durationMs: media.durationMs ?? 0,
     sizeBytes: 10_000_000,

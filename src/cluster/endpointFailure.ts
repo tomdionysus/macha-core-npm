@@ -38,6 +38,28 @@ export function retryableEndpointFailure(error: unknown): boolean {
   return status === 429 || (status !== undefined && status >= 500 && status <= 599);
 }
 
+/**
+ * Server error codes that describe one title's outcome on a node, not the
+ * node's health.
+ *
+ * A transcode pipeline that fails to start, or a source stream that dies, is
+ * a fact about that title on that node. Cooling the endpoint down for it
+ * takes a healthy node out of rotation for every *other* title — and with a
+ * small cluster and an escalating cooldown, a single unplayable file can
+ * empty the candidate list. Trying the next node for the same title is still
+ * right; recording the node as unhealthy is not.
+ */
+const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'playback_pipeline_start_failed',
+  'stream_failed',
+]);
+
+export function isPerTitleFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && PER_TITLE_FAILURE_CODES.has(code);
+}
+
 export function unreachableEndpointFailure(error: unknown): boolean {
   if (error instanceof MachaConnectionError) return true;
   if (error instanceof MachaEndpointError) return error.kind === 'transport';

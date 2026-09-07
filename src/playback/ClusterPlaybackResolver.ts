@@ -1,5 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
-import { endpointFailure, retryableEndpointFailure } from '../cluster/endpointFailure.js';
+import { endpointFailure, isPerTitleFailure, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
@@ -166,7 +166,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
           standby: !preferOnSuccess,
           error,
         });
-        this.registry.recordFailure(endpoint.id);
+        if (!isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
       }
     }
@@ -187,7 +187,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       // Superseded client intent is not evidence that the owning node failed.
       if (signal?.aborted) throw signal.reason ?? error;
-      if (retryableEndpointFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
@@ -199,7 +199,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       await owned.resolver.stop(owned.nodeSessionId, options);
       this.sessions.delete(sessionId);
     } catch (error) {
-      if (retryableEndpointFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
