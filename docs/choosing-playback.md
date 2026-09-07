@@ -137,6 +137,8 @@ That answer decides **copy versus transcode inside the chosen container. It does
 
 An instruction is a request, and until 0.33.1 the segment container was the one part of it with no confirmation anywhere in the response. `session.output.container` closes that: `fmp4` or `mpegts` for an HLS session, the source file's own container for a direct one.
 
+**How far to trust these fields.** There is no independent witness in a session object: `mode`, `output.container` and the stream mime type are all the server stating its plan, and a plan is not evidence about itself. What 0.33.1 added is narrower than verification — the plan is validated against the mode table before the pipeline starts, and an instruction that cannot be performed as stated is refused rather than quietly performed as something else. So the guarantee is not "the field was checked against reality" but "the field cannot describe a thing the server would not do". Build on that and no more.
+
 Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from what was served rather than from the mode: what arrived decides the badge, what was asked for does not.
 
 The badge asks whether the viewer was handed the file or something built from it, and a manifest settles that on its own — an MPEG-TS source packaged into MPEG-TS segments changes no container and is still a playlist. Container equality cannot see that, so `source.isManifest` is checked first and the container comparison decides only among whole files.
