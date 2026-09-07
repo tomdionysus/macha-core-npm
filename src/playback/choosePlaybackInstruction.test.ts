@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
+import { canonicalContainers, choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 
 // The Samsung Tizen 3 set, as the TV actually advertises it.
@@ -375,6 +375,25 @@ describe('container families', () => {
     const decision = choosePlaybackInstruction(profile('mpeg', [h264, aac]), audioOnly);
     expect(decision.mode).not.toBe('direct');
     expect(decision.reasons).toContain('container-not-playable');
+  });
+
+  it('maps every container the server can emit to a family of its own', () => {
+    // The server's source vocabulary, written down here so the two lists can
+    // be compared rather than assumed to agree. Three of tonight's bugs were
+    // found exactly this way — by holding two written copies of the same fact
+    // side by side — and none was reachable from either side alone.
+    const serverVocabulary = [
+      'matroska', 'webm', 'mp4', 'avi', 'asf', 'mpeg', 'mpegts',
+      'mp3', 'flac', 'ogg', 'adts', 'wav', 'aiff',
+    ];
+
+    const families = serverVocabulary.map((name) => canonicalContainers(name));
+    // Every token is known: an unrecognised one falls through to "not
+    // playable", which is safe but silently costs a viewer direct play.
+    expect(serverVocabulary.filter((_, i) => families[i] === undefined)).toEqual([]);
+    // And no two share a family. `mpeg` with `mp3` was that bug; `mpeg` with
+    // `mpegts` would have been the same bug with a worse failure.
+    expect(new Set(families.map((family) => family?.join('/'))).size).toBe(serverVocabulary.length);
   });
 
   it('still plays an mp3 on a host that claims mp3', () => {

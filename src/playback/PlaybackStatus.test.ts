@@ -75,17 +75,32 @@ describe('the container actually served', () => {
   it('calls a copied session DIRECT when the served container is the source container', () => {
     const described = describePlaybackSession(session({
       mode: 'direct',
+      source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
       output: { ...session().output, format: 'matroska', container: 'matroska' },
     }));
     expect(described?.video).toBe('DIRECT · HEVC · 1920×1080 · 7.5 Mb/s');
   });
 
+  it('does not call an MPEG-TS source in MPEG-TS segments a direct hand-off', () => {
+    // The container genuinely did not change; what changed is that the viewer
+    // is being handed a playlist and segments rather than the file. Container
+    // equality cannot see that, and this lands on the television, where the
+    // host policy asks for MPEG-TS carriage on everything.
+    const described = describePlaybackSession(session({
+      sourceInfo: { ...session().sourceInfo, format: 'mpegts', container: 'mpegts' },
+      output: { ...session().output, format: 'hls', container: 'mpegts' },
+    }));
+    expect(described?.video).toBe('REMUX · HEVC · 1920×1080 · 7.5 Mb/s');
+  });
+
   it('calls it REMUX when the container changed, whatever the mode field says', () => {
-    // The server reported `direct` for a session it packaged into MPEG-TS.
-    // What arrived decides the badge; what was asked for does not.
+    // The server reported `direct` for a session whose container changed.
+    // What arrived decides the badge; what was asked for does not. Handed
+    // over whole, so the manifest shortcut is not what is under test here.
     const described = describePlaybackSession(session({
       mode: 'direct',
-      output: { ...session().output, format: 'hls', container: 'mpegts' },
+      source: { ...session().source, mimeType: 'video/mp2t', isManifest: false },
+      output: { ...session().output, format: 'mpegts', container: 'mpegts' },
     }));
     expect(described?.video).toBe('REMUX · HEVC · 1920×1080 · 7.5 Mb/s');
   });

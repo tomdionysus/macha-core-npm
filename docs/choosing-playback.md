@@ -137,7 +137,9 @@ That answer decides **copy versus transcode inside the chosen container. It does
 
 An instruction is a request, and until 0.33.1 the segment container was the one part of it with no confirmation anywhere in the response. `session.output.container` closes that: `fmp4` or `mpegts` for an HLS session, the source file's own container for a direct one.
 
-Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from it rather than from the mode: what arrived decides the badge, what was asked for does not.
+Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from what was served rather than from the mode: what arrived decides the badge, what was asked for does not.
+
+The badge asks whether the viewer was handed the file or something built from it, and a manifest settles that on its own — an MPEG-TS source packaged into MPEG-TS segments changes no container and is still a playlist. Container equality cannot see that, so `source.isManifest` is checked first and the container comparison decides only among whole files.
 
 The coordinator keeps the two sides together on `PlaybackInstructionReport`: `container` is what the instruction asked for, `servedContainer` is what came back, and `containerHonoured` is the comparison — undefined, not true, when either side is unknown. A host policy preferring MPEG-TS against a node that ignores it otherwise shows a real container on screen that simply is not the one requested, with nothing pointing at the gap. The comparison is made once here rather than at each call site, because the two sides use different vocabularies and it has exactly one correct answer.
 

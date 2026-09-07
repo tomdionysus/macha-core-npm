@@ -108,14 +108,23 @@ function outputAudioParts(session: PlaybackSession): string[] {
 /**
  * DIRECT or REMUX, from what was served rather than what was asked for.
  *
- * Only called when every selected stream is copied, so the sole remaining
- * question is whether the container changed. `output.container` answers it
- * directly: a direct session reports the source file's own container, and a
- * remux reports the segment container it was packaged into. Falls back to the
- * session mode for nodes that do not report the field yet — which is the
- * requested mode, and was the only thing available before 0.33.1.
+ * Only called when every selected stream is copied, so the question is
+ * narrow: was the viewer handed the file, or something built from it?
+ *
+ * A manifest settles it on its own. An MPEG-TS source packaged into MPEG-TS
+ * segments changes no container at all, and is still a playlist and a pile of
+ * segments rather than the file — so container equality cannot answer this
+ * and `isManifest` is the honest tell. That case is not hypothetical: it is
+ * .ts and .m2ts sources on a host whose policy asks for MPEG-TS carriage,
+ * which is the television.
+ *
+ * For anything handed over whole, `output.container` decides: same container
+ * as the source is a direct hand-off, a different one was repackaged. Falls
+ * back to the session mode for nodes that do not report the field, which is
+ * the requested mode and was the only thing available before 0.33.1.
  */
 function copyModeLabel(session: PlaybackSession): string {
+  if (session.source.isManifest) return 'REMUX';
   const served = session.output.container?.trim().toLowerCase();
   if (!served) return session.mode === 'direct' ? 'DIRECT' : 'REMUX';
   const source = session.sourceInfo.container ?? session.sourceInfo.format;
