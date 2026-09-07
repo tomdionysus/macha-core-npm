@@ -24,6 +24,7 @@ export type PlaybackDecisionReason =
   | 'host-policy-forbids-direct'
   | 'host-policy-excludes-container'
   | 'host-policy-excludes-codec'
+  | 'host-policy-prefers-container'
   | 'no-technical-facts'
   | 'executor-refused-copy'
   | 'executor-cannot-direct'
@@ -47,6 +48,22 @@ export interface PlaybackPolicyOverrides {
   /** Video codecs to treat as undecodable regardless of what the probe claimed. */
   excludeVideoCodecs?: string[];
   excludeAudioCodecs?: string[];
+  /**
+   * Which HLS segment container to ask for when the host supports both.
+   *
+   * Without this, fragmented MP4 wins whenever it is available, which is a
+   * preference hardcoded as an ordering — the rule living in the chooser
+   * rather than with the party that knows it. A host may have good reason to
+   * want MPEG-TS: a 2017 Samsung carries neither HEVC video nor any audio
+   * correctly in fMP4 on any delivery path, while copying both untouched in
+   * TS. Stating that here rather than by denying `hlsFmp4` matters, because
+   * the set genuinely can do fMP4 — denying it would falsify a capability to
+   * achieve a policy.
+   *
+   * Ignored when the host has not said it supports the container it prefers;
+   * the default ordering then applies rather than an unusable instruction.
+   */
+  preferSegmentContainer?: SegmentContainer;
 }
 
 /**
@@ -204,10 +221,27 @@ export function audioStreamObjection(
   return undefined;
 }
 
-function segmentContainer(capabilities: PlaybackCapabilities): SegmentContainer | undefined {
-  if (capabilities.hlsFmp4) return 'fmp4';
-  if (capabilities.hlsTs) return 'mpegts';
-  return undefined;
+/**
+ * Note this reads `hlsTs`, which the default ordering never reached: `fmp4`
+ * was returned one line before it was consulted. A preference and its
+ * detection have to arrive together or neither does anything — which is how
+ * `hlsTs` managed to be both unreachable and unpopulated without anyone
+ * noticing.
+ */
+function segmentContainer(
+  capabilities: PlaybackCapabilities,
+  overrides: PlaybackPolicyOverrides,
+): { container: SegmentContainer | undefined; preferred: boolean } {
+  const fmp4 = capabilities.hlsFmp4;
+  const mpegts = capabilities.hlsTs ?? false;
+  const wanted = overrides.preferSegmentContainer;
+
+  if (wanted === 'mpegts' && mpegts) return { container: 'mpegts', preferred: fmp4 };
+  if (wanted === 'fmp4' && fmp4) return { container: 'fmp4', preferred: false };
+
+  if (fmp4) return { container: 'fmp4', preferred: false };
+  if (mpegts) return { container: 'mpegts', preferred: false };
+  return { container: undefined, preferred: false };
 }
 
 export interface ChooseInstructionOptions {
@@ -262,7 +296,8 @@ export function choosePlaybackInstruction(
     ? streams.find((s) => s.index === options.audioStream)
     : streams.find((s) => s.type === 'audio' && s.default) ?? streams.find((s) => s.type === 'audio');
 
-  const container = segmentContainer(capabilities);
+  const { container, preferred: containerPreferred } = segmentContainer(capabilities, overrides);
+  if (containerPreferred) reasons.push('host-policy-prefers-container');
   if (streams.length === 0) reasons.push('no-technical-facts');
 
   // A stream with no video is the music case; the container decision still applies.

@@ -115,13 +115,31 @@ choosePlaybackInstruction(profile, capabilities, {
 
 The probe is the general mechanism; the override covers a device that lies. Both are needed, and the override is first-class rather than a fork.
 
+### Preferring a segment container
+
+When a host supports both HLS packagings, `preferSegmentContainer` says which it wants. Without it, fragmented MP4 wins whenever available — a preference hardcoded as an ordering, the rule living in the chooser rather than with the party that knows it.
+
+```ts
+overrides: { preferSegmentContainer: 'mpegts' }
+```
+
+The case it exists for: a 2017 Samsung carries neither HEVC video nor any audio correctly in fragmented MP4 — on the native path or through MediaSource — while copying both untouched in MPEG-TS. The alternative was excluding the audio codec, which forces a re-encode of audio that needs none on every title.
+
+State it here rather than by denying `hlsFmp4`. The set genuinely *can* do fMP4; denying it would falsify a capability to achieve a policy.
+
+A preference the host has not said it supports is ignored, and the default ordering applies — preferring what you cannot play is a configuration error, not an instruction. The reason `host-policy-prefers-container` appears only when the preference actually changed the outcome, so a host with one available container does not see a preference it never exercised.
+
+**Whether the *node* can emit the preferred container is a separate question**, and currently an assumption. `operations` reports `copy_into_fmp4` but has no MPEG-TS equivalent, so a host preferring TS against a node that cannot emit it gets a 400 rather than a fallback. That is the loud failure leg, so it is survivable — but it is an assumption, and the honest fix is a `copy_into_mpegts` fact alongside the existing one rather than the chooser guessing.
+
 ### State the limitation at the level the fault is at
 
 An override states a device truth, and stating one **at the wrong level** narrows the choice into a worse branch that the chooser then defends. It is not fooled — it is obeying, and it will keep obeying.
 
 The worked case: a 2017 Samsung was mangling E-AC-3 audio, so `excludeAudioCodecs: ['eac3']` looked like the obvious policy. It forced the AAC transcode instead — and AAC through the same path was *silent*, a failure already proved that evening. The exclusion traded stuttering audio for none, and the chooser defended it perfectly.
 
-The fault was not the codec. Handed as fragmented MP4, that set gave a black screen for copied HEVC, broken audio for copied E-AC-3, and silence for transcoded AAC, while playing all three progressively. Three codecs, three failures, one container. A codec-level policy against a container-level fault can only move the failure around.
+The fault was not the codec. Handed as fragmented MP4, that set gives a black screen for copied HEVC, broken audio for copied E-AC-3, and silence for transcoded AAC — while playing all three progressively, and while playing **h264 in fMP4 perfectly well**. So it is not the container wholesale either: it is HEVC video and all audio, in that container, on every delivery path. A codec-level policy against a carriage-level fault can only move the failure around.
+
+That last qualification was itself a correction. "Every stream as fMP4 fails" was recorded here as established when it had been generalised from three data points, and the h264 result falsified it. Narrowing a claim to what was actually measured is not pedantry when the claim is what a future override will be written against.
 
 Before adding an override, ask what varies and what is constant across the failures you have. If every failure shares a container and the codecs differ, the container is the fact. `excludeContainers` and `neverDirect` exist for that, and there is deliberately no way to say "this codec is fine except in that container" — if you need that, you have not finished diagnosing.
 

@@ -358,3 +358,52 @@ describe('mode legality', () => {
     expect(remuxes).toBeGreaterThan(0);
   });
 });
+
+describe('preferSegmentContainer', () => {
+  const bothContainers = { ...samsung, hlsFmp4: true, hlsTs: true };
+
+  it('asks for MPEG-TS when the host prefers it and supports it', () => {
+    // The Samsung case: it carries neither HEVC nor any audio correctly in
+    // fMP4 on any delivery path, and copies both untouched in TS.
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), bothContainers, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+    });
+    expect(decision.container).toBe('mpegts');
+    expect(decision.reasons).toContain('host-policy-prefers-container');
+  });
+
+  it('still defaults to fragmented MP4 when nothing is preferred', () => {
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), bothContainers);
+    expect(decision.container).toBe('fmp4');
+    expect(decision.reasons).not.toContain('host-policy-prefers-container');
+  });
+
+  it('ignores a preference the host never said it supports', () => {
+    // Preferring what you cannot play is a configuration error, not an
+    // instruction: fall back rather than emit something unusable.
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), samsung, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+    });
+    expect(decision.container).toBe('fmp4');
+    expect(decision.reasons).not.toContain('host-policy-prefers-container');
+  });
+
+  it('does not claim a preference when there was no choice to make', () => {
+    // TS is the only container this host takes, so asking for it is not a
+    // preference being honoured — saying so would be noise in the panel.
+    const tsOnly = { ...samsung, hlsFmp4: false, hlsTs: true };
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), tsOnly, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+    });
+    expect(decision.container).toBe('mpegts');
+    expect(decision.reasons).not.toContain('host-policy-prefers-container');
+  });
+
+  it('leaves direct play alone, which has no segments at all', () => {
+    const decision = choosePlaybackInstruction(profile('mov,mp4', [h264, aac]), bothContainers, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+    });
+    expect(decision.mode).toBe('direct');
+    expect(decision.container).toBeUndefined();
+  });
+});
