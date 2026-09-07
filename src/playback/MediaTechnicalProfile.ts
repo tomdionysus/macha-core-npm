@@ -15,12 +15,15 @@ function normalizedStream(stream: CatalogueMediaProfile['streams'][number] | Pla
     sampleRate: 'sample_rate' in stream ? stream.sample_rate || undefined : stream.sampleRate,
     bitDepth: 'bit_depth' in stream ? stream.bit_depth || undefined : stream.bitDepth,
     bitrate: stream.bitrate || undefined,
-    // Present only on the session response. `bit_depth` is the existing
-    // discriminator for the snake_case catalogue shape.
-    level: 'bit_depth' in stream ? undefined : stream.level,
-    colorTransfer: 'bit_depth' in stream ? undefined : stream.colorTransfer,
-    dolbyVisionProfile: 'bit_depth' in stream ? undefined : stream.dolbyVisionProfile,
-    dolbyVisionCompatibility: 'bit_depth' in stream ? undefined : stream.dolbyVisionCompatibility,
+    // Both shapes carry these from profile schema 2 onward. Zero and empty
+    // string are the server's "not probed" markers, so they normalise to
+    // absent rather than to a confident wrong answer.
+    level: ('bit_depth' in stream ? stream.level : stream.level) || undefined,
+    colorTransfer: ('bit_depth' in stream ? stream.color_transfer : stream.colorTransfer) || undefined,
+    dolbyVisionProfile: ('bit_depth' in stream ? stream.dolby_vision_profile : stream.dolbyVisionProfile) || undefined,
+    dolbyVisionCompatibility: 'bit_depth' in stream
+      ? stream.dolby_vision_compatibility
+      : stream.dolbyVisionCompatibility,
     default: stream.default,
     forced: stream.forced,
   };
@@ -30,6 +33,7 @@ export function technicalProfileFromCatalogue(profile: CatalogueMediaProfile): M
   return {
     mediaId: profile.media_id,
     format: profile.format,
+    container: profile.container,
     durationMs: profile.duration_ms,
     bitrate: profile.bitrate,
     streams: profile.streams.map(normalizedStream),
@@ -40,6 +44,7 @@ export function technicalProfileFromSession(session: PlaybackSession): MediaTech
   return {
     mediaId: session.mediaId,
     format: session.sourceInfo.format,
+    container: session.sourceInfo.container,
     durationMs: session.durationMs,
     bitrate: session.sourceInfo.bitrate,
     sizeBytes: session.sourceInfo.size,

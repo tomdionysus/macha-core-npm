@@ -1,5 +1,7 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { Platform, Player } from '../platform/Platform.js';
+import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
+import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import {
   PlaybackCoordinator,
@@ -45,6 +47,20 @@ function requestError(media: MediaSummary): Error | undefined {
  * Resource-changing commands are generation-ordered: an old generation is
  * fully closed before a newer generation may acquire a server session.
  */
+/**
+ * What a host supplies so the runtime can choose an instruction.
+ *
+ * Without these the chooser decides from capabilities alone, which is enough
+ * to be wrong: it never learns what the source actually is, nor what this
+ * device gets wrong about itself.
+ */
+export interface PlaybackRuntimeOptions {
+  /** What the media is and what the node can do with it. See `PlaybackCoordinatorOptions`. */
+  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  /** Platform truths no capability probe can discover. */
+  policyOverrides?: PlaybackPolicyOverrides;
+}
+
 export class PlaybackRuntime {
   private readonly log = createClientLogger('playback.runtime');
   private readonly player: Player;
@@ -67,6 +83,7 @@ export class PlaybackRuntime {
   constructor(
     private readonly platform: Platform,
     resolver: PlaybackResolver,
+    private readonly options: PlaybackRuntimeOptions = {},
   ) {
     this.resolver = resolver;
     this.player = platform.createPlayer();
@@ -183,6 +200,8 @@ export class PlaybackRuntime {
         capabilities: () => this.capabilities(),
         initialPositionMs: Math.max(0, request.startPositionMs),
         initialPreferences: initialPreferences ? { ...initialPreferences } : undefined,
+        facts: this.options.facts,
+        policyOverrides: this.options.policyOverrides,
       });
       this.coordinator = coordinator;
       this.unsubscribeCoordinator = coordinator.subscribe((snapshot) => {

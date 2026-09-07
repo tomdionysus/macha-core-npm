@@ -74,6 +74,10 @@ Over-claiming is the dangerous direction: an over-claimed capability is a black 
 
 **Do not report screen size as a decoder limit.** `maxWidth`/`maxHeight` describe what the decoder can handle. A 1080p panel with a 4K-capable decoder should leave them unset; claiming 1920x1080 forces a transcode that buys nothing.
 
+**Validate the probe before believing it.** Ask first about a codec that cannot exist. An engine that answers "supported" to an impossible string is not discriminating, and every other answer it gives is worthless — treat the whole probe as unusable and fall back to a curated list rather than recording its opinions. A Samsung Tizen 3 set passes this check: it rejects the impossible codec and returns a genuinely narrower list. It is then still wrong about E-AC-3 in fragmented MP4, which is the useful lesson — a discriminating probe can be honestly wrong, and that is what `PlaybackPolicyOverrides` is for, not a reason to distrust probing in general.
+
+**A capability nobody produces is worse than one nobody consumes.** `hlsVideoCodecs` and `hlsAudioCodecs` are optional and fall back to the direct-play lists when unset. That is deliberate, and it is also a trap: the web client declared them, the chooser read them, and for a while nothing populated them — so the element-versus-delivery distinction was silently inert on the one device it exists for, and every delivery decision was answered by the media element's opinion of a progressive file. If you leave them unset, do so knowingly. If you set them, check they are actually narrower than the direct lists on the device you care about, because equal lists and absent lists are indistinguishable in the result.
+
 **Honest enumeration is only half possible, so curate.** Android's `MediaCodecList` gives you codecs but says nothing about containers — that is ExoPlayer's extractor set, fixed at build time — and iOS offers no enumeration API at all. A curated per-platform list, verified against real files, is the honest approach; a probe that cannot answer the question is worse than a list that admits it was written by hand.
 
 A real set, from a Samsung TV running the Tizen client:

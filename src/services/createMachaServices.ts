@@ -1,4 +1,6 @@
 import { ClusterAcquisitionApi } from '../api/ClusterAcquisitionApi.js';
+import { ClusterPlaybackFactsApi } from '../api/ClusterPlaybackFactsApi.js';
+import type { PlaybackFactsApi } from '../api/PlaybackFactsApi.js';
 import type { AcquisitionApi } from '../api/AcquisitionApi.js';
 import type { CatalogueApi } from '../api/CatalogueApi.js';
 import type { ClusterStatusApi } from '../api/ClusterStatusApi.js';
@@ -24,6 +26,12 @@ export interface MachaServices {
   serverApi: ServerApi;
   clusterStatusApi: ClusterStatusApi;
   acquisitionApi: AcquisitionApi;
+  /**
+   * Source facts and per-node operations, routed per call. Feed it to
+   * `PlaybackRuntime`'s `facts` option rather than building one against a
+   * fixed base URL — see `ClusterPlaybackFactsApi`.
+   */
+  playbackFactsApi: PlaybackFactsApi;
   /** False when a caller substituted its own `MediaApi`; management screens are then meaningless. */
   managementAvailable: boolean;
 }
@@ -58,6 +66,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
     serverApi: new ClusterServerApi(endpointRouter, auth),
     clusterStatusApi: new ClusterStatusRouter(endpointRouter, auth),
     acquisitionApi: new ClusterAcquisitionApi(endpointRouter, auth),
+    playbackFactsApi: new ClusterPlaybackFactsApi(endpointRouter, auth),
     managementAvailable: !apiOverride,
   };
 }

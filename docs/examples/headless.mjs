@@ -15,6 +15,7 @@
  */
 import {
   bootstrapEndpoints,
+  choosePlaybackInstruction,
   configureClientDiagnostics,
   createMachaServices,
   EndpointHealthMonitor,
@@ -23,6 +24,7 @@ import {
   memoryStorage,
   sessionManager,
   subscribeConnectionState,
+  technicalProfileFromCatalogue,
 } from '../../dist/index.js';
 
 // The client log writes to the console by default, which is right for a real
@@ -98,7 +100,26 @@ async function main() {
     hdr: [],
     videoBitDepth: 8,
   };
-  const session = await services.playbackResolver.resolve(first, advertised);
+  // The server no longer chooses. It reports what the media is and performs
+  // what it is told, so the client must decide — from the source facts plus
+  // what this host can honestly decode. `choosePlaybackInstruction` is that
+  // decision, held once in the core so every client reaches the same answer.
+  const raw = await services.catalogueApi.mediaProfile(first.mediaIds[0]).catch(() => undefined);
+  const instruction = raw
+    ? choosePlaybackInstruction(technicalProfileFromCatalogue(raw), advertised)
+    // No immutable profile (a mutable path identity has none). Transcode is
+    // the only instruction that is always performable.
+    : { mode: 'transcode', video: 'transcode', audio: 'transcode', reasons: ['no-technical-facts'] };
+
+  console.log(`instruction: ${instruction.mode} (video ${instruction.video}, audio ${instruction.audio})`);
+  console.log(`  because:   ${instruction.reasons.join(', ')}`);
+
+  const session = await services.playbackResolver.resolve(first, advertised, undefined, {
+    mode: instruction.mode,
+    video: instruction.video,
+    audio: instruction.audio,
+    container: instruction.container,
+  });
   try {
     console.log(`playback:  "${first.title}" -> mode=${session.mode} mime=${session.mimeType}`);
     console.log(`           video ${session.transform.video}, audio ${session.transform.audio}`);

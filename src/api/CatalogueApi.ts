@@ -65,12 +65,34 @@ export interface CatalogueMediaStreamProfile {
   forced: boolean;
   bitrate: number;
   attached_picture: boolean;
+  /**
+   * Added in profile schema 2. Zero and empty string are the server's
+   * "not probed" values, not real answers: Matroska does not carry
+   * `bits_per_raw_sample` for HEVC, and the colour transfer needs an SPS the
+   * bounded probe may not reach.
+   */
+  level?: number;
+  color_transfer?: string;
+  dolby_vision_profile?: number;
+  dolby_vision_compatibility?: number;
 }
 
 export interface CatalogueMediaProfile {
   schema_version: number;
   media_id: string;
+  /**
+   * The raw demuxer list, which names every format the demuxer covers rather
+   * than the one the file is: Matroska appears here as `matroska,webm`.
+   * Prefer `container` — see its note.
+   */
   format: string;
+  /**
+   * The resolved container family — `mp4`, `matroska`, `webm`, `mp3`, `flac`
+   * or `ogg` — added in schema 3. This is the field to match capabilities
+   * against; matching `format` accepts a Matroska file for any host that
+   * merely supports WebM, which is a corrupt picture rather than an error.
+   */
+  container?: string;
   duration_ms: number;
   bitrate: number;
   streams: CatalogueMediaStreamProfile[];

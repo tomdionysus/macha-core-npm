@@ -30,7 +30,7 @@ describe('ClusterPlaybackResolver', () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
 
-    const session = await resolver.resolve(media, capabilities, 12_000, { audioLanguage: 'eng' });
+    const session = await resolver.resolve(media, capabilities, 12_000, { mode: 'direct', audioLanguage: 'eng' });
     expect(session.endpoint).toEqual({ id: 'http://b', baseUrl: 'http://b' });
     expect(session.source.url).toBe('http://b/api/v1/playback/stream/session-b');
     expect(fetchMock.mock.calls.map(([url]) => (url as string).split('?')[0])).toEqual([
@@ -54,7 +54,7 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
-    await expect(resolver.resolve(media, capabilities)).resolves.toMatchObject({
+    await expect(resolver.resolve(media, capabilities, undefined, { mode: 'direct' })).resolves.toMatchObject({
       endpoint: { id: 'http://b' },
       sessionId: expect.stringContaining('session-b'),
     });
@@ -71,8 +71,8 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
-    const primary = await resolver.resolve(media, capabilities, 0, undefined);
-    await resolver.failover(primary, media, capabilities, 20_000, { mode: 'auto' }, undefined);
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
+    await resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' }, undefined);
 
     const urls = fetchMock.mock.calls.map(([url]) => new URL(url as string, 'http://x').searchParams.get('idempotency_key'));
     expect(urls[0]).toBeTruthy();
@@ -88,7 +88,7 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     await resolver.update(session.sessionId, { seekMs: 20_000 });
     await resolver.stop(session.sessionId);
     expect(fetchMock.mock.calls.map(([url]) => (url as string).split('?')[0])).toEqual([
@@ -107,7 +107,7 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
-    const active = await resolver.resolve(media, capabilities);
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     const controller = new AbortController();
 
     const update = resolver.update(active.sessionId, { seekMs: 20_000 }, controller.signal);
@@ -124,7 +124,7 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
-    const first = await resolver.resolve(media, capabilities);
+    const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
     expect(second.endpoint?.id).toBe('http://b');
     await expect(resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' }))
@@ -139,9 +139,9 @@ describe('ClusterPlaybackResolver', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-c')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c'])));
-    const active = await resolver.resolve(media, capabilities);
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
-    const replacement = await resolver.failover(active, media, capabilities, 21_000, { mode: 'auto' });
+    const replacement = await resolver.failover(active, media, capabilities, 21_000, { mode: 'direct' });
 
     expect(replacement.endpoint?.id).toBe('http://c');
     expect(fetchMock.mock.calls.map(([url]) => (url as string).split('?')[0])).toEqual([
@@ -164,9 +164,9 @@ describe('ClusterPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
-    const primary = await resolver.resolve(media, capabilities, undefined, undefined);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
-    const alternate = await resolver.prepareAlternate(primary, media, capabilities, 5_000, { mode: 'auto' });
+    const alternate = await resolver.prepareAlternate(primary, media, capabilities, 5_000, { mode: 'direct' });
 
     expect(alternate?.endpoint?.id).toBe('http://b');
     expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
@@ -190,7 +190,7 @@ describe('ClusterPlaybackResolver', () => {
       undefined,
       5,
     );
-    const primary = await resolver.resolve(media, capabilities);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     const alternate = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'direct' });
 
@@ -220,7 +220,7 @@ describe('ClusterPlaybackResolver', () => {
       5,
     );
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     expect(session.endpoint?.id).toBe('http://b');
     expect(fetchMock.mock.calls.map(([url]) => (url as string).split('?')[0])).toEqual([
@@ -258,7 +258,7 @@ describe('ClusterPlaybackResolver', () => {
       .mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
-    const primary = await resolver.resolve(media, capabilities);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     const alternate = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'direct' });
 
     expect(primary.sessionId).not.toBe(alternate?.sessionId);

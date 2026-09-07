@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
-import type { PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
+import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -89,7 +89,7 @@ function session(overrides: Partial<PlaybackSession> = {}): PlaybackSession {
   };
   return {
     sessionId: 's1', mediaId: 'm1', mode, mimeType, durationMs: 600_000, seekMs,
-    preferences: { mode: 'auto', maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+    preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
     sourceInfo: { path: '/movie', format: 'matroska', size: 100_000_000, bitrate: 10_000_000, streams: [] },
     output: {},
     selected: { videoStream: 0, audioStream: 1, subtitleStream: -1 },
@@ -477,7 +477,8 @@ describe('PlaybackCoordinator coalescence', () => {
       updates.push(update);
       count += 1;
       if (count === 1) return first.promise;
-      return session({ mode: 'transcode', seekMs: update.seekMs ?? 0, preferences: { ...initial.preferences, ...update.preferences } });
+      return session({ mode: 'transcode', seekMs: update.seekMs ?? 0, // The server only ever echoes a concrete mode; 'choose' is resolved client-side.
+        preferences: { ...initial.preferences, ...update.preferences } as PlaybackPreferences });
     });
     const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
     await coordinator.start();
@@ -1108,5 +1109,85 @@ describe('PlaybackCoordinator lease teardown', () => {
     await coordinator.close({ keepalive: true });
 
     expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+  });
+});
+
+describe('choosing an instruction mid-session', () => {
+  it('re-decides when the viewer selects Auto, rather than silently changing nothing', async () => {
+    // The failure this pins: an absent mode on an update leaves the server on
+    // whatever it was already doing, so the control highlights and does
+    // nothing — worse than an error, because there is nothing to notice.
+    const updates: PlaybackUpdate[] = [];
+    const initial = session({ mode: 'transcode' });
+    const api = resolver(initial, async (update) => {
+      updates.push(update);
+      return session({ mode: 'direct', preferences: { ...initial.preferences, ...update.preferences } as PlaybackPreferences });
+    });
+    const player = new FakePlayer();
+
+    let profileLookups = 0;
+    const coordinator = new PlaybackCoordinator({
+      media: media(),
+      player,
+      resolver: api,
+      capabilities: async () => capabilities(),
+      initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+      facts: async () => {
+        profileLookups += 1;
+        return { profile: { mediaId: 'm1', format: 'mov,mp4', container: 'mp4', durationMs: 1_000, bitrate: 1_000, streams: [
+          { index: 0, type: 'video', codec: 'h264', profile: '', language: '', default: true, forced: false },
+          { index: 1, type: 'audio', codec: 'aac', profile: '', language: '', default: true, forced: false },
+        ] } };
+      },
+    });
+    await coordinator.start();
+
+    coordinator.update({ preferences: { mode: 'choose' } });
+    await vi.waitFor(() => expect(updates.length).toBeGreaterThan(0));
+
+    // The sentinel never reaches the resolver: it arrives as a real decision.
+    const sent = updates.at(-1)?.preferences;
+    expect(sent?.mode).toBe('direct');
+    expect(sent?.video).toBe('copy');
+    expect(sent?.audio).toBe('copy');
+
+    // And the immutable facts were fetched once, not per toggle.
+    coordinator.update({ preferences: { mode: 'choose' } });
+    await vi.waitFor(() => expect(updates.length).toBeGreaterThan(1));
+    expect(profileLookups).toBe(1);
+  });
+});
+
+describe('the instruction has a symptom when it is a fallback', () => {
+  it('reports withoutFacts rather than looking like a decision', async () => {
+    // The worst failure in the chooser is silent: facts unavailable, fall back
+    // to transcode, viewer sees a working picture, nobody ever looks. A whole
+    // library quietly transcoded on a cluster that appears healthy.
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => { throw Object.assign(new Error('no route'), { status: 404 }); },
+    });
+    await coordinator.start();
+
+    const report = coordinator.getSnapshot().instruction;
+    expect(report?.withoutFacts).toBe(true);
+    expect(report?.chosenByViewer).toBe(false);
+    expect(report?.mode).toBe('transcode');
+    expect(report?.reasons).toContain('no-technical-facts');
+  });
+
+  it('marks a viewer’s own choice as theirs, not the chooser’s', async () => {
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'direct' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'direct' },
+    });
+    await coordinator.start();
+
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'direct', chosenByViewer: true, withoutFacts: false });
   });
 });

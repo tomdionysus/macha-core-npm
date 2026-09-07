@@ -12,7 +12,7 @@ function session(overrides: Partial<PlaybackSession> = {}): PlaybackSession {
     durationMs: 1000,
     seekMs: 0,
     preferences: {
-      mode: 'auto', maxHeight: null, maxBitrate: null, audioStream: null,
+      mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null,
       subtitleStream: null, audioLanguage: '', subtitleLanguage: '',
     },
     sourceInfo: {

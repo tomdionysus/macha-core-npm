@@ -30,7 +30,7 @@ export function wireSession(id: string, overrides: WireSessionOverrides = {}): u
     duration_ms: overrides.durationMs ?? 600_000,
     seek_ms: overrides.seekMs ?? 0,
     preferences: {
-      mode: 'auto', max_height: null, max_bitrate: null,
+      mode: 'direct', max_height: null, max_bitrate: null,
       audio_stream: null, subtitle_stream: null, audio_language: '', subtitle_language: '',
     },
     selection: { video_stream: 0, audio_stream: 1, subtitle_stream: -1 },

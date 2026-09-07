@@ -54,6 +54,9 @@ export * from './api/MachaAcquisitionApi.js';
 export * from './api/MachaCatalogueApi.js';
 export * from './api/MachaManageApi.js';
 export * from './api/MachaMediaApi.js';
+export * from './api/ClusterPlaybackFactsApi.js';
+export * from './api/MachaPlaybackFactsApi.js';
+export * from './api/PlaybackFactsApi.js';
 export * from './api/MachaServerApi.js';
 export * from './api/ManageApi.js';
 export * from './api/MediaApi.js';
@@ -71,6 +74,7 @@ export * from './cluster/endpointRouting.js';
 
 // --------------------------------------------------------------- playback
 export * from './playback/BufferedTimeline.js';
+export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
 export * from './playback/MachaPlaybackResolver.js';
 export * from './playback/MediaTechnicalProfile.js';

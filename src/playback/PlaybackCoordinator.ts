@@ -1,6 +1,6 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type Player } from '../platform/Platform.js';
-import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
+import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -9,6 +9,8 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
+import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
+import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface PlaybackIntent {
@@ -25,6 +27,38 @@ export interface PlaybackCoordinatorSnapshot {
   pendingPreferences?: PlaybackPreferencesUpdate;
   fatalError?: Error;
   notice?: string;
+  /**
+   * How this generation's instruction was arrived at, so a host can show it.
+   *
+   * Without this the worst failure in the chooser has no symptom. When the
+   * facts lookup fails, the coordinator falls back to `transcode` — correct,
+   * because it is the only always-performable instruction — and the viewer
+   * sees a picture that works. Nothing prompts anyone to look, so a client
+   * can quietly transcode a whole library that would have direct-played, on
+   * a cluster that looks healthy, indefinitely. A log line on a television is
+   * not a symptom. Surface this somewhere a person can see it.
+   */
+  instruction?: PlaybackInstructionReport;
+}
+
+export interface PlaybackInstructionReport {
+  mode: PlaybackMode;
+  video?: 'copy' | 'transcode';
+  audio?: 'copy' | 'transcode';
+  reasons: PlaybackDecisionReason[];
+  /**
+   * Optional inputs no host supplied, which this decision assumed answers
+   * for. A non-empty list on a client that believes it wires everything is
+   * the symptom of a field declared, consumed, and populated by nobody.
+   */
+  assumed: PlaybackChoiceAssumption[];
+  /** The viewer chose this mode themselves; the chooser was not consulted. */
+  chosenByViewer: boolean;
+  /**
+   * True when the instruction is a fallback rather than a decision — the
+   * facts were unavailable, so nothing could be reasoned from.
+   */
+  withoutFacts: boolean;
 }
 
 export interface PlaybackCoordinatorOptions {
@@ -34,6 +68,25 @@ export interface PlaybackCoordinatorOptions {
   capabilities: () => Promise<PlaybackCapabilities>;
   initialPositionMs: number;
   initialPreferences?: PlaybackPreferencesUpdate;
+  /**
+   * What the media is, and what the node can do with it, for choosing an
+   * instruction when the viewer has not chosen a mode themselves.
+   *
+   * Supplied as a function so the host decides where the facts come from and
+   * what they cost: a cached catalogue profile is free, a probe is not.
+   * `MachaPlaybackFactsApi.facts()` returns exactly this shape; a host with
+   * only a catalogue profile can return `{ profile }` and omit `operations`.
+   * It may resolve to undefined, in which case the coordinator falls back to
+   * `transcode`, the only instruction that is always performable.
+   *
+   * It takes the media rather than closing over it. A runtime plays many
+   * items over its lifetime, and a zero-argument thunk captured once returns
+   * the first item's facts for every later title — a wrong instruction that
+   * looks entirely reasonable.
+   */
+  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  /** Platform truths no capability probe can discover. */
+  policyOverrides?: PlaybackPolicyOverrides;
 }
 
 type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
@@ -92,6 +145,26 @@ function rangeContainsPosition(
   positionMs: number,
 ): boolean {
   return ranges.some((range) => range.startMs <= positionMs && positionMs <= range.endMs);
+}
+
+function instructionPreferences(instruction: PlaybackInstruction): PlaybackPreferencesUpdate {
+  return {
+    mode: instruction.mode,
+    video: instruction.video,
+    audio: instruction.audio,
+    container: instruction.container,
+  };
+}
+
+/**
+ * A node saying "I cannot perform this", as distinct from "not now" or "I am
+ * unwell". 400 is the server's refusal of an instruction it understands and
+ * cannot execute for this file on this build; 429 is capacity and 5xx is
+ * health, both of which failover handles and neither of which a downgrade
+ * should mask.
+ */
+function isExecutorRefusal(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { status?: unknown }).status === 400;
 }
 
 function mergePreferences(
@@ -248,6 +321,144 @@ export class PlaybackCoordinator {
     return this.startPromise;
   }
 
+  /**
+   * The viewer's preferences, with a concrete instruction filled in when they
+   * have not chosen one.
+   *
+   * An explicit choice always wins: the Mode control must mean what it says,
+   * including when it is wrong, because it is the operator's escape hatch.
+   */
+  private cachedFacts?: Promise<PlaybackDecisionFacts | undefined>;
+  private factsError?: unknown;
+  private chosenInstruction?: PlaybackInstruction;
+
+  private facts(): Promise<PlaybackDecisionFacts | undefined> {
+    // Cached for this generation so a viewer can toggle the mode control
+    // repeatedly without a round trip each time. The media's own facts are
+    // immutable, so that part is always safe.
+    //
+    // `operations` is not: it describes the answering node's build, and
+    // failover can move playback to a node with different abilities. The
+    // cached value is then stale in the one direction that matters, and the
+    // instruction it produced can be refused. That is deliberately left to
+    // the 400 path in `resolveInstructed` rather than re-fetched on every
+    // failover — a refusal is loud and recoverable, whereas re-probing on
+    // each attempt would put a request on the viewer's critical path during
+    // the exact moment playback is already struggling.
+    this.cachedFacts ??= Promise.resolve(this.options.facts?.(this.options.media))
+      .catch((error: unknown) => {
+        // Kept, not swallowed: a thrown lookup and an absent supplier both
+        // yield undefined, and they are not the same thing at all.
+        this.factsError = error;
+        return undefined;
+      });
+    return this.cachedFacts;
+  }
+
+  private async instructedPreferences(
+    preferences: PlaybackPreferencesUpdate,
+    capabilities: PlaybackCapabilities,
+  ): Promise<PlaybackPreferencesUpdate> {
+    if (preferences.mode !== undefined && preferences.mode !== 'choose') {
+      this.patchSnapshot({ instruction: {
+        mode: preferences.mode, video: preferences.video, audio: preferences.audio,
+        reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+      } });
+      return preferences;
+    }
+
+    const facts = await this.facts();
+    if (!facts) {
+      // Three different situations reach here and only one is expected, so
+      // they are logged apart rather than as one warning: no supplier is a
+      // configuration, a supplier returning undefined is a media without
+      // facts, and a supplier throwing is a fault that has just cost this
+      // viewer their picture quality.
+      if (this.factsError !== undefined) {
+        this.log.error('instruction-facts-failed', { mediaId: this.options.media.id, error: this.factsError });
+      } else if (this.options.facts === undefined) {
+        this.log.warn('instruction-without-facts-supplier', { mediaId: this.options.media.id });
+      }
+      this.patchSnapshot({ instruction: {
+        mode: 'transcode', video: 'transcode', audio: 'transcode',
+        reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
+      } });
+      // No facts to reason from. Transcode is the only instruction that is
+      // always performable, so it is the safe answer — never a corrupt
+      // picture, at the cost of quality nobody can verify was needed.
+      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id });
+      return { ...preferences, mode: 'transcode' };
+    }
+
+    const instruction = choosePlaybackInstruction(facts.profile, capabilities, {
+      overrides: this.options.policyOverrides,
+      operations: facts.operations,
+    });
+    this.log.info('instruction-chosen', {
+      mediaId: this.options.media.id,
+      assumed: instruction.assumed,
+      mode: instruction.mode,
+      video: instruction.video,
+      audio: instruction.audio,
+      container: instruction.container,
+      reasons: instruction.reasons,
+    });
+    this.chosenInstruction = instruction;
+    this.patchSnapshot({ instruction: {
+      mode: instruction.mode, video: instruction.video, audio: instruction.audio,
+      reasons: instruction.reasons, assumed: instruction.assumed,
+      chosenByViewer: false, withoutFacts: false,
+    } });
+    return { ...preferences, ...instructionPreferences(instruction) };
+  }
+
+  /**
+   * Ask for the chosen instruction, and if the node refuses to perform it,
+   * ask once for less.
+   *
+   * A refusal here is not a client bug. The chooser reasons about the media
+   * and the device; whether *this* build can copy E-AC-3 into fragmented MP4
+   * is a fact about the server that nothing currently reports before it is
+   * asked. So a wholly correct instruction can be refused, and the viewer
+   * gets nothing at all.
+   *
+   * Deliberately narrow, because a silent downgrade would hide server bugs:
+   * once only, never over a mode the viewer chose themselves, and only for a
+   * 400 — the node saying "I cannot do this", as distinct from 429 capacity
+   * or 5xx health, which failover handles and which degrading would mask.
+   * The downgrade is logged and surfaced as a notice rather than swallowed.
+   */
+  private async resolveInstructed(
+    capabilities: PlaybackCapabilities,
+    positionMs: number,
+    preferences: PlaybackPreferencesUpdate,
+  ): Promise<PlaybackSession> {
+    const viewerChose = (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
+    try {
+      return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences);
+    } catch (error) {
+      const instruction = this.chosenInstruction;
+      if (viewerChose || !instruction || !isExecutorRefusal(error)) throw error;
+      const degraded = degradeInstruction(instruction);
+      if (!degraded) throw error;
+
+      this.log.warn('instruction-degraded', {
+        mediaId: this.options.media.id,
+        from: { video: instruction.video, audio: instruction.audio, mode: instruction.mode },
+        to: { video: degraded.video, audio: degraded.audio, mode: degraded.mode },
+        error,
+      });
+      this.chosenInstruction = degraded;
+      this.patchSnapshot({ notice: 'This node could not copy the original streams, so they are being converted.' });
+      return await this.options.resolver.resolve(
+        this.options.media,
+        capabilities,
+        positionMs,
+        { ...preferences, ...instructionPreferences(degraded) },
+      );
+    }
+  }
+
   private async startInternal(): Promise<void> {
     if (this.disposed) return;
     const startedAt = machaHost().now();
@@ -256,11 +467,10 @@ export class PlaybackCoordinator {
       if (this.disposed) return;
       const requestedPositionMs = this.snapshot.intent.positionMs;
       const requestedPositionRevision = this.positionRevision;
-      const session = await this.options.resolver.resolve(
-        this.options.media,
+      const session = await this.resolveInstructed(
         capabilities,
         requestedPositionMs,
-        this.options.initialPreferences,
+        await this.instructedPreferences(this.options.initialPreferences ?? {}, capabilities),
       );
       if (this.disposed) {
         await this.options.resolver.stop(session.sessionId, this.closeOptions).catch(() => undefined);
@@ -454,6 +664,15 @@ export class PlaybackCoordinator {
       return;
     }
 
+    // "Decide for me" must mean the same thing at any point in a session, not
+    // only at the start. Without this the control appears to work — it
+    // highlights — and changes nothing, because an absent mode leaves the
+    // server on whatever it was already doing.
+    if (update.preferences?.mode === 'choose') {
+      void this.queueChosenInstruction(update);
+      return;
+    }
+
     const subtitleOnly = isSubtitleOnlyPlaybackUpdate(update);
     const prepared: PlaybackUpdate = subtitleOnly || !session.options.canSeek
       ? update
@@ -462,6 +681,28 @@ export class PlaybackCoordinator {
       reason: subtitleOnly ? 'subtitle' : 'representation',
       update: prepared,
     });
+  }
+
+  /**
+   * Re-run the chooser with the same facts and policy as at creation, then
+   * apply the result as an ordinary mutation. Re-entering `update` is
+   * deliberate and cannot recurse: the resolved preferences carry a concrete
+   * mode.
+   */
+  private async queueChosenInstruction(update: PlaybackUpdate): Promise<void> {
+    try {
+      const capabilities = await this.options.capabilities();
+      if (this.disposed) return;
+      const preferences = await this.instructedPreferences(
+        { ...update.preferences, mode: undefined },
+        capabilities,
+      );
+      if (this.disposed) return;
+      this.update({ ...update, preferences });
+    } catch (error) {
+      this.log.warn('instruction-rechoose-failed', { mediaId: this.options.media.id, error });
+      this.patchSnapshot({ notice: 'Could not work out how to play this here.' });
+    }
   }
 
   private queueMutation(next: PendingMutation): void {

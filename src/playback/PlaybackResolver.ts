@@ -34,7 +34,10 @@ export interface PlaybackStreamInfo {
 
 export interface PlaybackSourceInfo {
   path: string;
+  /** Raw demuxer list. Use `container` for capability matching. */
   format: string;
+  /** Resolved container family, when the server reports one. */
+  container?: string;
   size: number;
   bitrate: number;
   streams: PlaybackStreamInfo[];
@@ -96,39 +99,13 @@ export interface PlaybackOptions {
 }
 
 export interface PlaybackPreferences {
-  mode: PlaybackMode | 'auto';
+  mode: PlaybackMode;
   maxHeight: number | null;
   maxBitrate: number | null;
   audioStream: number | null;
   subtitleStream: number | null;
   audioLanguage: string;
   subtitleLanguage: string;
-}
-
-/**
- * Warning codes are stable strings, but the server is free to add more than
- * the core knows about. The `(string & {})` arm keeps editor completion for
- * the known values while still accepting an unrecognised one, so a newer
- * server cannot break an older client's types — consumers must handle a code
- * they do not recognise rather than assume the union is closed.
- */
-export type PlaybackWarningCode = 'capability_contradiction' | (string & {});
-export type PlaybackWarningField = 'video_codecs' | 'video_bit_depth' | 'hdr' | 'audio_codecs' | (string & {});
-
-/**
- * Advisory notice that a session contradicts what the client advertised.
- *
- * Emitted only when the viewer asked for an explicit `direct` or `remux` and
- * the copied stream is something the client said it could not handle — the
- * escape hatch is deliberately still honoured, so this is how a client learns
- * the server noticed. Never fatal, and never a reason to refuse a session.
- */
-export interface PlaybackWarning {
-  code: PlaybackWarningCode;
-  /** The advertised capability the source contradicts. */
-  field: PlaybackWarningField;
-  /** A specific sentence, e.g. "the source video is 10-bit; the client advertised 8". */
-  message: string;
 }
 
 export interface PlaybackSession {
@@ -151,22 +128,32 @@ export interface PlaybackSession {
     audio: PlaybackTransform;
   };
   options: PlaybackOptions;
-  /**
-   * Optional, so that a resolver synthesising a session — an offline or
-   * local-file resolver, a test fixture — need not write an empty array it
-   * has nothing to say into. `MachaPlaybackResolver` always populates it,
-   * so a session that came from a server is never undefined.
-   *
-   * Empty or absent means either "the server found no contradiction" or
-   * "the server is too old to report one", and those are indistinguishable
-   * by design, in the same way an absent capability means the client did not
-   * answer. Treat it as advice, never as proof of safety.
-   */
-  warnings?: PlaybackWarning[];
 }
 
 export interface PlaybackPreferencesUpdate {
-  mode?: PlaybackMode | 'auto';
+  /**
+   * Required on session creation, optional on update.
+   *
+   * There is no `auto`. The server reports what the media is and performs
+   * what it is told; deciding is the client's job, and
+   * `choosePlaybackInstruction` is how the core does it from source facts
+   * plus honest host capabilities.
+   *
+   * `'choose'` is a **client-side sentinel and never reaches the server**. It
+   * means "decide for me now", and the coordinator replaces it with a
+   * concrete instruction before anything is sent. It is not the old `auto`
+   * under a new name: `auto` asked the server to decide, this asks the core
+   * to, from facts the server does not have. It shares the `mode` field
+   * because choosing and naming a mode are mutually exclusive — as two
+   * fields they could contradict each other, and something would have to
+   * decide which wins.
+   */
+  mode?: PlaybackMode | 'choose';
+  /** Per-stream instruction, overriding the `mode` shorthand when given. */
+  video?: 'copy' | 'transcode';
+  audio?: 'copy' | 'transcode';
+  /** Which HLS segment container to package into. */
+  container?: 'fmp4' | 'mpegts';
   maxHeight?: number | null;
   maxBitrate?: number | null;
   audioStream?: number | null;

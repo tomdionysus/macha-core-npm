@@ -46,7 +46,7 @@ function session(media: MediaSummary, sessionId = `session:${media.id}`): Playba
     durationMs: media.durationMs ?? 0,
     seekMs: 0,
     preferences: {
-      mode: 'auto', maxHeight: null, maxBitrate: null,
+      mode: 'direct', maxHeight: null, maxBitrate: null,
       audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '',
     },
     sourceInfo: { path: `/${media.id}.mp4`, format: 'mp4', size: 10_000_000, bitrate: 1_000_000, streams: [] },

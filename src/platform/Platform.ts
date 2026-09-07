@@ -71,8 +71,15 @@ export interface Player {
   subscribeDegradation?(listener: PlaybackDegradationListener): () => void;
 }
 
-/** Which player implementation is in use, as reported to the server for capability negotiation. */
-export type PlatformName = 'web' | 'android' | 'tizen';
+/**
+ * Which player implementation is in use.
+ *
+ * Named for the executor rather than the operating system: `'ios'` and
+ * `'android'` are distinct because AVPlayer and ExoPlayer are, even where one
+ * React Native codebase covers both, and `'tizen'` is distinct from `'web'`
+ * despite both running in a browser engine.
+ */
+export type PlatformName = 'web' | 'ios' | 'android' | 'tizen';
 
 export interface Platform {
   readonly name: PlatformName;

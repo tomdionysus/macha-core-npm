@@ -28,6 +28,7 @@ Concretely, a host is expected to supply four small bindings of its own, and the
 - building a `MachaClientConfiguration` from wherever its endpoints come from (`import.meta.env` on the web, app config on native), including whether the build is pinned;
 - resolving its own build target to a `PlatformTarget` and applying it, so `platformTraits` stays single-argument at its call sites;
 - installing `clientDiagnosticsConsole()` wherever a developer can reach it, plus any clipboard affordance;
+- supplying `facts` and `policyOverrides` to `PlaybackRuntime`, so the chooser knows what the media is, what the node can do with it, and what this device gets wrong about itself;
 - binding `EndpointHealthMonitor` and `createMachaServices` to its own lifecycle and memoization;
 - **telling the runtime when the host is going away**, by calling `PlaybackRuntime.terminateForPageExit()`. Nothing in the core can decide this, and getting it wrong is invisible from the client: nothing breaks locally, the server keeps holding the session, and with one transcode slot per node the *next* viewer gets a 429. `pagehide` alone is correct for a browser tab and useless on a TV — Tizen suspends or replaces an app without ever firing it, so every redeploy during playback orphans a session. The web client pairs it with `visibilitychange` → hidden, gated on platforms without pointer controls, because a backgrounded browser tab is still legitimately playing while a backgrounded TV app is not. A native host needs its own answer from app state.
 
@@ -140,7 +141,7 @@ class OfflineFirstResolver implements PlaybackResolver {
 }
 ```
 
-The core resolves a playback session against the cluster, decides Direct Play vs transcode, and coordinates transport, failover and progress. It never touches a media element or a native view: it drives a `Player` that the host implements.
+The core resolves a playback session against the cluster, **decides what to ask for**, and coordinates transport, failover and progress. The server chooses nothing — it reports what the media is and performs what it is told, and there is no `auto` — so `choosePlaybackInstruction` holds that decision once for every client. See **[Choosing how to play something](docs/choosing-playback.md)**. It never touches a media element or a native view: it drives a `Player` that the host implements.
 
 ```ts
 import type { Platform, Player } from '@macha/core';

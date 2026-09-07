@@ -1,3 +1,4 @@
+import type { PlatformName } from './platform/Platform.js';
 import type { CatalogueKind } from './api/CatalogueApi.js';
 
 export type MediaKind = CatalogueKind;
@@ -110,7 +111,17 @@ export type VideoCodec = 'h264' | 'hevc' | 'vp9' | 'av1' | 'mpeg2' | string;
 export type AudioCodec = 'aac' | 'ac3' | 'eac3' | 'opus' | 'mp3' | 'flac' | string;
 
 export interface PlaybackCapabilities {
-  platform: 'web' | 'android' | 'tizen';
+  /**
+   * Which player implementation is answering.
+   *
+   * Purely client-side since capabilities left the wire: it identifies the
+   * executor in diagnostics, and is the honest place for a host to say what
+   * it is rather than approximate. `'ios'` is not `'web'` — AVPlayer and a
+   * browser differ on HLS segment containers and on ALAC — so a client that
+   * cannot name itself would be stating something the chooser could later act
+   * on wrongly.
+   */
+  platform: PlatformName;
   /** Optional decoder/platform limits. Web deliberately leaves these unset. */
   maxWidth?: number;
   maxHeight?: number;
@@ -131,6 +142,20 @@ export interface PlaybackCapabilities {
   hlsFmp4: boolean;
   /** HLS with MPEG-TS segments, offered by newer servers when `hlsFmp4` is false. */
   hlsTs?: boolean;
+  /**
+   * Video codecs decodable **through HLS delivery**, when that differs from
+   * `videoCodecs`.
+   *
+   * It does differ, and the difference is not theoretical: the HLS decoder is
+   * often not the media element's decoder. Samsung Tizen 3 direct-plays HEVC
+   * and reports it supported via `MediaSource.isTypeSupported`, then fails to
+   * decode it under hls.js. A codec list valid for direct play can therefore
+   * be invalid for remux or transcode delivery. Leave unset when the host has
+   * one decoder for both; the chooser then falls back to `videoCodecs`.
+   */
+  hlsVideoCodecs?: VideoCodec[];
+  /** Audio codecs decodable through HLS delivery, when that differs from `audioCodecs`. */
+  hlsAudioCodecs?: AudioCodec[];
   dash: boolean;
   /**
    * Transfer characteristics the client can actually display, by their
@@ -175,7 +200,11 @@ export interface MediaTechnicalStream {
   sampleRate?: number;
   bitDepth?: number;
   bitrate?: number;
-  /** Session-derived only; the immutable catalogue profile does not carry these. */
+  /**
+   * Reported by both the session response and the catalogue media profile
+   * from schema 2, so a client can decide how to play something before it
+   * asks for a session. Absent when the server could not probe the value.
+   */
   level?: number;
   colorTransfer?: string;
   dolbyVisionProfile?: number;
@@ -191,7 +220,10 @@ export interface MediaTechnicalStream {
  */
 export interface MediaTechnicalProfile {
   mediaId: string;
+  /** Raw demuxer list. Use `container` for capability matching. */
   format: string;
+  /** Resolved container family, when the server reports one. */
+  container?: string;
   durationMs: number;
   bitrate: number;
   sizeBytes?: number;

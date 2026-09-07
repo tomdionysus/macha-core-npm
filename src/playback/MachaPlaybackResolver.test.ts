@@ -85,25 +85,16 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test/', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url.split('?')[0]).toBe('http://node.test/api/v1/playback/sessions');
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer secret');
-    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
-      item_id: 'movie:test',
-      capabilities: expect.objectContaining({
-        containers: ['mp4', 'webm'],
-        video_codecs: ['h264'],
-        audio_codecs: ['aac', 'mp3'],
-        hls_fmp4: true,
-      }),
-    }));
-    const requestBody = JSON.parse(String(init.body)) as { capabilities: Record<string, unknown> };
-    expect(requestBody.capabilities).not.toHaveProperty('max_width');
-    expect(requestBody.capabilities).not.toHaveProperty('max_height');
-    expect(requestBody.capabilities).not.toHaveProperty('hdr');
-    expect(requestBody.capabilities).not.toHaveProperty('video_bit_depth');
+    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({ item_id: 'movie:test' }));
+    // Capabilities are not sent at all. The server never acted on them, so
+    // asking implied a check that did not exist; the instruction is now the
+    // entire contract.
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('capabilities');
     expect(session.mode).toBe('remux');
     expect(session.seekMs).toBe(0);
     expect(session.preferences.mode).toBe('auto');
@@ -122,7 +113,7 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test');
 
-    await resolver.resolve(media, capabilities);
+    await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const query = new URL(url, 'http://node.test').searchParams;
@@ -140,7 +131,7 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const api = new MachaPlaybackResolver('http://node.test');
 
-    await expect(api.resolve(media, capabilities)).rejects.toMatchObject({
+    await expect(api.resolve(media, capabilities, undefined, { mode: 'direct' })).rejects.toMatchObject({
       status: 425,
       code: 'profile_pending',
       retryAfterMs: 1_000,
@@ -164,7 +155,7 @@ describe('MachaPlaybackResolver', () => {
 
     void catalogue.mediaProfile('macha:immutable');
     expect(profileRequested).toBe(true);
-    await expect(playback.resolve(media, capabilities)).resolves.toMatchObject({ sessionId: 'session-1' });
+    await expect(playback.resolve(media, capabilities, undefined, { mode: 'direct' })).resolves.toMatchObject({ sessionId: 'session-1' });
     expect(fetchMock.mock.calls.map(([url]) => (url as string).split('?')[0])).toEqual([
       'http://node.test/api/v1/catalogue/media/macha%3Aimmutable/profile',
       'http://node.test/api/v1/playback/sessions',
@@ -189,31 +180,22 @@ describe('MachaPlaybackResolver', () => {
     const playback = new MachaPlaybackResolver('http://node.test');
 
     await expect(catalogue.mediaProfile('macha:immutable')).resolves.toBeUndefined();
-    await expect(playback.resolve(media, capabilities)).resolves.toMatchObject({ sessionId: 'session-1' });
+    await expect(playback.resolve(media, capabilities, undefined, { mode: 'direct' })).resolves.toMatchObject({ sessionId: 'session-1' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
 
 
-  it('asks for Auto on every platform, so the server capability gate is consulted', async () => {
+  it('refuses to create a session without an explicit instruction', async () => {
     const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    // Tizen used to default to Direct, which bypassed the gate on the one
-    // platform it was built for. Regression test for the corrupt picture.
-    await resolver.resolve(media, { ...capabilities, platform: 'tizen' });
-    const [, samsungInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(samsungInit.body))).toEqual(expect.objectContaining({
-      preferences: { mode: 'auto' },
-    }));
-
-    fetchMock.mockClear();
-    await resolver.resolve(media, capabilities);
-    const [, webInit] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(webInit.body))).toEqual(expect.objectContaining({
-      preferences: { mode: 'auto' },
-    }));
+    // There is no `auto` and no server-side default. A silent fallback here
+    // would be the worst of both: transcode quietly costs every viewer
+    // quality, direct quietly hands a TV a stream it cannot decode.
+    await expect(resolver.resolve(media, capabilities)).rejects.toMatchObject({ code: 'mode_required' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('still sends an explicit mode when the viewer chose one', async () => {
@@ -236,7 +218,7 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities, 42_000);
+    const session = await resolver.resolve(media, capabilities, 42_000, { mode: 'direct' });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({ seek_ms: 42_000 }));
@@ -263,22 +245,6 @@ describe('MachaPlaybackResolver', () => {
     }));
   });
 
-  it('only sends decoder resolution limits when the platform explicitly reports them', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    await resolver.resolve(media, { ...capabilities, maxWidth: 3840, maxHeight: 2160 });
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
-      capabilities: expect.objectContaining({
-        max_width: 3840,
-        max_height: 2160,
-      }),
-    }));
-  });
-
   it('carries stream level and colour transfer through from the session response', async () => {
     const response = sessionResponse();
     // 0.32.12 reports these alongside bit_depth on each video stream.
@@ -291,7 +257,7 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     expect(session.sourceInfo.streams[0]).toEqual(expect.objectContaining({
       bitDepth: 10,
@@ -305,13 +271,13 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     expect(session.sourceInfo.streams[0].level).toBeUndefined();
     expect(session.sourceInfo.streams[0].colorTransfer).toBeUndefined();
   });
 
-  it('reports what was advertised, what the source carries and what was served', async () => {
+  it('reports what the source carries and what was served', async () => {
     const response = sessionResponse();
     const typed = response as {
       source: { streams: Record<string, unknown>[] };
@@ -332,11 +298,8 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, { ...capabilities, videoBitDepth: 10, dolbyVision: [5, 8] });
+    const session = await resolver.resolve(media, { ...capabilities, videoBitDepth: 10, dolbyVision: [5, 8] }, undefined, { mode: 'direct' });
 
-    // Advertised.
-    const sent = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
-    expect(sent.capabilities.dolby_vision).toEqual([5, 8]);
     // Source: PQ, 10-bit, Dolby Vision profile 5.
     expect(session.sourceInfo.streams[0]).toEqual(expect.objectContaining({
       bitDepth: 10, colorTransfer: 'smpte2084', dolbyVisionProfile: 5, dolbyVisionCompatibility: 0,
@@ -347,71 +310,12 @@ describe('MachaPlaybackResolver', () => {
     }));
   });
 
-  it('omits an empty Dolby Vision profile list, as silence is not capability', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    await resolver.resolve(media, { ...capabilities, dolbyVision: [] });
-
-    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
-    expect(body.capabilities).not.toHaveProperty('dolby_vision');
-  });
-
-  it('surfaces advisory capability-contradiction warnings from the server', async () => {
-    const response = sessionResponse();
-    (response as unknown as { warnings: unknown }).warnings = [
-      { code: 'capability_contradiction', field: 'video_bit_depth', message: 'the source video is 10-bit; the client advertised 8' },
-      { code: 'capability_contradiction', field: 'hdr', message: 'the source video is smpte2084; the client advertised none' },
-    ];
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    const session = await resolver.resolve(media, capabilities);
-
-    expect(session.warnings).toEqual([
-      { code: 'capability_contradiction', field: 'video_bit_depth', message: 'the source video is 10-bit; the client advertised 8' },
-      { code: 'capability_contradiction', field: 'hdr', message: 'the source video is smpte2084; the client advertised none' },
-    ]);
-  });
-
-  it('reports no warnings against a server too old to send them', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    const session = await resolver.resolve(media, capabilities);
-
-    expect(session.warnings).toEqual([]);
-  });
-
-  it('drops malformed warnings rather than failing a viewer’s session over advice', async () => {
-    const response = sessionResponse();
-    (response as unknown as { warnings: unknown }).warnings = [
-      null,
-      'not an object',
-      { code: 'capability_contradiction' },
-      { code: 1, field: 'hdr', message: 'x' },
-      { code: 'capability_contradiction', field: 'hdr', message: 'the one good entry' },
-    ];
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    const session = await resolver.resolve(media, capabilities);
-
-    expect(session.warnings).toEqual([
-      { code: 'capability_contradiction', field: 'hdr', message: 'the one good entry' },
-    ]);
-  });
-
   it('declares whether the source is a manifest, so a native player need not sniff', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     // The fixture serves application/vnd.apple.mpegurl.
     expect(session.source.isManifest).toBe(true);
@@ -426,62 +330,9 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     expect(session.source.isManifest).toBe(false);
-  });
-
-  it('sends hls_ts only when the host answers the question', async () => {
-    // A Response body can only be read once, so mint a fresh one per call.
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(sessionResponse(), 201)));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    await resolver.resolve(media, capabilities);
-    const silent = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { capabilities: Record<string, unknown> };
-    expect(silent.capabilities).not.toHaveProperty('hls_ts');
-    // hls_fmp4 is required, so it is always stated — including when false.
-    expect(silent.capabilities.hls_fmp4).toBe(true);
-
-    await resolver.resolve(media, { ...capabilities, hlsFmp4: false, hlsTs: true });
-    const declared = JSON.parse(String(fetchMock.mock.calls[1][1].body)) as { capabilities: Record<string, unknown> };
-    expect(declared.capabilities.hls_fmp4).toBe(false);
-    expect(declared.capabilities.hls_ts).toBe(true);
-  });
-
-  it('advertises HDR transfers and sample depth when the platform reports them', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    await resolver.resolve(media, { ...capabilities, hdr: ['smpte2084'], videoBitDepth: 10 });
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
-      capabilities: expect.objectContaining({
-        // Sent as the array, not a boolean: a PQ-only decoder must not be
-        // told it can handle HLG.
-        hdr: ['smpte2084'],
-        video_bit_depth: 10,
-      }),
-    }));
-  });
-
-  it('omits an empty HDR list but still sends a bit depth of 8, which is a real answer', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
-    vi.stubGlobal('fetch', fetchMock);
-    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
-
-    await resolver.resolve(media, { ...capabilities, hdr: [], videoBitDepth: 8 });
-
-    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    const body = JSON.parse(String(init.body)) as { capabilities: Record<string, unknown> };
-    // The asymmetry is deliberate, and reads as an inconsistency until you
-    // see why: `[]` means the client said nothing about HDR, so the server
-    // should apply its own default; `8` means the client looked and found an
-    // 8-bit pipeline, which happens to equal that default but is an answer.
-    expect(body.capabilities).not.toHaveProperty('hdr');
-    expect(body.capabilities.video_bit_depth).toBe(8);
   });
 
   it('keeps a configured reverse-proxy prefix on returned capability URLs', async () => {
@@ -489,7 +340,7 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('/macha', fixedBearerToken('secret'));
 
-    const session = await resolver.resolve(media, capabilities);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     expect((fetchMock.mock.calls[0][0] as string).split('?')[0]).toBe('/macha/api/v1/playback/sessions');
     expect(session.source.url).toBe('/macha/api/v1/playback/stream/session-1/cap/1/master.m3u8');
@@ -660,11 +511,51 @@ describe('MachaPlaybackResolver', () => {
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
 
-    await expect(resolver.resolve(media, capabilities)).rejects.toMatchObject({
+    await expect(resolver.resolve(media, capabilities, undefined, { mode: 'direct' })).rejects.toMatchObject({
       message: 'Macha playback request failed: No playable media source',
       status: 409,
       code: 'media_unavailable',
     });
   });
 
+});
+
+describe('quality caps and copy instructions', () => {
+  it('upgrades a copy to a transcode when the viewer caps quality', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    // Copy passes the encoded stream through untouched, so there is no step
+    // at which a cap could apply; the server returns 400 rather than ignore
+    // one. Asking to cap quality is asking to re-encode.
+    await resolver.resolve(media, capabilities, undefined, {
+      mode: 'remux', video: 'copy', audio: 'copy', maxHeight: 720,
+    });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { preferences: Record<string, unknown> };
+    expect(body.preferences).toMatchObject({ mode: 'remux', video: 'transcode', audio: 'copy', max_height: 720 });
+  });
+
+  it('turns a capped direct instruction into a transcode', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    await resolver.resolve(media, capabilities, undefined, { mode: 'direct', maxBitrate: 4_000_000 });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { preferences: Record<string, unknown> };
+    expect(body.preferences).toMatchObject({ mode: 'transcode', video: 'transcode' });
+  });
+
+  it('leaves an uncapped copy instruction alone', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    await resolver.resolve(media, capabilities, undefined, { mode: 'direct', video: 'copy', audio: 'copy' });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { preferences: Record<string, unknown> };
+    expect(body.preferences).toMatchObject({ mode: 'direct', video: 'copy', audio: 'copy' });
+  });
 });

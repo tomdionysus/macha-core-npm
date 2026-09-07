@@ -5,7 +5,6 @@ import { parseErrorEnvelope } from '../api/errorEnvelope.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
 import type {
   PlaybackOptions,
-  PlaybackWarning,
   PlaybackPreferencesUpdate,
   PlaybackResolver,
   PlaybackSession,
@@ -67,7 +66,7 @@ interface WireSession {
   duration_ms: number;
   seek_ms: number;
   preferences: {
-    mode: PlaybackMode | 'auto';
+    mode: PlaybackMode;
     max_height: number | null;
     max_bitrate: number | null;
     audio_stream: number | null;
@@ -83,6 +82,7 @@ interface WireSession {
   source: {
     path: string;
     format: string;
+    container?: string;
     size: number;
     bitrate: number;
     streams: WireStream[];
@@ -98,7 +98,6 @@ interface WireSession {
     mime_type: string;
     subtitle_url: string | null;
   };
-  warnings?: Array<{ code?: unknown; field?: unknown; message?: unknown }>;
   options: {
     modes: PlaybackMode[];
     quality_heights: number[];
@@ -158,21 +157,6 @@ export function isManifestMimeType(mimeType: string | undefined): boolean {
   return mimeType !== undefined && MANIFEST_MIME_TYPES.has(mimeType.split(';')[0].trim().toLowerCase());
 }
 
-/**
- * Defensive because these are advisory: a malformed warning must never cost
- * a viewer their playback session. Anything unparseable is dropped rather
- * than surfaced half-formed or thrown.
- */
-function mapWarnings(warnings: WireSession['warnings']): PlaybackWarning[] {
-  if (!Array.isArray(warnings)) return [];
-  return warnings.flatMap((warning) => {
-    if (!warning || typeof warning !== 'object') return [];
-    const { code, field, message } = warning;
-    if (typeof code !== 'string' || typeof field !== 'string' || typeof message !== 'string') return [];
-    return [{ code, field, message }];
-  });
-}
-
 function mapStream(stream: WireStream): PlaybackStreamInfo {
   return {
     index: stream.index,
@@ -195,6 +179,59 @@ function mapStream(stream: WireStream): PlaybackStreamInfo {
   };
 }
 
+/**
+ * Session creation must state a mode. There is no server-side default and no
+ * `auto` to fall back on, so a missing one is a caller bug — and a silent
+ * fallback here would be the worst of both: `transcode` would quietly cost
+ * every viewer quality, `direct` would quietly hand a TV a stream it cannot
+ * decode. Failing loudly is the only option that cannot ship undetected.
+ */
+function requiredMode(mode: PlaybackMode | 'choose' | undefined): PlaybackMode {
+  if (mode === 'choose') {
+    throw new MachaPlaybackError(
+      "'choose' is a client-side sentinel and is not a playback mode. Resolve it with choosePlaybackInstruction "
+      + '(PlaybackCoordinator does this for you) before creating a session.',
+      undefined,
+      'mode_required',
+    );
+  }
+  if (mode === undefined) {
+    throw new MachaPlaybackError(
+      'Playback session creation requires an explicit mode. Use choosePlaybackInstruction(profile, capabilities) '
+      + 'to derive one from the source facts, or pass the viewer\'s chosen mode.',
+      undefined,
+      'mode_required',
+    );
+  }
+  return mode;
+}
+
+/**
+ * Resolve the one contradiction the server rejects outright.
+ *
+ * A copy instruction cannot be combined with `max_height` or `max_bitrate`:
+ * copying is passing the encoded stream through untouched, so there is no
+ * step at which a cap could be applied, and the server returns 400 rather
+ * than silently ignoring one of them. Asking to cap quality is asking to
+ * re-encode, so the cap wins and the video is transcoded.
+ *
+ * Resolved here rather than left to each caller because the two halves
+ * usually come from different places — the cap from a viewer's quality
+ * picker, the copy from `choosePlaybackInstruction` — so neither author sees
+ * the contradiction they are creating.
+ */
+export function reconcileQualityCaps(preferences: PlaybackPreferencesUpdate): PlaybackPreferencesUpdate {
+  const capped = (preferences.maxHeight ?? null) !== null || (preferences.maxBitrate ?? null) !== null;
+  if (!capped) return preferences;
+  if (preferences.video !== 'copy' && preferences.mode !== 'direct') return preferences;
+  if (preferences.mode === 'choose') return preferences;
+  return {
+    ...preferences,
+    video: 'transcode',
+    mode: preferences.mode === 'direct' ? 'transcode' : preferences.mode,
+  };
+}
+
 function wirePreferences(preferences?: PlaybackPreferencesUpdate): Record<string, unknown> | undefined {
   if (!preferences) return undefined;
   const out: Record<string, unknown> = {};
@@ -205,6 +242,9 @@ function wirePreferences(preferences?: PlaybackPreferencesUpdate): Record<string
   if (preferences.subtitleStream !== undefined) out.subtitle_stream = preferences.subtitleStream;
   if (preferences.audioLanguage !== undefined) out.audio_language = preferences.audioLanguage;
   if (preferences.subtitleLanguage !== undefined) out.subtitle_language = preferences.subtitleLanguage;
+  if (preferences.video !== undefined) out.video = preferences.video;
+  if (preferences.audio !== undefined) out.audio = preferences.audio;
+  if (preferences.container !== undefined) out.container = preferences.container;
   return out;
 }
 
@@ -221,6 +261,15 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     this.baseUrl = normalizeBaseUrl(baseUrl);
   }
 
+  /**
+   * `capabilities` no longer goes on the wire. The server never acted on it,
+   * so asking implied a check that did not exist; how to play the media is
+   * the client's problem, and `choosePlaybackInstruction` is where that
+   * problem is solved. The parameter stays because it is part of the
+   * `PlaybackResolver` seam — a decorating resolver (an offline or local-file
+   * one) legitimately needs to know what the host can decode — and because
+   * it is worth having in the diagnostics beside the instruction it produced.
+   */
   async resolve(
     media: MediaSummary,
     capabilities: PlaybackCapabilities,
@@ -244,46 +293,12 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       seekMs: seekMs ?? 0,
       requestedPreferences: preferences,
     });
-    const wireCapabilities: Record<string, unknown> = {
-      containers: capabilities.containers,
-      video_codecs: capabilities.videoCodecs,
-      audio_codecs: capabilities.audioCodecs,
-      hls_fmp4: capabilities.hlsFmp4,
-    };
-    if (capabilities.maxWidth !== undefined) wireCapabilities.max_width = capabilities.maxWidth;
-    if (capabilities.maxHeight !== undefined) wireCapabilities.max_height = capabilities.maxHeight;
-    // Both omitted rather than sent empty: the server reads an absent `hdr`
-    // as "SDR only" and an absent `video_bit_depth` as 8, which is what a
-    // client that cannot answer honestly should get.
-    if (capabilities.hdr.length > 0) wireCapabilities.hdr = capabilities.hdr;
-    if (capabilities.videoBitDepth !== undefined) wireCapabilities.video_bit_depth = capabilities.videoBitDepth;
-    if (capabilities.dolbyVision && capabilities.dolbyVision.length > 0) {
-      wireCapabilities.dolby_vision = capabilities.dolbyVision;
-    }
-    if (capabilities.hlsTs !== undefined) wireCapabilities.hls_ts = capabilities.hlsTs;
-
     const body: Record<string, unknown> = {
       item_id: media.id,
-      capabilities: wireCapabilities,
-      preferences: wirePreferences({
+      preferences: wirePreferences(reconcileQualityCaps({
         ...preferences,
-        // Always `auto` unless the viewer asked for something specific.
-        //
-        // Tizen used to default to `direct` here, with no recorded reason.
-        // It predates the server negotiating on capabilities at all, when
-        // `auto` might genuinely have handed a TV something worse. It is now
-        // actively harmful: the server's capability gate is specified for
-        // `auto`, so an explicit `direct` bypasses it, and the one platform
-        // the gate exists for was the only one that never asked for it. That
-        // is how a 10-bit Dolby Vision title reached a Samsung that had just
-        // advertised 8-bit and no HDR, and rendered a corrupt picture.
-        //
-        // A/B tested against a live node with that set's exact capabilities:
-        // a plain H.264 source direct-plays identically under `auto`, and the
-        // PQ source transcodes correctly instead of being copied. `auto`
-        // loses nothing and the special case bought nothing.
-        mode: preferences?.mode ?? 'auto',
-      }),
+        mode: requiredMode(preferences?.mode),
+      })),
     };
     if (seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(seekMs));
     // Session admission deliberately has no profile preflight: immutable
@@ -423,7 +438,6 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         audio: wire.output.audio?.transform ?? 'omit',
       },
       options,
-      warnings: mapWarnings(wire.warnings),
     };
   }
 

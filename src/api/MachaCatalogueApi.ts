@@ -74,7 +74,16 @@ export class MachaCatalogueApi implements CatalogueApi {
         { method: 'GET', signal },
       );
       if (profile === undefined || mediaProfilePending(profile)) return undefined;
-      if (profile.schema_version !== 1 || profile.media_id !== mediaId || !Array.isArray(profile.streams)) {
+      // Accept any schema the server declares from 1 upward. The profile
+      // schema grows additively — 2 added colour transfer, level and the
+      // Dolby Vision fields to the same stream objects — so pinning an exact
+      // version means every server upgrade silently disables opportunistic
+      // player preparation on every client, with a 502 nobody sees. Fields
+      // the core does not know about are ignored; fields it expects and does
+      // not find already read as absent.
+      const schemaVersion = profile.schema_version;
+      if (typeof schemaVersion !== 'number' || schemaVersion < 1
+        || profile.media_id !== mediaId || !Array.isArray(profile.streams)) {
         throw new MachaApiError('Macha catalogue returned an invalid immutable media profile.', 502, 'invalid_media_profile');
       }
       return profile as unknown as CatalogueMediaProfile;

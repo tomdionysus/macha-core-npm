@@ -282,3 +282,45 @@ describe('artwork URL absolutization', () => {
     expect(result[0]?.artwork[0]?.url).toBe('http://node-b:7438/artwork/a1');
   });
 });
+
+describe('immutable media profile schema versions', () => {
+  const profile = (schemaVersion: number) => ({
+    schema_version: schemaVersion,
+    media_id: 'macha:abc',
+    format: 'matroska,webm',
+    duration_ms: 1_000,
+    bitrate: 1_000,
+    streams: [{
+      index: 0, type: 'video', codec: 'hevc', profile: 'Main 10', language: '',
+      width: 1920, height: 802, channels: 0, sample_rate: 0, bit_depth: 0,
+      default: true, forced: false, bitrate: 0, attached_picture: false,
+      level: 153, color_transfer: 'smpte2084',
+    }],
+  });
+
+  it('accepts a newer additive profile schema instead of rejecting the server', async () => {
+    // Pinning schema_version to 1 meant a server upgrade silently disabled
+    // opportunistic player preparation on every client, with a 502 nobody saw.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(profile(2)), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaCatalogueApi('http://node.test').mediaProfile('macha:abc');
+
+    expect(result?.streams[0]).toEqual(expect.objectContaining({
+      color_transfer: 'smpte2084',
+      level: 153,
+    }));
+  });
+
+  it('still rejects a profile with no usable schema at all', async () => {
+    const bad = { ...profile(2), schema_version: 'two' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(bad), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    })));
+
+    await expect(new MachaCatalogueApi('http://node.test').mediaProfile('macha:abc'))
+      .rejects.toMatchObject({ code: 'invalid_media_profile' });
+  });
+});
