@@ -10,7 +10,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
+import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface PlaybackIntent {
@@ -52,6 +52,27 @@ export interface PlaybackInstructionReport {
    * the symptom of a field declared, consumed, and populated by nobody.
    */
   assumed: PlaybackChoiceAssumption[];
+  /** The segment container this instruction asked for, when it asked for one. */
+  container?: SegmentContainer;
+  /**
+   * The container the server says it served, once a session exists.
+   *
+   * Requested and served are kept side by side deliberately. A host policy
+   * preferring MPEG-TS against a node that ignores the preference produces
+   * `mpegts` in the policy and `fmp4` on the wire, and until both were
+   * reported in one place nothing pointed at the discrepancy — the panel
+   * showed a container, it was a real one, and it was not the one asked for.
+   */
+  servedContainer?: string;
+  /**
+   * False when the node served a container other than the one requested.
+   *
+   * Undefined rather than true when either side is unknown: no container was
+   * requested, or the node does not report what it served. An unanswered
+   * question must not read as an answer, which is the same rule the status
+   * line follows for the container itself.
+   */
+  containerHonoured?: boolean;
   /** The viewer chose this mode themselves; the chooser was not consulted. */
   chosenByViewer: boolean;
   /**
@@ -362,6 +383,7 @@ export class PlaybackCoordinator {
     if (preferences.mode !== undefined && preferences.mode !== 'choose') {
       this.patchSnapshot({ instruction: {
         mode: preferences.mode, video: preferences.video, audio: preferences.audio,
+        container: preferences.container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
       } });
       return preferences;
@@ -406,6 +428,7 @@ export class PlaybackCoordinator {
     this.chosenInstruction = instruction;
     this.patchSnapshot({ instruction: {
       mode: instruction.mode, video: instruction.video, audio: instruction.audio,
+      container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,
       chosenByViewer: false, withoutFacts: false,
     } });
@@ -1127,7 +1150,29 @@ export class PlaybackCoordinator {
   }
 
   private setSession(session: PlaybackSession): void {
-    this.patchSnapshot({ session });
+    this.patchSnapshot({ session, instruction: this.instructionWithServed(session) });
+  }
+
+  /**
+   * Record what the node actually served against what was asked for.
+   *
+   * Done once, here, rather than by each host comparing a policy against a
+   * status string: the two sides use different vocabularies and the
+   * comparison has exactly one correct answer, so leaving it to call sites
+   * produces several.
+   */
+  private instructionWithServed(session: PlaybackSession): PlaybackInstructionReport | undefined {
+    const instruction = this.snapshot.instruction;
+    if (!instruction) return undefined;
+    const served = session.output.container?.trim().toLowerCase() || undefined;
+    const requested = instruction.container;
+    return {
+      ...instruction,
+      servedContainer: served,
+      containerHonoured: requested === undefined || served === undefined
+        ? undefined
+        : served === requested,
+    };
   }
 
   private onPlayerEvent(next: PlaybackEvent): void {

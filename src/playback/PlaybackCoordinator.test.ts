@@ -1179,6 +1179,57 @@ describe('the instruction has a symptom when it is a fallback', () => {
     expect(report?.reasons).toContain('no-technical-facts');
   });
 
+  it('shows the container it asked for beside the one it got', async () => {
+    // A node that ignores a segment-container preference produces a real
+    // container on screen that is not the requested one, and nothing points
+    // at the discrepancy unless both are reported together.
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player,
+      resolver: resolver(session({ mode: 'remux', output: { format: 'hls', container: 'fmp4' } })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux', container: 'mpegts' },
+    });
+    await coordinator.start();
+
+    expect(coordinator.getSnapshot().instruction).toMatchObject({
+      container: 'mpegts', servedContainer: 'fmp4', containerHonoured: false,
+    });
+  });
+
+  it('confirms the preference when the node honoured it', async () => {
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player,
+      resolver: resolver(session({ mode: 'remux', output: { format: 'hls', container: 'mpegts' } })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux', container: 'mpegts' },
+    });
+    await coordinator.start();
+
+    expect(coordinator.getSnapshot().instruction).toMatchObject({
+      container: 'mpegts', servedContainer: 'mpegts', containerHonoured: true,
+    });
+  });
+
+  it('does not claim the preference was honoured by a node that never said', async () => {
+    // An unanswered question must not read as an answer — a node predating
+    // the field would otherwise silently confirm every preference it ignores.
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player,
+      resolver: resolver(session({ mode: 'remux', output: { format: 'hls' } })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux', container: 'mpegts' },
+    });
+    await coordinator.start();
+
+    const report = coordinator.getSnapshot().instruction;
+    expect(report?.container).toBe('mpegts');
+    expect(report?.servedContainer).toBeUndefined();
+    expect(report?.containerHonoured).toBeUndefined();
+  });
+
   it('marks a viewer’s own choice as theirs, not the chooser’s', async () => {
     const player = new FakePlayer();
     const coordinator = new PlaybackCoordinator({

@@ -365,6 +365,25 @@ describe('mode legality', () => {
   });
 });
 
+describe('container families', () => {
+  it('does not let an mp3 claim cover an MPEG program stream', () => {
+    // libav's names look adjacent and are not. The server reports `mpeg` for
+    // a .mpg, and a host that plays mp3 has said nothing about video.
+    const audioOnly = {
+      ...samsung, containers: ['mp3'], videoCodecs: ['h264' as const],
+    };
+    const decision = choosePlaybackInstruction(profile('mpeg', [h264, aac]), audioOnly);
+    expect(decision.mode).not.toBe('direct');
+    expect(decision.reasons).toContain('container-not-playable');
+  });
+
+  it('still plays an mp3 on a host that claims mp3', () => {
+    const mp3 = { index: 0, type: 'audio' as const, codec: 'mp3', profile: '', language: '', default: true, forced: false };
+    const decision = choosePlaybackInstruction(profile('mp3', [mp3]), { ...samsung, containers: ['mp3'] });
+    expect(decision.mode).toBe('direct');
+  });
+});
+
 describe('preferSegmentContainer', () => {
   const bothContainers = { ...samsung, hlsFmp4: true, hlsTs: true };
 

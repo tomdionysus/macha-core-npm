@@ -139,6 +139,8 @@ An instruction is a request, and until 0.33.1 the segment container was the one 
 
 Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from it rather than from the mode: what arrived decides the badge, what was asked for does not.
 
+The coordinator keeps the two sides together on `PlaybackInstructionReport`: `container` is what the instruction asked for, `servedContainer` is what came back, and `containerHonoured` is the comparison — undefined, not true, when either side is unknown. A host policy preferring MPEG-TS against a node that ignores it otherwise shows a real container on screen that simply is not the one requested, with nothing pointing at the gap. The comparison is made once here rather than at each call site, because the two sides use different vocabularies and it has exactly one correct answer.
+
 A container the server cannot name arrives as `""`, not as an absent key — six .avi files in the library answer exactly that today. The resolver maps it to `undefined` so consumers have one shape to test, and the status line falls back to `output.format`, which is still the server describing its own output rather than a default. Absent stays absent: render nothing rather than a guess, or a node that never answered becomes indistinguishable from one that did.
 
 ### Failures that name their reason

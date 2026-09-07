@@ -142,11 +142,19 @@ const CONTAINER_FAMILIES: ReadonlyArray<readonly string[]> = [
   ['mov', 'mp4', 'm4a', 'm4v', '3gp', '3g2'],
   ['mpegts', 'ts', 'mts', 'm2ts'],
   ['ogg', 'oga', 'ogv'],
-  ['mp3', 'mp2', 'mpeg'],
+  ['mp3', 'mp2'],
+  // MPEG program stream — a *video* container, and deliberately not grouped
+  // with mp3. libav's names look adjacent and are not: the server reports
+  // `mpeg` for a .mpg, so sharing a family with mp3 would let a host that
+  // claims only mp3 be told a program stream plays as-is. The same shape of
+  // mistake as reading `matroska,webm` as WebM.
+  ['mpeg', 'mpg', 'vob', 'm2p'],
   ['flac'],
   ['wav'],
+  ['aiff', 'aif'],
   ['aac', 'adts'],
   ['avi'],
+  ['asf', 'wmv', 'wma'],
 ];
 
 /**
