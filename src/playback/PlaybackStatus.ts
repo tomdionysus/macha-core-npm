@@ -118,6 +118,14 @@ function outputAudioParts(session: PlaybackSession): string[] {
  * .ts and .m2ts sources on a host whose policy asks for MPEG-TS carriage,
  * which is the television.
  *
+ * `isManifest` is not an independent witness — it is derived from the
+ * session's stream mime type, which the server sets from the same plan the
+ * mode comes from. What recommends it is that the player picks its loading
+ * path from that same value, so a wrong one breaks playback loudly instead of
+ * letting the badge lie quietly. Nothing reachable from a session object is
+ * truly independent of the server; this is the field that cannot be wrong on
+ * its own.
+ *
  * For anything handed over whole, `output.container` decides: same container
  * as the source is a direct hand-off, a different one was repackaged. Falls
  * back to the session mode for nodes that do not report the field, which is

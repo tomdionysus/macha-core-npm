@@ -377,6 +377,17 @@ describe('container families', () => {
     expect(decision.reasons).toContain('container-not-playable');
   });
 
+  it('keeps the segment container fmp4 out of the mp4 source family', () => {
+    // Deliberate, and worth pinning: fragmented MP4 *is* an MP4, so grouping
+    // them is the natural reading. Keeping them apart is what made an .mp4
+    // remuxed into fMP4 read as a container change — on the 58 .mp4 files in
+    // the library, the carriage everyone actually uses. `mpegts` is the
+    // opposite case, legitimately both a source and a segment container,
+    // which is why the badge cannot rest on this distinction alone.
+    expect(canonicalContainers('fmp4')).toBeUndefined();
+    expect(canonicalContainers('mp4')).toContain('mp4');
+  });
+
   it('maps every container the server can emit to a family of its own', () => {
     // The server's source vocabulary, written down here so the two lists can
     // be compared rather than assumed to agree. Three of tonight's bugs were
