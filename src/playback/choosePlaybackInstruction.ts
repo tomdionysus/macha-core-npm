@@ -227,6 +227,14 @@ export function audioStreamObjection(
  * detection have to arrive together or neither does anything — which is how
  * `hlsTs` managed to be both unreachable and unpopulated without anyone
  * noticing.
+ *
+ * The node's `copyIntoMpegts` deliberately does *not* veto the preference
+ * here. A host states a carriage preference because the other carriage is
+ * broken on the device — the 2017 Samsung black-screens copied HEVC in
+ * fragmented MP4 — so falling back to fMP4 on learning that the node cannot
+ * copy into MPEG-TS would trade a transcode the viewer can watch for a copy
+ * they cannot. The node's answer decides copy versus transcode *within* the
+ * chosen container; it does not decide the container.
  */
 function segmentContainer(
   capabilities: PlaybackCapabilities,
@@ -242,6 +250,25 @@ function segmentContainer(
   if (fmp4) return { container: 'fmp4', preferred: false };
   if (mpegts) return { container: 'mpegts', preferred: false };
   return { container: undefined, preferred: false };
+}
+
+/**
+ * Which streams this node can copy into the container we settled on.
+ *
+ * Copy support is a property of the pair, not of the node: MPEG-TS takes
+ * MPEG-2 video and MP3 audio that fragmented MP4 refuses, and fragmented MP4
+ * takes AV1 and Opus that MPEG-TS refuses. Asking `copyIntoFmp4` about a
+ * MPEG-TS session would answer a question nobody asked.
+ *
+ * With no facts at all, assume the node can copy — the chooser's behaviour
+ * before the facts endpoint existed, and the 400 is the loud, recoverable leg.
+ */
+function copyInto(
+  container: SegmentContainer | undefined,
+  operations: PlaybackOperations | undefined,
+): { video: boolean; audio: boolean } {
+  if (!operations) return { video: true, audio: true };
+  return container === 'mpegts' ? operations.copyIntoMpegts : operations.copyIntoFmp4;
 }
 
 export interface ChooseInstructionOptions {
@@ -335,15 +362,17 @@ export function choosePlaybackInstruction(
 
   // The streams themselves are fine — only the wrapper, or one track, is not.
   // Copying the video is the whole point of the per-stream instruction.
+  const executorCanCopy = copyInto(container, operations);
+
   if (!videoObjection) {
     // ...unless HLS delivery uses a different decoder that cannot take it.
     const deliverable = (video === undefined || has(deliveryVideoCodecs(capabilities), video.codec))
-      && (video === undefined || (operations?.copyIntoFmp4.video ?? true));
-    if (video !== undefined && operations && !operations.copyIntoFmp4.video) {
+      && (video === undefined || executorCanCopy.video);
+    if (video !== undefined && operations && !executorCanCopy.video) {
       reasons.push('executor-cannot-copy-video');
     }
     if (deliverable) {
-      const canCopyAudio = operations?.copyIntoFmp4.audio ?? true;
+      const canCopyAudio = executorCanCopy.audio;
       const audioDeliverable = audio === undefined
         || (!audioObjection && has(deliveryAudioCodecs(capabilities), audio.codec) && canCopyAudio);
       if (!audioDeliverable && !audioObjection && audio !== undefined) {
@@ -363,7 +392,7 @@ export function choosePlaybackInstruction(
 
   const audioDeliverable = audio === undefined
     || (!audioObjection && has(deliveryAudioCodecs(capabilities), audio.codec)
-      && (operations?.copyIntoFmp4.audio ?? true));
+      && executorCanCopy.audio);
   return { mode: 'transcode', video: 'transcode', audio: audioDeliverable ? 'copy' : 'transcode', container, reasons, assumed };
 }
 

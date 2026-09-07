@@ -129,7 +129,23 @@ State it here rather than by denying `hlsFmp4`. The set genuinely *can* do fMP4;
 
 A preference the host has not said it supports is ignored, and the default ordering applies — preferring what you cannot play is a configuration error, not an instruction. The reason `host-policy-prefers-container` appears only when the preference actually changed the outcome, so a host with one available container does not see a preference it never exercised.
 
-**Whether the *node* can emit the preferred container is a separate question**, and currently an assumption. `operations` reports `copy_into_fmp4` but has no MPEG-TS equivalent, so a host preferring TS against a node that cannot emit it gets a 400 rather than a fallback. That is the loud failure leg, so it is survivable — but it is an assumption, and the honest fix is a `copy_into_mpegts` fact alongside the existing one rather than the chooser guessing.
+**Whether the *node* can copy into the preferred container is a separate question**, and one the node now answers. `operations` reports `copyIntoMpegts` beside `copyIntoFmp4`, because the two carriages take genuinely different codecs: MPEG-TS takes MPEG-2 video and MP3/MP2 audio that fragmented MP4 refuses, fragmented MP4 takes AV1 and Opus that MPEG-TS refuses, and both take H.264, HEVC, AAC, AC-3 and E-AC-3. The chooser asks about whichever carriage the instruction actually names; asking `copyIntoFmp4` about an MPEG-TS session answers a question nobody put.
+
+That answer decides **copy versus transcode inside the chosen container. It does not choose the container.** A host states a carriage preference because the other carriage is broken on the device, so retreating to fMP4 on learning the node cannot copy into TS would trade a transcode the viewer can watch for a copy they cannot. Preferring TS against a node that can copy neither stream into it yields a transcode into TS, which plays.
+
+### Reading back what was actually served
+
+An instruction is a request, and until 0.33.1 the segment container was the one part of it with no confirmation anywhere in the response. `session.output.container` closes that: `fmp4` or `mpegts` for an HLS session, the source file's own container for a direct one.
+
+Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from it rather than from the mode: what arrived decides the badge, what was asked for does not.
+
+A container the server cannot name arrives as `""`, not as an absent key — six .avi files in the library answer exactly that today. The resolver maps it to `undefined` so consumers have one shape to test, and the status line falls back to `output.format`, which is still the server describing its own output rather than a default. Absent stays absent: render nothing rather than a guess, or a node that never answered becomes indistinguishable from one that did.
+
+### Failures that name their reason
+
+A failed source carries a `reason` beside the code: `source_unreadable`, `source_unsupported` or `source_read_timed_out`. The code says what went wrong; the reason says whether another node could possibly do better.
+
+`source_unsupported` is a fact about the bytes, and every node holds the same bytes — so it ends the search rather than spending the viewer's time collecting three identical refusals. The other two are facts about one node's view of the file, a bad extent or a mount gone slow, and the next node is exactly the right thing to try. All three leave the node's health record alone: none of them says anything about its ability to serve anything else.
 
 ### State the limitation at the level the fault is at
 

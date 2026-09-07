@@ -76,6 +76,17 @@ export interface PlaybackOutputAudioInfo {
 
 export interface PlaybackOutputInfo {
   format?: string;
+  /**
+   * The container actually served — `fmp4` or `mpegts` for HLS, the source
+   * file's own container for a direct session.
+   *
+   * The instruction says which segment container to package into; this says
+   * which one came back, and until the server reported it there was no way to
+   * tell a preference that took effect from one that was ignored. Absent when
+   * the node predates the field: read that as unknown, never as a default,
+   * because a default is indistinguishable on screen from an answer.
+   */
+  container?: string;
   bitrate?: number;
   video?: PlaybackOutputVideoInfo;
   audio?: PlaybackOutputAudioInfo;

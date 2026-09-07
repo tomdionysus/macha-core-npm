@@ -1,4 +1,32 @@
+import { canonicalContainers } from './choosePlaybackInstruction.js';
 import type { PlaybackSession, PlaybackStreamInfo } from './PlaybackResolver.js';
+
+const CONTAINER_LABELS: Record<string, string> = {
+  fmp4: 'FMP4',
+  mpegts: 'MPEG-TS',
+};
+
+/**
+ * The container actually served, as the panel should show it.
+ *
+ * Only ever from `output.container`. Synthesising it from the request would
+ * put the thing we asked for on screen wearing the clothes of the thing we
+ * got, and the entire value of this field is telling those two apart — a
+ * segment-container preference that the node quietly ignored looks identical
+ * to one it honoured until something reports back. Absent means absent: no
+ * text rather than a default.
+ */
+function servedContainer(session: PlaybackSession): string | undefined {
+  // `output.format` is the fallback, not a default: it is still the server
+  // describing what it produced, and it is the only answer for a direct
+  // session whose container the server could not name — the six .avi files
+  // report `container: ""` with `format: "avi"`. If that is fixed server-side
+  // the fallback simply stops being reached.
+  const container = session.output.container?.trim() || session.output.format?.trim();
+  if (!container) return undefined;
+  const key = container.toLowerCase();
+  return CONTAINER_LABELS[key] ?? key.toUpperCase();
+}
 
 function formatBitrate(bitrate?: number): string {
   if (!bitrate) return '';
@@ -77,12 +105,35 @@ function outputAudioParts(session: PlaybackSession): string[] {
   return parts;
 }
 
+/**
+ * DIRECT or REMUX, from what was served rather than what was asked for.
+ *
+ * Only called when every selected stream is copied, so the sole remaining
+ * question is whether the container changed. `output.container` answers it
+ * directly: a direct session reports the source file's own container, and a
+ * remux reports the segment container it was packaged into. Falls back to the
+ * session mode for nodes that do not report the field yet — which is the
+ * requested mode, and was the only thing available before 0.33.1.
+ */
 function copyModeLabel(session: PlaybackSession): string {
-  return session.mode === 'direct' ? 'DIRECT' : 'REMUX';
+  const served = session.output.container?.trim().toLowerCase();
+  if (!served) return session.mode === 'direct' ? 'DIRECT' : 'REMUX';
+  const source = session.sourceInfo.container ?? session.sourceInfo.format;
+  const sourceFamily = canonicalContainers(source);
+  const servedFamily = canonicalContainers(served);
+  const unchanged = sourceFamily !== undefined && sourceFamily === servedFamily;
+  return unchanged ? 'DIRECT' : 'REMUX';
 }
 
 export interface PlaybackStatusDescription {
   endpoint?: string;
+  /**
+   * The container the server says it served — `MPEG-TS`, `FMP4`, or a source
+   * container such as `MATROSKA` for a direct session. Undefined when the
+   * node did not report one; render nothing in that case rather than a
+   * default, so an unanswering node stays visibly distinct from an answer.
+   */
+  container?: string;
   video?: string;
   audio?: string;
   subtitle?: string;
@@ -128,7 +179,10 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
   const subtitle = session.selected.subtitleStream >= 0
     ? selectedStream(session, 'subtitle', session.selected.subtitleStream)
     : undefined;
-  const result: PlaybackStatusDescription = { endpoint: endpointDescription(session, activeStreamOrigin) };
+  const result: PlaybackStatusDescription = {
+    endpoint: endpointDescription(session, activeStreamOrigin),
+    container: servedContainer(session),
+  };
 
   if (video && session.transform.video !== 'omit') {
     const source = sourceVideoParts(session, video);

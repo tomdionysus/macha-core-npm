@@ -310,6 +310,38 @@ describe('MachaPlaybackResolver', () => {
     }));
   });
 
+  it('carries the container actually served, which the request could never tell us', async () => {
+    const response = sessionResponse();
+    const typed = response as { source: Record<string, unknown>; output: Record<string, unknown> };
+    typed.source.container = 'matroska';
+    typed.output.container = 'mpegts';
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'remux', container: 'mpegts' });
+
+    // Asking for a segment container and never seeing what came back was the
+    // one instruction with no confirmation anywhere in the response.
+    expect(session.output.container).toBe('mpegts');
+    expect(session.sourceInfo.container).toBe('matroska');
+  });
+
+  it('treats a container the server could not name as absent, not as empty', async () => {
+    const response = sessionResponse();
+    const typed = response as { source: Record<string, unknown>; output: Record<string, unknown> };
+    typed.source.container = '';
+    typed.output.container = '';
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response, 201));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    expect(session.output.container).toBeUndefined();
+    expect(session.sourceInfo.container).toBeUndefined();
+  });
+
   it('declares whether the source is a manifest, so a native player need not sniff', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(sessionResponse(), 201));
     vi.stubGlobal('fetch', fetchMock);

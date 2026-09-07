@@ -47,16 +47,20 @@ function mapStream(stream: WireFactsStream): MediaTechnicalStream {
   };
 }
 
+function streamPair(field: unknown): { video: boolean; audio: boolean } {
+  const pair = (field && typeof field === 'object' ? field : {}) as Record<string, unknown>;
+  return { video: pair.video === true, audio: pair.audio === true };
+}
+
 function mapOperations(value: unknown): PlaybackOperations {
   const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
-  const copy = (record.copy_into_fmp4 && typeof record.copy_into_fmp4 === 'object'
-    ? record.copy_into_fmp4 : {}) as Record<string, unknown>;
   // Absent reads as "cannot", not "can". This gates instructions, so an
   // unknown answer must never be optimistic — the whole point is to stop
   // asking for something the node will refuse.
   return {
     direct: record.direct === true,
-    copyIntoFmp4: { video: copy.video === true, audio: copy.audio === true },
+    copyIntoFmp4: streamPair(record.copy_into_fmp4),
+    copyIntoMpegts: streamPair(record.copy_into_mpegts),
     transcodeVideo: record.transcode_video === true,
     transcodeAudio: record.transcode_audio === true,
   };
@@ -97,7 +101,10 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
       const profile: MediaTechnicalProfile = {
         mediaId,
         format: typeof item.format === 'string' ? item.format : '',
-        container: typeof item.container === 'string' ? item.container : undefined,
+        // `""` is the server's answer for a container it cannot name — an
+        // absent value, not a value. Normalised here so one shape reaches
+        // every consumer.
+        container: (typeof item.container === 'string' ? item.container.trim() : '') || undefined,
         durationMs: typeof item.duration_ms === 'number' ? item.duration_ms : 0,
         bitrate: typeof item.bitrate === 'number' ? item.bitrate : 0,
         sizeBytes: typeof item.size === 'number' ? item.size : undefined,

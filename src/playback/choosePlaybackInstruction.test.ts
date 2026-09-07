@@ -215,15 +215,21 @@ describe('degradeInstruction', () => {
 describe('executor operations as an input', () => {
   const canDoEverything = {
     direct: true, copyIntoFmp4: { video: true, audio: true },
+    copyIntoMpegts: { video: true, audio: true },
     transcodeVideo: true, transcodeAudio: true,
   };
+
+  // These fixtures all package into fMP4, so the MPEG-TS answers are set to
+  // the opposite of the fMP4 ones: if the chooser ever consults the wrong
+  // carriage, the assertion changes rather than staying accidentally true.
+  const noMpegtsCopy = { video: false, audio: false };
 
   it('does not instruct a copy the node cannot perform', () => {
     // The evening's actual failure: the chooser asked for an E-AC-3 copy that
     // the deployed build could not do, and the viewer got nothing at all.
     const decision = choosePlaybackInstruction(
       profile('matroska', [h264, eac3]), samsung,
-      { operations: { ...canDoEverything, copyIntoFmp4: { video: true, audio: false } } },
+      { operations: { ...canDoEverything, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: noMpegtsCopy } },
     );
     expect(decision).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
@@ -243,7 +249,7 @@ describe('executor operations as an input', () => {
     // stop asking for what will be refused.
     const decision = choosePlaybackInstruction(
       profile('matroska', [h264, eac3]), samsung,
-      { operations: { direct: false, copyIntoFmp4: { video: false, audio: false }, transcodeVideo: true, transcodeAudio: true } },
+      { operations: { direct: false, copyIntoFmp4: { video: false, audio: false }, copyIntoMpegts: noMpegtsCopy, transcodeVideo: true, transcodeAudio: true } },
     );
     expect(decision.video).toBe('transcode');
     expect(decision.audio).toBe('transcode');
@@ -256,7 +262,7 @@ describe('executor operations as an input', () => {
     const mp3 = { index: 0, type: 'audio' as const, codec: 'mp3', profile: '', language: '', default: true, forced: false };
     const decision = choosePlaybackInstruction(
       profile('mp3', [mp3]), samsung,
-      { operations: { direct: false, copyIntoFmp4: { video: true, audio: false }, transcodeVideo: true, transcodeAudio: true } },
+      { operations: { direct: false, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: noMpegtsCopy, transcodeVideo: true, transcodeAudio: true } },
     );
 
     expect(decision).toMatchObject({ mode: 'transcode', audio: 'transcode', container: 'fmp4' });
@@ -296,7 +302,7 @@ describe('reporting what had to be assumed', () => {
       hlsVideoCodecs: ['h264' as const], hlsAudioCodecs: ['aac' as const], hlsTs: false,
     };
     const decision = choosePlaybackInstruction(profile('mov,mp4', [h264, aac]), complete, {
-      operations: { direct: true, copyIntoFmp4: { video: true, audio: true }, transcodeVideo: true, transcodeAudio: true },
+      operations: { direct: true, copyIntoFmp4: { video: true, audio: true }, copyIntoMpegts: { video: true, audio: true }, transcodeVideo: true, transcodeAudio: true },
     });
     expect(decision.assumed).toEqual([]);
   });
@@ -323,9 +329,9 @@ describe('mode legality', () => {
     const containers = ['mp4', 'matroska,webm', 'webm', 'ogg', 'flac', 'unknown-format'];
     const operationSets = [
       undefined,
-      { direct: true, copyIntoFmp4: { video: true, audio: true }, transcodeVideo: true, transcodeAudio: true },
-      { direct: false, copyIntoFmp4: { video: true, audio: false }, transcodeVideo: true, transcodeAudio: true },
-      { direct: false, copyIntoFmp4: { video: false, audio: false }, transcodeVideo: true, transcodeAudio: true },
+      { direct: true, copyIntoFmp4: { video: true, audio: true }, copyIntoMpegts: { video: true, audio: true }, transcodeVideo: true, transcodeAudio: true },
+      { direct: false, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: { video: false, audio: false }, transcodeVideo: true, transcodeAudio: true },
+      { direct: false, copyIntoFmp4: { video: false, audio: false }, copyIntoMpegts: { video: true, audio: true }, transcodeVideo: true, transcodeAudio: true },
     ];
     let remuxes = 0;
     for (const format of containers) {
@@ -405,5 +411,40 @@ describe('preferSegmentContainer', () => {
     });
     expect(decision.mode).toBe('direct');
     expect(decision.container).toBeUndefined();
+  });
+
+  it('asks the node about the carriage it actually chose', () => {
+    // The two carriages take different codecs, so `copyIntoFmp4` is simply
+    // the wrong question once the instruction says MPEG-TS. Here the node
+    // cannot copy either stream into fMP4 and can copy both into TS.
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), bothContainers, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+      operations: {
+        direct: false,
+        copyIntoFmp4: { video: false, audio: false },
+        copyIntoMpegts: { video: true, audio: true },
+        transcodeVideo: true, transcodeAudio: true,
+      },
+    });
+    expect(decision).toMatchObject({ mode: 'remux', video: 'copy', audio: 'copy', container: 'mpegts' });
+  });
+
+  it('transcodes into the preferred carriage rather than copying into the broken one', () => {
+    // The preference exists because fMP4 is broken on this device, so
+    // retreating to a copy the device cannot decode would trade a picture the
+    // viewer can watch for one they cannot. The node's answer decides copy
+    // versus transcode inside the chosen container; it does not choose the
+    // container.
+    const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), bothContainers, {
+      overrides: { preferSegmentContainer: 'mpegts' },
+      operations: {
+        direct: false,
+        copyIntoFmp4: { video: true, audio: true },
+        copyIntoMpegts: { video: true, audio: false },
+        transcodeVideo: true, transcodeAudio: true,
+      },
+    });
+    expect(decision).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode', container: 'mpegts' });
+    expect(decision.reasons).toContain('executor-cannot-copy-audio');
   });
 });

@@ -21,7 +21,42 @@ function errorStatus(error: unknown): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/**
+ * Why the source failed, as the server states it.
+ *
+ * `source_unsupported` is a fact about the file: every node holds the same
+ * bytes and every node will refuse it the same way, so walking the cluster
+ * only spends the viewer's time before giving them the same answer.
+ * `source_unreadable` and `source_read_timed_out` are facts about one node's
+ * view of it — a bad extent, a storage mount gone slow — and the next node is
+ * exactly the right thing to try.
+ */
+const TERMINAL_SOURCE_REASONS: ReadonlySet<string> = new Set(['source_unsupported']);
+const NODE_LOCAL_SOURCE_REASONS: ReadonlySet<string> = new Set([
+  'source_unreadable',
+  'source_read_timed_out',
+]);
+
+function failureReason(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const reason = (error as { reason?: unknown }).reason;
+  if (typeof reason === 'string') return reason;
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object') {
+    const nested = (cause as { reason?: unknown }).reason;
+    if (typeof nested === 'string') return nested;
+  }
+  return undefined;
+}
+
 export function retryableEndpointFailure(error: unknown): boolean {
+  const reason = failureReason(error);
+  // A stated reason outranks the status. A node reporting a 5xx for a file it
+  // cannot decode is telling the truth about the file, and asking its
+  // neighbours produces three identical refusals instead of one.
+  if (reason !== undefined && TERMINAL_SOURCE_REASONS.has(reason)) return false;
+  if (reason !== undefined && NODE_LOCAL_SOURCE_REASONS.has(reason)) return true;
+
   if (error instanceof MachaConnectionError || error instanceof MachaEndpointError) return true;
   // Browser Fetch reports connection refusal, DNS failure and CORS transport
   // failure as TypeError. API/schema errors use the typed HTTP errors below.
@@ -56,6 +91,11 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
 
 export function isPerTitleFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
+  const reason = failureReason(error);
+  // A source this node could not read, or could not read in time, says
+  // nothing about its ability to serve anything else.
+  if (reason !== undefined
+    && (NODE_LOCAL_SOURCE_REASONS.has(reason) || TERMINAL_SOURCE_REASONS.has(reason))) return true;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' && PER_TITLE_FAILURE_CODES.has(code);
 }

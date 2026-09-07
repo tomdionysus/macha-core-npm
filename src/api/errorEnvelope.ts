@@ -5,6 +5,16 @@ interface ErrorRecord {
 export interface ParsedErrorEnvelope {
   message: string;
   code?: string;
+  /**
+   * Why the source failed, when the server says: `source_unreadable`,
+   * `source_unsupported` or `source_read_timed_out`.
+   *
+   * The code says what went wrong; this says whether asking a different node
+   * could possibly help. Unreadable and timed-out are facts about one node's
+   * view of the file; unsupported is a fact about the file, and no node will
+   * answer differently.
+   */
+  reason?: string;
 }
 
 function asRecord(value: unknown): ErrorRecord | undefined {
@@ -67,5 +77,7 @@ export function parseErrorEnvelope(body: unknown, fallback: string): ParsedError
     ?? describe(envelope.detail)
     ?? fallback;
 
-  return { message, code };
+  const reason = nonEmptyString(envelope.reason) ?? nonEmptyString(structuredError?.reason);
+
+  return { message, code, reason };
 }

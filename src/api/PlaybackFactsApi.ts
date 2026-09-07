@@ -14,6 +14,17 @@ export interface PlaybackOperations {
   direct: boolean;
   /** Whether each stream can be copied into a fragmented-MP4 segment. */
   copyIntoFmp4: { video: boolean; audio: boolean };
+  /**
+   * The same question for MPEG-TS, and not the same answer.
+   *
+   * The two carriages genuinely differ: MPEG-TS takes MPEG-2 video and
+   * MP3/MP2 audio that fragmented MP4 will not, fragmented MP4 takes AV1 and
+   * Opus that MPEG-TS will not, and both take H.264, HEVC, AAC, AC-3 and
+   * E-AC-3. So which streams survive a copy depends on which container was
+   * asked for, and a host that prefers one carriage must be told about that
+   * carriage rather than the other.
+   */
+  copyIntoMpegts: { video: boolean; audio: boolean };
   transcodeVideo: boolean;
   transcodeAudio: boolean;
 }

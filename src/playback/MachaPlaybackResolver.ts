@@ -89,6 +89,13 @@ interface WireSession {
   };
   output: {
     format?: string;
+    /**
+     * The container actually served: `fmp4` or `mpegts` for HLS, the source
+     * file's own container for a direct session. Never synthesise it from the
+     * request — the request is what was asked for, and this is the one field
+     * that says what arrived.
+     */
+    container?: string;
     bitrate?: number;
     video?: WireOutputVideo;
     audio?: WireOutputAudio;
@@ -116,6 +123,8 @@ export class MachaPlaybackError extends Error {
     public readonly status?: number,
     public readonly code?: string,
     public readonly retryAfterMs?: number,
+    /** Server-stated source failure reason; see `ParsedErrorEnvelope.reason`. */
+    public readonly reason?: string,
   ) {
     super(message);
   }
@@ -155,6 +164,17 @@ const MANIFEST_MIME_TYPES: ReadonlySet<string> = new Set([
 
 export function isManifestMimeType(mimeType: string | undefined): boolean {
   return mimeType !== undefined && MANIFEST_MIME_TYPES.has(mimeType.split(';')[0].trim().toLowerCase());
+}
+
+/**
+ * A container the server could not name arrives as `""`, not as an absent
+ * key — six .avi files in the library report exactly that today. One shape
+ * for "no answer" means consumers test one thing, and nothing downstream can
+ * put an empty chip on screen.
+ */
+function reportedContainer(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 function mapStream(stream: WireStream): PlaybackStreamInfo {
@@ -398,12 +418,14 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       sourceInfo: {
         path: wire.source.path,
         format: wire.source.format,
+        container: reportedContainer(wire.source.container),
         size: wire.source.size,
         bitrate: wire.source.bitrate,
         streams: wire.source.streams.map(mapStream),
       },
       output: {
         format: wire.output.format,
+        container: reportedContainer(wire.output.container),
         bitrate: wire.output.bitrate,
         video: wire.output.video ? {
           sourceStream: wire.output.video.source_stream,
@@ -563,6 +585,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       response.status,
       parsed.code,
       retryAfterMs(response.headers.get('retry-after')),
+      parsed.reason,
     );
   }
 }

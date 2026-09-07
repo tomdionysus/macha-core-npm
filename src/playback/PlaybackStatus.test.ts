@@ -37,6 +37,60 @@ function session(overrides: Partial<PlaybackSession> = {}): PlaybackSession {
   };
 }
 
+describe('the container actually served', () => {
+  it('reports the segment container the server says it produced', () => {
+    const described = describePlaybackSession(session({
+      output: { ...session().output, format: 'hls', container: 'mpegts' },
+    }));
+    expect(described?.container).toBe('MPEG-TS');
+  });
+
+  it('reports fragmented MP4 under the name the server uses', () => {
+    const described = describePlaybackSession(session({
+      output: { ...session().output, format: 'hls', container: 'fmp4' },
+    }));
+    expect(described?.container).toBe('FMP4');
+  });
+
+  it('says nothing at all when neither container nor format was reported', () => {
+    // A default here would be indistinguishable on screen from an answer, and
+    // telling those apart is the entire reason the field exists.
+    const described = describePlaybackSession(session({
+      output: { video: session().output.video, audio: session().output.audio },
+    }));
+    expect(described?.container).toBeUndefined();
+    expect('container' in (described ?? {})).toBe(true);
+  });
+
+  it('falls back to the output format when the server could not name a container', () => {
+    // Six .avi files in the library answer `container: ""` with `format:
+    // "avi"`. The fallback is still the server describing its own output.
+    const described = describePlaybackSession(session({
+      mode: 'direct',
+      output: { format: 'avi', video: session().output.video, audio: session().output.audio },
+    }));
+    expect(described?.container).toBe('AVI');
+  });
+
+  it('calls a copied session DIRECT when the served container is the source container', () => {
+    const described = describePlaybackSession(session({
+      mode: 'direct',
+      output: { ...session().output, format: 'matroska', container: 'matroska' },
+    }));
+    expect(described?.video).toBe('DIRECT · HEVC · 1920×1080 · 7.5 Mb/s');
+  });
+
+  it('calls it REMUX when the container changed, whatever the mode field says', () => {
+    // The server reported `direct` for a session it packaged into MPEG-TS.
+    // What arrived decides the badge; what was asked for does not.
+    const described = describePlaybackSession(session({
+      mode: 'direct',
+      output: { ...session().output, format: 'hls', container: 'mpegts' },
+    }));
+    expect(described?.video).toBe('REMUX · HEVC · 1920×1080 · 7.5 Mb/s');
+  });
+});
+
 describe('describePlaybackSession', () => {
   it('shows credential-safe active node and stream provenance', () => {
     const described = describePlaybackSession(session({
@@ -68,6 +122,7 @@ describe('describePlaybackSession', () => {
 
   it('reports the server-resolved remux mode when both streams are copied', () => {
     expect(describePlaybackSession(session())).toEqual({
+      container: 'MP4',
       video: 'REMUX · HEVC · 1920×1080 · 7.5 Mb/s',
       audio: 'AUDIO COPY · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
     });
@@ -83,6 +138,7 @@ describe('describePlaybackSession', () => {
         audio: { sourceStream: 1, transform: 'transcode', codec: 'aac', channels: 2, sampleRate: 48000, bitrate: 192_000 },
       },
     }))).toEqual({
+      container: 'MP4',
       video: 'VIDEO COPY · HEVC · 1920×1080 · 7.5 Mb/s',
       audio: 'AUDIO TRANSCODE · SOURCE · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s → AAC · stereo · 48 kHz · 192 kb/s',
     });
