@@ -827,6 +827,95 @@ describe('PlaybackCoordinator player failures', () => {
     expect(api.failover).not.toHaveBeenCalled();
   });
 
+  describe('a standby that is ready while the node keeps failing', () => {
+    const remuxSession = (overrides = {}) => session({ mode: 'remux', mediaId: 'macha:one', ...overrides });
+
+    it('promotes it rather than waiting for a fatal that is a minute away', async () => {
+      // Measured against a stopped node: standby ready in 267 ms, discarded
+      // unused at 30 s, rebuilt from scratch at 63 s. The player's own retry
+      // budget outlasts the standby's window, so waiting for fatal guarantees
+      // the rescue goes stale.
+      const player = new FakePlayer();
+      const primary = remuxSession({ sessionId: 'primary' });
+      const alternate = remuxSession({ sessionId: 'alternate', endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+      const api = resolver(primary) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => alternate);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(new PlaybackSourceError('read-ahead TCP failed', 'stream'));
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      await flush();
+      expect(player.playCalls).toHaveLength(1);
+
+      player.degrade(new PlaybackSourceError('read-ahead TCP failed again', 'stream'));
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+
+      expect(player.playCalls.at(-1)?.source).toEqual(alternate.source);
+      expect(coordinator.getSnapshot().session?.sessionId).toBe('alternate');
+    });
+
+    it('tells the registry the abandoned node is unwell', async () => {
+      // It never refused a session, it stopped serving bytes, so nothing else
+      // would ever record it — and a later failover would pick it straight
+      // back up as an apparently untried candidate.
+      const player = new FakePlayer();
+      const primary = remuxSession({ sessionId: 'primary', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+      const alternate = remuxSession({ sessionId: 'alternate', endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+      const api = resolver(primary) as ReturnType<typeof resolver>
+        & { prepareAlternate: ReturnType<typeof vi.fn>; recordEndpointFailure: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => alternate);
+      api.recordEndpointFailure = vi.fn();
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(new PlaybackSourceError('first', 'stream'));
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      await flush();
+      player.degrade(new PlaybackSourceError('second', 'stream'));
+      await vi.waitFor(() => expect(api.recordEndpointFailure).toHaveBeenCalledWith('node-a'));
+    });
+
+    it('does not promote on the first failure, because there is nothing built yet', async () => {
+      const player = new FakePlayer();
+      const api = resolver(remuxSession({ sessionId: 'primary' })) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => remuxSession({ sessionId: 'alternate', endpoint: { id: 'node-b', baseUrl: 'http://b' } }));
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(new PlaybackSourceError('first', 'stream'));
+      await flush();
+
+      // One play call: the original. The first failure builds the rescue, it
+      // does not use it.
+      expect(player.playCalls).toHaveLength(1);
+    });
+
+    it('leaves a seek alone rather than racing it with a second replacement', async () => {
+      // A seek outside local coverage is already replacing this generation.
+      // Promoting alongside it produces two live replacements for one viewer.
+      const player = new FakePlayer();
+      const primary = remuxSession({ sessionId: 'primary' });
+      const alternate = remuxSession({ sessionId: 'alternate', endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+      const stuck = deferred<PlaybackSession>();
+      const api = resolver(primary, async () => stuck.promise) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => alternate);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(new PlaybackSourceError('first', 'stream'));
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      await flush();
+
+      coordinator.seek(600_000);
+      await flush();
+      player.degrade(new PlaybackSourceError('teardown from the seek', 'stream'));
+      await flush();
+
+      expect(coordinator.getSnapshot().session?.sessionId).toBe('primary');
+    });
+  });
+
   it('promotes a terminal platform-source failure into coordinator fatal state', async () => {
     const player = new FakePlayer();
     const api = resolver(session({ mode: 'transcode' }));

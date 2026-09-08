@@ -1066,7 +1066,29 @@ export class PlaybackCoordinator {
   private degrade(error: Error): void {
     if (this.disposed || !isEndpointRetryablePlaybackFailure(error)) return;
     const session = this.snapshot.session ?? this.serverSession;
-    if (!session || this.alternatePreparations.size > 0 || this.alternateSessions.size > 0) return;
+    if (!session || this.alternatePreparations.size > 0) return;
+    // A standby is already built and this node has failed again. There is
+    // nothing left to wait for: continuing to sit on a validated rescue while
+    // the primary works through its retry budget is what turns a sub-second
+    // recovery into a minute of black screen.
+    //
+    // Measured, on a node stopped mid-playback: the standby was ready 267 ms
+    // in, was discarded unused when its thirty-second window expired, and the
+    // identical session was rebuilt from scratch 33 seconds after that — 63.6 s
+    // of black screen for work that had been finished in under a second. The
+    // two budgets were chosen independently and each is defensible; their
+    // product is a rescue guaranteed to go stale, because a player's own retry
+    // schedule outlasts the window and only a *fatal* failure consumed the
+    // standby.
+    //
+    // Two failures inside the standby's own lifetime is the evidence threshold,
+    // and it is the strongest one available — there is no positive "recovered"
+    // signal to wait for. The first failure is what built the rescue; the
+    // second is the node saying it meant it.
+    if (this.alternateSessions.size > 0) {
+      this.promoteReadyAlternate(session, error);
+      return;
+    }
     // A seek already outside local coverage is itself replacing this
     // generation via resolver.update() — the server tearing down the old
     // pipeline to honor that PATCH is expected, not independent failure
@@ -1080,6 +1102,62 @@ export class PlaybackCoordinator {
       error,
     });
     this.prepareAlternate(session, this.sourceActivationRevision);
+  }
+
+  /**
+   * Swap to a standby that is already built, validated and waiting.
+   *
+   * Unlike Direct Play — where `addDirectSourceAlternative` hands the fallback
+   * to the read-ahead worker and the swap is invisible — a manifest source has
+   * no in-band handoff, so this reloads the player against the new generation.
+   * That costs a visible rebuffer of roughly a second, against a minute of
+   * black screen for waiting out the primary's retry budget.
+   *
+   * Deliberately does nothing while a failover is already running or a seek is
+   * in flight: both are already replacing this generation, and a promotion
+   * racing either would produce two live replacements for one viewer.
+   */
+  private promoteReadyAlternate(session: PlaybackSession, error: Error): void {
+    // A seek counts whether it is in flight, debounced, or queued behind
+    // another mutation. `degrade()` checks only the active one, which is
+    // enough when the consequence is a redundant standby; here the
+    // consequence is a live replacement, so a seek still sitting on its
+    // debounce timer has to count too.
+    const seeking = this.activeMutation?.reason === 'seek'
+      || this.debouncedSeekMutation !== undefined
+      || this.pendingMutation?.reason === 'seek';
+    if (this.failoverPromise || seeking) return;
+    const alternate = [...this.alternateSessions.values()].find((candidate) => (
+      candidate.mediaId === session.mediaId
+      && candidate.mode === session.mode
+      && candidate.endpoint?.id !== session.endpoint?.id
+    ));
+    if (!alternate) return;
+
+    this.log.warn('alternate-promoted-on-degradation', {
+      previousSessionId: session.sessionId,
+      alternateSessionId: alternate.sessionId,
+      endpoint: alternate.endpoint,
+      error,
+    });
+
+    this.alternateSessions.delete(alternate.sessionId);
+    const expiry = this.alternateExpiryTimers.get(alternate.sessionId);
+    if (expiry !== undefined) clearTimeout(expiry);
+    this.alternateExpiryTimers.delete(alternate.sessionId);
+
+    this.serverSession = alternate;
+    // The node never refused a session — it stopped serving bytes — so nothing
+    // else would tell the registry it is unwell, and a later failover would
+    // pick it back up as an apparently untried candidate.
+    if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
+    const desiredMs = this.snapshot.intent.positionMs;
+    this.activateSession(alternate, desiredMs, alternate.seekMs);
+    this.beginSupersededCleanup({
+      oldSessionId: session.sessionId,
+      newSessionId: alternate.sessionId,
+      attempt: 0,
+    });
   }
 
   private prepareAlternate(session: PlaybackSession, activationRevision: number): void {
