@@ -1,5 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
-import { endpointFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { reportClusterReachable, SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 
@@ -24,8 +24,17 @@ export class MachaClusterRouteError extends Error {
 export class ClusterEndpointRouter {
   constructor(readonly registry: EndpointRegistry) {}
 
-  request<T>(operation: EndpointOperation<T>): Promise<T> {
-    return this.route(operation);
+  /**
+   * A safe read, walking candidates until one answers.
+   *
+   * `signal` cancels the walk, not just the in-flight attempt: without it a
+   * caller that has gone away — a screen unmounted mid-load — still pays for
+   * every remaining candidate before the result is discarded. Cancellation is
+   * client intent and never endpoint evidence, so an abort records no failure
+   * against any node.
+   */
+  request<T>(operation: EndpointOperation<T>, signal?: AbortSignal): Promise<T> {
+    return this.route(operation, signal);
   }
 
   mutation<T>(operation: EndpointOperation<T>): Promise<T> {
@@ -43,6 +52,41 @@ export class ClusterEndpointRouter {
       // Mutations never retry another endpoint, so this is always terminal.
       log.warn('mutation-failed', { endpointId: endpoint.id, retryable });
       throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
+    });
+  }
+
+  /**
+   * Work that belongs to one endpoint and cannot be moved.
+   *
+   * A playback session lives on the node that created it: a PATCH to any other
+   * node addresses a session that does not exist there, so failing over is not
+   * a fallback but a different and wrong request. That makes this a third
+   * category rather than a stricter `mutation` — `mutation` picks the best
+   * candidate and declines to retry, while this one has no choice to make.
+   *
+   * It exists so pinned work still feeds endpoint health. Calling a node's API
+   * directly is the obvious alternative and silently costs the registry every
+   * success and failure on the node doing the most work.
+   *
+   * A per-title failure — a file this node cannot read, a pipeline that would
+   * not start — leaves the health record alone. It says nothing about the
+   * node's ability to serve anything else, and with a small cluster and an
+   * escalating cooldown a single unplayable file could otherwise empty the
+   * candidate list.
+   */
+  pinned<T>(endpoint: MachaEndpoint, operation: EndpointOperation<T>): Promise<T> {
+    log.debug('pinned-attempt', { endpointId: endpoint.id });
+    return operation(endpoint).then((result) => {
+      this.registry.recordSuccess(endpoint.id);
+      reportClusterReachable();
+      log.debug('pinned-success', { endpointId: endpoint.id });
+      return result;
+    }, (error: unknown) => {
+      const perTitle = isPerTitleFailure(error);
+      const retryable = retryableEndpointFailure(error);
+      if (retryable && !perTitle) this.registry.recordFailure(endpoint.id);
+      log.warn('pinned-failed', { endpointId: endpoint.id, retryable, perTitle });
+      throw error;
     });
   }
 
@@ -96,13 +140,14 @@ export class ClusterEndpointRouter {
     return undefined;
   }
 
-  private async route<T>(operation: EndpointOperation<T>): Promise<T> {
+  private async route<T>(operation: EndpointOperation<T>, signal?: AbortSignal): Promise<T> {
     let lastError: unknown;
     const attempted: string[] = [];
     let allUnreachable = true;
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length });
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
       try {
         const result = await operation(endpoint);
         this.registry.recordSuccess(endpoint.id);
@@ -110,6 +155,7 @@ export class ClusterEndpointRouter {
         log.debug('route-success', { endpointId: endpoint.id });
         return result;
       } catch (error) {
+        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         this.registry.recordFailure(endpoint.id);

@@ -38,6 +38,12 @@ export interface NodeRuntimeStatus {
   rss_bytes?: number;
   process_cpu_percent?: number;
   load1?: number;
+  /**
+   * CPUs available to the node. Optional because older nodes do not report it;
+   * without it `load1` cannot be compared between machines of different sizes,
+   * so the client's capacity ranking abstains rather than guess.
+   */
+  cpu_cores?: number;
   peers_known?: number;
   peers_active?: number;
   rpc_connections_created?: number;
@@ -56,14 +62,26 @@ export interface ClusterNodeStatus {
   version: string;
   host: string;
   port: number;
-  // Where other clients should reach this node's HTTP API — distinct from
-  // `host`/`port` above, which is the node's internal RPC bind address and is
-  // not necessarily reachable or even the right protocol for REST calls.
-  // Defaults to the bound API address server-side when no advertised
-  // override is configured (e.g. behind NAT). Older nodes in a mixed-version
-  // cluster may not report this yet.
-  api_host?: string;
-  api_port?: number;
+  /**
+   * The URL a client dials to reach this node's HTTP API — scheme, host and
+   * optional port, never a path.
+   *
+   * Distinct from `host`/`port` above, which is the node's internal RPC bind
+   * address: a different plane, never proxied, and not necessarily reachable
+   * or even the right protocol for REST calls. Displaying `host:port` as
+   * though it were the API is a mistake two clients made independently before
+   * this field existed.
+   *
+   * It has to be a whole URL rather than a host and a port because neither the
+   * scheme nor the port of the outer address is derivable from the bind: with
+   * TLS offload in front of the API, the node serves plain HTTP on its own port
+   * while clients must be told HTTPS on the proxy's.
+   *
+   * Optional because a node predating this does not send it. It arrives absent
+   * rather than partial — the server rejects anything without `://` — so a
+   * client can treat presence as sufficient and never has to guess a scheme.
+   */
+  api_endpoint?: string;
   failure_domain: string;
   metadata_generation: number;
   storage: ByteUsage;

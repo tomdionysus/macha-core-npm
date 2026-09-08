@@ -95,4 +95,97 @@ describe('ClusterEndpointRouter', () => {
 
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
+
+  describe('pinned work', () => {
+    const endpointOf = (registry: EndpointRegistry, id: string) =>
+      registry.snapshot().find((candidate) => candidate.endpoint.id === id)!.endpoint;
+
+    it('runs on the given endpoint even when it is not the best candidate', async () => {
+      // A playback session lives on the node that created it. A PATCH sent
+      // anywhere else addresses a session that does not exist there — not a
+      // fallback, a different and wrong request.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordSuccess('http://a');
+      const router = new ClusterEndpointRouter(registry);
+      const attempted: string[] = [];
+
+      await router.pinned(endpointOf(registry, 'http://b'), async (endpoint) => {
+        attempted.push(endpoint.id);
+        return 'ok';
+      });
+
+      expect(attempted).toEqual(['http://b']);
+    });
+
+    it('feeds endpoint health from pinned work rather than losing it', async () => {
+      // The alternative — calling a node's API directly — silently costs the
+      // registry every success and failure on the node doing the most work.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+
+      await router.pinned(endpointOf(registry, 'http://b'), async () => 'ok');
+
+      expect(registry.candidates()[0].endpoint.id).toBe('http://b');
+      expect(registry.selectionAxis()).toBe('sticky');
+    });
+
+    it('never retries elsewhere and records the failure against the pinned node', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const attempted: string[] = [];
+
+      await expect(router.pinned(endpointOf(registry, 'http://a'), async (endpoint) => {
+        attempted.push(endpoint.id);
+        throw Object.assign(new Error('node fell over'), { status: 503 });
+      })).rejects.toThrow('node fell over');
+
+      expect(attempted).toEqual(['http://a']);
+      expect(registry.snapshot()[0].health.consecutiveFailures).toBe(1);
+    });
+
+    it('leaves health alone when the failure is about the title rather than the node', async () => {
+      // With a small cluster and an escalating cooldown, one unplayable file
+      // could otherwise cool every node out of the candidate list in turn.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+      const router = new ClusterEndpointRouter(registry);
+
+      await expect(router.pinned(endpointOf(registry, 'http://a'), async () => {
+        throw Object.assign(new Error('pipeline refused'), { status: 500, code: 'stream_failed' });
+      })).rejects.toThrow('pipeline refused');
+
+      expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
+    });
+  });
+
+  describe('cancelling a read', () => {
+    it('stops the walk rather than only the attempt in flight', async () => {
+      // Without this a caller that has gone away — a screen unmounted
+      // mid-load — still pays for every remaining candidate before its result
+      // is discarded.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
+      const router = new ClusterEndpointRouter(registry);
+      const controller = new AbortController();
+      const attempted: string[] = [];
+
+      await expect(router.request(async (endpoint) => {
+        attempted.push(endpoint.id);
+        controller.abort();
+        throw Object.assign(new Error('node fell over'), { status: 503 });
+      }, controller.signal)).rejects.toThrow();
+
+      expect(attempted).toEqual(['http://a']);
+    });
+
+    it('records no failure against a node when the caller cancelled', async () => {
+      // Cancellation is client intent, never endpoint evidence.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+      const router = new ClusterEndpointRouter(registry);
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(router.request(async () => 'unreached', controller.signal)).rejects.toThrow();
+
+      expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import type { CatalogueApi, CatalogueArtwork, CatalogueItem } from './CatalogueApi.js';
+import type { ArtworkSource, CatalogueApi, CatalogueArtwork, CatalogueItem } from './CatalogueApi.js';
 import type { MediaApi } from './MediaApi.js';
 import type {
   AlbumDetails,
@@ -49,44 +49,44 @@ export class MachaMediaApi implements MediaApi {
 
   constructor(private readonly catalogue: CatalogueApi) {}
 
-  status() {
-    return this.catalogue.status();
+  status(signal?: AbortSignal) {
+    return this.catalogue.status(signal);
   }
 
   mediaProfile(mediaId: string, signal?: AbortSignal) {
     return this.catalogue.mediaProfile(mediaId, signal);
   }
 
-  async home(): Promise<LibraryHome> {
-    const [movies, shows, albums] = await Promise.all([this.movies(), this.shows(), this.albums()]);
+  async home(signal?: AbortSignal): Promise<LibraryHome> {
+    const [movies, shows, albums] = await Promise.all([this.movies(signal), this.shows(signal), this.albums(signal)]);
     return { movies, shows, albums };
   }
 
-  async movies(): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('movie')).map((item) => this.media(item));
+  async movies(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('movie', undefined, signal)).map((item) => this.media(item));
   }
 
-  async shows(): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('show')).map((item) => this.media(item));
+  async shows(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('show', undefined, signal)).map((item) => this.media(item));
   }
 
-  async artists(): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('artist')).map((item) => this.media(item));
+  async artists(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('artist', undefined, signal)).map((item) => this.media(item));
   }
 
-  async albums(): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('album')).map((item) => this.media(item));
+  async albums(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('album', undefined, signal)).map((item) => this.media(item));
   }
 
-  async tracks(): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('track')).map((item) => this.media(item));
+  async tracks(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('track', undefined, signal)).map((item) => this.media(item));
   }
 
-  async details(id: string): Promise<MediaDetails> {
-    const item = await this.catalogue.get(id);
+  async details(id: string, signal?: AbortSignal): Promise<MediaDetails> {
+    const item = await this.catalogue.get(id, signal);
 
     if (item.kind === 'show') {
-      const seasonItems = await this.catalogue.list('season', item.id);
+      const seasonItems = await this.catalogue.list('season', item.id, signal);
       const seasons = seasonItems
         .map((seasonItem) => this.seasonSummary(seasonItem, item.id))
         .sort((a, b) => a.seasonNumber - b.seasonNumber);
@@ -99,8 +99,8 @@ export class MachaMediaApi implements MediaApi {
 
     if (item.kind === 'season') {
       const [show, episodeItems] = await Promise.all([
-        this.catalogue.get(this.parentId(item)),
-        this.catalogue.list('episode', item.id),
+        this.catalogue.get(this.parentId(item), signal),
+        this.catalogue.list('episode', item.id, signal),
       ]);
       const episodes = episodeItems
         .map((episode) => this.episode(episode, item, show))
@@ -112,13 +112,13 @@ export class MachaMediaApi implements MediaApi {
     }
 
     if (item.kind === 'episode') {
-      const season = await this.catalogue.get(this.parentId(item));
-      const show = await this.catalogue.get(this.parentId(season));
+      const season = await this.catalogue.get(this.parentId(item), signal);
+      const show = await this.catalogue.get(this.parentId(season), signal);
       return this.episode(item, season, show);
     }
 
     if (item.kind === 'artist') {
-      const albums = (await this.catalogue.list('album', item.id))
+      const albums = (await this.catalogue.list('album', item.id, signal))
         .map((album) => this.media(album))
         .sort((a, b) => (a.year ?? Number.MAX_SAFE_INTEGER) - (b.year ?? Number.MAX_SAFE_INTEGER) || a.title.localeCompare(b.title));
       return {
@@ -129,7 +129,7 @@ export class MachaMediaApi implements MediaApi {
     }
 
     if (item.kind === 'album') {
-      const tracks = (await this.catalogue.list('track', item.id))
+      const tracks = (await this.catalogue.list('track', item.id, signal))
         .map((track) => this.media(track))
         .sort((a, b) => (a.discNumber ?? 1) - (b.discNumber ?? 1) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0));
       return {
@@ -142,8 +142,18 @@ export class MachaMediaApi implements MediaApi {
     return this.media(item);
   }
 
-  async search(query: string): Promise<MediaSummary[]> {
-    return (await this.catalogue.search(query, 50)).map((item) => this.media(item));
+  async search(query: string, signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.search(query, 50, signal)).map((item) => this.media(item));
+  }
+
+  artworkUrls(ref: ArtworkRef): ArtworkSource[] {
+    // The signed URL first when there is one: no header needed, so it is the
+    // only entry usable from an image loader that cannot set them, and the
+    // server owns fetching, decode and HTTP caching for it.
+    return [
+      ...(ref.url ? [{ url: ref.url, requiresAuthorization: false }] : []),
+      ...this.catalogue.artworkUrls(ref.id),
+    ];
   }
 
   artwork(ref: ArtworkRef, signal?: AbortSignal): Promise<Blob> {

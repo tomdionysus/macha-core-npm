@@ -359,4 +359,17 @@ describe('session cache storage resolution', () => {
     expect(explicit.getItem('macha-session')).not.toBeNull();
     expect(hostStorage.getItem('macha-session')).toBeNull();
   });
+
+  describe('authorization for requests this client does not make', () => {
+    it('hands out the current header for a URL given to a native player', async () => {
+      expect(await fixedBearerToken('secret').authorization()).toBe('Bearer secret');
+    });
+
+    it('says undefined rather than an empty header when unauthenticated', async () => {
+      // A player told `Bearer ` would send a malformed header and get a 401 it
+      // cannot interpret; absent is an answer it can act on.
+      expect(await fixedBearerToken(undefined).authorization()).toBeUndefined();
+      expect(await fixedBearerToken('   ').authorization()).toBeUndefined();
+    });
+  });
 });

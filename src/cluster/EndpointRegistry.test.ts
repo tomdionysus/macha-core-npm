@@ -333,4 +333,108 @@ describe('EndpointRegistry', () => {
       expect(registry.bytesPerSecond('http://b')).toBeUndefined();
     });
   });
+
+  describe('ranking on measured evidence rather than configured order', () => {
+    // The afternoon this exists to prevent: with no throughput samples for
+    // anyone, `candidates()` fell straight through to the order the endpoints
+    // were typed into `.env`, and every playback session went to the flaky
+    // wireless node because it happened to be listed first.
+    const ids = (registry: EndpointRegistry) => registry.candidates().map((candidate) => candidate.endpoint.id);
+
+    it('prefers the nearer endpoint when nothing has throughput evidence yet', () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://wireless', 'http://wired']));
+      registry.recordLatency('http://wireless', 400);
+      registry.recordLatency('http://wired', 20);
+
+      expect(ids(registry)).toEqual(['http://wired', 'http://wireless']);
+      expect(registry.selectionAxis()).toBe('latency');
+    });
+
+    it('does not reshuffle two endpoints a few milliseconds apart', () => {
+      // Both a ratio and an absolute floor: 3 ms against 5 ms is a 40%
+      // "difference" that no viewer can perceive and that would trade places
+      // every probe cycle.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordLatency('http://a', 5);
+      registry.recordLatency('http://b', 3);
+
+      expect(ids(registry)).toEqual(['http://a', 'http://b']);
+      expect(registry.selectionAxis()).toBe('configured-order');
+    });
+
+    it('ranks on reported load when latency cannot separate two endpoints', () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://busy', 'http://idle']));
+      registry.recordLatency('http://busy', 20);
+      registry.recordLatency('http://idle', 21);
+      registry.recordCapacity('http://busy', { load1: 8, cores: 4, observedAt: 1 });
+      registry.recordCapacity('http://idle', { load1: 1, cores: 4, observedAt: 1 });
+
+      expect(ids(registry)).toEqual(['http://idle', 'http://busy']);
+      expect(registry.selectionAxis()).toBe('capacity');
+    });
+
+    it('compares load per core rather than raw load', () => {
+      // 2.67 is a struggling two-core box and an idle eight-core one. Ranking
+      // the raw numbers would put the big machine last for being big.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://small', 'http://large']));
+      registry.recordCapacity('http://small', { load1: 2.67, cores: 2, observedAt: 1 });
+      registry.recordCapacity('http://large', { load1: 4, cores: 16, observedAt: 1 });
+
+      expect(ids(registry)).toEqual(['http://large', 'http://small']);
+      expect(registry.selectionAxis()).toBe('capacity');
+    });
+
+    it('abstains from the capacity axis entirely when no core count was reported', () => {
+      // A comparison between machines of unknown and probably different size
+      // is not a comparison. Falling back to configured order is honest;
+      // ranking the raw numbers would be confidently wrong on every cycle.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordCapacity('http://a', { load1: 9, observedAt: 1 });
+      registry.recordCapacity('http://b', { load1: 1, observedAt: 1 });
+
+      expect(ids(registry)).toEqual(['http://a', 'http://b']);
+      expect(registry.selectionAxis()).toBe('configured-order');
+    });
+
+    it('does not let a small load difference move anything', () => {
+      // Capacity responds to our own routing — send work, load rises, node
+      // demoted, work leaves, load falls, node promoted. The minimum relative
+      // difference is the damping on that loop.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordCapacity('http://a', { load1: 2.0, cores: 4, observedAt: 1 });
+      registry.recordCapacity('http://b', { load1: 1.7, cores: 4, observedAt: 1 });
+
+      expect(ids(registry)).toEqual(['http://a', 'http://b']);
+      expect(registry.selectionAxis()).toBe('configured-order');
+    });
+
+    it('keeps the sticky endpoint above every measured axis', () => {
+      // Authority must not move because a number wobbled; `evaluatePreferredSwap`
+      // owns that decision, with its own streak and cooldown.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordSuccess('http://a');
+      registry.recordLatency('http://a', 400);
+      registry.recordLatency('http://b', 20);
+      registry.recordCapacity('http://a', { load1: 8, cores: 4, observedAt: 1 });
+      registry.recordCapacity('http://b', { load1: 1, cores: 4, observedAt: 1 });
+
+      expect(ids(registry)).toEqual(['http://a', 'http://b']);
+      expect(registry.selectionAxis()).toBe('sticky');
+    });
+
+    it('publishes the evidence behind the ordering, absent where it has none', () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      registry.recordLatency('http://a', 30);
+      registry.recordCapacity('http://a', { load1: 1, cores: 4, cpuPercent: 25, observedAt: 7 });
+
+      const [a, b] = registry.snapshot();
+      expect(a.latencyMs).toBe(30);
+      expect(a.capacity).toEqual({ load1: 1, cores: 4, cpuPercent: 25, observedAt: 7 });
+      // A node that has never answered has no evidence, and absent must stay
+      // distinguishable from zero.
+      expect(b.latencyMs).toBeUndefined();
+      expect(b.capacity).toBeUndefined();
+      expect(b.bytesPerSecond).toBeUndefined();
+    });
+  });
 });

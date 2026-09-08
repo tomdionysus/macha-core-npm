@@ -22,6 +22,93 @@ describe('API endpoint health probes', () => {
     configureClientDiagnostics({ level: 'debug', console: false, maxEntries: 100 });
   });
 
+  describe('the endpoint discovered peers are reached at', () => {
+    // The node states a whole URL. Nothing is assembled here and no scheme is
+    // inferred — with TLS offload in front of the API, neither the scheme nor
+    // the port of the outer address is derivable from anything the client can
+    // see, which is why host+port could not express it.
+    const discovered = (registry: EndpointRegistry) =>
+      registry.snapshot().map(({ endpoint }) => endpoint.baseUrl).filter((url) => url.includes('peer'));
+    const nodeAt = (endpoint?: string, runtime: Record<string, unknown> = {}) =>
+      ({ id: 'peer', state: 'online', ...(endpoint ? { api_endpoint: endpoint } : {}), runtime } as unknown as ClusterNodeStatus);
+
+    it('registers the URL the node stated, verbatim', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+      await discoverClusterEndpoints(registry, fakeClusterStatusApi([nodeAt('https://peer.example')]));
+      // Note the seed is plain http and the peer is https on no explicit port.
+      // Neither is derivable from the other, which is the whole point.
+      expect(discovered(registry)).toEqual(['https://peer.example']);
+    });
+
+    it('records capacity against the same string it registered the peer under', async () => {
+      // Two spellings of one endpoint would key the capacity record to an
+      // endpoint that is never ranked: evidence collected every cycle and
+      // never once consulted, with nothing to indicate it.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+      await discoverClusterEndpoints(registry, fakeClusterStatusApi([
+        nodeAt('https://peer.example', { load1: 1, cpu_cores: 4 }),
+      ]));
+      expect(registry.capacity('https://peer.example')).toMatchObject({ load1: 1, cores: 4 });
+    });
+
+    it('skips a node that has not stated one rather than assembling something', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+      await discoverClusterEndpoints(registry, fakeClusterStatusApi([nodeAt(undefined)]));
+      expect(discovered(registry)).toEqual([]);
+    });
+
+    it('skips a bare hostname from a node that predates the field', async () => {
+      // An older node puts a hostname in that slot. Without the `://` check it
+      // would be registered as a relative URL and every request against it
+      // would go somewhere unintended.
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+      await discoverClusterEndpoints(registry, fakeClusterStatusApi([nodeAt('peer.example')]));
+      expect(discovered(registry)).toEqual([]);
+    });
+  });
+
+  it('records each node\'s reported load from the status call it already makes', async () => {
+    // No probe is added for this. The status payload already describes every
+    // node six times a minute, and a synthetic load or throughput probe would
+    // compete with viewer traffic for the resource it claims to measure.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://gbni-1:7438']));
+    const api = fakeClusterStatusApi([
+      {
+        id: 'gbni-1', state: 'online', api_endpoint: 'http://gbni-1:7438',
+        storage: { capacity_bytes: 100, used_bytes: 40, free_bytes: 60 },
+        runtime: { load1: 1.01, process_cpu_percent: 25.2, cpu_cores: 4 },
+      } as unknown as ClusterNodeStatus,
+      {
+        id: 'gbni-2', state: 'online', api_endpoint: 'http://gbni-2:7438',
+        storage: { capacity_bytes: 100, used_bytes: 90, free_bytes: 10 },
+        runtime: { load1: 1.18, process_cpu_percent: 62.0, cpu_cores: 4 },
+      } as unknown as ClusterNodeStatus,
+    ]);
+
+    await discoverClusterEndpoints(registry, api);
+
+    // Including the node this client is not talking to — which is the point.
+    // Request evidence only ever accrues for the endpoint already in use, so
+    // self-reported load is the only measurement held about an alternate.
+    expect(registry.capacity('http://gbni-2:7438')).toMatchObject({
+      load1: 1.18, cpuPercent: 62.0, cores: 4, storageAvailableBytes: 10,
+    });
+    expect(registry.capacity('http://gbni-1:7438')).toMatchObject({ load1: 1.01, cores: 4 });
+  });
+
+  it('leaves capacity unrecorded for a node that reports no runtime figures', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://old:7438']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([
+      { id: 'old', state: 'online', api_endpoint: 'http://old:7438', runtime: {} } as unknown as ClusterNodeStatus,
+    ]));
+
+    // An older node reporting nothing must not become "zero load", which would
+    // rank it top of every list for saying least.
+    const capacity = registry.capacity('http://old:7438');
+    expect(capacity?.load1).toBeUndefined();
+    expect(capacity?.cores).toBeUndefined();
+  });
+
   it('records a reachable/known summary to bounded diagnostics each cycle', async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const fetchImpl = vi.fn(async (url: string | URL | Request) => new Response(null, {
@@ -146,9 +233,9 @@ describe('cluster membership discovery', () => {
   it('adds online cluster nodes the registry did not already know about', async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
     const clusterStatusApi = fakeClusterStatusApi([
-      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_host: '10.44.1.50', api_port: 7438 } as ClusterNodeStatus,
-      { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_host: '10.44.1.51', api_port: 7438 } as ClusterNodeStatus,
-      { id: 'node-offline', state: 'offline', host: '10.34.1.99', port: 7437, api_host: '10.34.1.99', api_port: 7438 } as ClusterNodeStatus,
+      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_endpoint: 'http://10.44.1.50:7438' } as ClusterNodeStatus,
+      { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_endpoint: 'http://10.44.1.51:7438' } as ClusterNodeStatus,
+      { id: 'node-offline', state: 'offline', host: '10.34.1.99', port: 7437, api_endpoint: 'http://10.34.1.99:7438' } as ClusterNodeStatus,
     ]);
 
     await discoverClusterEndpoints(registry, clusterStatusApi);
@@ -163,8 +250,8 @@ describe('cluster membership discovery', () => {
   it('does not guess an API endpoint for a node that has not advertised one yet', async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
     const clusterStatusApi = fakeClusterStatusApi([
-      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_host: '10.44.1.50', api_port: 7438 } as ClusterNodeStatus,
-      // An older node in a mixed-version cluster: no api_host/api_port yet.
+      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_endpoint: 'http://10.44.1.50:7438' } as ClusterNodeStatus,
+      // An older node in a mixed-version cluster: no api_endpoint yet.
       // `host`/`port` here is its RPC bind address on a different port and
       // must never be guessed at as the API address.
       { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437 } as ClusterNodeStatus,
@@ -180,8 +267,8 @@ describe('cluster membership discovery', () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
     registry.recordSuccess('http://10.44.1.50:7438');
     const clusterStatusApi = fakeClusterStatusApi([
-      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_host: '10.44.1.50', api_port: 7438 } as ClusterNodeStatus,
-      { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_host: '10.44.1.51', api_port: 7438 } as ClusterNodeStatus,
+      { id: 'node-50', state: 'online', host: '10.44.1.50', port: 7437, api_endpoint: 'http://10.44.1.50:7438' } as ClusterNodeStatus,
+      { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_endpoint: 'http://10.44.1.51:7438' } as ClusterNodeStatus,
     ]);
 
     await discoverClusterEndpoints(registry, clusterStatusApi);
@@ -308,7 +395,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     const monitor = new EndpointHealthMonitor({
       registry,
       clusterStatusApi: fakeClusterStatusApi([
-        { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_host: '10.44.1.51', api_port: 7438 } as ClusterNodeStatus,
+        { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_endpoint: 'http://10.44.1.51:7438' } as ClusterNodeStatus,
       ]),
       auth: fixedBearerToken(undefined, fetchImpl),
       configuration,

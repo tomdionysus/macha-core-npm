@@ -1,5 +1,5 @@
 import { canonicalContainers } from './choosePlaybackInstruction.js';
-import type { PlaybackSession, PlaybackStreamInfo } from './PlaybackResolver.js';
+import type { PlaybackSession, PlaybackStreamInfo, PlaybackTransform } from './PlaybackResolver.js';
 
 const CONTAINER_LABELS: Record<string, string> = {
   fmp4: 'FMP4',
@@ -166,19 +166,25 @@ function safeOrigin(value: string | undefined, base?: string): string | undefine
   }
 }
 
+/**
+ * Where the bytes on screen are coming from, as a bare origin.
+ *
+ * The stream origin, not the API one, and deliberately only one of them. They
+ * are usually identical; when they diverge it is because a Direct Play
+ * failover silently moved the transfer to another node while session
+ * bookkeeping stayed put, and the origin serving the picture is the one worth
+ * showing. That divergence still reads on the panel — the URL simply changes —
+ * without spending a line on labels to announce a distinction that holds for
+ * seconds at a time.
+ *
+ * Credentials never appear: `safeOrigin` reduces to scheme, host and port, so
+ * a capability query string or embedded userinfo cannot reach the screen.
+ */
 function endpointDescription(session: PlaybackSession, activeStreamOrigin?: string): string | undefined {
   if (!session.endpoint) return undefined;
-  const apiOrigin = safeOrigin(session.endpoint?.baseUrl);
-  const streamOrigin = safeOrigin(activeStreamOrigin) ?? safeOrigin(session.source.url, session.endpoint?.baseUrl);
-  const endpointId = session.endpoint?.id;
-  const endpointIdOrigin = safeOrigin(endpointId);
-  const node = endpointId && endpointIdOrigin !== apiOrigin ? endpointId : undefined;
-  if (!node && apiOrigin && apiOrigin === streamOrigin) return `NODE/STREAM ${apiOrigin}`;
-  const parts: string[] = [];
-  if (node) parts.push(`NODE ${node}`);
-  if (apiOrigin) parts.push(`API ${apiOrigin}`);
-  if (streamOrigin) parts.push(`STREAM ${streamOrigin}`);
-  return parts.join(' · ') || undefined;
+  return safeOrigin(activeStreamOrigin)
+    ?? safeOrigin(session.source.url, session.endpoint.baseUrl)
+    ?? safeOrigin(session.endpoint.baseUrl);
 }
 
 /**
@@ -201,16 +207,32 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
     container: servedContainer(session),
   };
 
+  // When every selected stream is copied, no per-stream operation happened
+  // that is worth naming per stream: the session as a whole is either the file
+  // handed over untouched (DIRECT) or the same streams rewrapped in a new
+  // container (REMUX). Saying "AUDIO COPY" for a direct hand-off describes an
+  // operation the server never performed — it did not copy a stream anywhere,
+  // it sent the file. The distinction is not pedantry: "copy" is what makes
+  // remux and a copied-video transcode legible, and spending the word on
+  // direct play too is what stopped it meaning anything.
+  //
+  // Per-stream labels therefore belong to the mixed cases, which is exactly
+  // where the streams differ from one another and the reader needs telling
+  // which is which.
+  const streamCopiedOrAbsent = (transform: PlaybackTransform) => transform === 'copy' || transform === 'omit';
+  const wholeSessionLabel = streamCopiedOrAbsent(session.transform.video)
+    && streamCopiedOrAbsent(session.transform.audio)
+    ? copyModeLabel(session)
+    : undefined;
+
   if (video && session.transform.video !== 'omit') {
     const source = sourceVideoParts(session, video);
     const output = outputVideoParts(session);
     if (session.transform.video === 'transcode') {
       const sourceDescription = ['VIDEO TRANSCODE', 'SOURCE', ...source].join(' · ');
       result.video = output.length ? `${sourceDescription} → ${output.join(' · ')}` : sourceDescription;
-    } else if (session.transform.audio === 'copy') {
-      result.video = [copyModeLabel(session), ...source].join(' · ');
     } else {
-      result.video = ['VIDEO COPY', ...source].join(' · ');
+      result.video = [wholeSessionLabel ?? 'VIDEO COPY', ...source].join(' · ');
     }
   }
 
@@ -221,17 +243,12 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
       const sourceDescription = ['AUDIO TRANSCODE', 'SOURCE', ...source].join(' · ');
       result.audio = output.length ? `${sourceDescription} → ${output.join(' · ')}` : sourceDescription;
     } else {
-      result.audio = ['AUDIO COPY', ...source].join(' · ');
+      result.audio = [wholeSessionLabel ?? 'AUDIO COPY', ...source].join(' · ');
     }
   }
 
   if (subtitle) {
     result.subtitle = ['SUBTITLES', ...subtitleParts(subtitle)].join(' · ');
-  }
-
-  // Audio-only playback still needs a meaningful overall mode when everything is copied.
-  if (!result.video && result.audio && session.transform.audio === 'copy') {
-    result.audio = [copyModeLabel(session), ...result.audio.split(' · ').slice(1)].join(' · ');
   }
 
   return result;

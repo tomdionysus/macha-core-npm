@@ -36,9 +36,36 @@ This entry point depends on no test runner. It is plain classes, usable from Vit
 | `stream` | The bytes stopped arriving | Retried on another node |
 | `media` | The container or stream is broken | Not retried elsewhere |
 | `unsupported` | This decoder cannot play this | Not retried elsewhere |
+| `not-ready` | The node has not produced this fragment yet | Not evidence at all; nothing is retried |
 | `unknown` | No evidence | Retried on another node |
 
 `isEndpointRetryablePlaybackFailure` treats a plain `Error` as retryable, for compatibility with players that predate this. That default is safe but expensive: reporting a decoder failure as a stream failure sends the viewer around the whole cluster to fail identically on every node. If you know it was the decoder, say so.
+
+**`not-ready` is the one that is not a failure.** A node producing fragments answers a request for one it has not made yet with a 5xx meaning "not made yet, ask again". That is the node working, and it is the one case where the right response is to retry the same request on the same node. Report it as `stream` or as a plain `Error` and the coordinator prepares a standby elsewhere and can escalate to failover, which cannot help: the next node is producing a different generation and does not have that fragment either.
+
+Only the player can tell a hold from a real fragment failure, and **what it has to tell them apart with depends on the stack.** The core deliberately does not name the discriminator, because the obvious one is often unreachable. hls.js is the worked example: its `XhrLoader` reports a bad status as `{ code: xhr.status, text: xhr.statusText }` and the fragment layer sets `response.data` to `undefined`, so an error envelope in the body never arrives at the error event; it is reachable only through `data.networkDetails`, which is the raw `XMLHttpRequest` and becomes something else entirely under `FetchLoader`. Headers are behind the same object and no better. The HTTP status is the one field both loaders populate identically.
+
+So find what your stack actually exposes before designing around what the server sends, and if the answer is "only the status", say so — that is a constraint on the wire protocol, not a defect in your adapter. What core requires is only that a hold arrives as `not-ready` and a broken generation as `stream`.
+
+Against Macha that constraint has been answered on the wire — the two are split by **status**, both inside 5xx so a player's own retry still applies:
+
+| status | code | means | report as |
+| --- | --- | --- | --- |
+| `500` | `segment_not_ready` | Not produced yet; ask again | `not-ready` |
+| `503` | `stream_failed` | This generation is broken | `stream` |
+| `404` | `not_found` | Past the end of the plan | `stream` |
+
+The JSON body still carries the machine code, for operators and for any client that can read it; it is not the discriminator. The `404` is included because it is the one a hold-aware adapter is most likely to get wrong in the other direction: a request beyond the plan is a genuine miss, not something to sit and retry.
+
+**Why the hold is the 500 and not the 503**, since the spec suggests the opposite and someone will eventually try to correct it: `503` is what every proxy, tunnel and load balancer emits for a service that is genuinely down, so the status is not the server's alone to assign. Give the hold `503` and a dead node behind an intermediary reads as a healthy one still producing fragments — no failover, ever, and nothing surfaced. The two mistakes are not symmetric. Misreading a hold as a loss costs an unnecessary failover: wasteful, visible as a hitch, self-correcting. Misreading a dead node as a hold costs failover entirely: silent, permanent, and likeliest exactly where a proxy is involved. A discriminator readable only as a status has to be one nothing else on the path can emit.
+
+That paragraph is the only record of the reasoning anywhere in this repo, and the decision looks like a mistake to anyone who checks it against the spec alone. Keep them together.
+
+**Hold windows and your stack's deadline.** A held request sends no bytes, so if the server holds for longer than your stack's time-to-first-byte deadline, you never receive the status at all — the client aborts first and takes its timeout path, which looks like a network fault and is treated as one. The server holds for 6000 ms, chosen to clear every deadline anyone has actually read. Be precise about what that means, because the figures are uneven in quality and are not going to improve on their own: hls.js's governing deadline is `fragLoadPolicy.default.maxTimeToFirstByteMs` at 10000 (the deprecated `fragLoadingTimeOut` is inert unless a config sets it), and media3's `DEFAULT_READ_TIMEOUT_MILLIS` is 8000. Both were read out of shipped artifacts. **Neither has ever been confirmed against a running client, nobody is scheduled to confirm them, and AVFoundation's has not been read at all** — the native measurements need hardware this project does not have. Treat that as the standing state rather than a caveat awaiting resolution: the 6000 clears 8000 by 2000 ms of margin that is inferred, not observed.
+
+So if you are writing a player on a platform whose deadline is not listed above, find it and say what you find — nobody else is going to. A platform whose number nobody knows is the one most likely to be sitting just under the hold.
+
+Retry the hold on the same node — the next node is producing a different generation and does not have that fragment either — and back off exponentially rather than hammering at a fixed interval; a `Retry-After` on the hold is a hint, and hls.js ignores it on the fragment path anyway.
 
 **Optional methods are genuinely optional.** `prepare`, `setSubtitle`, `addDirectSourceAlternative`, `preflightSource`, `detachHost`, `subscribeFailure` and `subscribeDegradation` may all be omitted; the core checks before calling. Start with the required set — `attach`, `detach`, `play`, `pause`, `resume`, `seek`, `localSeekCoverage`, `setVolume`, `stop`, `subscribe` — and add the rest when you want the behaviour they buy.
 
@@ -100,4 +127,4 @@ That set is honest and still not sufficient, which is the point. The panel claim
 
 ## Checking yourself
 
-Once your player runs, the [headless client](headless-client.md) is useful in reverse — it shows you exactly what the server decided for a title, so you can tell a player bug from a negotiation bug before you start debugging on a device.
+Once your player runs, the [headless client](headless-client.md) is useful in reverse — it shows you the instruction the core chose for a title and what the node did with it, so you can tell a player bug from a chooser bug before you start debugging on a device.

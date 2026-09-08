@@ -31,3 +31,18 @@ describe('buffered timeline segments', () => {
     ], 100_000)).toEqual([]);
   });
 });
+
+describe('a timeline with nothing to draw', () => {
+  it('draws nothing when the player has reported no ranges', () => {
+    expect(bufferedTimelineSegments(undefined, 100_000)).toEqual([]);
+    expect(bufferedTimelineSegments([], 100_000)).toEqual([]);
+  });
+
+  it('draws nothing before a duration is known', () => {
+    // `video.duration` is NaN until metadata loads. Dividing by it would put
+    // every segment at NaN% and paint the whole bar.
+    expect(bufferedTimelineSegments([{ startMs: 0, endMs: 1000 }], Number.NaN)).toEqual([]);
+    expect(bufferedTimelineSegments([{ startMs: 0, endMs: 1000 }], 0)).toEqual([]);
+    expect(bufferedTimelineSegments([{ startMs: 0, endMs: 1000 }], -5)).toEqual([]);
+  });
+});

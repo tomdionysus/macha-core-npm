@@ -3,6 +3,7 @@ import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type {
+  ArtworkSource,
   CatalogueApi,
   CatalogueArtwork,
   CatalogueItem,
@@ -50,19 +51,19 @@ export class MachaCatalogueApi implements CatalogueApi {
     this.baseUrl = normalizeBaseUrl(baseUrl);
   }
 
-  status(): Promise<CatalogueStatus> {
-    return this.getJson('/api/v1/catalogue/status');
+  status(signal?: AbortSignal): Promise<CatalogueStatus> {
+    return this.getJson('/api/v1/catalogue/status', signal);
   }
 
-  async list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
+  async list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]> {
     const query = queryString([['type', kind], ['parent', parent]]);
     const suffix = query ? `?${query}` : '';
-    const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/items${suffix}`);
+    const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/items${suffix}`, signal);
     return response.items.map((item) => this.withAbsoluteArtworkUrls(item));
   }
 
-  async get(id: string): Promise<CatalogueItem> {
-    return this.withAbsoluteArtworkUrls(await this.getJson(`/api/v1/catalogue/items/${encodeURIComponent(id)}`));
+  async get(id: string, signal?: AbortSignal): Promise<CatalogueItem> {
+    return this.withAbsoluteArtworkUrls(await this.getJson(`/api/v1/catalogue/items/${encodeURIComponent(id)}`, signal));
   }
 
   async mediaProfile(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined> {
@@ -116,9 +117,14 @@ export class MachaCatalogueApi implements CatalogueApi {
     });
   }
 
-  async search(query: string, limit = 50): Promise<CatalogueItem[]> {
+  /** This node's URL for the artwork. One entry: a node API speaks for one node. */
+  artworkUrls(id: string): ArtworkSource[] {
+    return [{ url: `${this.baseUrl}/api/v1/catalogue/artwork/${encodeURIComponent(id)}`, requiresAuthorization: true }];
+  }
+
+  async search(query: string, limit = 50, signal?: AbortSignal): Promise<CatalogueItem[]> {
     const params = queryString([['q', query], ['limit', String(limit)]]);
-    const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/search?${params}`);
+    const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/search?${params}`, signal);
     return response.items.map((item) => this.withAbsoluteArtworkUrls(item));
   }
 
@@ -178,8 +184,8 @@ export class MachaCatalogueApi implements CatalogueApi {
     };
   }
 
-  private getJson<T>(path: string): Promise<T> {
-    return this.request(path, { method: 'GET' });
+  private getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+    return this.request(path, { method: 'GET', signal });
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {

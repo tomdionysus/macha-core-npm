@@ -27,6 +27,20 @@ export interface PlaybackHierarchyContext {
   season: { id: string; title: string; seasonNumber: number };
 }
 
+/**
+ * Album and artist ancestry for a track.
+ *
+ * Resolved once by the media API rather than by callers, because a track row
+ * has to name its album and draw its cover without the caller knowing how to
+ * walk the catalogue upwards. The artwork is the album's, used wherever a
+ * track carries none of its own.
+ */
+export interface MusicHierarchyContext {
+  album: { id: string; title: string };
+  artist?: { id: string; title: string };
+  artwork?: ArtworkRef;
+}
+
 export interface MediaSummary {
   id: string;
   kind: MediaKind;
@@ -43,6 +57,9 @@ export interface MediaSummary {
   mediaIds: string[];
   durationMs?: number;
   playbackContext?: PlaybackHierarchyContext;
+
+  /** Album/artist ancestry for a track. Resolved by the media API, never by callers. */
+  musicContext?: MusicHierarchyContext;
 
   /** Catalogue `updated_ns`, currently the server's only chronology signal for Home recency ordering. */
   catalogueUpdatedNs?: number;

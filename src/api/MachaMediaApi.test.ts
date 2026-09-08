@@ -35,6 +35,10 @@ const EPISODE_1 = catalogueItem('episode-1', 'episode', {
 });
 
 class FakeCatalogue implements CatalogueApi {
+  artworkUrls(id: string) {
+    return [{ url: `http://node/artwork/${id}`, requiresAuthorization: true }];
+  }
+
   mediaProfile(): Promise<undefined> { return Promise.resolve(undefined); }
   status(): Promise<CatalogueStatus> { throw new Error('not used'); }
   update(item: CatalogueItem): Promise<CatalogueItem> { return Promise.resolve(item); }
@@ -258,4 +262,27 @@ describe('MachaMediaApi', () => {
     expect(requests).toBe(2);
   });
 
+});
+
+describe('where artwork can be fetched from', () => {
+  it('leads with the signed URL and marks it as needing no header', () => {
+    // It is the only entry an image loader that cannot set headers can use,
+    // and the server owns fetching, decode and caching for it.
+    const api = new MachaMediaApi(new FakeCatalogue() as unknown as CatalogueApi);
+
+    expect(api.artworkUrls({ id: 'art-1', mimeType: 'image/jpeg', url: 'https://signed/art-1' })).toEqual([
+      { url: 'https://signed/art-1', requiresAuthorization: false },
+      { url: 'http://node/artwork/art-1', requiresAuthorization: true },
+    ]);
+  });
+
+  it('falls back to node URLs, and says they need the caller\'s header', () => {
+    // A flat list of strings would silently 401 here. A caller that cannot
+    // send a header has to be able to tell, rather than hope.
+    const api = new MachaMediaApi(new FakeCatalogue() as unknown as CatalogueApi);
+
+    expect(api.artworkUrls({ id: 'art-1', mimeType: 'image/jpeg' })).toEqual([
+      { url: 'http://node/artwork/art-1', requiresAuthorization: true },
+    ]);
+  });
 });

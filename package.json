@@ -1,6 +1,6 @@
 {
   "name": "@macha/core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Generic, platform-independent client core for Macha: server API families, cluster endpoint routing and health, playback resolution and coordination, and persisted client state.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -32,10 +32,13 @@
     "build": "npm run typecheck && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "dist:check": "node scripts/dist-check.mjs",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.7",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   },

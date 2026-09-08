@@ -1,7 +1,7 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders } from '../api/httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import type { ClusterStatusApi } from '../api/ClusterStatusApi.js';
-import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
+import { endpointId, type EndpointRegistry, type MachaEndpoint } from './EndpointRegistry.js';
 import { reportClusterReachable, reportClusterUnreachable } from '../api/serverConnection.js';
 import type { MachaClientConfiguration } from '../runtime/configuration.js';
 import { machaHost } from '../runtime/host.js';
@@ -69,15 +69,38 @@ export async function discoverClusterEndpoints(
 ): Promise<void> {
   try {
     const { nodes } = await clusterStatusApi.status();
-    // `host`/`port` is the node's internal RPC bind address, not its HTTP API
-    // — using it here would guess at a port that is frequently wrong (a
-    // different service, or unreachable behind NAT). Only `api_host`/
-    // `api_port`, which the server advertises specifically for this purpose,
-    // are trustworthy; nodes not yet reporting it are simply not discovered.
-    const advertisements = nodes
-      .filter((node) => node.state === 'online' && node.api_host && node.api_port)
-      .map((node) => ({ nodeId: node.id, apiBaseUrls: [`http://${node.api_host}:${node.api_port}`] }));
+    // `host`/`port` is the node's internal RPC bind address, not its HTTP API —
+    // using it here would guess at a port that is frequently wrong, and at a
+    // scheme that TLS offload makes unguessable. `api_endpoint` is the whole
+    // URL the node says to dial, so nothing is assembled here and no scheme is
+    // inferred. A node that does not report one is simply not discovered:
+    // failing closed costs a failover candidate, while inventing a URL costs a
+    // plaintext request to a node someone deliberately put behind TLS.
+    const online = nodes.filter((node) => node.state === 'online' && node.api_endpoint?.includes('://'));
+    const advertisements = online
+      .map((node) => ({ nodeId: node.id, apiBaseUrls: [node.api_endpoint!] }));
     if (advertisements.length > 0) registry.applyAdvertisement(advertisements);
+
+    // This payload already describes every node's load, and it arrives on a
+    // call the health cycle makes anyway. Reading it costs nothing; the
+    // alternative — a synthetic throughput or load probe — would compete with
+    // viewer traffic for the exact resource it claims to measure, and on a
+    // weak link would consume the capacity it was trying to observe.
+    //
+    // Note the coverage this buys: real request evidence only ever accrues for
+    // the node already in use, so the alternates a failover would pick from
+    // have none. Self-reported load is the only measurement held about a node
+    // this client is *not* currently talking to.
+    const observedAt = machaHost().now();
+    for (const node of online) {
+      registry.recordCapacity(endpointId(node.api_endpoint!), {
+        ...(node.runtime.process_cpu_percent !== undefined ? { cpuPercent: node.runtime.process_cpu_percent } : {}),
+        ...(node.runtime.load1 !== undefined ? { load1: node.runtime.load1 } : {}),
+        ...(node.runtime.cpu_cores !== undefined ? { cores: node.runtime.cpu_cores } : {}),
+        ...(node.storage?.free_bytes !== undefined ? { storageAvailableBytes: node.storage.free_bytes } : {}),
+        observedAt,
+      });
+    }
   } catch {
     // Membership discovery is opportunistic. Health probing of already-known
     // endpoints must keep working even when no endpoint can answer this yet.
@@ -111,7 +134,7 @@ export async function probeKnownEndpoints(
     if (swap) {
       log.info('preemptive-endpoint-swap', swap);
     }
-    log.debug('probe-cycle', { reachable, known: endpoints.length });
+    log.debug('probe-cycle', { reachable, known: endpoints.length, decidedBy: registry.selectionAxis() });
   }
   return reachable;
 }

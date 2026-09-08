@@ -35,3 +35,20 @@ describe('startup status presentation', () => {
     expect(startupSubsystems(failed)).toHaveLength(8);
   });
 });
+
+describe('naming the phase a node is in', () => {
+  const at = (phase: string) => startupPhaseLabel({ phase } as unknown as ClusterStartupStatus);
+
+  it('names each phase the server states', () => {
+    expect(at('ready')).toBe('Ready');
+    expect(at('recovering')).toBe('Recovering');
+    expect(at('failed')).toBe('Startup failed');
+  });
+
+  it('calls a phase it has never heard of "Starting"', () => {
+    // A server adding a phase must not produce a blank label on an old
+    // client. "Starting" is the safe reading: something is in progress.
+    expect(at('reindexing')).toBe('Starting');
+    expect(at('')).toBe('Starting');
+  });
+});

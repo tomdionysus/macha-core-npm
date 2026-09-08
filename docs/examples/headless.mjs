@@ -84,9 +84,12 @@ async function main() {
   console.log(`endpoints: ${registry.candidates().map((c) => c.endpoint.baseUrl).join(', ')}`);
 
   // 5. Playback negotiation, with no player anywhere in sight. `resolve`
-  //    returns the server's decision — mode, stream URL, what it transcoded
-  //    and why — which is the whole of what a Player is handed. Advertise
-  //    capabilities honestly: over-claiming is how you get a black screen.
+  //    carries an instruction to a node and returns what that node did with
+  //    it — mode, stream URL, which streams it copied — which is the whole of
+  //    what a Player is handed. It is not a decision coming back: the
+  //    decision is made below, here, and the response is the server stating
+  //    how it performed it. Advertise capabilities honestly to the chooser:
+  //    over-claiming is how you get a black screen.
   const [first] = movies;
   if (!first) return;
 
@@ -100,10 +103,12 @@ async function main() {
     hdr: [],
     videoBitDepth: 8,
   };
-  // The server no longer chooses. It reports what the media is and performs
-  // what it is told, so the client must decide — from the source facts plus
-  // what this host can honestly decode. `choosePlaybackInstruction` is that
-  // decision, held once in the core so every client reaches the same answer.
+  // The server does not choose, and there is no `auto` to ask it to. It
+  // reports what the media is and performs what it is told, so deciding is
+  // the client's job — from the source facts plus what this host can honestly
+  // decode. `choosePlaybackInstruction` is that decision, held once in the
+  // core so every client reaches the same answer rather than three clients
+  // reaching three.
   const raw = await services.catalogueApi.mediaProfile(first.mediaIds[0]).catch(() => undefined);
   const instruction = raw
     ? choosePlaybackInstruction(technicalProfileFromCatalogue(raw), advertised)

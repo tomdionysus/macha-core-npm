@@ -22,6 +22,23 @@ const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
 /** Everything an API client needs to make an authenticated request — nothing more. */
 export interface AuthenticatedFetch {
   fetch(url: string, init?: RequestInit): Promise<Response>;
+  /**
+   * The `Authorization` header value for a request this client will not make
+   * itself — a URL handed to a native player, an `<img>`, or a platform
+   * downloader, all of which fetch on their own and cannot go through `fetch`
+   * above. Undefined when the client is unauthenticated.
+   *
+   * Async because the honest answer may not exist yet: a session being minted
+   * for the first time, or re-minted after a 401, has no valid token until
+   * that settles, and handing back the expired one would produce a 401 the
+   * caller cannot retry — the fetch is happening inside a player.
+   *
+   * Returns the whole header value rather than the bare token, deliberately.
+   * Callers that need it in a query parameter can strip the prefix, but they
+   * should not be encouraged to: a token in a URL ends up in access logs, in
+   * `Referer`, and in whatever the platform keeps about recent media.
+   */
+  authorization(): Promise<string | undefined>;
 }
 
 /**
@@ -41,6 +58,7 @@ export function fixedBearerToken(token: string | undefined, fetchImpl?: typeof f
       ...init,
       headers: mergeRequestHeaders(init.headers, { Authorization: trimmed ? `Bearer ${trimmed}` : undefined }),
     }),
+    authorization: async () => (trimmed ? `Bearer ${trimmed}` : undefined),
   };
 }
 
@@ -130,6 +148,20 @@ export class SessionManager implements AuthenticatedFetch {
    * - If re-minting fails there is nothing better to retry with: the
    *   original 401 is returned, and the failure-retry timer owns recovery.
    */
+  /**
+   * The current `Authorization` header for a request made outside this class.
+   *
+   * Waits for a bootstrap already in flight, exactly as `fetch` does — a cold
+   * start would otherwise hand a native player `undefined` and produce a 401
+   * inside a component that has no way to retry. Beyond that it cannot
+   * promise much: the token is a snapshot, and a caller holding it across a
+   * re-mint holds a dead one. Ask again per request rather than caching it.
+   */
+  async authorization(): Promise<string | undefined> {
+    if (this.token === undefined && this.inFlight) await this.inFlight;
+    return this.token ? `Bearer ${this.token}` : undefined;
+  }
+
   async fetch(url: string, init: RequestInit = {}): Promise<Response> {
     if (this.token === undefined && this.inFlight) await this.inFlight;
     const sent = this.token;

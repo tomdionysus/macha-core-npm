@@ -48,3 +48,21 @@ describe('playback route restoration', () => {
     expect(routePlaybackMedia('target', undefined, [movie('other')], progress)).toBe(progress);
   });
 });
+
+describe('reading an item id back out of a player URL', () => {
+  it('decodes an id that had to be escaped into the path', () => {
+    expect(playerRouteItemId('/play/macha%3Aabc')).toBe('macha:abc');
+  });
+
+  it('returns undefined for a path that is not a player route', () => {
+    expect(playerRouteItemId('/movies/macha:abc')).toBeUndefined();
+    expect(playerRouteItemId('/play/one/two')).toBeUndefined();
+  });
+
+  it('keeps a malformed escape as written rather than throwing', () => {
+    // `decodeURIComponent` throws on a lone `%`. A viewer with a mangled URL
+    // should reach a "not found" page, not a blank screen from an exception
+    // raised while working out which page to show.
+    expect(playerRouteItemId('/play/100%')).toBe('100%');
+  });
+});

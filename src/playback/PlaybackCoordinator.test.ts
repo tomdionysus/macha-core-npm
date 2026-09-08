@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
 import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate } from './PlaybackCoordinator.js';
+import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -788,6 +788,45 @@ describe('PlaybackCoordinator player failures', () => {
     expect(coordinator.getSnapshot().fatalError?.message).toBe('browser rejected the video stream');
   });
 
+  it('does not prepare a standby when the node is holding a fragment it has not produced yet', async () => {
+    // A node near the production frontier answers `503 segment_not_ready` with
+    // a Retry-After. That is the node working, and it is a 5xx on a fragment
+    // exactly like a stream loss is, so only the adapter can tell them apart.
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', mode: 'remux' });
+    const alternate = session({ sessionId: 'alternate', mediaId: 'macha:one', mode: 'remux', endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+    api.prepareAlternate = vi.fn(async () => alternate);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.degrade(new PlaybackSourceError('segment not produced yet', 'not-ready'));
+    await flush();
+
+    expect(api.prepareAlternate).not.toHaveBeenCalled();
+  });
+
+  it('does not fail over to another node when a fragment is merely being held', async () => {
+    // The next node holds a different generation, so failing over cannot
+    // produce the fragment sooner — it discards a working session to ask a
+    // stranger for something only this node is making.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => replacement);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('segment not produced yet', 'not-ready'));
+    await flush();
+
+    expect(api.failover).not.toHaveBeenCalled();
+  });
+
   it('promotes a terminal platform-source failure into coordinator fatal state', async () => {
     const player = new FakePlayer();
     const api = resolver(session({ mode: 'transcode' }));
@@ -1240,5 +1279,81 @@ describe('the instruction has a symptom when it is a fallback', () => {
     await coordinator.start();
 
     expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'direct', chosenByViewer: true, withoutFacts: false });
+  });
+});
+
+describe('preferences a mode change clears', () => {
+  // Server 0.34.0: naming `mode` on a PATCH restates the whole transform.
+  const capped = session({
+    mode: 'transcode',
+    preferences: {
+      mode: 'transcode', maxHeight: 720, maxBitrate: 4_000_000,
+      audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '',
+    },
+  });
+
+  it('carries a quality ceiling into a transcode that can still apply it', () => {
+    const update = restatePreferencesClearedByMode({ preferences: { mode: 'transcode' } }, capped, 'mpegts');
+    expect(update.preferences).toEqual({
+      mode: 'transcode', maxHeight: 720, maxBitrate: 4_000_000, container: 'mpegts',
+    });
+  });
+
+  it('lets the ceiling go when the viewer asks for a copy', () => {
+    // Nothing re-encodes in Direct or Remux, so there is no step at which a
+    // cap could apply. Restating it would only make the server refuse, or
+    // make `reconcileQualityCaps` overturn the mode the viewer just picked.
+    for (const mode of ['direct', 'remux'] as const) {
+      const update = restatePreferencesClearedByMode({ preferences: { mode } }, capped, 'mpegts');
+      expect(update.preferences?.maxHeight).toBeUndefined();
+      expect(update.preferences?.maxBitrate).toBeUndefined();
+    }
+  });
+
+  it('lets it go for a video stream this same request asked to copy', () => {
+    const update = restatePreferencesClearedByMode(
+      { preferences: { mode: 'transcode', video: 'copy', audio: 'transcode' } }, capped, undefined);
+    expect(update.preferences?.maxHeight).toBeUndefined();
+  });
+
+  it('never overrides a ceiling or container the request already names', () => {
+    const update = restatePreferencesClearedByMode(
+      { preferences: { mode: 'transcode', maxHeight: 480, container: 'fmp4' } }, capped, 'mpegts');
+    expect(update.preferences).toMatchObject({ maxHeight: 480, container: 'fmp4' });
+  });
+
+  it('restates the segment container for every mode that produces segments', () => {
+    expect(restatePreferencesClearedByMode({ preferences: { mode: 'remux' } }, capped, 'mpegts').preferences?.container)
+      .toBe('mpegts');
+    // Direct serves the file itself; there are no segments to package.
+    expect(restatePreferencesClearedByMode({ preferences: { mode: 'direct' } }, capped, 'mpegts').preferences?.container)
+      .toBeUndefined();
+  });
+
+  it('leaves an update that names no mode exactly as it was', () => {
+    // The server only restates the transform when asked to, so a bare
+    // subtitle or quality change must not acquire fields it did not have.
+    const update = { preferences: { subtitleStream: 3 } };
+    expect(restatePreferencesClearedByMode(update, capped, 'mpegts')).toBe(update);
+    expect(restatePreferencesClearedByMode({ preferences: { mode: 'choose' } }, capped, 'mpegts').preferences)
+      .toEqual({ mode: 'choose' });
+  });
+
+  it('sends the ceiling and container on the wire when the viewer changes mode', async () => {
+    const player = new FakePlayer();
+    const api = resolver(capped);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux', container: 'mpegts' },
+    });
+    await coordinator.start();
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(api.update).toHaveBeenCalledTimes(1));
+    expect(api.update.mock.calls[0][1].preferences).toMatchObject({
+      mode: 'transcode', maxHeight: 720, maxBitrate: 4_000_000, container: 'mpegts',
+    });
+    await coordinator.close();
   });
 });

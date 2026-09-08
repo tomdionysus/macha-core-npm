@@ -4,7 +4,19 @@ export type PlaybackListener = (event: PlaybackEvent) => void;
 export type PlaybackFailureListener = (error: Error) => void;
 export type PlaybackDegradationListener = (error: Error) => void;
 
-export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'unknown';
+/**
+ * What the player's evidence is about.
+ *
+ * `stream` and `unknown` may be endpoint evidence; `media` and `unsupported`
+ * are facts about the bytes and never reflect on the node. `not-ready` is the
+ * odd one: it is not a failure at all. A node holding a fragment back until it
+ * has been produced answers `503 segment_not_ready` with a `Retry-After`, which
+ * is the node working correctly near the production frontier and saying so. It
+ * is separated from `stream` because they are indistinguishable by status — both
+ * are 5xx on a fragment — and treating a hold as evidence would take a healthy
+ * node out of rotation for doing exactly what it was asked.
+ */
+export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-ready' | 'unknown';
 
 /** Terminal player evidence, kept distinct from endpoint/API failures. */
 export class PlaybackSourceError extends Error {
@@ -22,6 +34,12 @@ export function isEndpointRetryablePlaybackFailure(error: unknown): boolean {
   // Existing/custom players historically emitted plain Error objects for
   // source loss. Preserve that compatibility while allowing players with real
   // decoder evidence to prevent pointless node churn.
+  //
+  // Note what the default costs a player that does not classify: a bare Error
+  // is treated as endpoint evidence, so a segment hold reported without a kind
+  // prepares a standby on another node and can escalate to failover. Only the
+  // adapter can tell a hold from a loss — it is the thing holding the response
+  // — so a player fetching fragments itself must classify them.
   return !(error instanceof PlaybackSourceError) || error.kind === 'stream' || error.kind === 'unknown';
 }
 

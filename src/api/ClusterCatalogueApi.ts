@@ -1,4 +1,5 @@
 import type {
+  ArtworkSource,
   CatalogueApi,
   CatalogueArtwork,
   CatalogueItem,
@@ -46,9 +47,9 @@ export class ClusterCatalogueApi implements CatalogueApi {
 
   private readonly router: ClusterEndpointRouter;
 
-  status(): Promise<CatalogueStatus> {
+  status(signal?: AbortSignal): Promise<CatalogueStatus> {
     return this.read(async (api) => {
-      const status = await api.status();
+      const status = await api.status(signal);
       if (!status.ready) {
         throw new MachaApiError(
           status.error || 'Macha catalogue is not ready.',
@@ -57,15 +58,15 @@ export class ClusterCatalogueApi implements CatalogueApi {
         );
       }
       return status;
-    });
+    }, signal);
   }
 
-  list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
-    return this.read((api) => api.list(kind, parent));
+  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]> {
+    return this.read((api) => api.list(kind, parent, signal), signal);
   }
 
-  get(id: string): Promise<CatalogueItem> {
-    return this.read((api) => api.get(id));
+  get(id: string, signal?: AbortSignal): Promise<CatalogueItem> {
+    return this.read((api) => api.get(id, signal), signal);
   }
 
   mediaProfile(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined> {
@@ -81,12 +82,24 @@ export class ClusterCatalogueApi implements CatalogueApi {
     return this.consumeMediaProfile(mediaId, request, consumer, signal);
   }
 
-  search(query: string, limit?: number): Promise<CatalogueItem[]> {
-    return this.read((api) => api.search(query, limit));
+  search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]> {
+    return this.read((api) => api.search(query, limit, signal), signal);
   }
 
   artwork(id: string, signal?: AbortSignal): Promise<Blob> {
     return this.readArtwork(id, signal);
+  }
+
+  /**
+   * One URL per candidate endpoint, preferred node first.
+   *
+   * Ordered by the same ranking real requests use, so the first entry is the
+   * node this client would talk to anyway; the rest are fallbacks a caller
+   * walks on a decode or transport failure. Artwork is content-addressed, so
+   * any node holding it serves the same bytes.
+   */
+  artworkUrls(id: string): ArtworkSource[] {
+    return this.router.registry.candidates().flatMap(({ endpoint }) => this.api(endpoint).artworkUrls(id));
   }
 
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem> {
@@ -102,10 +115,9 @@ export class ClusterCatalogueApi implements CatalogueApi {
   }
 
   private async read<T>(operation: EndpointOperation<T>, signal?: AbortSignal): Promise<T> {
-    return this.router.request((endpoint) => {
-      if (signal?.aborted) return Promise.reject(signal.reason);
-      return operation(this.api(endpoint), endpoint);
-    });
+    // The signal reaches the router as well as the operation: it must cancel
+    // the walk over remaining candidates, not merely the attempt in flight.
+    return this.router.request((endpoint) => operation(this.api(endpoint), endpoint), signal);
   }
 
   private async readArtwork(id: string, signal?: AbortSignal): Promise<Blob> {

@@ -65,6 +65,18 @@ which is the server stating this contract, and was read instead as a node missin
 
 The ordering matters: the chooser must not form an illegal instruction, and `operations` then narrows a legal one. An invariant test asserts no returned instruction ever pairs `remux` with a re-encoded stream, over the whole combination space rather than the paths that happen to reach it today — including after `degradeInstruction`, which must promote the mode when it gives up the audio copy.
 
+### Naming a mode restates the whole transform
+
+On an update, `mode` is not one field among several — it is the whole transform, and from server 0.34.0 naming it clears `video`, `audio`, `max_height` and `max_bitrate` unless the same request names them again.
+
+This is the fix for a contradiction the client could not see. Per-stream overrides used to outlive the mode they belonged to, so a session created as `transcode` with `video: 'copy'` refused a later bare `{"mode":"direct"}` with *direct copies every stream* — the illegal pairing judged against an instruction the client had not sent in that request. That is every session the chooser starts with a copy in it, which was most of the library, so Direct and Remux were broken for viewers from a control that looked like it worked.
+
+So a PATCH naming `mode` alone is now safe and means what it says. What it costs is that a quality ceiling set from a different control for a different reason disappears when the viewer touches the Mode picker — a full-height transcode nobody asked for. `restatePreferencesClearedByMode` fills the caps back in from the confirmed session, and only into a transform that can carry one: `direct` and `remux` copy the encoded stream through untouched, so there is genuinely no step at which a cap could apply and letting it clear is right, not lossy. The same goes for a `video: 'copy'` the request itself just asked for.
+
+It restates the segment container too, which is not necessary and is done deliberately anyway. `container` is parsed separately from `mode` and is not in the cleared set — confirmed in 0.34.0's code and on a live node, where a session created as MPEG-TS and then PATCHed with `mode` alone still serves MPEG-TS. The reason to send it regardless is that the two failure postures are not symmetric, and that asymmetry does not go away because the server currently behaves: a redundant field costs one line of JSON, while a device handed fragmented MP4 where it asked for MPEG-TS shows a black picture and reports nothing. Only absent fields are filled, so anything the request names — including a value merged in from an earlier mutation that never reached the wire — always wins.
+
+Creating a session is unaffected: there is nothing yet to clear.
+
 ## The rules, and why they are these rules
 
 **Copy whatever can be copied.** Repackaging is cheap and lossless; re-encoding costs the viewer quality and the node its CPU. A container mismatch must never escalate to a full transcode, and an audio codec the host listed must never be silently downmixed to AAC.
@@ -141,11 +153,26 @@ An instruction is a request, and until 0.33.1 the segment container was the one 
 
 Read the delivered container from there and never from the request. A preference the node quietly ignored looks identical on screen to one it honoured, and telling those apart is the entire reason the field exists. `describePlaybackSession` puts it on `PlaybackStatusDescription.container`, and the DIRECT/REMUX badge is derived from what was served rather than from the mode: what arrived decides the badge, what was asked for does not.
 
+That badge is also what the stream lines say when nothing was transcoded. A session where every selected stream is copied or omitted labels both lines `DIRECT` or `REMUX`; per-stream words — `VIDEO COPY`, `AUDIO TRANSCODE` — are spent only where the streams actually differ from one another, which is the case they exist to tell apart. Calling a direct hand-off `AUDIO COPY` was true of the instruction and false of the operation: the server copied no stream anywhere, it served the file. Two clients arrived at that complaint independently, one of them from a panel that shares none of this code, so it is worth stating as a rule rather than fixing per screen. **In prose about a session, `copy` describes a stream repackaged while a sibling was not; the whole-session transforms are named `direct` and `remux`.**
+
 The badge asks whether the viewer was handed the file or something built from it, and a manifest settles that on its own — an MPEG-TS source packaged into MPEG-TS segments changes no container and is still a playlist. Container equality cannot see that, so `source.isManifest` is checked first and the container comparison decides only among whole files.
 
 The coordinator keeps the two sides together on `PlaybackInstructionReport`: `container` is what the instruction asked for, `servedContainer` is what came back, and `containerHonoured` is the comparison — undefined, not true, when either side is unknown. A host policy preferring MPEG-TS against a node that ignores it otherwise shows a real container on screen that simply is not the one requested, with nothing pointing at the gap. The comparison is made once here rather than at each call site, because the two sides use different vocabularies and it has exactly one correct answer.
 
-A container the server cannot name arrives as `""`, not as an absent key — six .avi files in the library answer exactly that today. The resolver maps it to `undefined` so consumers have one shape to test, and the status line falls back to `output.format`, which is still the server describing its own output rather than a default. Absent stays absent: render nothing rather than a guess, or a node that never answered becomes indistinguishable from one that did.
+A container the server cannot name arrives as `""`, not as an absent key. Six .avi files in the library answered exactly that until 0.34.0, which names AVI, ASF, MPEG-PS, MPEG-TS, WAV, AIFF and ADTS sources; the normalisation stays because it should now never fire, and a `""` arriving today means a format neither side's table knows — worth surfacing rather than smoothing over. The resolver maps it to `undefined` so consumers have one shape to test, and the status line falls back to `output.format`, which is still the server describing its own output rather than a default. Absent stays absent: render nothing rather than a guess, or a node that never answered becomes indistinguishable from one that did.
+
+### A transformed session's timeline is not the media element's
+
+A transformed playlist is a complete VOD list: `#EXT-X-PLAYLIST-TYPE:VOD`, every planned fragment, `#EXT-X-ENDLIST`, arriving whole on the first fetch and byte-identical on every later fetch of the same generation. Nothing needs to re-fetch or diff it. Detect it by that shape rather than by a version string — the change shipped without a version bump, so `0.36.1` names two different contracts depending on when a node was built, and the playlist is the honest witness.
+
+**The frontier still exists; it moved into the fragment responses.** A fragment or `init.mp4` that has not been produced yet answers `500 segment_not_ready` immediately — a hold, not a fault, and not evidence about the node. A broken generation answers `503 stream_failed` and is terminal. A request past the end of the plan answers `404`, which is a genuine miss and neither of the above. Read all three from the status: the body's machine code is unreachable on a fragment error in every stack checked. See `not-ready` in [writing-a-player.md](writing-a-player.md) for why, and for why the hold is the `500` despite the spec pointing the other way.
+
+**Why the earlier EVENT list is not the answer to come back to.** From 0.32.14 until this shipped, transformed playlists were EVENT lists with segments appended as they were generated. That existed for a real, measured reason: a VOD list of 1,517 planned fragments made a native player prefetch far ahead, and each request for an unproduced segment *blocked on the encoder* for about three seconds — a 98-second black screen before the first frame. What changed is not the playlist shape's safety but the answer to a premature request: a hold now returns in well under a millisecond instead of occupying a connection until the encoder catches up. The list was never the fault; blocking was. Anyone proposing to revert to EVENT lists is treating the symptom this project already diagnosed.
+
+Two consequences hold under both shapes and are worth knowing before diagnosing anything:
+
+- **The duration comes from the session, never from the media element.** `session.durationMs` is the title; `video.duration` is whatever the element currently believes. The coordinator already prefers the session, so a scrubber reading 8 seconds into a 92-minute film is a client reading the wrong field, not a server reporting a wrong number.
+- **A seek past the generated frontier is a `seekMs` PATCH, not a media-element seek.** It is satisfied by moving the frontier rather than waiting for it, which is why `seek()` consults `localSeekCoverage()` first and replaces the source generation when the target falls outside it. That in turn is why a `Player` must report coverage honestly rather than returning the title's length: claim a target is locally reachable and the resulting `player.seek()` is silently ignored — no request, no error, and a seek that lands somewhere other than where it was asked for.
 
 ### Failures that name their reason
 
@@ -173,13 +200,15 @@ Every decision returns `reasons` — `container-not-playable`, `video-transfer-n
 
 ## Showing the decision to a viewer
 
-`PlaybackCoordinatorSnapshot.instruction` carries `{ mode, video, audio, reasons, chosenByViewer, withoutFacts }`. Render it **next to the Mode control, not on a device-status screen**. Device capabilities are a standing property, true whether or not anything is playing; an instruction belongs to one playback generation and changes the moment the viewer touches Mode. On a status screen it is blank most of the time or stale about a film that finished an hour ago. Under the Mode row, the answer appears where the question was asked:
+`PlaybackCoordinatorSnapshot.instruction` carries `{ mode, video, audio, container, reasons, assumed, chosenByViewer, withoutFacts }`, plus `servedContainer` and `containerHonoured` once a session comes back. Render it **next to the Mode control, not on a device-status screen**. Device capabilities are a standing property, true whether or not anything is playing; an instruction belongs to one playback generation and changes the moment the viewer touches Mode. On a status screen it is blank most of the time or stale about a film that finished an hour ago. Under the Mode row, the answer appears where the question was asked:
 
 ```
-Mode:  [Auto] [Direct] [Remux] [Transcode]
-Chosen automatically: this device cannot play the container;
-                      this server cannot repackage the audio.
+Mode:  [Choose] [Direct] [Remux] [Transcode]
+Chosen for you: this device cannot play the container;
+                this server cannot repackage the audio.
 ```
+
+**Do not label that first control `Auto`.** `auto` was a mode that asked the server to decide, and it does not exist — the server reports what the media is and performs what it is told, and nothing on it is capable of choosing. What this control sends is `mode: 'choose'`, a client-side sentinel the coordinator replaces with a concrete instruction before anything goes on the wire. The two are opposites wearing similar words: one hands the decision away, the other takes it. A viewer told `Auto` is being told something false about where their picture quality is decided, and an engineer reading that label will look for the decision on the wrong machine.
 
 Map the reason slugs to plain sentences. The distinction worth preserving is **who is at fault**, because it is the difference between something a viewer can act on and something they cannot:
 

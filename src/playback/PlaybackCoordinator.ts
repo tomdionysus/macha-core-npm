@@ -240,6 +240,67 @@ function completePreferences(session: PlaybackSession): PlaybackPreferencesUpdat
   };
 }
 
+/**
+ * Restate what naming a `mode` throws away.
+ *
+ * From server 0.34.0 a PATCH carrying `mode` restates the whole transform:
+ * `video`, `audio`, `max_height` and `max_bitrate` are cleared unless the
+ * same request names them again. For the per-stream fields that is the point.
+ * An override outliving the mode it belonged to is what made every session
+ * the chooser started refuse a later bare `{"mode":"direct"}` as "direct
+ * copies every stream" — judged against an instruction the client had not
+ * sent in that request — so they are deliberately left to clear here.
+ *
+ * A quality ceiling is a different kind of thing. The viewer set it from
+ * another control for another reason, and clearing it because they touched
+ * the Mode picker hands them a full-height transcode nobody asked for. So it
+ * is restated, but only into a transform that can carry one: copying passes
+ * the encoded stream through untouched, so `direct` and `remux` have no step
+ * at which a cap could apply (see `reconcileQualityCaps`) and clearing it
+ * there is correct rather than lossy.
+ *
+ * The segment container is restated even though it does not need to be.
+ * `container` is parsed apart from `mode` and is not in the cleared set —
+ * confirmed against 0.34.0's code and a live node, where a session created as
+ * MPEG-TS and then PATCHed with `mode` alone still serves MPEG-TS. It is sent
+ * anyway because the two failure postures are not symmetric, and that
+ * asymmetry does not go away because the server currently behaves: a
+ * redundant field costs one line of JSON, while a device handed fragmented
+ * MP4 where it asked for MPEG-TS shows a black picture and reports nothing.
+ * The value is not a guess either — it is the container this generation
+ * already asked for.
+ *
+ * Only fields the update leaves absent are filled, so a fresh cap or
+ * container in the same request always wins — including one merged in from an
+ * earlier queued mutation that never reached the wire.
+ */
+export function restatePreferencesClearedByMode(
+  update: PlaybackUpdate,
+  session: PlaybackSession,
+  requestedContainer: SegmentContainer | undefined,
+): PlaybackUpdate {
+  const preferences = update.preferences;
+  const mode = preferences?.mode;
+  if (!preferences || mode === undefined || mode === 'choose') return update;
+
+  const restated: PlaybackPreferencesUpdate = { ...preferences };
+  // `video: 'copy'` inside a transcode is a per-stream instruction the caller
+  // just made; capping the height of a stream being copied is the same
+  // contradiction from the other side.
+  if (mode === 'transcode' && preferences.video !== 'copy') {
+    if (restated.maxHeight === undefined && session.preferences.maxHeight !== null) {
+      restated.maxHeight = session.preferences.maxHeight;
+    }
+    if (restated.maxBitrate === undefined && session.preferences.maxBitrate !== null) {
+      restated.maxBitrate = session.preferences.maxBitrate;
+    }
+  }
+  if (mode !== 'direct' && restated.container === undefined && requestedContainer !== undefined) {
+    restated.container = requestedContainer;
+  }
+  return { ...update, preferences: restated };
+}
+
 export function equivalentDirectSources(primary: PlaybackSession, alternate: PlaybackSession): boolean {
   const primaryMime = (primary.source.mimeType ?? primary.mimeType).split(';', 1)[0]?.trim().toLowerCase();
   const alternateMime = (alternate.source.mimeType ?? alternate.mimeType).split(';', 1)[0]?.trim().toLowerCase();
@@ -821,9 +882,14 @@ export class PlaybackCoordinator {
       // transport intent arrived. Generation work is a correctness fallback, so
       // bind it to the latest position at dispatch time rather than preparing a
       // representation around stale transport state.
-      const update = pending.reason === 'subtitle' || !current.options.canSeek
+      const positioned = pending.reason === 'subtitle' || !current.options.canSeek
         ? pending.update
         : { ...pending.update, seekMs: this.snapshot.intent.positionMs };
+      const update = restatePreferencesClearedByMode(
+        positioned,
+        current,
+        this.snapshot.instruction?.container,
+      );
       const requestedPositionMs = update.seekMs ?? this.snapshot.intent.positionMs;
       const requestedPositionRevision = this.positionRevision;
       const startedAt = machaHost().now();

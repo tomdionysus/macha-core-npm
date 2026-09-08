@@ -157,3 +157,129 @@ describe('MachaManageApi', () => {
   });
 
 });
+
+describe('the management operations an operator drives', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const api = () => new MachaManageApi('http://node.test', fixedBearerToken('secret'));
+  const stub = (response: Response) => {
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  const sent = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls[0] as [string, RequestInit];
+
+  it('escapes an id into the path so a filename cannot alter the route', async () => {
+    // Unmatched ids carry provider prefixes and, in practice, paths. An
+    // unescaped `/` would silently address a different endpoint.
+    const fetchMock = stub(jsonResponse({ id: 'hint:a/b' }));
+    await api().unmatchedDetail('hint:a/b');
+    expect(sent(fetchMock)[0]).toBe('http://node.test/api/v1/manage/unmatched/hint%3Aa%2Fb');
+  });
+
+  it('omits the query entirely when no search text was given', async () => {
+    // `?q=` is not the same request as no query, and the server need not read
+    // them the same way.
+    const fetchMock = stub(jsonResponse({ candidates: [] }));
+    await api().prospectiveMatches('hint:one');
+    expect(sent(fetchMock)[0]).toBe('http://node.test/api/v1/manage/unmatched/hint%3Aone/matches');
+  });
+
+  it('includes the search text when there is some', async () => {
+    const fetchMock = stub(jsonResponse({ candidates: [] }));
+    await api().prospectiveMatches('hint:one', 'blade runner');
+    expect(sent(fetchMock)[0]).toContain('matches?q=blade%20runner');
+  });
+
+  it('retries a match as a POST with no body', async () => {
+    const fetchMock = stub(new Response(null, { status: 204 }));
+    await expect(api().retry('hint:one')).resolves.toBeUndefined();
+    expect(sent(fetchMock)[1].method).toBe('POST');
+  });
+
+  it('sends the chosen catalogue item when matching by hand', async () => {
+    const fetchMock = stub(new Response(null, { status: 204 }));
+    await api().match('hint:one', 'macha:abc');
+    expect(JSON.parse(String(sent(fetchMock)[1].body))).toEqual({ catalogue_item_id: 'macha:abc' });
+  });
+
+  it('sends manual metadata as the body and returns what the server made of it', async () => {
+    const fetchMock = stub(jsonResponse({ catalogue_item_id: 'macha:new' }));
+    const metadata = { kind: 'movie', title: 'Solaris', year: 1972 } as never;
+    await expect(api().manual('hint:one', metadata)).resolves.toEqual({ catalogue_item_id: 'macha:new' });
+    expect(JSON.parse(String(sent(fetchMock)[1].body))).toEqual({ kind: 'movie', title: 'Solaris', year: 1972 });
+  });
+
+  it('deletes an unmatched entry with DELETE, not a POST', async () => {
+    const fetchMock = stub(new Response(null, { status: 204 }));
+    await api().deleteUnmatched('hint:one');
+    expect(sent(fetchMock)[1].method).toBe('DELETE');
+  });
+
+  it('browses the filesystem without caching, since it changes underneath', async () => {
+    const fetchMock = stub(jsonResponse({ path: '/media', entries: [] }));
+    await api().browse('/media');
+    const [url, init] = sent(fetchMock);
+    expect(url).toBe('http://node.test/api/v1/manage/filesystem?path=%2Fmedia');
+    expect(init.cache).toBe('no-store');
+  });
+
+  it('creates a directory through its own endpoint', async () => {
+    const mkdir = stub(new Response(null, { status: 204 }));
+    await api().mkdir('/media/new');
+    expect(sent(mkdir)[0]).toBe('http://node.test/api/v1/manage/filesystem/mkdir');
+    expect(JSON.parse(String(sent(mkdir)[1].body))).toEqual({ path: '/media/new' });
+  });
+
+  it('renames without replacing, so a move cannot silently destroy a file', async () => {
+    // `no_replace` is the whole safety of this operation: an operator moving
+    // a file onto an existing name should be told, not have the other one
+    // disappear. Asserted because it is invisible at the call site.
+    const rename = stub(new Response(null, { status: 204 }));
+    await api().rename('/media/a', '/media/b');
+    expect(JSON.parse(String(sent(rename)[1].body))).toEqual({
+      path: '/media/a', destination: '/media/b', no_replace: true,
+    });
+  });
+
+  it('deletes a path by query rather than by body', async () => {
+    const remove = stub(new Response(null, { status: 204 }));
+    await api().deletePath('/media/gone.mkv');
+    const [url, init] = sent(remove);
+    expect(url).toBe('http://node.test/api/v1/manage/filesystem?path=%2Fmedia%2Fgone.mkv');
+    expect(init.method).toBe('DELETE');
+  });
+});
+
+describe('how a management failure is reported', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const api = () => new MachaManageApi('http://node.test', fixedBearerToken('secret'));
+
+  it('carries the server\'s own message, status and code', async () => {
+    // An operator acting on a node needs the node's reason, not a generic
+    // failure: "path is outside the library root" is actionable and "500" is not.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(
+      { error: 'path_outside_root', message: 'path is outside the library root' },
+      { status: 400, statusText: 'Bad Request' },
+    )));
+
+    await expect(api().mkdir('/etc')).rejects.toMatchObject({
+      name: 'MachaManageApiError',
+      status: 400,
+      code: 'path_outside_root',
+      message: expect.stringContaining('path is outside the library root'),
+    });
+  });
+
+  it('reports an unreachable server rather than an API error for a bodyless 502', async () => {
+    // A proxy answering instead of the node is a connection problem, and an
+    // operator told "management request failed" would go looking at the node.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 502 })));
+    await expect(api().unmatched()).rejects.toMatchObject({ name: 'MachaConnectionError' });
+  });
+
+  it('treats a 204 as success with nothing to decode', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    await expect(api().retry('hint:one')).resolves.toBeUndefined();
+  });
+});

@@ -98,15 +98,43 @@ export interface CatalogueMediaProfile {
   streams: CatalogueMediaStreamProfile[];
 }
 
+/**
+ * One place an artwork can be fetched from.
+ *
+ * `requiresAuthorization` is not decoration. A signed capability URL carries
+ * its own authority and works from anywhere; a per-node catalogue URL needs the
+ * client's `Authorization` header. A flat list of strings mixes the two, and a
+ * caller that cannot set headers — an `<img src>`, a native image loader, a
+ * platform downloader — silently 401s on every fallback while appearing to have
+ * options. Such a caller should filter on this rather than hope.
+ */
+export interface ArtworkSource {
+  url: string;
+  requiresAuthorization: boolean;
+}
+
 export interface CatalogueApi {
-  status(): Promise<CatalogueStatus>;
-  list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]>;
-  get(id: string): Promise<CatalogueItem>;
+  status(signal?: AbortSignal): Promise<CatalogueStatus>;
+  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]>;
+  get(id: string, signal?: AbortSignal): Promise<CatalogueItem>;
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem>;
   clearMetadata(id: string, expectedRevision?: number): Promise<void>;
-  search(query: string, limit?: number): Promise<CatalogueItem[]>;
+  search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]>;
   putArtwork(itemId: string, role: string, mimeType: string, data: Blob): Promise<CatalogueArtwork>;
   artwork(id: string, signal?: AbortSignal): Promise<Blob>;
+  /**
+   * Where this artwork can be fetched from, best first.
+   *
+   * A list because artwork is content-addressed: any node holding it will do,
+   * so a node that fails to serve one image should not cost the viewer the
+   * image. A caller walks the list on a decode or transport failure.
+   *
+   * Synchronous, and the primitive `artwork()` is built on: a URL can always
+   * be fetched into a `Blob`, while a `Blob` cannot be handed to an image
+   * loader that wants a URL — which is what `<img src>` and a native `Image`
+   * both want.
+   */
+  artworkUrls(id: string): ArtworkSource[];
   /** Immutable technical facts; absence is temporary while catalogue hydration catches up. */
   mediaProfile(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined>;
 }

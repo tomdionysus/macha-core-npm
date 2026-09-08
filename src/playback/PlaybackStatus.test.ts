@@ -113,8 +113,11 @@ describe('describePlaybackSession', () => {
       source: { ...session().source, url: 'https://node.test:7438/api/v1/playback/stream/s1?capability=secret' },
     }));
 
-    expect(described?.endpoint).toBe('NODE node-corvus · API https://node.test:7438 · STREAM https://node.test:7438');
+    // Reduced to an origin, so neither the embedded userinfo nor the
+    // capability query string can reach the panel.
+    expect(described?.endpoint).toBe('https://node.test:7438');
     expect(described?.endpoint).not.toContain('secret');
+    expect(described?.endpoint).not.toContain('hidden');
   });
 
   it('collapses provisional URL identity when API and stream share an origin', () => {
@@ -123,7 +126,7 @@ describe('describePlaybackSession', () => {
       source: { ...session().source, url: 'http://node.test:7438/direct' },
     }));
 
-    expect(described?.endpoint).toBe('NODE/STREAM http://node.test:7438');
+    expect(described?.endpoint).toBe('http://node.test:7438');
   });
 
   it('shows the worker-selected stream origin after transparent Direct failover', () => {
@@ -132,14 +135,65 @@ describe('describePlaybackSession', () => {
       source: { ...session().source, url: 'http://node-a.test:7438/direct' },
     }), 'http://node-b.test:7438');
 
-    expect(described?.endpoint).toBe('API http://node-a.test:7438 · STREAM http://node-b.test:7438');
+    // The worker moved the transfer to node B while the session's own
+    // bookkeeping stayed on node A. What is serving the picture is node B, and
+    // that is what the panel shows — the change of origin is the signal.
+    expect(described?.endpoint).toBe('http://node-b.test:7438');
   });
 
   it('reports the server-resolved remux mode when both streams are copied', () => {
+    // Both lines carry the session's own badge, not a per-stream operation.
+    // "AUDIO COPY" here would name an operation nobody needs distinguishing:
+    // in remux every stream is copied, so saying it per stream says nothing
+    // the badge has not already said.
     expect(describePlaybackSession(session())).toEqual({
       container: 'MP4',
       video: 'REMUX · HEVC · 1920×1080 · 7.5 Mb/s',
-      audio: 'AUDIO COPY · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
+      audio: 'REMUX · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
+    });
+  });
+
+  it('calls both streams DIRECT when the file was handed over untouched', () => {
+    // The server copied nothing: it served the source file. Describing the
+    // audio as "copy" was true of the instruction and false of the operation,
+    // and it read as though a stream had been repackaged when none had.
+    expect(describePlaybackSession(session({
+      mode: 'direct',
+      source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
+      output: { ...session().output, format: 'matroska', container: 'matroska' },
+    }))).toEqual({
+      container: 'MATROSKA',
+      video: 'DIRECT · HEVC · 1920×1080 · 7.5 Mb/s',
+      audio: 'DIRECT · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
+    });
+  });
+
+  it('keeps AUDIO COPY where a copy is genuinely what distinguishes the stream', () => {
+    // Under transcode the streams differ from one another, so each needs
+    // naming: this is the case the word "copy" exists for.
+    expect(describePlaybackSession(session({
+      mode: 'transcode',
+      transform: { video: 'transcode', audio: 'copy' },
+      output: {
+        format: 'mp4',
+        video: { sourceStream: 0, transform: 'transcode', codec: 'h264', width: 1920, height: 1080, bitrate: 5_000_000 },
+        audio: { sourceStream: 1, transform: 'copy', codec: 'eac3', channels: 6, sampleRate: 48000, bitrate: 640_000 },
+      },
+    }))?.audio).toBe('AUDIO COPY · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s');
+  });
+
+  it('calls a video with no selected audio DIRECT too', () => {
+    // The omitted side is not a second operation to distinguish from the
+    // first, so there is nothing for "VIDEO COPY" to be contrasting with —
+    // the session is still just the file, handed over.
+    expect(describePlaybackSession(session({
+      mode: 'direct',
+      source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
+      transform: { video: 'copy', audio: 'omit' },
+      output: { ...session().output, format: 'matroska', container: 'matroska' },
+    }))).toEqual({
+      container: 'MATROSKA',
+      video: 'DIRECT · HEVC · 1920×1080 · 7.5 Mb/s',
     });
   });
 

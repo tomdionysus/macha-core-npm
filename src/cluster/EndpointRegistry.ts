@@ -18,9 +18,62 @@ export interface EndpointHealth {
   retryAt?: number;
 }
 
+/**
+ * What a node says about its own load, taken from the cluster status payload
+ * the health cycle already fetches. Never probed for: a synthetic request
+ * competes with viewer traffic for the exact resource it claims to measure,
+ * and on a weak link it consumes the capacity it is trying to observe.
+ *
+ * Every field is optional because a node that has not answered yet has none of
+ * them, and absent must stay distinguishable from zero — a node reporting 0%
+ * CPU and a node that has never been heard from are opposite situations.
+ */
+export interface EndpointCapacity {
+  /** The node process's CPU, as the node reports it. May exceed 100 across cores. */
+  cpuPercent?: number;
+  /** System load average over one minute. Only comparable once divided by `cores`. */
+  load1?: number;
+  /**
+   * How many CPUs the load is spread across.
+   *
+   * Load-bearing rather than decorative: `load1: 2.67` is a struggling machine
+   * on two cores and an idle one on eight, and this cluster is deliberately
+   * non-uniform hardware. `process_cpu_percent` has the same problem from the
+   * other side — it exceeds 100 precisely because cores are not normalised out
+   * of it. So the capacity comparison divides by this and abstains without it,
+   * rather than making a hardware-size guess on every cycle.
+   */
+  cores?: number;
+  storageAvailableBytes?: number;
+  observedAt: number;
+}
+
+/**
+ * Which comparison actually separated one endpoint from the next.
+ *
+ * Ranking on four axes is only debuggable if the client can say which one
+ * decided. Without this an operator looking at a bad choice has to reconstruct
+ * the comparator from stored evidence, which is how an afternoon of transcode
+ * measurements got taken against the wrong node before anyone noticed.
+ */
+export type EndpointSelectionAxis =
+  | 'availability'
+  | 'sticky'
+  | 'failures'
+  | 'throughput'
+  | 'latency'
+  | 'capacity'
+  | 'configured-order';
+
 export interface EndpointCandidate {
   endpoint: MachaEndpoint;
   health: EndpointHealth;
+  /** Rolling average probe round-trip, where any probe has succeeded. */
+  latencyMs?: number;
+  /** Measured transfer rate, where enough transfers back it. */
+  bytesPerSecond?: number;
+  /** The node's own last reported load, where it has answered a status call. */
+  capacity?: EndpointCapacity;
 }
 
 /** Transport-neutral shape consumed by the registry once servers advertise APIs. */
@@ -48,6 +101,15 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
 const THROUGHPUT_MIN_SAMPLES = 2;
 /** How much faster (or slower) a link must measure before throughput changes any decision. */
 const THROUGHPUT_MIN_RELATIVE_DIFFERENCE = 0.4;
+/**
+ * Ranking thresholds, deliberately blunt for the same reason throughput's is:
+ * ordering must not reshuffle on noise. Latency needs an absolute floor as
+ * well as a ratio, or two nodes at 3 ms and 5 ms trade places every cycle on a
+ * 40% "difference" nobody can perceive.
+ */
+const LATENCY_RANK_MIN_ABSOLUTE_MS = 50;
+const LATENCY_RANK_MIN_RELATIVE_DIFFERENCE = 0.4;
+const CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE = 0.4;
 
 export interface PreferredEndpointSwap {
   fromId: string;
@@ -57,6 +119,9 @@ export interface PreferredEndpointSwap {
   /** Present only where both endpoints had enough transfer evidence to compare. */
   fromBytesPerSecond?: number;
   toBytesPerSecond?: number;
+  /** The nodes' own reported load at the moment of the swap, for the log line. */
+  fromCapacity?: EndpointCapacity;
+  toCapacity?: EndpointCapacity;
   reason: 'latency' | 'throughput';
 }
 
@@ -87,6 +152,8 @@ export class EndpointRegistry {
   private readonly listeners = new Set<() => void>();
   private preferredId?: string;
   private readonly latencySamples = new Map<string, number[]>();
+  private readonly capacities = new Map<string, EndpointCapacity>();
+  private lastSelectionAxis?: EndpointSelectionAxis;
   private latencyAdvantageId?: string;
   private latencyAdvantageStreak = 0;
   private lastLatencySwapAt?: number;
@@ -104,6 +171,7 @@ export class EndpointRegistry {
     const retained = new Set(this.endpoints.map((endpoint) => endpoint.id));
     for (const id of this.health.keys()) if (!retained.has(id)) this.health.delete(id);
     for (const id of this.latencySamples.keys()) if (!retained.has(id)) this.latencySamples.delete(id);
+    for (const id of this.capacities.keys()) if (!retained.has(id)) this.capacities.delete(id);
     this.bandwidth?.retain(retained);
     if (this.preferredId && !retained.has(this.preferredId)) this.preferredId = undefined;
     if (this.latencyAdvantageId && !retained.has(this.latencyAdvantageId)) {
@@ -113,6 +181,21 @@ export class EndpointRegistry {
     this.notify();
   }
 
+  /**
+   * Fires on **every** change to endpoint state, not only on membership.
+   *
+   * That includes each probe success and failure, so with a ten-second health
+   * cycle a listener sees one notification per endpoint per cycle even when
+   * nothing an observer would call different has happened — only
+   * `lastSuccessAt` moved. That is deliberate: a listener rendering health
+   * wants exactly those, and the registry cannot know which subset any
+   * particular listener cares about.
+   *
+   * It does mean a listener that *writes* on notification must diff first, or
+   * it will write on every probe forever. `persistConfirmedEndpoints` is the
+   * worked example: it recomputes the confirmed list and returns without
+   * touching storage unless the list itself moved.
+   */
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -159,27 +242,105 @@ export class EndpointRegistry {
         order,
       }));
 
-    candidates.sort((left, right) => {
-      const leftReady = (left.health.retryAt ?? 0) <= now;
-      const rightReady = (right.health.retryAt ?? 0) <= now;
-      if (leftReady !== rightReady) return leftReady ? -1 : 1;
-      const leftPreferred = left.endpoint.id === this.preferredId;
-      const rightPreferred = right.endpoint.id === this.preferredId;
-      if (leftPreferred !== rightPreferred) return leftPreferred ? -1 : 1;
-      if (!leftReady && !rightReady) return (left.health.retryAt ?? 0) - (right.health.retryAt ?? 0);
-      if (left.health.consecutiveFailures !== right.health.consecutiveFailures) {
-        return left.health.consecutiveFailures - right.health.consecutiveFailures;
-      }
-      // Measured throughput outranks the order the endpoints happened to be
-      // configured in. Without this, a failover from the preferred node walks
-      // the list as typed — which is a stand-in for "nearest" that a mixed
-      // wired/wireless/WAN cluster falsifies routinely.
-      const throughput = this.compareThroughput(left.endpoint.id, right.endpoint.id);
-      if (throughput !== 0) return throughput;
-      return left.order - right.order;
-    });
+    candidates.sort((left, right) => this.compare(left, right, now).order);
 
-    return candidates.map(({ endpoint, health }) => ({ endpoint, health }));
+    // The axis that separated the winner from the runner-up is the one that
+    // actually decided; the rest never got a say. Recorded rather than
+    // returned so the ordinary call site stays a list of candidates.
+    this.lastSelectionAxis = candidates.length > 1
+      ? this.compare(candidates[0], candidates[1], now).axis
+      : candidates.length === 1 ? 'configured-order' : undefined;
+
+    return candidates.map(({ endpoint, health }) => this.describe(endpoint, health));
+  }
+
+  /**
+   * One comparison, reported with the axis that settled it.
+   *
+   * The order of the axes is the argument, so it is written down here rather
+   * than spread across the sort. Reachability and the sticky preference come
+   * first because they are about whether an endpoint can be used at all.
+   * Then the three measurements, most direct first:
+   *
+   * - **Throughput** is the closest thing to the question actually being
+   *   asked — can this link carry the bytes — so where it is known it wins.
+   * - **Latency** is the only signal held about the *path*. It has to outrank
+   *   capacity, because the failure this ordering exists to prevent is a
+   *   healthy, lightly loaded node behind a bad wireless hop, and no
+   *   server-reported metric can see that. Rank capacity above latency and the
+   *   axis that is blind to the fault decides before the one that can see it.
+   * - **Capacity** is last of the three, and is a comparison rather than a
+   *   threshold on purpose: `load1` cannot be turned into "saturated" without
+   *   a core count, which the status payload does not carry, so `load1: 2.67`
+   *   is comfortable on eight cores and dire on two. A relative comparison
+   *   between two nodes at least has bounded error; an absolute gate would be
+   *   confidently wrong on any node whose size we guessed. If a core count
+   *   ever arrives, a saturation gate ahead of latency is the better shape,
+   *   because a saturated node is a harder blocker than a longer round trip.
+   */
+  private compare(
+    left: { endpoint: MachaEndpoint; health: EndpointHealth; order: number },
+    right: { endpoint: MachaEndpoint; health: EndpointHealth; order: number },
+    now: number,
+  ): { order: number; axis: EndpointSelectionAxis } {
+    const leftReady = (left.health.retryAt ?? 0) <= now;
+    const rightReady = (right.health.retryAt ?? 0) <= now;
+    if (leftReady !== rightReady) return { order: leftReady ? -1 : 1, axis: 'availability' };
+    const leftPreferred = left.endpoint.id === this.preferredId;
+    const rightPreferred = right.endpoint.id === this.preferredId;
+    if (leftPreferred !== rightPreferred) return { order: leftPreferred ? -1 : 1, axis: 'sticky' };
+    if (!leftReady && !rightReady) {
+      return { order: (left.health.retryAt ?? 0) - (right.health.retryAt ?? 0), axis: 'availability' };
+    }
+    if (left.health.consecutiveFailures !== right.health.consecutiveFailures) {
+      return { order: left.health.consecutiveFailures - right.health.consecutiveFailures, axis: 'failures' };
+    }
+    // Measured evidence outranks the order the endpoints happened to be
+    // configured in. Without this, a failover from the preferred node walks
+    // the list as typed — which is a stand-in for "nearest" that a mixed
+    // wired/wireless/WAN cluster falsifies routinely.
+    const throughput = this.compareThroughput(left.endpoint.id, right.endpoint.id);
+    if (throughput !== 0) return { order: throughput, axis: 'throughput' };
+    const latency = this.compareLatency(left.endpoint.id, right.endpoint.id);
+    if (latency !== 0) return { order: latency, axis: 'latency' };
+    const capacity = this.compareCapacity(left.endpoint.id, right.endpoint.id);
+    if (capacity !== 0) return { order: capacity, axis: 'capacity' };
+    return { order: left.order - right.order, axis: 'configured-order' };
+  }
+
+  private describe(endpoint: MachaEndpoint, health: EndpointHealth): EndpointCandidate {
+    const latencyMs = this.latencyMs(endpoint.id);
+    const bytesPerSecond = this.bytesPerSecond(endpoint.id);
+    const capacity = this.capacities.get(endpoint.id);
+    return {
+      endpoint,
+      health,
+      ...(latencyMs !== undefined ? { latencyMs } : {}),
+      ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
+      ...(capacity ? { capacity: { ...capacity } } : {}),
+    };
+  }
+
+  /**
+   * Which axis decided the current head of `candidates()`, as of the last call.
+   *
+   * Undefined before any call, and when only one endpoint is known there is
+   * nothing to have decided — `configured-order` is reported for that case,
+   * since the list is what put it there.
+   */
+  selectionAxis(): EndpointSelectionAxis | undefined {
+    return this.lastSelectionAxis;
+  }
+
+  /** Record a node's self-reported load, from the status call the health cycle already makes. */
+  recordCapacity(endpointIdValue: string, capacity: EndpointCapacity): void {
+    this.capacities.set(endpointIdValue, capacity);
+  }
+
+  /** The node's last self-reported load, or undefined if it has never answered. */
+  capacity(endpointIdValue: string): EndpointCapacity | undefined {
+    const value = this.capacities.get(endpointIdValue);
+    return value ? { ...value } : undefined;
   }
 
   recordSuccess(endpointIdValue: string): void {
@@ -261,6 +422,63 @@ export class EndpointRegistry {
   }
 
   /**
+   * -1 when `leftId` is materially closer, 1 when `rightId` is, 0 otherwise.
+   * Needs both a ratio and an absolute floor: without the floor two nodes a
+   * few milliseconds apart trade places on noise every probe cycle.
+   */
+  private compareLatency(leftId: string, rightId: string): number {
+    const left = this.latencyMs(leftId);
+    const right = this.latencyMs(rightId);
+    if (left === undefined || right === undefined) return 0;
+    if (Math.abs(left - right) < LATENCY_RANK_MIN_ABSOLUTE_MS) return 0;
+    if (left <= right * (1 - LATENCY_RANK_MIN_RELATIVE_DIFFERENCE)) return -1;
+    if (right <= left * (1 - LATENCY_RANK_MIN_RELATIVE_DIFFERENCE)) return 1;
+    return 0;
+  }
+
+  /**
+   * Load per CPU, or undefined where the node has not said enough to compute it.
+   *
+   * `load1` describes the machine and `process_cpu_percent` describes one
+   * process, so `load1` is preferred; both are divided by the core count
+   * because neither means anything without it. No fallback to raw values: a
+   * comparison between two machines of unknown and probably different size is
+   * not a comparison, and this axis staying inert until the count arrives is
+   * the honest behaviour rather than a degraded one.
+   */
+  private loadPerCore(endpointIdValue: string): number | undefined {
+    const capacity = this.capacities.get(endpointIdValue);
+    if (!capacity?.cores || capacity.cores <= 0) return undefined;
+    if (capacity.load1 !== undefined) return capacity.load1 / capacity.cores;
+    if (capacity.cpuPercent !== undefined) return capacity.cpuPercent / 100 / capacity.cores;
+    return undefined;
+  }
+
+  /**
+   * -1 when `leftId` has materially more headroom, 1 when `rightId` does, 0
+   * otherwise or where either has not reported enough to say.
+   *
+   * Blunt on purpose, and more so than the other axes: capacity is the one
+   * measurement that responds to our own routing. Send work to a node and its
+   * load rises, which demotes it, which moves the work away, which lowers the
+   * load, which promotes it again. The minimum relative difference is the
+   * damping on that loop — together with the sticky preference, which sits
+   * above every measured axis in `compare` and so holds authority in place
+   * while the numbers move underneath it.
+   */
+  private compareCapacity(leftId: string, rightId: string): number {
+    const left = this.loadPerCore(leftId);
+    const right = this.loadPerCore(rightId);
+    if (left === undefined || right === undefined) return 0;
+    // Two idle nodes are not distinguishable, and a ratio against zero is not
+    // a number. Neither is worth reshuffling for.
+    if (left <= 0 && right <= 0) return 0;
+    const higher = Math.max(left, right);
+    if (Math.abs(left - right) / higher < CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE) return 0;
+    return left < right ? -1 : 1;
+  }
+
+  /**
    * Pre-emptively move authority to a healthy known endpoint that measures
    * materially and consistently better than the current preferred endpoint.
    *
@@ -327,6 +545,8 @@ export class EndpointRegistry {
 
     const fromBytesPerSecond = this.bytesPerSecond(this.preferredId);
     const toBytesPerSecond = this.bytesPerSecond(best.id);
+    const fromCapacity = this.capacity(this.preferredId);
+    const toCapacity = this.capacity(best.id);
     const swap: PreferredEndpointSwap = {
       fromId: this.preferredId,
       toId: best.id,
@@ -334,6 +554,8 @@ export class EndpointRegistry {
       toLatencyMs: best.latencyMs,
       ...(fromBytesPerSecond !== undefined ? { fromBytesPerSecond } : {}),
       ...(toBytesPerSecond !== undefined ? { toBytesPerSecond } : {}),
+      ...(fromCapacity ? { fromCapacity } : {}),
+      ...(toCapacity ? { toCapacity } : {}),
       reason: best.reason,
     };
     this.preferredId = best.id;
@@ -344,10 +566,10 @@ export class EndpointRegistry {
   }
 
   snapshot(): EndpointCandidate[] {
-    return this.endpoints.map((endpoint) => ({
+    return this.endpoints.map((endpoint) => this.describe(
       endpoint,
-      health: { ...(this.health.get(endpoint.id) ?? { consecutiveFailures: 0 }) },
-    }));
+      { ...(this.health.get(endpoint.id) ?? { consecutiveFailures: 0 }) },
+    ));
   }
 
   private deduplicate(endpoints: readonly MachaEndpoint[]): MachaEndpoint[] {

@@ -46,3 +46,29 @@ describe('routes', () => {
     expect(pathForMedia(item({ id: 'track:one', kind: 'track' }))).toBe('/music/tracks/track%3Aone');
   });
 });
+
+describe('routing a media item that is not a plain title', () => {
+  const item = (kind: string, extra: Record<string, unknown> = {}) =>
+    ({ id: 'x1', kind, title: 'x', mediaIds: ['x1'], ...extra }) as unknown as MediaSummary;
+
+  it('routes a season through its show, so the page has its parent to render', () => {
+    expect(pathForMedia(item('season', { parentId: 'show-9' }))).toBe(routes.season('show-9', 'x1'));
+  });
+
+  it('falls back to the generic item route for a season with no known parent', () => {
+    // A season page cannot be drawn without its show, so an orphan goes to
+    // the generic route rather than to a URL missing a segment.
+    expect(pathForMedia(item('season'))).toBe(routes.item('x1'));
+  });
+
+  it('routes music kinds to their own pages', () => {
+    expect(pathForMedia(item('artist'))).toBe(routes.artist('x1'));
+    expect(pathForMedia(item('album'))).toBe(routes.album('x1'));
+    expect(pathForMedia(item('track'))).toBe(routes.track('x1'));
+  });
+
+  it('sends a kind it has never heard of to the generic item route', () => {
+    // A server that adds a kind must not produce a dead link in an old client.
+    expect(pathForMedia(item('audiobook'))).toBe(routes.item('x1'));
+  });
+});
