@@ -44,6 +44,20 @@ export interface NodeRuntimeStatus {
    * so the client's capacity ranking abstains rather than guess.
    */
   cpu_cores?: number;
+  /**
+   * Physical RAM on the machine, not the node's own footprint — `rss_bytes`
+   * above is the process's resident set and answers a different question.
+   * Optional for the same reason as `cpu_cores`: older nodes do not send it.
+   *
+   * Reported for display only. Unlike `cpu_cores`, which makes `load1`
+   * comparable between machines of different sizes, total memory does not
+   * make any other figure mean more: a node is not slower for having less of
+   * it until it runs out, and by then `load1` is already saying so. The
+   * endpoint ranking deliberately does not read it — ranking on total memory
+   * would prefer a large thrashing machine to a small healthy one, which is
+   * not a subtle inaccuracy but the axis voting for the wrong node.
+   */
+  memory_total_bytes?: number;
   peers_known?: number;
   peers_active?: number;
   rpc_connections_created?: number;
