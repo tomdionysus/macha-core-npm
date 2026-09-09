@@ -189,16 +189,3 @@ describe('parseEndpointList', () => {
   });
 });
 
-describe('api token', () => {
-  it('stores a trimmed token and clears the key when emptied', () => {
-    const storage = memoryStorage();
-    const configuration = configured(storage);
-
-    configuration.setApiToken('  secret  ');
-    expect(configuration.apiToken()).toBe('secret');
-
-    configuration.setApiToken('   ');
-    expect(configuration.apiToken()).toBe('');
-    expect(storage.getItem('macha-api-token')).toBeNull();
-  });
-});

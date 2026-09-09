@@ -42,9 +42,14 @@ export interface AuthenticatedFetch {
 }
 
 /**
- * A fixed, never-refreshed bearer token: the Settings screen's manual
- * override, and the standard test double wherever a test needs an
- * `AuthenticatedFetch` without exercising session lifecycle at all.
+ * A fixed, never-refreshed bearer token.
+ *
+ * `NO_AUTH` is defined in terms of it, and it is the standard test double
+ * wherever a test needs an `AuthenticatedFetch` without exercising session
+ * lifecycle at all. It is deliberately **not** a way to configure a token:
+ * clients mint anonymous sessions through `SessionManager`, and the
+ * settings-screen override this once backed has been removed from every
+ * client. Nothing should reintroduce a caller that passes a real token.
  */
 export function fixedBearerToken(token: string | undefined, fetchImpl?: typeof fetch): AuthenticatedFetch {
   const trimmed = token?.trim() || undefined;

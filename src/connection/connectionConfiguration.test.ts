@@ -22,15 +22,18 @@ describe('connection configuration', () => {
     const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => String(url).startsWith('http://b/')
       ? new Response('{}', { status: 200 })
       : Promise.reject(new TypeError('offline')));
-    const result = await checkEndpointConfiguration(['http://a', 'http://b'], 'secret', fetchMock as unknown as typeof fetch, 50);
+    const result = await checkEndpointConfiguration(['http://a', 'http://b'], fetchMock as unknown as typeof fetch, 50);
     expect(result.available).toEqual(['http://b']);
     expect(result.message).toBeUndefined();
-    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer secret');
+    // Deliberately unauthenticated: this asks whether an address answers at
+    // all, which needs no credentials, and there is no session to draw one
+    // from before the endpoint has been saved.
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('authorization')).toBeNull();
   });
 
   it('never probes a blank line against the client origin', async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request) => new Response('{}', { status: 200 }));
-    const result = await checkEndpointConfiguration(['http://node-a:7438', '', '  '], '', fetchMock as unknown as typeof fetch, 50);
+    const result = await checkEndpointConfiguration(['http://node-a:7438', '', '  '], fetchMock as unknown as typeof fetch, 50);
     expect(result.endpoints).toEqual(['http://node-a:7438']);
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://node-a:7438/api/v1/catalogue/status');
@@ -38,7 +41,7 @@ describe('connection configuration', () => {
 
   it('returns one concise transport failure when no endpoint can be reached', async () => {
     const fetchMock = vi.fn(async () => { throw new TypeError('offline'); }) as typeof fetch;
-    await expect(checkEndpointConfiguration(['http://a', 'http://b'], '', fetchMock, 50)).resolves.toMatchObject({
+    await expect(checkEndpointConfiguration(['http://a', 'http://b'], fetchMock, 50)).resolves.toMatchObject({
       available: [],
       message: 'All configured API endpoints are unreachable.',
     });
@@ -50,7 +53,7 @@ describe('connection configuration', () => {
       return new Promise<Response>(() => undefined);
     }) as typeof fetch;
 
-    await expect(checkEndpointConfiguration(['http://a'], '', fetchMock, 1)).resolves.toEqual({
+    await expect(checkEndpointConfiguration(['http://a'], fetchMock, 1)).resolves.toEqual({
       endpoints: ['http://a'],
       available: [],
       message: 'Connection checks are still pending. Try again shortly.',

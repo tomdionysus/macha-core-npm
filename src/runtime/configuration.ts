@@ -6,7 +6,6 @@ const SERVER_URL_KEY = 'macha-server-url';
 const INTERIM_SERVER_ENDPOINTS_KEY = 'macha-server-endpoints-v1';
 const BOOTSTRAP_ENDPOINTS_KEY = 'macha-bootstrap-endpoints-v1';
 const DISCOVERED_ENDPOINTS_KEY = 'macha-discovered-endpoints-v1';
-const API_TOKEN_KEY = 'macha-api-token';
 /** A cluster realistically has a handful of nodes; this only guards against a pathological advertisement. */
 const MAX_DISCOVERED_ENDPOINTS = 16;
 
@@ -125,16 +124,6 @@ export class MachaClientConfiguration {
       return;
     }
     this.writeEndpointValue(normalized, DISCOVERED_ENDPOINTS_KEY);
-  }
-
-  apiToken(): string {
-    return this.storage.getItem(API_TOKEN_KEY) ?? '';
-  }
-
-  setApiToken(token: string): void {
-    const value = token.trim();
-    if (value) this.storage.setItem(API_TOKEN_KEY, value);
-    else this.storage.removeItem(API_TOKEN_KEY);
   }
 
   private readEndpointValue(key: string): string[] | undefined {

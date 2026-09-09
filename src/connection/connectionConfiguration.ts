@@ -1,4 +1,4 @@
-import { authenticatedRequestHeaders, normalizeBaseUrl } from '../api/httpCompat.js';
+import { mergeRequestHeaders, normalizeBaseUrl } from '../api/httpCompat.js';
 import { SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
 
 export const CONNECTION_CHECK_TIMEOUT_MS = 4_000;
@@ -53,9 +53,15 @@ function observeWithin(request: Promise<Response>, timeoutMs: number): Promise<C
   });
 }
 
+/**
+ * A pre-save reachability ping for endpoints a viewer has typed in.
+ *
+ * Deliberately unauthenticated. It asks whether an address answers at all,
+ * which needs no credentials, and the client has none to offer before a
+ * session exists anyway.
+ */
 export async function checkEndpointConfiguration(
   urls: readonly string[],
-  bearerToken: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = CONNECTION_CHECK_TIMEOUT_MS,
 ): Promise<ConnectionCheckResult> {
@@ -68,7 +74,7 @@ export async function checkEndpointConfiguration(
     const attempt = await observeWithin(
       fetchImpl(`${endpoint}/api/v1/catalogue/status`, {
         method: 'GET',
-        headers: authenticatedRequestHeaders(undefined, bearerToken),
+        headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }),
         cache: 'no-store',
       }),
       timeoutMs,

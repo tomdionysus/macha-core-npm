@@ -99,26 +99,6 @@ export function normalizeBaseUrl(value: string): string {
   return trimmed.replace(/\/+$/, '');
 }
 
-/**
- * Used only by the one-off, pre-save "check this endpoint" validation ping
- * (`connectionConfiguration.ts`) — a plain typed-in token, not a live
- * session. Every real API client authenticates via `SessionManager`
- * (`src/api/SessionManager.ts`) instead, which owns attaching and
- * refreshing the token itself.
- */
-export function authenticatedRequestHeaders(
-  initial: HeadersInit | undefined,
-  bearerToken: string | undefined,
-  values: HeaderValues = {},
-): Record<string, string> {
-  const token = bearerToken?.trim();
-  return mergeRequestHeaders(initial, {
-    Accept: 'application/json',
-    Authorization: token ? `Bearer ${token}` : undefined,
-    ...values,
-  });
-}
-
 export async function readResponseBody(response: Response): Promise<ParsedResponseBody> {
   try {
     return { body: await readJsonBody<unknown>(response), wasJson: true };
