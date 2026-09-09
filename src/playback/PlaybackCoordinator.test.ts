@@ -1192,6 +1192,32 @@ describe('PlaybackCoordinator player failures', () => {
     await coordinator.close();
   });
 
+  it('asks a replacement node for the same segment container the generation was created with', async () => {
+    // A device handed fragmented MP4 where it asked for MPEG-TS shows a black
+    // picture and reports nothing, so the starvation is charged to a node
+    // that did exactly what it was told. `container` is not among a session's
+    // confirmed preferences, so failover has to restate it — the update path
+    // already does.
+    const player = new FakePlayer();
+    const remux = { mode: 'remux' as const, maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' };
+    const initial = session({ mode: 'remux', preferences: remux, endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => session({
+      sessionId: 'replacement', mode: 'remux', preferences: remux, endpoint: { id: 'node-b', baseUrl: 'http://b' },
+    }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPreferences: { mode: 'remux', container: 'mpegts' }, initialPositionMs: 0,
+    });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalled());
+    expect(api.failover.mock.calls[0][4]).toMatchObject({ mode: 'remux', container: 'mpegts' });
+    await coordinator.close();
+  });
+
   it('enters terminal failure only after alternate generation recreation is exhausted', async () => {
     const player = new FakePlayer();
     const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });

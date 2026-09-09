@@ -295,10 +295,36 @@ export function restatePreferencesClearedByMode(
       restated.maxBitrate = session.preferences.maxBitrate;
     }
   }
-  if (mode !== 'direct' && restated.container === undefined && requestedContainer !== undefined) {
-    restated.container = requestedContainer;
-  }
-  return { ...update, preferences: restated };
+  return { ...update, preferences: withRestatedSegmentContainer(restated, requestedContainer) };
+}
+
+/**
+ * Restate the segment container on any transformed generation being created
+ * or replaced.
+ *
+ * Shared by the update path above and by `currentPreferences` below, because
+ * the two were not sharing it and the gap had a body count. A PATCH restated
+ * the container; a *failover* did not — it rebuilt the generation from the
+ * session's confirmed preferences, and `container` is not among them. So a
+ * Samsung set that had asked for MPEG-TS was handed fragmented MP4 by every
+ * replacement node, which is the one carriage it cannot play: black picture,
+ * no error, nothing fetched. Each silent starvation was then charged to a
+ * perfectly healthy node until the cluster ran out of candidates.
+ *
+ * Measured on the set 2026-09-09 — two replacements, two 20 s starvations at
+ * `readyState: HAVE_NOTHING`, and instant playback from the *same* node the
+ * moment a PATCH went through it. The asymmetry was the whole fault.
+ *
+ * Copying is the only transform with no step at which a container could be
+ * chosen, so `direct` is left alone.
+ */
+function withRestatedSegmentContainer(
+  preferences: PlaybackPreferencesUpdate,
+  requestedContainer: SegmentContainer | undefined,
+): PlaybackPreferencesUpdate {
+  if (preferences.mode !== 'remux' && preferences.mode !== 'transcode') return preferences;
+  if (preferences.container !== undefined || requestedContainer === undefined) return preferences;
+  return { ...preferences, container: requestedContainer };
 }
 
 export function equivalentDirectSources(primary: PlaybackSession, alternate: PlaybackSession): boolean {
@@ -1060,7 +1086,10 @@ export class PlaybackCoordinator {
    * would be silently dropped on recovery.
    */
   private currentPreferences(session: PlaybackSession): PlaybackPreferencesUpdate {
-    return { ...completePreferences(session), ...this.snapshot.pendingPreferences };
+    return withRestatedSegmentContainer(
+      { ...completePreferences(session), ...this.snapshot.pendingPreferences },
+      this.snapshot.instruction?.container,
+    );
   }
 
   private degrade(error: Error): void {
