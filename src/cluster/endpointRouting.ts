@@ -2,6 +2,7 @@ import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
 import { endpointFailure, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { reportClusterReachable, SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { abortError } from '../errors.js';
 
 export type EndpointOperation<T> = (endpoint: MachaEndpoint) => Promise<T>;
 
@@ -107,7 +108,7 @@ export class ClusterEndpointRouter {
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('find-attempt', { endpointId: endpoint.id, order: attempted.length, advisory: Boolean(options?.advisory) });
-      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (signal?.aborted) throw signal.reason ?? abortError();
       try {
         const result = await operation(endpoint);
         if (result !== undefined) {
@@ -122,7 +123,7 @@ export class ClusterEndpointRouter {
         log.debug('find-temporary-absence', { endpointId: endpoint.id });
         observedTemporaryAbsence = true;
       } catch (error) {
-        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+        if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         this.registry.recordFailure(endpoint.id);
@@ -147,7 +148,7 @@ export class ClusterEndpointRouter {
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length });
-      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (signal?.aborted) throw signal.reason ?? abortError();
       try {
         const result = await operation(endpoint);
         this.registry.recordSuccess(endpoint.id);
@@ -155,7 +156,7 @@ export class ClusterEndpointRouter {
         log.debug('route-success', { endpointId: endpoint.id });
         return result;
       } catch (error) {
-        if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+        if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         this.registry.recordFailure(endpoint.id);

@@ -17,12 +17,40 @@ interface ProbeResult {
   latencyMs?: number;
 }
 
+/**
+ * A health probe must never be answered from a cache, and `cache: 'no-store'`
+ * is not enough to guarantee that.
+ *
+ * The option means three different things across this project's three hosts,
+ * measured rather than assumed: a browser sends the directive; React Native's
+ * `whatwg-fetch` implements it by appending `_=<epoch>` to the query; and
+ * Tizen 3 does not have the property at all — `'cache' in new Request(url,
+ * {cache:'no-store'})` is `false` — so it vanishes silently, header and all.
+ *
+ * On that last one the consequence is not cosmetic. A cached
+ * `/api/v1/catalogue/status` makes a dead node answer `200` from the WebView's
+ * own store, so `EndpointHealthMonitor` reports it healthy, keeps ranking it
+ * first, and keeps sending playback to a node that is gone.
+ *
+ * A unique URL is the one mechanism every host honours, because none of them
+ * can cache a request they have never seen. Doing it here makes the behaviour
+ * the same everywhere instead of three-way different, and Macha ignores query
+ * parameters it does not know.
+ */
+function cacheBustedProbeUrl(baseUrl: string, startedAt: number): string {
+  // Built from the timestamp the caller already took, rather than reading the
+  // clock again: `startedAt` is the other half of the latency measurement on
+  // the next line, and a second `now()` between them would fold this function's
+  // own cost into the number being reported.
+  return `${baseUrl}/api/v1/catalogue/status?_=${Math.round(startedAt)}`;
+}
+
 async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch): Promise<ProbeResult> {
   const startedAt = machaHost().now();
   try {
     const response = await fetchWithTimeout(
       (url, init) => auth.fetch(url, init),
-      `${endpoint.baseUrl}/api/v1/catalogue/status`,
+      cacheBustedProbeUrl(endpoint.baseUrl, startedAt),
       { method: 'GET', headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }), cache: 'no-store' },
       DEFAULT_REQUEST_TIMEOUT_MS,
     );

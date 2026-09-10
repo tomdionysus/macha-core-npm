@@ -12,6 +12,7 @@ import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
 import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
+import { abortError } from '../errors.js';
 
 export interface PlaybackIntent {
   positionMs: number;
@@ -111,6 +112,25 @@ export interface PlaybackCoordinatorOptions {
 }
 
 type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
+/**
+ * How long a prepared standby is held before being closed unused.
+ *
+ * Calibrated against a server number, not chosen freely: a node reclaims an
+ * idle transcode pipeline after `streaming.pipeline_idle_ms`, 60 s by default
+ * and never below 10 s, and only a fragment request refreshes that clock. A
+ * standby is idle by definition — nothing fetches from it until it is promoted
+ * — so a window at or beyond the reclaim interval promotes onto a session
+ * whose engine has gone, which is worse than having no standby at all: the
+ * promotion succeeds, plays nothing, and burns the recovery attempt that would
+ * otherwise have admitted a fresh session.
+ *
+ * Thirty seconds sits inside the default sixty with room for the promotion
+ * itself. Note the two clocks are independent: reclaiming the pipeline does not
+ * expire the session record, which lives for `session_idle` (30 minutes), so an
+ * aged standby is a live session with a cold engine rather than a dead one. A
+ * node reports its real interval as `pipeline_idle_ms` on
+ * `/api/v1/playback/status`, so this need not stay a guess if it ever matters.
+ */
 const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
@@ -629,7 +649,7 @@ export class PlaybackCoordinator {
     this.sourceActivationRevision += 1;
     this.pendingMutation = undefined;
     this.debouncedSeekMutation = undefined;
-    this.activeMutation?.controller.abort(new DOMException('Playback coordinator closed', 'AbortError'));
+    this.activeMutation?.controller.abort(abortError('Playback coordinator closed'));
     if (this.seekDebounceTimer !== undefined) clearTimeout(this.seekDebounceTimer);
     this.seekDebounceTimer = undefined;
     this.unsubscribePlayer();
@@ -873,7 +893,7 @@ export class PlaybackCoordinator {
   private cancelInFlightSeek(): void {
     const active = this.activeMutation;
     if (active?.reason !== 'seek' || active.controller.signal.aborted) return;
-    active.controller.abort(new DOMException('Seek superseded by newer viewer intent', 'AbortError'));
+    active.controller.abort(abortError('Seek superseded by newer viewer intent'));
   }
 
   /**

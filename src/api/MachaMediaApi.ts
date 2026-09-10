@@ -14,9 +14,10 @@ import type {
   ShowDetails,
 } from '../types.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { abortError } from '../errors.js';
 
 function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException('Artwork consumer cancelled.', 'AbortError');
+  return signal.reason ?? abortError('Artwork consumer cancelled.');
 }
 
 function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<Blob> {

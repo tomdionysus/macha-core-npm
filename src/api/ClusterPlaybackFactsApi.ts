@@ -4,6 +4,7 @@ import { retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { MachaPlaybackFactsApi } from './MachaPlaybackFactsApi.js';
 import type { PlaybackFactsApi, PlaybackMediaFacts } from './PlaybackFactsApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
+import { abortError } from '../errors.js';
 
 /**
  * Playback facts from whichever endpoint is currently preferred, resolved per
@@ -53,7 +54,7 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
     let lastError: unknown;
     let attempted = 0;
     for (const { endpoint } of this.router.registry.candidates()) {
-      if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+      if (signal?.aborted) throw signal.reason ?? abortError();
       attempted += 1;
       try {
         const facts = await this.api(endpoint).facts(ref, signal);

@@ -47,6 +47,14 @@ export function isEndpointRetryablePlaybackFailure(error: unknown): boolean {
  * Whatever a platform presents into: a DOM element on the web, a native view
  * handle or component ref on React Native. The core never inspects it — it
  * only carries it from the presentation layer to that platform's own player.
+ *
+ * **Use this rather than a DOM type, and nothing will stop you doing otherwise.**
+ * `tsconfig` enables the `DOM` lib because core legitimately uses the web
+ * standard `fetch`, `Response`, `Headers` and `AbortSignal`, whose types live
+ * there — so `HTMLElement` also compiles perfectly well, and `PlaybackRuntime`
+ * accepted one for a while. It typechecks, it passes every test, and it is
+ * wrong: it hands React Native a type it cannot satisfy, in a package whose
+ * whole claim is that it assumes no browser.
  */
 export type PlaybackHost = unknown;
 

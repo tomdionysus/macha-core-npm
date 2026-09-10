@@ -131,10 +131,14 @@ describe('API endpoint health probes', () => {
 
     await expect(probeKnownEndpoints(registry, fixedBearerToken('secret', fetchImpl), new AbortController().signal)).resolves.toBe(2);
 
-    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+    // Cache-busted: `no-store` means three different things across this
+    // project's hosts and nothing at all on Tizen 3, so a unique URL is what
+    // actually stops a dead node answering 200 from a WebView cache.
+    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+$/, ''))).toEqual([
       'http://a/api/v1/catalogue/status',
       'http://b/api/v1/catalogue/status',
     ]);
+    expect(fetchSpy.mock.calls.every(([url]) => /\?_=\d+$/.test(String(url)))).toBe(true);
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer secret');
     expect(registry.snapshot().map(({ health }) => health.consecutiveFailures)).toEqual([0, 1]);
     expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');

@@ -11,6 +11,7 @@ import { MachaApiError, MachaCatalogueApi } from './MachaCatalogueApi.js';
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
+import { abortError } from '../errors.js';
 
 type EndpointOperation<T> = (api: MachaCatalogueApi, endpoint: MachaEndpoint) => Promise<T>;
 
@@ -26,7 +27,7 @@ export const MAX_ABANDONED_MEDIA_PROFILE_REQUESTS = 2;
 export const ARTWORK_ENDPOINT_TIMEOUT_MS = 8_000;
 
 function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException('Aborted', 'AbortError');
+  return signal.reason ?? abortError();
 }
 
 /** Safe catalogue reads fail over; mutations deliberately execute once. */
@@ -153,7 +154,7 @@ export class ClusterCatalogueApi implements CatalogueApi {
         callback();
       };
       const consumerAborted = () => {
-        const reason = consumerSignal ? abortReason(consumerSignal) : new DOMException('Aborted', 'AbortError');
+        const reason = consumerSignal ? abortReason(consumerSignal) : abortError();
         controller.abort(reason);
         finish(() => reject(reason));
       };
@@ -222,7 +223,7 @@ export class ClusterCatalogueApi implements CatalogueApi {
       const onAbort = () => {
         if (!finish()) return;
         this.abandonMediaProfile(mediaId, request);
-        reject(signal ? abortReason(signal) : new DOMException('Aborted', 'AbortError'));
+        reject(signal ? abortReason(signal) : abortError());
       };
       signal?.addEventListener('abort', onAbort, { once: true });
       request.promise.then((profile) => {
@@ -244,7 +245,7 @@ export class ClusterCatalogueApi implements CatalogueApi {
     for (const [abandonedMediaId, abandonedRequest] of abandoned.slice(0, -MAX_ABANDONED_MEDIA_PROFILE_REQUESTS)) {
       if (this.mediaProfileRequests.get(abandonedMediaId) === abandonedRequest) {
         this.mediaProfileRequests.delete(abandonedMediaId);
-        abandonedRequest.controller.abort(new DOMException('Profile preparation tail exceeded', 'AbortError'));
+        abandonedRequest.controller.abort(abortError('Profile preparation tail exceeded'));
       }
     }
   }

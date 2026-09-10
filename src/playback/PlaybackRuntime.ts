@@ -1,5 +1,5 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
-import type { Platform, Player } from '../platform/Platform.js';
+import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
@@ -73,7 +73,7 @@ export class PlaybackRuntime {
   private playback?: PlaybackCoordinatorSnapshot;
   private generation = 0;
   private transitionTail: Promise<void> = Promise.resolve();
-  private host?: HTMLElement;
+  private host?: PlaybackHost;
   private hostWaiters = new Set<() => void>();
   private teardownBarrier: Promise<void> = Promise.resolve();
   private disposed = false;
@@ -131,7 +131,7 @@ export class PlaybackRuntime {
     });
   }
 
-  attach(host: HTMLElement): void {
+  attach(host: PlaybackHost): void {
     if (this.disposed) return;
     if (this.host === host) return;
     this.host = host;
@@ -140,7 +140,7 @@ export class PlaybackRuntime {
     this.hostWaiters.clear();
   }
 
-  detach(host: HTMLElement): void {
+  detach(host: PlaybackHost): void {
     if (this.host !== host) return;
     this.host = undefined;
     // Presentation lifetime is not playback lifetime. In particular React

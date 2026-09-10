@@ -78,6 +78,7 @@ export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
 export * from './playback/MachaPlaybackResolver.js';
 export * from './playback/MediaTechnicalProfile.js';
+export * from './playback/MediaWatchdog.js';
 export * from './playback/PlaybackCoordinator.js';
 export * from './playback/PlaybackResolver.js';
 export * from './playback/PlaybackRuntime.js';

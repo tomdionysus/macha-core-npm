@@ -572,6 +572,43 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     expect(api.stop).toHaveBeenCalledWith('alternate', {});
   });
 
+  it('hands a Direct Play alternate over without reloading the element', async () => {
+    // The 17 ms silent swap is a byte-level handover: the read-ahead worker
+    // changes source underneath an element that never reloads. Promotion goes
+    // the other way, through `activateSession` and `player.play()`.
+    //
+    // Nothing else here asserts the silent path is taken *instead of* that
+    // one — only that it happens — so a change routing a Direct Play alternate
+    // through promotion-and-reload would pass every other test in this file
+    // and lose the seamless swap with nothing to show for it.
+    //
+    // The pair of assertions is the point: bookkeeping moved, so the swap is
+    // real rather than an inert path, and the element was never told to load
+    // anything. A promotion satisfies the first and fails the second.
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    primary.source.mediaId = 'macha:one';
+    const alternate = session({
+      sessionId: 'alternate',
+      mediaId: 'macha:one',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...primary.source, mediaId: 'macha:one', url: 'http://b/direct' },
+    });
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+    api.prepareAlternate = vi.fn(async () => alternate);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    expect(player.playCalls).toHaveLength(1);
+
+    player.degrade(new PlaybackSourceError('read-ahead TCP failed', 'stream'));
+    await vi.waitFor(() => expect(player.directAlternatives).toHaveLength(1));
+    await flush();
+
+    expect(coordinator.getSnapshot().session?.sessionId).toBe('alternate');
+    expect(player.playCalls).toHaveLength(1);
+    expect(player.playCalls[0]?.source).toEqual(primary.source);
+  });
+
   it('keeps registering fallbacks against the source truly loaded in the player across chained silent promotions', async () => {
     // The player never reloads across a silent promotion, so a *second*
     // degradation must still register its new fallback against the original

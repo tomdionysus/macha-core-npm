@@ -1,6 +1,6 @@
 {
   "name": "@macha/core",
-  "version": "0.6.4",
+  "version": "0.7.0",
   "description": "Generic, platform-independent client core for Macha: server API families, cluster endpoint routing and health, playback resolution and coordination, and persisted client state.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -29,8 +29,9 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "npm run typecheck && tsc -p tsconfig.build.json",
+    "build": "npm run typecheck && npm run lint:platform && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false",
+    "lint:platform": "tsc --noEmit -p tsconfig.nodom.json --pretty false",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "dist:check": "node scripts/dist-check.mjs",
