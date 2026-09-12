@@ -104,3 +104,4 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.6.4` | The manual bearer token removed from every interface. |
 | `0.7.0` | Stall detection, and the DOM out of the package. |
 | `0.8.0` | Accounts and roles, and the defects a full review found. |
+| `0.8.1` | First tests on the credential path; a refusal stops counting as a node fault. |

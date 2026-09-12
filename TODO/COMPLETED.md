@@ -8,6 +8,14 @@ Anything reverted or retracted stays here, marked, because knowing what was trie
 
 ---
 
+## 0.8.1 — the first tests on the accounts work
+
+**`signIn` has coverage.** The three users modules shipped in 0.8.0 with no test file at all. This is the first of it, on the credential path: that credentials go out on the same route as an anonymous mint and the username the server names is kept, that a refused password does **not** mark the node unhealthy and does not walk to the next node, and that a node which cannot answer at all still walks.
+
+The middle one is a review finding caught before it could bite: `mintAnonymousSessionAnyNode` charged every error to the endpoint, so a wrong password would have cooled down every node in the cluster in turn and then reported the cluster unreachable. A refusal is an answer, and answering is what a healthy node does.
+
+Also: the review record narrowed the bootstrap-lockout finding to callers of `checkEndpointConfiguration` after the phone client showed its own probe already accepts a 401, and gained two items the accounts work exposed — the two clients now disagreeing about how `logout()` and `signOut()` compose, and the undocumented obligation to stop playback before changing identity.
+
 ## 0.8.0 — accounts, and the defects a review found
 
 **The probe cache-buster no longer restarts every page load.** `cacheBustedProbeUrl` took its value from `machaHost().now()` — `performance.now()` on a browser, so near zero on every load — and the first probe of a load fires at a fixed point in startup. Measured on the running web client: two consecutive reloads gave 744 and 571. A few hundred integers wide, re-entered from the beginning each time, so a cache could answer a probe for a node that is gone and report a dead node healthy. Now the wall clock plus a counter, the counter because two endpoints in a cycle are probed in the same millisecond. The latency half stays monotonic; they are different clocks for different jobs.

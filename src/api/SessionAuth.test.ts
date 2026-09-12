@@ -60,6 +60,59 @@ describe('mintAnonymousSession', () => {
   });
 });
 
+describe('signing in with credentials', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('sends the credentials on the same route and keeps the username the server names', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(sessionResponse({ username: 'alice', roles: ['media_viewer'] })),
+      { status: 201, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const session = await mintAnonymousSession('http://node.test', { username: 'alice', password: 'hunter2000' });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ credentials: { username: 'alice', password: 'hunter2000' } });
+    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, username: 'alice' });
+  });
+
+  it('does not mark a node unhealthy for refusing a password, and does not ask the next one', async () => {
+    // A mistyped password would otherwise walk the cluster and record a
+    // failure against every node, degrading endpoint ranking and playback
+    // failover because somebody fumbled a login. The refusal is also
+    // cluster-wide: every node checks the same replicated table.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: 'invalid_credentials', message: 'Unknown username or password.' }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry, { username: 'alice', password: 'wrong' }))
+      .rejects.toMatchObject({ status: 401 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it('still walks to the next node when one cannot answer at all', async () => {
+    // The counterpart: a node that fails to respond is a node fault, and the
+    // walk is the whole reason a cold start survives one node being down.
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry, { username: 'alice', password: 'right' }))
+      .resolves.toMatchObject({ token: 'token-secret' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('mintAnonymousSessionAnyNode', () => {
   afterEach(() => vi.unstubAllGlobals());
 
