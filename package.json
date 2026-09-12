@@ -5,6 +5,9 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20"
   },
