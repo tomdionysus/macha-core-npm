@@ -42,6 +42,21 @@ export interface IngestJob {
   error: string | null;
 }
 
+// Post-import cataloguing of what the torrent delivered, reported per job by
+// the server since 0.28.1. A torrent whose payload landed but matched nothing
+// in the catalogue is a successful download and a failed acquisition, and only
+// these counts tell the two apart.
+export type TorrentCatalogueState = 'waiting' | 'processing' | 'completed' | 'completed_with_issues';
+
+export interface TorrentCatalogueSummary {
+  total: number;
+  pending: number;
+  catalogued: number;
+  no_match: number;
+  failed: number;
+  state: TorrentCatalogueState;
+}
+
 export interface TorrentJob {
   id: string;
   name: string;
@@ -54,9 +69,13 @@ export interface TorrentJob {
   uploaded_total: number;
   peers: number;
   seeds: number;
+  catalogue: TorrentCatalogueSummary;
   eta_seconds: number | null;
   progress: number | null;
   ingest_job_id: string | null;
+  // Present only in the cluster-wide job listing, which tags each job with the
+  // node running it; a single-job action response carries the job alone.
+  node_id?: string;
   created_unix_ms: number;
   updated_unix_ms: number;
   error: string | null;

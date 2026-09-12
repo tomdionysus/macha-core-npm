@@ -1,6 +1,6 @@
 import { machaHost } from '../runtime/host.js';
 import type { StorageLike } from '../state/storage.js';
-import { mintAnonymousSessionAnyNode, validateAnonymousSessionAnyNode, type AnonymousSession } from './SessionAuth.js';
+import { mintAnonymousSessionAnyNode, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
 import { mergeRequestHeaders } from './httpCompat.js';
 import { reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
@@ -127,6 +127,42 @@ export class SessionManager implements AuthenticatedFetch {
     this.ready = false;
     this.registry = registry;
     void this.bootstrap();
+  }
+
+  /**
+   * Exchange credentials for a session and adopt it.
+   *
+   * Failure is thrown rather than swallowed, unlike the background mint: a
+   * wrong password is something the person at the keyboard has to be told,
+   * and retrying it on a timer would lock the account out on their behalf.
+   * The previous session is simply replaced — it belonged to a different
+   * user, so revoking it here would sign out whoever else was holding it.
+   */
+  async signIn(credentials: SessionCredentials): Promise<void> {
+    if (!this.registry) throw new Error('Cannot sign in before the session lifecycle has started.');
+    const session = await mintAnonymousSessionAnyNode(this.registry, credentials);
+    this.cacheSession(session);
+    this.adopt(session);
+  }
+
+  /**
+   * Drop this session and take an anonymous one.
+   *
+   * Revoking the old token server-side is the caller's to do before calling
+   * this, because a revoke is a request that can fail and this cannot: once
+   * the viewer has asked to be signed out, ending up still signed in is the
+   * one outcome that must not happen.
+   */
+  async signOut(): Promise<void> {
+    this.token = undefined;
+    try {
+      this.storage?.removeItem(SESSION_CACHE_KEY);
+    } catch {
+      // An unwritable store cannot keep us signed in: the in-memory token is
+      // already gone, and a stale cached one is rejected on the next reload.
+    }
+    this.notify();
+    if (this.registry) await this.mintNow(this.registry);
   }
 
   /** Halts the lifecycle (pending timers, in-flight tracking) without clearing the current token. */

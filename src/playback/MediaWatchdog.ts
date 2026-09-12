@@ -1,3 +1,4 @@
+import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
 /**
  * Bounds the one playback failure the player could not previously see: a media
  * element that accepted a source, began its fetch, and then received nothing
@@ -219,12 +220,17 @@ export class MediaStartWatchdog {
  * told.
  *
  * Was fifteen seconds, then five, then this, over 2026-09-08 and 09. Fifteen
- * was a viewer staring at a frozen frame; five proved too eager in use and
- * sat under the server's own hold. If it moves again, move it against the
- * hold, not against a round number — and if `segment_timeout_ms` changes,
- * this changes with it.
+ * was a viewer staring at a frozen frame; five proved too eager in use and sat
+ * *under* the server's own hold — so a node answering a held fragment exactly
+ * as designed was called stalled before it could answer.
+ *
+ * That is why this is now expressed against `SERVER_SEGMENT_HOLD_MS` rather
+ * than written as a number. The relationship is the requirement; the figure is
+ * a consequence. A second of margin is enough because the hold ends with a
+ * response rather than with silence — this only has to outlast the wait, not
+ * the round trip after it.
  */
-export const MEDIA_STALL_TIMEOUT_MS = 7_000;
+export const MEDIA_STALL_TIMEOUT_MS = SERVER_SEGMENT_HOLD_MS + 1_000;
 
 /**
  * The stall watchdog: playback stopped and nothing is arriving to restart it.

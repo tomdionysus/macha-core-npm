@@ -5,6 +5,19 @@ import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 export interface AnonymousSession {
   token: string;
   expiresAtMs: number;
+  /**
+   * The account this session belongs to, where the server names it.
+   *
+   * Absent from a node that has sessions but not yet accounts, which is not
+   * the same as an unnamed user — the caller has to be able to tell "the
+   * server did not say" from "the server said anonymous".
+   */
+  username?: string;
+}
+
+export interface SessionCredentials {
+  username: string;
+  password: string;
 }
 
 export class SessionAuthError extends Error {
@@ -13,15 +26,37 @@ export class SessionAuthError extends Error {
   }
 }
 
-/** `POST /api/v1/session` — the one endpoint that takes no Authorization header. */
-export async function mintAnonymousSession(baseUrl: string): Promise<AnonymousSession> {
+/**
+ * Whether the server refused who you claim to be, rather than failing to
+ * answer.
+ *
+ * 401 is a wrong username or password; 403 is a refusal to mint at all, such
+ * as anonymous access being switched off. Both are the node working
+ * correctly. 429 is deliberately absent: a rate limit is worth trying
+ * elsewhere, and it says nothing about whether the credentials are right.
+ */
+function refusedCredentials(error: unknown): boolean {
+  const status = error instanceof SessionAuthError ? error.status : undefined;
+  return status === 401 || status === 403;
+}
+
+/**
+ * `POST /api/v1/session` — the one endpoint that takes no Authorization header.
+ *
+ * Credentials are optional because there is no such thing as an
+ * unauthenticated session: omitting them authenticates the `anonymous` user
+ * and supplying them authenticates whoever they name. Same route, same
+ * response, one lifecycle — which is why signing in does not need a parallel
+ * set of everything below.
+ */
+export async function mintAnonymousSession(baseUrl: string, credentials?: SessionCredentials): Promise<AnonymousSession> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   let response: Response;
   try {
     response = await fetch(url, {
       method: 'POST',
       headers: mergeRequestHeaders(undefined, { Accept: 'application/json', 'Content-Type': 'application/json' }),
-      body: '{}',
+      body: JSON.stringify(credentials ? { credentials } : {}),
     });
   } catch {
     throw serverUnreachable();
@@ -36,7 +71,8 @@ export async function mintAnonymousSession(baseUrl: string): Promise<AnonymousSe
   const token = typeof record?.token === 'string' ? record.token : undefined;
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
   if (!token || expiresAtMs === undefined) throw new SessionAuthError('Server returned a malformed session response.');
-  return { token, expiresAtMs };
+  const username = typeof record?.username === 'string' ? record.username : undefined;
+  return username === undefined ? { token, expiresAtMs } : { token, expiresAtMs, username };
 }
 
 /**
@@ -45,14 +81,28 @@ export async function mintAnonymousSession(baseUrl: string): Promise<AnonymousSe
  * any node is valid cluster-wide, so a single down node must not block
  * getting a token.
  */
-export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry): Promise<AnonymousSession> {
+export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, credentials?: SessionCredentials): Promise<AnonymousSession> {
   let lastError: unknown;
   for (const { endpoint } of registry.candidates()) {
     try {
-      const session = await mintAnonymousSession(endpoint.baseUrl);
+      const session = await mintAnonymousSession(endpoint.baseUrl, credentials);
       registry.recordSuccess(endpoint.id);
       return session;
     } catch (error) {
+      // A refusal is not a fault. A node that answers "those credentials are
+      // wrong" has done its job perfectly, and marking it unhealthy for
+      // saying so would let one mistyped password walk the whole cluster and
+      // mark every node failed — degrading endpoint ranking and playback
+      // failover because somebody fumbled a login.
+      //
+      // It is also cluster-wide and final, the same reasoning session
+      // validation already uses for a rejected token: every node checks the
+      // same credentials against the same replicated table, so asking the
+      // next one is a slower way to be told the same thing.
+      if (refusedCredentials(error)) {
+        registry.recordSuccess(endpoint.id);
+        throw error;
+      }
       registry.recordFailure(endpoint.id);
       lastError = error;
     }

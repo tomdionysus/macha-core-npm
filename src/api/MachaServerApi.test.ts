@@ -25,13 +25,27 @@ describe('MachaServerApi', () => {
     expect(status.playbackAvailable).toBe(true);
   });
 
-  it('accepts a Macha server header as the version source', async () => {
+  it('takes the version from the body and ignores response headers entirely', async () => {
+    // There was a header fallback here — `x-macha-version`, `x-server-version`,
+    // then parsing `Server` — and a test asserting the last of them. The server
+    // sends none of the three and never has, verified against its source and a
+    // live node. The old test passed against a header nobody emits, which
+    // proved the code worked rather than that the behaviour was wanted.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ enabled: true, server_version: '0.36.9' }), {
+      status: 200,
+      headers: { Server: 'Macha/0.8.3', 'x-macha-version': '0.8.3' },
+    })));
+
+    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ version: '0.36.9' }));
+  });
+
+  it('reports no version rather than inventing one when the body omits it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ enabled: true }), {
       status: 200,
       headers: { Server: 'Macha/0.8.3' },
     })));
 
-    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ version: '0.8.3' }));
+    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ version: null }));
   });
 
   it('treats an HTTP playback error as a reachable server with unavailable playback', async () => {

@@ -276,6 +276,66 @@ describe('where artwork can be fetched from', () => {
     ]);
   });
 
+  it('re-hosts a signed capability on every node, because its signature is a cluster credential', () => {
+    // The HMAC covers the artwork id and expiry, not the host, and any node
+    // reads content-addressed artwork from its DHT owner: one capability is
+    // good everywhere, which is what an <img> needs in order to fail over.
+    // The node that signed it is listed once, not twice.
+    const catalogue = new FakeCatalogue();
+    catalogue.artworkUrls = (id: string) => [
+      { url: `http://a/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true },
+      { url: `http://b/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true },
+    ];
+    const api = new MachaMediaApi(catalogue);
+    const live = `?exp=${Date.now() + 60_000}&sig=abc`;
+
+    expect(api.artworkUrls({ id: 'art-1', mimeType: 'image/jpeg', url: `http://a/api/v1/catalogue/artwork/art-1${live}` })).toEqual([
+      { url: `http://a/api/v1/catalogue/artwork/art-1${live}`, requiresAuthorization: false },
+      { url: `http://b/api/v1/catalogue/artwork/art-1${live}`, requiresAuthorization: false },
+      { url: 'http://a/api/v1/catalogue/artwork/art-1', requiresAuthorization: true },
+      { url: 'http://b/api/v1/catalogue/artwork/art-1', requiresAuthorization: true },
+    ]);
+  });
+
+  it('reads exp as unix milliseconds, which is what the server signs', () => {
+    // Pins the unit, because getting it wrong fails silently and in the
+    // direction that looks fine: seconds against Date.now() make every live
+    // capability read as long expired, so no alternate is ever offered and
+    // the failover quietly stops existing. The server signs
+    // `unix_ms() + ttl` and checks `unix_ms() >= expires` (src/types.cpp),
+    // and a real capability off the wire carries thirteen digits.
+    const catalogue = new FakeCatalogue();
+    catalogue.artworkUrls = (id: string) => [{ url: `http://b/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true }];
+    const api = new MachaMediaApi(catalogue);
+    const reHosted = (exp: number) => api
+      .artworkUrls({ id: 'art-1', mimeType: 'image/jpeg', url: `http://a/api/v1/catalogue/artwork/art-1?exp=${exp}&sig=abc` })
+      .some((source) => source.url.startsWith('http://b') && !source.requiresAuthorization);
+
+    const anHourAway = Date.now() + 3_600_000;
+    expect(reHosted(anHourAway)).toBe(true);
+    // The same instant in seconds. Read as milliseconds it is 1970, so it
+    // must be treated as expired rather than quietly normalised — a format
+    // that ever does change units should break loudly here.
+    expect(reHosted(Math.floor(anHourAway / 1000))).toBe(false);
+  });
+
+  it('re-hosts an expired capability nowhere, because every node would refuse it', () => {
+    // It still leads: the caller's own cache may hold the image under it.
+    // What follows is the authenticated URLs, which are the real recovery.
+    const catalogue = new FakeCatalogue();
+    catalogue.artworkUrls = (id: string) => [
+      { url: `http://a/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true },
+      { url: `http://b/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true },
+    ];
+    const api = new MachaMediaApi(catalogue);
+
+    expect(api.artworkUrls({ id: 'art-1', mimeType: 'image/jpeg', url: 'http://a/api/v1/catalogue/artwork/art-1?exp=1&sig=abc' })).toEqual([
+      { url: 'http://a/api/v1/catalogue/artwork/art-1?exp=1&sig=abc', requiresAuthorization: false },
+      { url: 'http://a/api/v1/catalogue/artwork/art-1', requiresAuthorization: true },
+      { url: 'http://b/api/v1/catalogue/artwork/art-1', requiresAuthorization: true },
+    ]);
+  });
+
   it('falls back to node URLs, and says they need the caller\'s header', () => {
     // A flat list of strings would silently 401 here. A caller that cannot
     // send a header has to be able to tell, rather than hope.

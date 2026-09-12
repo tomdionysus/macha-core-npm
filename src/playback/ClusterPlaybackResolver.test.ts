@@ -19,6 +19,37 @@ function wireSession(id: string) {
   };
 }
 
+/**
+ * Admission requests only, located by method rather than by position.
+ *
+ * `failover` also closes the session it abandons, so counting calls
+ * positionally breaks the moment any request is added — which is exactly what
+ * happened when it did. Filtering on what a call *is* survives that.
+ */
+function admissionCalls(fetchMock: ReturnType<typeof vi.fn>): Array<[string, RequestInit]> {
+  return (fetchMock.mock.calls as Array<[string, RequestInit]>)
+    .filter(([, init]) => (init?.method ?? 'GET').toUpperCase() === 'POST');
+}
+
+/**
+ * Answer `DELETE` with `204` and serve everything else from the queued
+ * responses in order.
+ *
+ * The fixtures here were built from `mockResolvedValueOnce` chains, which
+ * assume every request is an admission. Once `failover` began closing the
+ * session it abandons, a `DELETE` consumed the response meant for the next
+ * `POST` and the failures read as protocol errors rather than as fixture
+ * drift. Making the double answer by *method* removes the coupling between
+ * how many requests happen and which response each one gets.
+ */
+function withSessionCloses(fetchMock: ReturnType<typeof vi.fn>): ReturnType<typeof vi.fn> {
+  const wrapped = vi.fn(async (url: unknown, init?: RequestInit) => {
+    if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+    return (fetchMock as unknown as (u: unknown, i?: RequestInit) => Promise<Response>)(url, init);
+  });
+  return wrapped as unknown as ReturnType<typeof vi.fn>;
+}
+
 describe('ClusterPlaybackResolver', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -26,7 +57,7 @@ describe('ClusterPlaybackResolver', () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('node A unreachable'))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
 
@@ -40,7 +71,7 @@ describe('ClusterPlaybackResolver', () => {
     const attemptKeys = fetchMock.mock.calls.map(([url]) => new URL(url as string, 'http://x').searchParams.get('idempotency_key'));
     expect(attemptKeys[0]).toBeTruthy();
     expect(attemptKeys[1]).toBe(attemptKeys[0]);
-    const secondBody = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    const secondBody = JSON.parse(String(admissionCalls(fetchMock)[1][1].body));
     expect(secondBody).toEqual(expect.objectContaining({ seek_ms: 12_000, preferences: expect.objectContaining({ audio_language: 'eng' }) }));
   });
 
@@ -51,7 +82,7 @@ describe('ClusterPlaybackResolver', () => {
         { status: 425, headers: { 'Content-Type': 'application/json', 'Retry-After': '5' } },
       ))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
     await expect(resolver.resolve(media, capabilities, undefined, { mode: 'direct' })).resolves.toMatchObject({
@@ -68,7 +99,7 @@ describe('ClusterPlaybackResolver', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
     const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
@@ -85,6 +116,8 @@ describe('ClusterPlaybackResolver', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 200, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    // Deliberately unwrapped: this test asserts the teardown request itself,
+    // so the method-aware double must not answer it in the resolver's place.
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
@@ -104,7 +137,7 @@ describe('ClusterPlaybackResolver', () => {
       .mockImplementationOnce((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
       }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
     const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
@@ -121,7 +154,7 @@ describe('ClusterPlaybackResolver', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
     const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
@@ -137,7 +170,7 @@ describe('ClusterPlaybackResolver', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'media_open_failed', message: 'open media: Input/output error' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-c')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c'])));
     const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
@@ -161,7 +194,7 @@ describe('ClusterPlaybackResolver', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const resolver = new ClusterPlaybackResolver(registry);
     const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
@@ -170,7 +203,7 @@ describe('ClusterPlaybackResolver', () => {
 
     expect(alternate?.endpoint?.id).toBe('http://b');
     expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
-    const body = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+    const body = JSON.parse(String(admissionCalls(fetchMock)[1][1].body));
     expect(body.preferences.mode).toBe('direct');
     const idempotencyKeys = fetchMock.mock.calls.map(([url]) => new URL(url as string, 'http://x').searchParams.get('idempotency_key'));
     expect(idempotencyKeys[1]).not.toBe(idempotencyKeys[0]);
@@ -184,7 +217,7 @@ describe('ClusterPlaybackResolver', () => {
         return new Promise<Response>(() => undefined);
       })
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-c')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(
       new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c'])),
       undefined,
@@ -213,7 +246,7 @@ describe('ClusterPlaybackResolver', () => {
         return new Promise<Response>(() => undefined);
       })
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(
       new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])),
       undefined,
@@ -239,7 +272,7 @@ describe('ClusterPlaybackResolver', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(transformed('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(transformed('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
     const primary = await resolver.resolve(media, capabilities, 0, { mode: 'remux' });
     const standby = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'remux' });
@@ -256,6 +289,8 @@ describe('ClusterPlaybackResolver', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('same-id')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('same-id')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
       .mockResolvedValue(new Response(null, { status: 204 }));
+    // Deliberately unwrapped: this test asserts the teardown request itself,
+    // so the method-aware double must not answer it in the resolver's place.
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
     const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
@@ -270,3 +305,119 @@ describe('ClusterPlaybackResolver', () => {
     ]);
   });
 });
+
+describe('the carriage a replacement generation asks for', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const remuxWire = (id: string, container?: string) => ({
+    ...wireSession(id),
+    mode: 'remux',
+    output: container === undefined ? {} : { container },
+  });
+  const preferencesOf = (fetchMock: ReturnType<typeof vi.fn>, call: number) =>
+    JSON.parse(String(admissionCalls(fetchMock)[call][1].body)).preferences ?? {};
+
+  const failoverFrom = async (container: string | undefined, preferences: Record<string, unknown> = { mode: 'remux' }) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(remuxWire('session-a', container)), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(remuxWire('session-b', container)), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'remux' });
+    await resolver.failover(primary, media, capabilities, 20_000, preferences as never);
+    return preferencesOf(fetchMock, 1);
+  };
+
+  it('asks for the carriage the failed generation was actually served with', async () => {
+    // `container` is not among a session's confirmed preferences, so a
+    // replacement built from those asks for whatever the node defaults to. A
+    // set that asked for MPEG-TS then gets fMP4 from every replacement — the
+    // one carriage it cannot play — and a native player fetches nothing and
+    // reports nothing about it.
+    expect(await failoverFrom('mpegts')).toMatchObject({ container: 'mpegts' });
+  });
+
+  it('uses what was served rather than what was asked for', async () => {
+    // The two agree until they do not, and a node answering with something
+    // other than the request is exactly what a failover is recovering from.
+    expect(await failoverFrom('fmp4', { mode: 'remux' })).toMatchObject({ container: 'fmp4' });
+  });
+
+  it('never overrides a container the caller stated', async () => {
+    expect(await failoverFrom('fmp4', { mode: 'remux', container: 'mpegts' })).toMatchObject({ container: 'mpegts' });
+  });
+
+  it('asks for nothing when the node reported no container', async () => {
+    // No grounds to choose one, so today's behaviour is the right no-op.
+    expect(await failoverFrom(undefined)).not.toHaveProperty('container');
+  });
+
+  it('asks for nothing when the node reported a container it does not recognise', async () => {
+    expect(await failoverFrom('matroska')).not.toHaveProperty('container');
+  });
+
+  it('leaves a direct generation alone, which has no carriage to choose', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...wireSession('session-a'), output: { container: 'fmp4' } }), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
+    await resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' });
+
+    expect(preferencesOf(fetchMock, 1)).not.toHaveProperty('container');
+  });
+});
+
+describe('the session a failover walks away from', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is closed, without the caller having to ask', async () => {
+    // A node counts a session against `max_video_transcodes` from admission
+    // until the record is erased — `session_idle`, 30 minutes — and reclaiming
+    // the idle pipeline at 60 s does not release it. With one slot per node,
+    // failing away from a node that is alive but slow closes it to every other
+    // viewer's transcode for half an hour.
+    const deletes: string[] = [];
+    let admissions = 0;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') {
+        deletes.push(String(url));
+        return new Response(null, { status: 204 });
+      }
+      admissions += 1;
+      return new Response(JSON.stringify(wireSession(`session-${admissions}`)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
+    await resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' });
+    await flushMicrotasks();
+
+    // Session ids are namespaced by endpoint (`http://a::session-1`) while the
+    // URL carries the node-local half, so match on that rather than the whole.
+    const nodeLocalId = primary.sessionId.split('::').at(-1)!;
+    expect(deletes).toEqual([`http://a/api/v1/playback/sessions/${nodeLocalId}`]);
+  });
+
+  it('still fails over when the close cannot be delivered', async () => {
+    // Never awaited and never allowed to fail the failover: a slow node is
+    // exactly where failover fires, so waiting on this would hang the recovery
+    // it is part of.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') throw new TypeError('node gone');
+      return new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
+    await expect(resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' })).resolves.toBeTruthy();
+    await flushMicrotasks();
+  });
+});
+
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

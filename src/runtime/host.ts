@@ -20,7 +20,25 @@ export interface MachaHost {
    * passing persistent storage here, rather than inheriting it by accident.
    */
   ephemeralStorage: StorageLike;
-  /** Milliseconds from an arbitrary origin, for measuring durations only. */
+  /**
+   * Milliseconds from an arbitrary origin, for measuring durations only.
+   *
+   * **The consequence, because "durations only" has not been enough.** This is
+   * `performance.now()` wherever the host has it: monotonic, and restarting
+   * near zero on every run. It cannot express an absolute instant, so route a
+   * duration through it and keep anything absolute on `Date.now()` — never
+   * convert between them. Three cases in this package, all of which have been
+   * got wrong or nearly swept the wrong way:
+   *
+   * - `EndpointBandwidth` persists `updatedAt` and compares it after a restart
+   *   against a six-hour window. On this clock the cutoff goes negative and
+   *   every stored record reads as fresh, whatever its age.
+   * - `MachaMediaApi.expiredCapability` compares against an expiry another
+   *   machine signed, which a from-arbitrary-origin clock cannot express.
+   * - `EndpointHealthMonitor`'s probe cache-buster needs a value that never
+   *   repeats. Built from this clock it restarted every page load and
+   *   collided, which is the same confusion running the other way.
+   */
   now(): number;
   /** A fresh RFC 4122 identifier. */
   uuid(): string;

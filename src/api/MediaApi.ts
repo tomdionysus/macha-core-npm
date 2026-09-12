@@ -18,10 +18,20 @@ export interface MediaApi {
    *
    * The ref's own signed capability URL leads when it has one: it carries its
    * own authority, so it is both the cheapest path and the only one usable
-   * from a context that cannot set headers. Per-node catalogue URLs follow as
-   * fallbacks and do need the client's `Authorization` header — check
-   * `requiresAuthorization` rather than assuming, or a caller that cannot send
-   * one silently 401s on every entry after the first.
+   * from a context that cannot set headers. The same capability re-hosted on
+   * every other node follows, and needs no header either — its signature
+   * covers the artwork id and expiry, never the host, and it is checked with
+   * the shared cluster key, so every node honours it and any of them serves
+   * the same content-addressed bytes. That is what lets a caller which cannot
+   * set headers fail over from a node that is down instead of losing the
+   * image. Per-node catalogue URLs come last and do need the client's
+   * `Authorization` header — check `requiresAuthorization` rather than
+   * assuming, or a caller that cannot send one silently 401s on every entry
+   * after the first.
+   *
+   * An expired capability is not re-hosted: every node would refuse it, so a
+   * caller holding one has only its own entry (the browser may still have the
+   * image cached under it) and then the authenticated URLs.
    */
   artworkUrls(ref: ArtworkRef): ArtworkSource[];
   invalidateArtwork?(ref: ArtworkRef): void;

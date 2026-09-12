@@ -7,6 +7,8 @@ import type { ClusterStatusApi } from '../api/ClusterStatusApi.js';
 import { ClusterStatusRouter } from '../api/ClusterStatusRouter.js';
 import { ClusterCatalogueApi } from '../api/ClusterCatalogueApi.js';
 import { ClusterManageApi } from '../api/ClusterManageApi.js';
+import { ClusterUsersApi } from '../api/ClusterUsersApi.js';
+import type { UsersApi } from '../api/UsersApi.js';
 import type { ManageApi } from '../api/ManageApi.js';
 import { MachaMediaApi } from '../api/MachaMediaApi.js';
 import type { MediaApi } from '../api/MediaApi.js';
@@ -21,6 +23,7 @@ import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 export interface MachaServices {
   catalogueApi: CatalogueApi;
   manageApi: ManageApi;
+  usersApi: UsersApi;
   mediaApi: MediaApi;
   playbackResolver: PlaybackResolver;
   serverApi: ServerApi;
@@ -61,6 +64,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
   return {
     catalogueApi,
     manageApi: new ClusterManageApi(endpointRouter, auth),
+    usersApi: new ClusterUsersApi(endpointRouter, auth),
     mediaApi: apiOverride ?? new MachaMediaApi(catalogueApi),
     playbackResolver: playbackOverride ?? new ClusterPlaybackResolver(endpointRouter, auth),
     serverApi: new ClusterServerApi(endpointRouter, auth),

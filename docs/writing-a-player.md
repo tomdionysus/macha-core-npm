@@ -47,6 +47,8 @@ Only the player can tell a hold from a real fragment failure, and **what it has 
 
 So find what your stack actually exposes before designing around what the server sends, and if the answer is "only the status", say so — that is a constraint on the wire protocol, not a defect in your adapter. What core requires is only that a hold arrives as `not-ready` and a broken generation as `stream`.
 
+**Do not implement the mapping yourself.** `playbackFailureKindForStatus(status)` is exported for it. Report the status your stack gave you and let core say what it means: the split below is protocol, not platform, and it was previously reimplemented once per player — in JavaScript against hls.js, in Kotlin against media3 — which put wire knowledge inside adapters that have no business holding it. The reasoning stays here because that is the part worth reading; the mapping does not.
+
 Against Macha that constraint has been answered on the wire — the two are split by **status**, both inside 5xx so a player's own retry still applies:
 
 | status | code | means | report as |
@@ -66,6 +68,10 @@ That paragraph is the only record of the reasoning anywhere in this repo, and th
 So if you are writing a player on a platform whose deadline is not listed above, find it and say what you find — nobody else is going to. A platform whose number nobody knows is the one most likely to be sitting just under the hold.
 
 Retry the hold on the same node — the next node is producing a different generation and does not have that fragment either — and back off exponentially rather than hammering at a fixed interval; a `Retry-After` on the hold is a hint, and hls.js ignores it on the fragment path anyway.
+
+**Check the host actually provides what core assumes.** `checkPlatformSurface()` probes it at runtime and returns findings rather than throwing or logging, so a host can render them on a diagnostics screen; `missingRequiredSurface()` returns just the failures, and empty is the expected answer.
+
+It exists because core's compile-time gate and a host's runtime are different facts. `npm run lint:platform` proves core reaches for nothing outside `types/platform-neutral.d.ts`; it cannot prove your host supplies it. `DOMException` compiled and passed the whole suite while throwing `ReferenceError` on React Native, and Chromium 47 meets the surface only because the web client installs its own `AbortController`. Run it once on a real device before believing a green build.
 
 **Optional methods are genuinely optional.** `prepare`, `setSubtitle`, `addDirectSourceAlternative`, `preflightSource`, `detachHost`, `subscribeFailure` and `subscribeDegradation` may all be omitted; the core checks before calling. Start with the required set — `attach`, `detach`, `play`, `pause`, `resume`, `seek`, `localSeekCoverage`, `setVolume`, `stop`, `subscribe` — and add the rest when you want the behaviour they buy.
 

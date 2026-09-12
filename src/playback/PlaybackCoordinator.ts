@@ -115,23 +115,57 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
 /**
  * How long a prepared standby is held before being closed unused.
  *
- * Calibrated against a server number, not chosen freely: a node reclaims an
- * idle transcode pipeline after `streaming.pipeline_idle_ms`, 60 s by default
- * and never below 10 s, and only a fragment request refreshes that clock. A
- * standby is idle by definition — nothing fetches from it until it is promoted
- * — so a window at or beyond the reclaim interval promotes onto a session
- * whose engine has gone, which is worse than having no standby at all: the
- * promotion succeeds, plays nothing, and burns the recovery attempt that would
- * otherwise have admitted a fresh session.
+ * This window was originally chosen against `streaming.pipeline_idle_ms` — the
+ * 60 s after which a node reclaims an idle transcode pipeline — on the belief
+ * that a standby older than that would promote onto a dead session. **That
+ * reasoning was wrong and is recorded here so it does not come back.** The two
+ * server clocks are independent: `pipeline_idle` reclaims the *engine*, while
+ * `session_idle` (30 minutes) erases the *session*. An aged standby is a live
+ * session with a cold engine, so promoting it costs a cold start rather than a
+ * failure, and 60 s was never the binding constraint.
  *
- * Thirty seconds sits inside the default sixty with room for the promotion
- * itself. Note the two clocks are independent: reclaiming the pipeline does not
- * expire the session record, which lives for `session_idle` (30 minutes), so an
- * aged standby is a live session with a cold engine rather than a dead one. A
- * node reports its real interval as `pipeline_idle_ms` on
- * `/api/v1/playback/status`, so this need not stay a guess if it ever matters.
+ * What thirty seconds actually buys is the case where a node produces one
+ * degradation and then recovers: the rescue is held long enough to be there if
+ * a second failure follows, and released if none does. For a remux or direct
+ * standby that costs the node a session record and nothing anyone else is
+ * competing for, so the window can afford to be generous.
+ *
+ * A transcode standby is not in that position — see
+ * `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` below, which is the constraint that
+ * turned out to be real.
  */
 const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
+/**
+ * How long a standby against a **transcode** session is held.
+ *
+ * Much shorter, because that standby is not merely idle — it holds a scarce,
+ * node-wide resource for every other viewer. A node admits a session as video
+ * transcode entitled and counts it against `max_video_transcodes` **from
+ * admission until the session record is destroyed**, not while its pipeline is
+ * running: the entitlement lives on the session, and `video_transcodes_locked()`
+ * never inspects whether an engine exists. These nodes are configured with one
+ * slot.
+ *
+ * The two server clocks are worth keeping straight, because confusing them is
+ * what made this look smaller than it is. `pipeline_idle` (60 s) reclaims the
+ * *engine*; `session_idle` (**30 minutes**) erases the *session*. Only the
+ * second releases the slot. So this window bounds how long core *intends* to
+ * hold a slot, and an explicit close is what actually returns it — a standby
+ * dropped by letting the reference go strands the node's only video slot for
+ * up to half an hour. Every path here that abandons one calls
+ * `resolver.stop()`, and that is not incidental.
+ *
+ * The full window buys the case where a node produces one degradation and then
+ * recovers, and the rescue turns out not to have been needed. That is worth
+ * holding a cheap resource for and not worth holding the only one. Long enough
+ * to cover the second failure that promotes it, which follows the first within
+ * seconds when it comes at all; short enough that a false alarm costs a
+ * stranger a few seconds rather than half a minute.
+ *
+ * Remux and direct standbys keep the full window — they are entitled to no
+ * transcode slot and cost the node nothing but a session record.
+ */
+const ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS = 8_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
@@ -705,7 +739,16 @@ export class PlaybackCoordinator {
 
   seek(positionMs: number): boolean {
     if (this.disposed) return false;
-    const durationMs = this.snapshot.session?.durationMs || this.snapshot.event.durationMs || this.options.media.durationMs;
+    const session = this.snapshot.session;
+    // Refused before anything is recorded. The intent used to move first, so
+    // a refused seek left the coordinator waiting for a position the player
+    // would never reach: real positions were ignored, `seekBy` built on the
+    // phantom, and a failover asked the next node to start there.
+    if (session && !session.options.canSeek) {
+      this.patchSnapshot({ notice: 'This stream cannot seek.' });
+      return false;
+    }
+    const durationMs = session?.durationMs || this.snapshot.event.durationMs || this.options.media.durationMs;
     const bounded = clampPosition(positionMs, durationMs);
     this.lastSeekTransitionAt = Date.now();
     this.positionRevision += 1;
@@ -717,14 +760,9 @@ export class PlaybackCoordinator {
       notice: undefined,
     });
 
-    const session = this.snapshot.session;
     if (!session) {
       this.log.info('seek-intent-before-generation', { positionMs: bounded });
       return true;
-    }
-    if (!session.options.canSeek) {
-      this.patchSnapshot({ notice: 'This stream cannot seek.' });
-      return false;
     }
 
     const localPositionMs = this.activeLocalPosition(session, bounded);
@@ -1202,11 +1240,16 @@ export class PlaybackCoordinator {
     if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
     const desiredMs = this.snapshot.intent.positionMs;
     this.activateSession(alternate, desiredMs, alternate.seekMs);
-    this.beginSupersededCleanup({
-      oldSessionId: session.sessionId,
-      newSessionId: alternate.sessionId,
-      attempt: 0,
-    });
+    // Recorded before it is begun. `beginSupersededCleanup` acts only on the
+    // record it already owns, so a fresh object passed straight in was a
+    // no-op: the primary was never closed, and on a one-slot node its
+    // transcode stayed counted for `session_idle`. Closed now rather than
+    // after buffered evidence on the replacement — the standby was promoted
+    // because the primary stopped serving, so there is nothing to fall back
+    // to and no reason to hold the slot.
+    const cleanup = { oldSessionId: session.sessionId, newSessionId: alternate.sessionId, attempt: 0 };
+    this.supersededCleanup = cleanup;
+    this.beginSupersededCleanup(cleanup);
   }
 
   private prepareAlternate(session: PlaybackSession, activationRevision: number): void {
@@ -1281,7 +1324,9 @@ export class PlaybackCoordinator {
           void this.options.resolver.stop(alternate!.sessionId).catch((error) => {
             this.log.warn('expired-alternate-close-failed', { sessionId: alternate!.sessionId, error });
           });
-        }, ALTERNATE_RECOVERY_WINDOW_MS);
+        }, alternate.mode === 'transcode'
+          ? ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS
+          : ALTERNATE_RECOVERY_WINDOW_MS);
         this.alternateExpiryTimers.set(alternate.sessionId, expiry);
         this.log.info('alternate-ready', {
           primarySessionId: session.sessionId,

@@ -1,0 +1,165 @@
+/**
+ * Accounts, roles, and who the current session belongs to.
+ *
+ * Roles are **capabilities, not a ladder**. `importer` does not imply
+ * `manager`, and nothing here expands one into another: the server resolves a
+ * user's roles when the session is minted and the array it returns is the
+ * closed set. A client that infers "a manager can obviously also import" is
+ * reimplementing policy the server already decided, and the two will drift.
+ */
+export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users';
+
+export const USER_ROLES: readonly UserRole[] = ['media_viewer', 'importer', 'manager', 'manage_users'];
+
+/**
+ * What may be changed about this user, decided by the server and stated per
+ * field.
+ *
+ * The root and anonymous accounts are ordinary users that happen to be
+ * protected, and the protection is **not** knowable from the username. A
+ * client that tests `username === 'root'` is wrong the moment those names
+ * become configurable, and it disables the wrong controls everywhere at once.
+ * Render what this block says and nothing else.
+ *
+ * Protection is also not the only reason a field can be locked: removing the
+ * last account holding `manage_users` is refused, and `setRolesBlockedBy`
+ * distinguishes that from an account that is protected, so the UI can explain
+ * which it is rather than greying a control for no stated reason.
+ */
+export interface UserMutability {
+  rename: boolean;
+  delete: boolean;
+  set_password: boolean;
+  set_roles: boolean;
+  /** Present when `set_roles` is false because of the last-manager rule rather than protection. */
+  set_roles_blocked_by?: 'last_user_manager';
+}
+
+/** Exact JSON shape exposed by Macha's users API. */
+export interface MachaUser {
+  id: string;
+  username: string;
+  roles: UserRole[];
+  created_unix_ms: number;
+  updated_unix_ms: number;
+  /**
+   * Bumped by a password or role change. Every session minted before the bump
+   * stops validating cluster-wide, which is why a role change signs the user
+   * out — a demotion that took up to thirty days to bite would not be a
+   * demotion.
+   */
+  credential_generation: number;
+  /** Last-write-wins counter, for optimistic concurrency once `If-Match` is wired. */
+  version: number;
+  mutable: UserMutability;
+}
+
+/**
+ * Rules the server enforces on a password, so the client can check inline
+ * rather than keeping its own copy.
+ *
+ * An object rather than a bare number so rules can be added without breaking
+ * readers. Treat every field as optional and an absent one as "no such rule":
+ * a client that requires a field it does not understand fails closed on a
+ * server that is merely newer.
+ */
+export interface PasswordPolicy {
+  min_password_length?: number;
+}
+
+/**
+ * Who the current token belongs to and what it may do.
+ *
+ * This is the whoami. It needs a valid token and **no role at all**, which is
+ * what makes it usable both for validating a cached session on reload and as
+ * a health probe — including on a node whose catalogue is still recovering
+ * and would answer anything else with a 503.
+ */
+export interface CurrentSession {
+  /**
+   * Identity, where the server states it.
+   *
+   * Optional because a deployed 0.37.2 node answers this route with `id`,
+   * `roles` and two timestamps and nothing else: it has sessions but not yet
+   * accounts. Typing these as required would be a promise about every server
+   * that some servers do not keep, and a reader would discover it as the word
+   * `undefined` rendered into the page rather than as a type error.
+   */
+  user_id?: string;
+  username?: string;
+  roles: UserRole[];
+  expires_unix_ms: number;
+  password_policy?: PasswordPolicy;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  roles: readonly UserRole[];
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  roles?: readonly UserRole[];
+  password?: string;
+}
+
+export interface UsersApi {
+  /** Every account. Requires `manage_users`. */
+  list(signal?: AbortSignal): Promise<MachaUser[]>;
+  get(id: string, signal?: AbortSignal): Promise<MachaUser>;
+  create(request: CreateUserRequest): Promise<MachaUser>;
+  /** Partial update. Omitted fields are left alone; a rejected field is a 403, never a silent no-op. */
+  update(id: string, request: UpdateUserRequest): Promise<MachaUser>;
+  remove(id: string): Promise<void>;
+  /** The signed-in user's own record. Any authenticated user, no role needed. */
+  me(signal?: AbortSignal): Promise<MachaUser>;
+  /**
+   * Change your own password.
+   *
+   * Accepts a password and nothing else — a roles change here would be an
+   * escalation route open to every viewer. Returns a fresh token, because the
+   * change invalidates the session that made it and being signed out by your
+   * own password change is a bug, not a security measure.
+   */
+  changeOwnPassword(password: string): Promise<{ token: string; expires_unix_ms: number }>;
+  /** Who this token is, what it may do, and the server's password rules. No role required. */
+  currentSession(signal?: AbortSignal): Promise<CurrentSession>;
+  /**
+   * End this session server-side.
+   *
+   * Dropping the token locally is not a logout: the session stays valid
+   * everywhere until it expires, and anyone holding the token keeps the
+   * access. This revokes it, and the revocation propagates to every node.
+   */
+  logout(): Promise<void>;
+}
+
+/**
+ * The account an empty set of credentials authenticates.
+ *
+ * Fixed rather than configurable: it is one of the two accounts the server
+ * refuses to rename, which is what makes comparing against it safe. Nothing
+ * about its *session* is special — it carries roles and is validated like any
+ * other — but a viewer holding one has not chosen to be anyone, so the UI
+ * offers them a way to sign in rather than an account to manage.
+ */
+export const ANONYMOUS_USERNAME = 'anonymous';
+
+/**
+ * Whether this session represents a person who has signed in.
+ *
+ * False for the anonymous account, and false where the server names no user
+ * at all — an older node with sessions but no accounts cannot say who this
+ * is, and offering "change your password" for a user it does not model would
+ * be a promise nothing can keep.
+ */
+export function isSignedIn(session: Pick<CurrentSession, 'username'> | undefined): boolean {
+  const username = session?.username?.trim();
+  return username !== undefined && username !== '' && username !== ANONYMOUS_USERNAME;
+}
+
+/** Whether `roles` permits `role`. A plain membership test, stated once so no caller invents implication. */
+export function hasRole(roles: readonly UserRole[] | undefined, role: UserRole): boolean {
+  return roles?.includes(role) ?? false;
+}

@@ -59,6 +59,9 @@ export * from './api/MachaPlaybackFactsApi.js';
 export * from './api/PlaybackFactsApi.js';
 export * from './api/MachaServerApi.js';
 export * from './api/ManageApi.js';
+export * from './api/UsersApi.js';
+export { MachaUsersApi, MachaUsersApiError, type UsersApiErrorCode } from './api/MachaUsersApi.js';
+export { ClusterUsersApi } from './api/ClusterUsersApi.js';
 export * from './api/MediaApi.js';
 export * from './api/serverConnection.js';
 export * from './api/SessionAuth.js';
@@ -74,6 +77,7 @@ export * from './cluster/endpointRouting.js';
 
 // --------------------------------------------------------------- playback
 export * from './playback/BufferedTimeline.js';
+export * from './playback/formatDuration.js';
 export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
 export * from './playback/MachaPlaybackResolver.js';
@@ -83,6 +87,7 @@ export * from './playback/PlaybackCoordinator.js';
 export * from './playback/PlaybackResolver.js';
 export * from './playback/PlaybackRuntime.js';
 export * from './playback/PlaybackStatus.js';
+export * from './playback/streamProtocol.js';
 
 // ------------------------------------------------------------------ state
 export * from './state/continueWatching.js';
@@ -96,6 +101,7 @@ export * from './state/volume.js';
 // --------------------------------------------------------------- platform
 export * from './platform/Platform.js';
 export * from './platform/platformTraits.js';
+export * from './platform/platformSurface.js';
 
 // --------------------------------------------------------------- services
 export * from './services/createMachaServices.js';

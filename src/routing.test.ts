@@ -23,11 +23,15 @@ describe('routes', () => {
     expect(routes.status).toBe('/status');
     expect(routes.statusClient).toBe('/status/client');
     expect(routes.statusConnectivity).toBe('/status/connectivity');
-    expect(routes.connection).toBe('/manage/settings/connection');
+    expect(routes.connection).toBe('/settings/connection');
     expect(routes.statusNode('node:one')).toBe('/status/nodes/node%3Aone');
     expect(routes.manage).toBe('/manage');
     expect(routes.manageFiles).toBe('/manage/files');
-    expect(routes.settings).toBe('/manage/settings');
+    expect(routes.manageUsers).toBe('/manage/users');
+    expect(routes.login).toBe('/login');
+    expect(routes.account).toBe('/account');
+    expect(routes.accountPassword).toBe('/account/password');
+    expect(routes.settings).toBe('/settings');
     expect(routes.artist('artist:one')).toBe('/music/artists/artist%3Aone');
     expect(routes.album('album:one')).toBe('/music/albums/album%3Aone');
     expect(routes.track('track:one')).toBe('/music/tracks/track%3Aone');

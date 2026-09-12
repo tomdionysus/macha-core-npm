@@ -115,6 +115,35 @@ async function flush(): Promise<void> {
 }
 
 describe('PlaybackCoordinator transport invariants', () => {
+  it('refuses a seek on a stream that cannot seek without moving intent', async () => {
+    // The guard used to sit below the intent mutation, so a refused seek
+    // pinned intent at a position the player would never reach: observed
+    // positions were ignored, `seekBy` built on the phantom, and a failover
+    // asked the next node to start there.
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'transcode', options: { ...session().options, canSeek: false } }));
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    // Activation holds an intent at the start position until the player
+    // reports reaching it; settle that first so the next event tracks.
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 7_000, durationMs: 600_000, paused: false, ended: false });
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(7_000);
+
+    expect(coordinator.seek(300_000)).toBe(false);
+
+    expect(coordinator.getSnapshot().notice).toBe('This stream cannot seek.');
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(7_000);
+    expect(coordinator.getSnapshot().event.positionMs).toBe(7_000);
+    expect(player.seekCalls).toEqual([]);
+    expect(api.update).not.toHaveBeenCalled();
+
+    player.emit({ positionMs: 9_000, durationMs: 600_000, paused: false, ended: false });
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(9_000);
+    expect(coordinator.seekBy(1_000)).toBe(false);
+    await coordinator.close();
+  });
+
   it('debounces uncached seek transitions until 300ms after the last input', async () => {
     vi.useFakeTimers();
     try {
@@ -864,6 +893,55 @@ describe('PlaybackCoordinator player failures', () => {
     expect(api.failover).not.toHaveBeenCalled();
   });
 
+  describe('what a standby costs the node holding it', () => {
+    const standbyFor = async (mode: 'remux' | 'transcode') => {
+      const player = new FakePlayer();
+      const primary = session({ sessionId: 'primary', mediaId: 'macha:one', mode });
+      const alternate = session({ sessionId: 'alternate', mediaId: 'macha:one', mode, endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+      const api = resolver(primary) as ReturnType<typeof resolver>
+        & { prepareAlternate: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => alternate);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      player.degrade(new PlaybackSourceError('read-ahead TCP failed', 'stream'));
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      await flush();
+      return api;
+    };
+
+    it('releases a transcode standby quickly, because it holds the node\'s only slot', async () => {
+      // A node counts a session against `max_video_transcodes` from admission
+      // until destruction — reclaiming its pipeline does not release the
+      // entitlement — and these nodes have one slot. So an unused transcode
+      // standby is thirty seconds in which nobody else on that node can start
+      // one. Verified against the server: 8 s, not 30 s.
+      vi.useFakeTimers();
+      try {
+        const api = await standbyFor('transcode');
+        expect(api.stop).not.toHaveBeenCalledWith('alternate');
+        await vi.advanceTimersByTimeAsync(9_000);
+        expect(api.stop).toHaveBeenCalledWith('alternate');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('holds a remux standby for the full window, which costs the node nothing scarce', async () => {
+      // Remux is entitled to no transcode slot: the node keeps a session
+      // record and nothing a another viewer is competing for.
+      vi.useFakeTimers();
+      try {
+        const api = await standbyFor('remux');
+        await vi.advanceTimersByTimeAsync(9_000);
+        expect(api.stop).not.toHaveBeenCalledWith('alternate');
+        await vi.advanceTimersByTimeAsync(22_000);
+        expect(api.stop).toHaveBeenCalledWith('alternate');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('a standby that is ready while the node keeps failing', () => {
     const remuxSession = (overrides = {}) => session({ mode: 'remux', mediaId: 'macha:one', ...overrides });
 
@@ -890,6 +968,33 @@ describe('PlaybackCoordinator player failures', () => {
 
       expect(player.playCalls.at(-1)?.source).toEqual(alternate.source);
       expect(coordinator.getSnapshot().session?.sessionId).toBe('alternate');
+    });
+
+    it('closes the primary it walked away from', async () => {
+      // The cleanup call passed a fresh record to a method that acts only on
+      // the record it already owns, so it was a no-op: the promoted-from
+      // session was never deleted, and a one-slot node kept its transcode
+      // counted for `session_idle`, thirty minutes. The test that would have
+      // caught it asserted only the play call.
+      const player = new FakePlayer();
+      const primary = remuxSession({ sessionId: 'primary', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+      const alternate = remuxSession({ sessionId: 'alternate', endpoint: { id: 'node-b', baseUrl: 'http://b' } });
+      const api = resolver(primary) as ReturnType<typeof resolver> & { prepareAlternate: ReturnType<typeof vi.fn> };
+      api.prepareAlternate = vi.fn(async () => alternate);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(new PlaybackSourceError('first', 'stream'));
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      await flush();
+      expect(api.stop).not.toHaveBeenCalled();
+
+      player.degrade(new PlaybackSourceError('second', 'stream'));
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary'));
+      expect(api.stop).not.toHaveBeenCalledWith('alternate');
+
+      await coordinator.close();
     });
 
     it('tells the registry the abandoned node is unwell', async () => {

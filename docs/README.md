@@ -1,6 +1,6 @@
 # `@macha/core` documentation
 
-The [package README](../README.md) covers what the core is, what it deliberately leaves to a host, and how to install and configure it. These guides cover the two things a new host actually has to do.
+The [package README](../README.md) covers what the core is, what it leaves to a host, and how to install and configure it. [History](../HISTORY.md) covers why it is shaped the way it is. These guides cover the work of bringing it to a new host.
 
 | Guide | Read it when |
 | --- | --- |
@@ -9,4 +9,4 @@ The [package README](../README.md) covers what the core is, what it deliberately
 | [Async storage on a synchronous interface](async-storage.md) | Your platform's storage is asynchronous (React Native's `AsyncStorage`, or anything else that returns promises) and the core wants a synchronous `StorageLike`. |
 | [Writing a player](writing-a-player.md) | You are bringing the core to a new platform. This is the one interface a host must implement, and the contracts that are not obvious from its type signature. |
 
-Both guides assume the package is built (`npm install && npm run build`); a linked `file:` dependency does not build itself.
+Every guide assumes the package is built (`npm install && npm run build`); a linked `file:` dependency does not build itself.

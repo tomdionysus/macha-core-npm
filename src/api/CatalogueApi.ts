@@ -107,6 +107,23 @@ export interface CatalogueMediaProfile {
  * caller that cannot set headers — an `<img src>`, a native image loader, a
  * platform downloader — silently 401s on every fallback while appearing to have
  * options. Such a caller should filter on this rather than hope.
+ *
+ * **"Cannot set headers" is literal for two of Macha's clients**, and it is a
+ * constraint on the wire rather than a client preference. React Native's
+ * `expo-file-system` downloader is invoked with no headers option at all, and a
+ * native player is handed a URL rather than a request — neither can attach one
+ * without a native module. The web client attaches nothing of its own either,
+ * though its legacy Blob path reaches artwork through this package's
+ * authenticated fetch, so a bearer token does travel when no signed URL was
+ * supplied.
+ *
+ * So a URL marked `requiresAuthorization: false` must be **genuinely
+ * self-authenticating**, and that is a promise the server has to keep rather
+ * than a hint. "Macha requires no custom headers" and "Macha's media URLs need
+ * no headers at all" are different guarantees, and the data plane depends on
+ * the second one: if a capability URL ever came to need an accompanying
+ * header, downloads and native playback would both break with no client-side
+ * fix available.
  */
 export interface ArtworkSource {
   url: string;

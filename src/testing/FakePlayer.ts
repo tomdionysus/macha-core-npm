@@ -20,6 +20,17 @@ export interface FakePlayerPlayCall {
  * plus any full-stack integration test that needs a real node-to-node
  * failover story without a browser.
  */
+/**
+ * **Not the only fake player in this repository.** `PlaybackCoordinator.test.ts`
+ * defines its own, locally, and does not import this one.
+ *
+ * Worth knowing before you edit this file to change a coordinator test's
+ * behaviour: doing so changes nothing, silently. That cost a full round of
+ * "prove the test fails against the broken code" — the check ran green every
+ * time because the code it was meant to break was never the code under test,
+ * and a good test was deleted on the strength of it. A test that has never
+ * been seen red is an assertion about intentions rather than behaviour.
+ */
 export class FakePlayer implements Player {
   listener?: PlaybackListener;
   failureListener?: PlaybackFailureListener;

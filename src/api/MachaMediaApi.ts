@@ -39,6 +39,33 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
   });
 }
 
+/**
+ * Whether a capability URL's own `exp` has passed. The server signs the
+ * expiry into the URL, so this is answerable without asking a node — and has
+ * to be, since the alternative is learning it from four refusals in a row.
+ *
+ * **`exp` is unix milliseconds, not seconds.** The server builds it as
+ * `unix_ms() + ttl` and verifies it as `unix_ms() >= expires`, where
+ * `unix_ms()` is a `duration_cast<milliseconds>` of the system clock
+ * (`src/types.cpp`); a capability observed on the wire carries a
+ * thirteen-digit value. That is unusual — JWT's `exp` is seconds, and most
+ * things that look like this are too — so it is worth stating rather than
+ * inferring, because getting it wrong fails silently in the safe-looking
+ * direction: seconds compared against `Date.now()` make every live
+ * capability look long expired, no alternate is ever offered, and the
+ * failover simply never happens while every test still passes.
+ *
+ * `Date.now()` is deliberate here and must not become `machaHost().now()`.
+ * That clock is documented as milliseconds from an arbitrary origin, for
+ * measuring durations, and is `performance.now()` wherever the host has it.
+ * This is a comparison against an absolute instant chosen by another
+ * machine, which is the one thing that clock cannot answer.
+ */
+function expiredCapability(url: string): boolean {
+  const expiry = /[?&]exp=(\d+)/.exec(url);
+  return expiry !== null && Number(expiry[1]) <= Date.now();
+}
+
 function optionalNumber(value: number | null): number | undefined {
   return value ?? undefined;
 }
@@ -148,13 +175,39 @@ export class MachaMediaApi implements MediaApi {
   }
 
   artworkUrls(ref: ArtworkRef): ArtworkSource[] {
-    // The signed URL first when there is one: no header needed, so it is the
-    // only entry usable from an image loader that cannot set them, and the
-    // server owns fetching, decode and HTTP caching for it.
-    return [
-      ...(ref.url ? [{ url: ref.url, requiresAuthorization: false }] : []),
-      ...this.catalogue.artworkUrls(ref.id),
+    const nodes = this.catalogue.artworkUrls(ref.id);
+    const signed = ref.url;
+    if (!signed) return nodes;
+    // The signed URL first: no header needed, so it is the only kind usable
+    // from an image loader that cannot set them, and the server owns
+    // fetching, decode and HTTP caching for it.
+    //
+    // Its signature covers the artwork id and expiry and never the host. It
+    // is a cluster credential, checked with the shared cluster key on every
+    // node, and artwork is content-addressed, read from its DHT owner by any
+    // node without a local copy. So one capability is good on every node,
+    // which is what lets a loader that cannot set headers fail over from a
+    // node that is down or slow instead of losing the image. It is re-hosted
+    // by grafting its query onto each node's own artwork URL, so a node base
+    // with a path prefix survives intact.
+    //
+    // An expired one is re-hosted nowhere, because every node would refuse
+    // it. It still leads, since the caller's own cache may hold the image
+    // under it, and the authenticated URLs behind it are the real recovery.
+    const query = signed.indexOf('?');
+    const elsewhere = query >= 0 && !expiredCapability(signed);
+    const capability: ArtworkSource[] = [
+      { url: signed, requiresAuthorization: false },
+      ...(elsewhere ? nodes.map((node) => ({ url: `${node.url}${signed.slice(query)}`, requiresAuthorization: false })) : []),
     ];
+    // Keyed on the full URL, so a node's capability entry and its
+    // authenticated entry coexist: the query string is what separates them,
+    // and a capability without one was already excluded above.
+    const unique = new Map<string, ArtworkSource>();
+    for (const source of [...capability, ...nodes]) {
+      if (!unique.has(source.url)) unique.set(source.url, source);
+    }
+    return [...unique.values()];
   }
 
   artwork(ref: ArtworkRef, signal?: AbortSignal): Promise<Blob> {

@@ -35,22 +35,53 @@ interface ProbeResult {
  * A unique URL is the one mechanism every host honours, because none of them
  * can cache a request they have never seen. Doing it here makes the behaviour
  * the same everywhere instead of three-way different, and Macha ignores query
- * parameters it does not know.
+ * parameters it does not know — which is the accurate guarantee, rather than
+ * "the query string is never inspected". It is inspected elsewhere: session
+ * creation validates the *content* of a parameter it knows and answers 400.
+ * So this stays safe only while `_` remains unknown to every endpoint it is
+ * sent to.
+ *
+ * **It is not a polyfill workaround and does not retire with Tizen 3.**
+ * `no-store` is a *request* directive: it governs the caches the client can
+ * speak to, and says nothing to an intermediary. A proxy or CDN between this
+ * client and a node can still answer from its own store — a live possibility
+ * on a WAN endpoint rather than a theoretical one — and a health probe served
+ * from anyone's cache reports a dead node healthy. A URL nobody has seen
+ * before defeats every cache on the path, which no header can promise.
+ *
+ * **It must not be built from `machaHost().now()`, and was.** That clock is
+ * monotonic — `performance.now()` wherever the host has it — so it restarts
+ * near zero on every page load, and the first probe of a load fires at a fixed
+ * point in startup. Measured on the running web client: two consecutive
+ * reloads produced 744 and 571. The value space for a load's first probe is a
+ * few hundred integers, re-entered from the beginning every time, so a
+ * collision is close to certain for anyone who reloads more than a handful of
+ * times — and the cache then answers a probe for a node that is gone. A
+ * defeated cache-buster fails silently and in the worst direction.
+ *
+ * The counter is what makes this never-repeating rather than merely unlikely:
+ * a wall clock rounded to milliseconds still collides between two probes in
+ * the same millisecond, and two endpoints are probed together.
  */
-function cacheBustedProbeUrl(baseUrl: string, startedAt: number): string {
-  // Built from the timestamp the caller already took, rather than reading the
-  // clock again: `startedAt` is the other half of the latency measurement on
-  // the next line, and a second `now()` between them would fold this function's
-  // own cost into the number being reported.
-  return `${baseUrl}/api/v1/catalogue/status?_=${Math.round(startedAt)}`;
+let probeSequence = 0;
+
+function cacheBustedProbeUrl(baseUrl: string): string {
+  // Deliberately NOT `startedAt`. That value is the other half of the latency
+  // measurement and has to stay monotonic; this half needs an absolute value
+  // that never repeats. They are different clocks for different jobs — see the
+  // note on `MachaHost.now()` — and the second reading costs nothing here
+  // because it is taken before the timed region rather than inside it.
+  probeSequence += 1;
+  return `${baseUrl}/api/v1/catalogue/status?_=${Date.now()}-${probeSequence}`;
 }
 
 async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch): Promise<ProbeResult> {
+  const url = cacheBustedProbeUrl(endpoint.baseUrl);
   const startedAt = machaHost().now();
   try {
     const response = await fetchWithTimeout(
       (url, init) => auth.fetch(url, init),
-      cacheBustedProbeUrl(endpoint.baseUrl, startedAt),
+      url,
       { method: 'GET', headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }), cache: 'no-store' },
       DEFAULT_REQUEST_TIMEOUT_MS,
     );

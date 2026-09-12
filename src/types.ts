@@ -271,6 +271,19 @@ export interface PlaybackSource {
   durationMs?: number;
   /** Source byte length when known; enables bounded Direct Play read-ahead. */
   sizeBytes?: number;
+  /**
+   * Headers a host must attach when fetching this source, if any.
+   *
+   * **Nothing in this package ever sets it**, and that is worth keeping true:
+   * a native player receives them through its own data source, so anything put
+   * here reaches the wire without passing through this package's fetch and
+   * without any client seeing it. Macha needs no custom header on the data
+   * plane — media and artwork are reached by signed capability URLs that carry
+   * their own authority — and two of its clients cannot attach one at all.
+   *
+   * The field exists for a host with its own transport requirement, not as a
+   * channel for this package to use.
+   */
   headers?: Record<string, string>;
 }
 

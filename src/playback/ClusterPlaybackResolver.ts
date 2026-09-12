@@ -42,6 +42,45 @@ function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): P
 }
 
 /** Creates disposable playback generations on any suitable bootstrap endpoint. */
+/**
+ * Carry the carriage a failed generation was actually served with into its
+ * replacement.
+ *
+ * `container` is not among a session's confirmed preferences, so a replacement
+ * built from those asks for whatever the node defaults to. A set that had asked
+ * for MPEG-TS is then handed fragmented MP4 by every replacement node — the one
+ * carriage it cannot play — and a native player given that fetches nothing and
+ * reports nothing, so each silent starvation is charged to a healthy node until
+ * the candidate list is empty.
+ *
+ * `PlaybackCoordinator` already restates it on the paths it owns. This is the
+ * same fix one layer down, where **every** consumer passes rather than only the
+ * three that drive the coordinator — a fix landing in the coordinator reaches
+ * three of four clients and silently misses the fourth.
+ *
+ * It deliberately uses `output.container` — what the node *served* — rather
+ * than what the instruction asked for. Those agree until they do not, and a
+ * node answering with something other than what was requested is precisely the
+ * case a failover is most likely to be recovering from. The replacement should
+ * match reality, not intent.
+ *
+ * Absent or unrecognised leaves the preferences untouched: a node that does not
+ * report its container gives no grounds to choose one, and today's behaviour is
+ * the right no-op. `direct` is skipped because copying passes the file through
+ * whole and has no step at which a container could be chosen.
+ */
+function withServedSegmentContainer(
+  preferences: PlaybackPreferencesUpdate,
+  failedSession: PlaybackSession,
+): PlaybackPreferencesUpdate {
+  if (preferences.container !== undefined) return preferences;
+  const mode = preferences.mode ?? failedSession.mode;
+  if (mode !== 'remux' && mode !== 'transcode') return preferences;
+  const served = failedSession.output?.container?.trim().toLowerCase();
+  if (served !== 'fmp4' && served !== 'mpegts') return preferences;
+  return { ...preferences, container: served };
+}
+
 export class ClusterPlaybackResolver implements PlaybackResolver {
   readonly available = true;
   private readonly log = createClientLogger('playback.cluster');
@@ -83,6 +122,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     // "an endpoint just failed" is recorded identically regardless of which
     // path noticed it, rather than two independent inline copies drifting.
     if (failedSession.endpoint) this.recordEndpointFailure(failedSession.endpoint.id);
+    this.releaseFailedSession(failedSession);
     if (preparedAlternate) {
       const owned = this.sessions.get(preparedAlternate.sessionId);
       if (owned
@@ -92,7 +132,43 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         return preparedAlternate;
       }
     }
-    return this.create(media, capabilities, seekMs, preferences, this.failedGenerationEndpoints, true, this.generationAttemptTimeoutMs);
+    return this.create(
+      media,
+      capabilities,
+      seekMs,
+      withServedSegmentContainer(preferences, failedSession),
+      this.failedGenerationEndpoints,
+      true,
+      this.generationAttemptTimeoutMs,
+    );
+  }
+
+  /**
+   * Close the session being failed away from, without waiting for it.
+   *
+   * The decision to abandon it is made here, so closing it belongs here. A
+   * caller asked to fail over, not to end up holding two sessions — and every
+   * consumer of `failover` has this exposure, not only the ones driving a
+   * coordinator that happens to do its own superseded cleanup.
+   *
+   * What skipping it costs: a node counts a session against
+   * `max_video_transcodes` from admission until the session record is erased,
+   * which is `session_idle` — **30 minutes** — and reclaiming the idle pipeline
+   * at 60 s does not release it. With one slot per node, failing away from a
+   * node that is alive but slow closes it to every other viewer's transcode
+   * for half an hour, and the viewer who caused it is the one person who
+   * cannot observe it.
+   *
+   * **Never awaited, and never allowed to fail the failover.** A slow node is
+   * exactly where failover fires, so awaiting this would hang the recovery it
+   * is part of. Sessions are node-local and a `DELETE` for an id a node does
+   * not hold answers a bare `404`, which `stop()` already treats as success —
+   * so there is no need to decide first whether the node is still alive, and
+   * racing a coordinator's own superseded cleanup is harmless rather than a
+   * conflict.
+   */
+  private releaseFailedSession(failedSession: PlaybackSession): void {
+    void this.stop(failedSession.sessionId).catch(() => undefined);
   }
 
   async prepareAlternate(

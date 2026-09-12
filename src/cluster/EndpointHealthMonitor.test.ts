@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { discoverClusterEndpoints, EndpointHealthMonitor, persistConfirmedEndpoints, probeKnownEndpoints } from './EndpointHealthMonitor.js';
 import { MachaClientConfiguration } from '../runtime/configuration.js';
-import { configureMachaHost, memoryStorage } from '../runtime/host.js';
+import { configureMachaHost, memoryStorage, resetMachaHost } from '../runtime/host.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 import type { ClusterNodeStatus, ClusterStatusApi, ClusterStatusSnapshot } from '../api/ClusterStatusApi.js';
@@ -134,14 +134,47 @@ describe('API endpoint health probes', () => {
     // Cache-busted: `no-store` means three different things across this
     // project's hosts and nothing at all on Tizen 3, so a unique URL is what
     // actually stops a dead node answering 200 from a WebView cache.
-    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+$/, ''))).toEqual([
+    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
       'http://a/api/v1/catalogue/status',
       'http://b/api/v1/catalogue/status',
     ]);
-    expect(fetchSpy.mock.calls.every(([url]) => /\?_=\d+$/.test(String(url)))).toBe(true);
+    expect(fetchSpy.mock.calls.every(([url]) => /\?_=\d+-\d+$/.test(String(url)))).toBe(true);
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer secret');
     expect(registry.snapshot().map(({ health }) => health.consecutiveFailures)).toEqual([0, 1]);
     expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
+  });
+
+  it('never repeats a probe URL, including across a restart of the monotonic clock', async () => {
+    // The value used to come from `machaHost().now()`, which is
+    // `performance.now()` on a browser and so restarts near zero every page
+    // load. Measured on the running web client, two consecutive reloads gave
+    // 744 and 571: a few hundred integers wide, re-entered from the start each
+    // time, so a cache could answer a probe for a node that is gone and report
+    // a dead node healthy.
+    //
+    // Simulated here by pinning the host clock to a constant, which is what a
+    // fresh page load looks like from this function's point of view. Two
+    // probes in the same millisecond is also the ordinary case rather than an
+    // edge one, since the endpoints in a cycle are probed together.
+    const seen = new Set<string>();
+    const fetchSpy = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      seen.add(String(url));
+      return new Response(null, { status: 200 });
+    });
+    const fetchImpl = fetchSpy as unknown as typeof fetch;
+
+    configureMachaHost({ now: () => 744 });
+    try {
+      for (let load = 0; load < 3; load += 1) {
+        const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+        await probeKnownEndpoints(registry, fixedBearerToken('secret', fetchImpl), new AbortController().signal);
+      }
+    } finally {
+      resetMachaHost();
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(6);
+    expect(seen.size).toBe(6);
   });
 
   it('does not publish results after the monitor is cancelled', async () => {

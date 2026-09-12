@@ -331,8 +331,27 @@ export class PlaybackRuntime {
   }
 
   /**
-   * Browser exit is a best-effort teardown. keepalive lets a DELETE survive
-   * navigation; the normal awaited stop path remains authoritative in-app.
+   * Best-effort teardown on the way out. `keepalive` lets the `DELETE` survive
+   * a navigation; the normal awaited stop path remains authoritative in-app.
+   *
+   * **Best-effort is not a hedge, and on two platforms it is closer to a
+   * hope.** `keepalive` is browser-only: React Native ignores it and Tizen 3
+   * does not have the property at all — precisely the platforms that suspend
+   * an app rather than navigate away from it. A host that is force-quit,
+   * crashes or loses power sends nothing anywhere.
+   *
+   * What that costs is not local. A node counts a session against
+   * `max_video_transcodes` from admission until the session record is erased,
+   * which is `session_idle` — **30 minutes** — and reclaiming the idle pipeline
+   * at 60 s does not release it. So an unsent `DELETE` on a one-slot node
+   * means the next viewer gets `429 resource_limit` for up to half an hour,
+   * and nothing about it is visible from the client that caused it.
+   *
+   * There is no server-side mitigation today: no shorter idle for a session
+   * nothing was ever fetched from, and admission refuses rather than evicting.
+   * Both have been raised. Until one exists, calling this promptly and
+   * correctly is the whole of the defence, which is why it is the host's job
+   * and cannot be inferred here.
    */
   terminateForPageExit(): void {
     if (this.lifecycle.phase === 'idle') return;

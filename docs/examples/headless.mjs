@@ -90,6 +90,12 @@ async function main() {
   //    decision is made below, here, and the response is the server stating
   //    how it performed it. Advertise capabilities honestly to the chooser:
   //    over-claiming is how you get a black screen.
+  //
+  //    These never reach the server. There is no `capabilities` field in the
+  //    playback API and never has been — the server does not ask what a client
+  //    can play. They are for `choosePlaybackInstruction` below, and they are
+  //    accepted by `resolve()` only because a decorating resolver (an offline
+  //    one, say) legitimately needs to know what this host can decode.
   const [first] = movies;
   if (!first) return;
 
