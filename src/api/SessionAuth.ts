@@ -125,9 +125,16 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
     headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }),
   });
   // A reachable node that rejects the token is a definitive, cluster-wide
-  // answer (anonymous sessions are valid cluster-wide, so a rejection is not
+  // answer (sessions are valid cluster-wide, so a rejection is not
   // node-specific) — no point asking another node the same question.
-  if (response.status === 401) return false;
+  //
+  // 403 counts too, and that is not hypothetical: a rolling upgrade leaves
+  // sessions minted by the older build carrying a role vocabulary the new one
+  // refuses, so every route answers 403. Treated as a transport fault it
+  // would mark all four nodes unhealthy on the way to re-minting, wrecking
+  // endpoint ranking at exactly the moment the cluster is already in flux.
+  // The token is simply no longer acceptable anywhere; say so and re-mint.
+  if (response.status === 401 || response.status === 403) return false;
   if (!response.ok) throw new SessionAuthError(`${response.status} ${response.statusText}`, response.status);
   return true;
 }

@@ -47,6 +47,30 @@ export class MachaUsersApiError extends Error {
   }
 }
 
+/**
+ * The account list.
+ *
+ * The server wraps this collection under `users` — not `items`, which is what
+ * every other collection in this API uses, and what this originally assumed.
+ * Getting that wrong is silent: reading a key a payload does not have yields
+ * `undefined`, which is not an error anywhere downstream, so the screen
+ * rendered its heading and nothing else and looked broken rather than
+ * reporting a bad answer.
+ *
+ * The alternatives are accepted because single records come back bare while
+ * collections come wrapped, and being generous about the envelope costs
+ * nothing. An unrecognised shape throws, so the next time this is wrong it
+ * says so instead of quietly showing an empty list.
+ */
+function userList(response: unknown): MachaUser[] {
+  if (Array.isArray(response)) return response as MachaUser[];
+  const envelope = response as { users?: unknown; items?: unknown } | null;
+  for (const candidate of [envelope?.users, envelope?.items]) {
+    if (Array.isArray(candidate)) return candidate as MachaUser[];
+  }
+  throw new MachaUsersApiError('The server returned an unrecognised user list.', 502, 'invalid_user_list');
+}
+
 export class MachaUsersApi implements UsersApi {
   private readonly baseUrl: string;
 
@@ -55,8 +79,8 @@ export class MachaUsersApi implements UsersApi {
   }
 
   async list(signal?: AbortSignal): Promise<MachaUser[]> {
-    const response = await this.request<{ items: MachaUser[] }>('/api/v1/users', { method: 'GET', cache: 'no-store', signal });
-    return response.items;
+    const response = await this.request<unknown>('/api/v1/users', { method: 'GET', cache: 'no-store', signal });
+    return userList(response);
   }
 
   get(id: string, signal?: AbortSignal): Promise<MachaUser> {

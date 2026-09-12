@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mintAnonymousSession, mintAnonymousSessionAnyNode, SessionAuthError } from './SessionAuth.js';
+import { mintAnonymousSession, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
 function sessionResponse(overrides: Record<string, unknown> = {}) {
@@ -57,6 +57,26 @@ describe('mintAnonymousSession', () => {
   it('reports a network failure as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     await expect(mintAnonymousSession('http://node.test')).rejects.toThrow('The Macha server cannot be reached.');
+  });
+});
+
+describe('validating a session the cluster no longer accepts', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('treats a 403 as the token being refused everywhere, not as a broken node', async () => {
+    // A rolling upgrade leaves sessions minted by the older build carrying a
+    // role vocabulary the new one refuses, so every route answers 403. Read
+    // as a transport fault it would mark every node unhealthy on the way to
+    // re-minting, wrecking endpoint ranking while the cluster is already in
+    // flux. It is one cluster-wide answer: this token is no longer valid.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'forbidden', message: 'stale role vocabulary' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBe(false);
+    for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
   });
 });
 
