@@ -33,7 +33,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "npm run typecheck && npm run lint:platform && tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && npm run typecheck && npm run lint:platform && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false",
     "lint:platform": "tsc --noEmit -p tsconfig.nodom.json --pretty false",
     "test": "vitest run",
