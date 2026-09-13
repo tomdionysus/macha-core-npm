@@ -14,6 +14,7 @@ import type {
   ShowDetails,
 } from '../types.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
 
 function abortReason(signal: AbortSignal): unknown {
@@ -44,8 +45,33 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
  * expiry into the URL, so this is answerable without asking a node — and has
  * to be, since the alternative is learning it from four refusals in a row.
  *
- * **`exp` is unix milliseconds, not seconds.** The server builds it as
- * `unix_ms() + ttl` and verifies it as `unix_ms() >= expires`, where
+ * **When this actually fires, as of server `0.40.0`.** The server quantises
+ * the expiry — `(now / ttl + 2) * ttl`, floor to the current bucket then add
+ * two — and **the bucket is the TTL**, so the invariant is a relationship
+ * rather than a duration: remaining validity is always **more than one TTL and
+ * at most two**, whatever the TTL is configured to be. The artwork response's
+ * own `max-age` is that same TTL, so the floor is *strictly* greater than it
+ * and **a cached copy can never outlive the signature that names it**, at any
+ * point in the cycle, on any cluster.
+ *
+ * Stated as a relationship deliberately. With the default 24 h TTL it works
+ * out as (24 h, 48 h] behind `max-age=86400`, and writing *that* down would
+ * quietly become false the first time a cluster reconfigured the TTL — which
+ * is the same trap as a stall budget written as a number instead of against
+ * `SERVER_SEGMENT_HOLD_MS`.
+ *
+ * (The "plus two" rather than "next boundary" is the whole point: a naive
+ * bucket would hand a URL minted a millisecond before the boundary a lifetime
+ * of almost nothing, behind a full-TTL cache directive, invisibly to the
+ * client holding it.)
+ *
+ * So a capability from a *freshly read* catalogue payload is never expired
+ * here, and this guard exists for one case: **a payload held across a bucket
+ * boundary** — persisted state, a long-lived cache, a client resuming after a
+ * long idle. Worth knowing before treating a hit as a server fault.
+ *
+ * **`exp` is unix milliseconds, not seconds.** Earlier builds computed it as
+ * `unix_ms() + ttl` per call and verified it as `unix_ms() >= expires`, where
  * `unix_ms()` is a `duration_cast<milliseconds>` of the system clock
  * (`src/types.cpp`); a capability observed on the wire carries a
  * thirteen-digit value. That is unusual — JWT's `exp` is seconds, and most
@@ -74,8 +100,14 @@ export class MachaMediaApi implements MediaApi {
   private readonly artworkCache = new Map<string, Blob>();
   private readonly artworkRequests = new Map<string, Promise<Blob>>();
   private readonly log = createClientLogger('artwork.api');
+  private readonly artworkHost: ArtworkHostPreference;
 
-  constructor(private readonly catalogue: CatalogueApi) {}
+  constructor(
+    private readonly catalogue: CatalogueApi,
+    artworkHost: ArtworkHostPreference = new ArtworkHostPreference(),
+  ) {
+    this.artworkHost = artworkHost;
+  }
 
   status(signal?: AbortSignal) {
     return this.catalogue.status(signal);
@@ -207,7 +239,21 @@ export class MachaMediaApi implements MediaApi {
     for (const source of [...capability, ...nodes]) {
       if (!unique.has(source.url)) unique.set(source.url, source);
     }
-    return [...unique.values()];
+    // Then promote whichever node last served artwork, which is the whole of
+    // the cache fix. Everything above orders by the *streaming* preferred
+    // endpoint — `ClusterCatalogueApi.artworkUrls` returns candidates
+    // preferred-node-first, and `signed` was absolutised against whichever
+    // node answered the catalogue read — so without this a pre-emptive swap
+    // renames every poster and a platform HTTP cache re-downloads bytes it
+    // already holds.
+    //
+    // Nothing is added or removed, only reordered, so every failover candidate
+    // and its relative order behind the promoted host is untouched.
+    return this.artworkHost.order([...unique.values()]);
+  }
+
+  noteArtworkLoaded(url: string): void {
+    this.artworkHost.noteLoaded(url);
   }
 
   artwork(ref: ArtworkRef, signal?: AbortSignal): Promise<Blob> {
@@ -226,6 +272,11 @@ export class MachaMediaApi implements MediaApi {
         this.artworkCache.set(ref.id, blob);
         this.artworkRequests.delete(ref.id);
         this.log.debug('request-complete', { artworkId: ref.id, sizeBytes: blob.size });
+        // This path does not learn the host: `CatalogueApi.artwork` walks
+        // candidates internally and returns bytes, not the endpoint that
+        // produced them. Recorded as a known gap rather than plumbed out — the
+        // blob path is the fallback, the URL path is what renders a library
+        // screen, and a caller using it reports through `noteArtworkLoaded`.
         return blob;
       }, (error) => {
         this.artworkRequests.delete(ref.id);

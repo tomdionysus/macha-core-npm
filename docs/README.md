@@ -1,4 +1,4 @@
-# `@macha/core` documentation
+# `@machafoundation/core` documentation
 
 The [package README](../README.md) covers what the core is, what it leaves to a host, and how to install and configure it. [History](../HISTORY.md) covers why it is shaped the way it is. These guides cover the work of bringing it to a new host.
 

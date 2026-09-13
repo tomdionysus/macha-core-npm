@@ -49,7 +49,7 @@ let distStat;
 try {
   distStat = statSync(distRoot);
 } catch {
-  console.error('dist-check: no dist/ at all — run `npm run build` in @macha/core.');
+  console.error('dist-check: no dist/ at all — run `npm run build` in @machafoundation/core.');
   process.exit(1);
 }
 if (!distStat.isDirectory()) {
@@ -78,7 +78,7 @@ if (!stale.length && !missing.length) {
 
 // Name the files rather than just the count: the usual cause is one forgotten
 // rebuild after one edit, and seeing which edit says whether it mattered.
-console.error('dist-check: dist is behind src — run `npm run build` in @macha/core.');
+console.error('dist-check: dist is behind src — run `npm run build` in @machafoundation/core.');
 for (const path of missing) console.error(`  never built  ${path}`);
 for (const path of stale) console.error(`  stale        ${path}`);
 process.exit(1);

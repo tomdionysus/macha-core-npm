@@ -16,7 +16,53 @@ import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
  */
 const SESSION_CACHE_KEY = 'macha.session.v1';
 const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
-/** No sliding renewal in v1: re-mint shortly before the server-declared expiry rather than waiting to be 401'd. */
+/**
+ * How far before the server-declared expiry to re-mint rather than wait to be
+ * 401'd.
+ *
+ * **There is no renewal to schedule, and that is now a decision rather than a
+ * gap.** Confirmed with the server on 2026-09-13: the session TTL is 30 days,
+ * counted from *creation* and never extended — `validate()` does not slide it
+ * — and there are no refresh tokens. So this timer does not refresh anything;
+ * it re-mints, which is a different operation with a different result.
+ *
+ * **For a credentialed session that difference is the whole story.** A re-mint
+ * presents no credentials, so at the 30-day mark a signed-in viewer's session
+ * becomes a session for whatever an empty set of credentials authenticates.
+ * Re-minting is still the right thing to attempt — it is the only thing this
+ * can present — but **do not assume the result is a usable browsing session.**
+ *
+ * On a cluster where the anonymous account holds no roles — the shape of any
+ * deployment that requires accounts — the re-mint degrades a signed-in viewer
+ * not to browsing but **to nothing**: the library empties mid-use and the
+ * application renders its refused state, unannounced, looking exactly like a
+ * fault. That is worse than a logout, because a logout at least says what
+ * happened.
+ *
+ * *Measured rather than hypothesised, on the development cluster with
+ * `media_viewer` removed from the anonymous account: `POST /api/v1/session`
+ * with empty credentials mints successfully on every node and returns
+ * `roles: []`, and `/catalogue/items` then answers `403 requires the
+ * 'media_viewer' role`. So the degraded session is not merely limited — it
+ * cannot read the catalogue at all, which presents as an empty client rather
+ * than as a sign-out.*
+ *
+ * **Core gives a host both halves of the answer and invents neither.**
+ * {@link SessionManager.lastIdentityChange} says the session stopped belonging
+ * to the account it belonged to; {@link sessionLockedOut} on
+ * {@link SessionManager.roles} says whether what replaced it can do anything
+ * at all. Read together they separate "your session aged out" from "this
+ * cluster refuses you" — two states that look identical to a gate and read
+ * very differently to a person. Core states neither sentence, because a 401
+ * does not distinguish an expiry from a revoke from a `credential_generation`
+ * bump.
+ *
+ * So a signed-in viewer is signed out 30 days after minting **even under daily
+ * use**, knowingly short of "permanent until logout". The honest remedy is not
+ * to explain it afterwards but to pre-empt it: the expiry is knowable in
+ * advance from the session's own `expiresAtMs`, so a host can ask for a fresh
+ * sign-in before the deadline rather than after the library has emptied.
+ */
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
 /**
  * `setTimeout`'s delay is a 32-bit signed int internally (~24.8 days max);

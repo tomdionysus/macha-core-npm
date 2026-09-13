@@ -32,8 +32,33 @@ export interface MediaApi {
    * An expired capability is not re-hosted: every node would refuse it, so a
    * caller holding one has only its own entry (the browser may still have the
    * image cached under it) and then the authenticated URLs.
+   *
+   * **Candidates on the node that last served artwork successfully lead**, so
+   * that a URL stays byte-identical across a pre-emptive endpoint swap and a
+   * platform HTTP cache keeps hitting. Feed that back with
+   * {@link MediaApi.noteArtworkLoaded} — without it this ordering never
+   * learns anything and every swap renames every poster. See
+   * `ArtworkHostPreference`.
    */
   artworkUrls(ref: ArtworkRef): ArtworkSource[];
+  /**
+   * Report that an artwork URL loaded, so later candidates prefer its host.
+   *
+   * **A caller that renders artwork itself must call this**, because the cache
+   * that matters is the platform's and this package never sees those bytes: an
+   * `<img src>` or a native `Image` fetches and caches on its own, keyed on the
+   * whole URL string. Core cannot observe that success and cannot re-key that
+   * cache, so the one thing it can do is stop handing out a different URL for
+   * the same bytes — and it only knows which URL worked if it is told.
+   *
+   * Success only. Do not call it for a URL that failed: the preference is
+   * meant to follow bytes that actually arrived, and a single artwork 404 —
+   * artwork placement is deliberately sparse, so a node legitimately may not
+   * hold one object — must not move it.
+   *
+   * Cheap and idempotent; calling it on every load is the intended use.
+   */
+  noteArtworkLoaded?(url: string): void;
   invalidateArtwork?(ref: ArtworkRef): void;
   mediaProfile?(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined>;
 }

@@ -26,12 +26,25 @@ export interface ArtworkRef {
    * fetching, decode and HTTP caching for it, and the response carries a long
    * `immutable` cache lifetime.
    *
-   * **Not stable, and not a cache key.** The signature covers the artwork id
-   * and an expiry computed at the moment of signing, so the server currently
-   * mints a different `exp`, `sig` and query string on every catalogue read of
-   * the same unchanged image. Anything keyed on this string therefore misses
-   * every time, including the platform HTTP cache the `immutable` header was
-   * meant to reach. Use {@link ArtworkRef.id}.
+   * **Not guaranteed stable, and not a cache key — because of the host, not
+   * the signature.** The signed part is stable: since server `0.40.0` the
+   * expiry is quantised to a day bucket, so `exp` and `sig` are identical
+   * across every object in a response and across nodes, and hold for at least
+   * 24 hours. What varies is the **origin**: this URL is absolutised against
+   * whichever node answered the catalogue read, so it renames itself whenever
+   * the cluster's preferred endpoint moves. Anything keyed on the whole string
+   * therefore misses on a swap, including the platform HTTP cache the
+   * `immutable` header was meant to reach.
+   *
+   * Use {@link ArtworkRef.id}, and get the candidates from
+   * `MediaApi.artworkUrls`, which promotes the host that last served artwork
+   * so the URL stays byte-identical across a swap.
+   *
+   * *An earlier version of this comment blamed per-fetch re-signing. That was
+   * true of builds up to `0.39.1` and was measured false on the deployed
+   * cluster — the advice was right for the wrong reason, which is the kind of
+   * comment that sends the next reader to build the very workaround the
+   * paragraph above warns against.*
    */
   url?: string;
 }

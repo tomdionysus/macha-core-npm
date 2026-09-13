@@ -1,5 +1,5 @@
 /**
- * Check, on the device, that this host actually provides what `@macha/core`
+ * Check, on the device, that this host actually provides what `@machafoundation/core`
  * requires of it.
  *
  * Core declares its permitted platform surface in `macha-ts/types/
