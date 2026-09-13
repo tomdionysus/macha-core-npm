@@ -10,6 +10,12 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Decided by Tom on 2026-09-13. This is `0.10.0` and it is a hard cut.** Every client refactors against it; there are no aliases, shims or staged migrations (three in-house consumers, rebuild them).
 
+### The same naming error exists on the server, and neither side caught it in the other
+
+`0.10.0` removed `AnonymousSession` — a type called anonymous that was the type of **every** session, including a password-minted one, and whose name produced four defects. On 2026-09-13 the server session reported, independently and while answering an unrelated question, that its TTL is `SessionConfig::anonymous_ttl`, applied by `SessionManager::create()` to **every session regardless of whether `user_id` is empty**, and never extended by `validate()`. In its words: *"the name says anonymous; the behaviour is universal."*
+
+**The identical error, on both sides of one wire, found the same day by two sessions who did not know they were describing the same thing.** Not core's to fix, and recorded here because it is the strongest evidence yet for why the rename mattered: a name that quietly asserts a category is how a whole codebase comes to believe a special case exists. Worth asking, next time a type or a constant is named for a role: *is this actually about that role, or is it about everything and named after the first case someone had in mind?*
+
 ### STATUS: implemented on `develop`, NOT tagged — waiting on a client to go green
 
 **All six steps are built and committed.** Version bumped to `0.10.0`, `dist` rebuilt, **719 tests in 60 files**, all five gates pass. Every client has been sent a tailored refactor brief.
@@ -25,6 +31,10 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 *Worth generalising: that bug was found by a client reading a brief and comparing it against the shape of its own state machine, not by running anything. Writing the brief was what surfaced it.*
 
 **One latent defect the clients must check for themselves.** The lossy cache meant a restored session lost its `username`. The phone client never saw it because it re-reads `currentSession` on every token change rather than trusting the cached record. **A client that trusted the cache was showing a signed-in viewer as anonymous after every restart.** `0.10.0` fixes it either way, but an affected client has user-visible behaviour about to silently correct itself and should know that rather than meet it as an unexplained change. Both remaining clients asked.
+
+**Session lifetime is settled and needs no further work.** Tom, asked directly on 2026-09-13: *"30 days is good for now."* Closed rather than deferred — fixed TTL from creation, no sliding expiry, no refresh tokens — so nothing in core's session handling needs to anticipate a renewal scheme. Documented on `REFRESH_SAFETY_MARGIN_MS`, including the consequence that the "refresh" timer **re-mints** rather than renewing, so a signed-in viewer becomes anonymous at the 30-day mark even under daily use. That is surfaced by `lastIdentityChange` rather than being silent, which is what that field is for.
+
+*The client half is what made 30 days acceptable, and it is worth knowing why: the phone client was writing its token to disk and never reading it back, so a login's practical lifetime was one process rather than thirty days. The server's expiry only became the binding constraint once the client stopped being the tighter one.*
 
 **What is waiting:** client swaps; then tag.
 

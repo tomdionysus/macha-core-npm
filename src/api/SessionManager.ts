@@ -16,7 +16,29 @@ import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
  */
 const SESSION_CACHE_KEY = 'macha.session.v1';
 const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
-/** No sliding renewal in v1: re-mint shortly before the server-declared expiry rather than waiting to be 401'd. */
+/**
+ * How far before the server-declared expiry to re-mint rather than wait to be
+ * 401'd.
+ *
+ * **There is no renewal to schedule, and that is now a decision rather than a
+ * gap.** Confirmed with the server on 2026-09-13: the session TTL is 30 days,
+ * counted from *creation* and never extended — `validate()` does not slide it
+ * — and there are no refresh tokens. So this timer does not refresh anything;
+ * it re-mints, which is a different operation with a different result.
+ *
+ * **For a credentialed session that difference is the whole story.** A re-mint
+ * presents no credentials, so at the 30-day mark a signed-in viewer's session
+ * becomes a session for whatever an empty set of credentials authenticates.
+ * That is correct — it is the only thing this can present, and browsing beats
+ * no session — but it is an identity change and must not be silent. It is
+ * reported through {@link SessionManager.lastIdentityChange}, which exists for
+ * exactly this and for the mid-session case that looks identical from here.
+ *
+ * So a signed-in viewer is signed out 30 days after minting **even under daily
+ * use**, knowingly short of "permanent until logout". A host that wants to
+ * spare them that has one honest option: ask them to sign in again before it
+ * happens, using `lastIdentityChange` to notice when it has.
+ */
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
 /**
  * `setTimeout`'s delay is a 32-bit signed int internally (~24.8 days max);
