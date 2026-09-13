@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PlaybackSource } from '../types.js';
 import {
+  HLS_MAX_RETRY_AFTER_MS,
   HLS_WALK_TIMEOUT_MS,
   firstVariantUri,
   hlsWalkTargets,
@@ -27,6 +28,8 @@ interface StubResponse {
   headers?: Record<string, string>;
   /** Simulate a host whose `body` exists but has no `getReader`. */
   bodyWithoutReader?: boolean;
+  /** Simulate a host where every buffered body accessor rejects. */
+  unreadableBody?: boolean;
 }
 
 interface RecordedCall {
@@ -48,7 +51,14 @@ function stubFetch(routes: Record<string, StubResponse | undefined>, calls: Reco
       url,
       headers: { get: (name: string) => route.headers?.[name.toLowerCase()] ?? null },
       text: async () => body,
-      blob: async () => ({ size: body.length, type: '' }),
+      arrayBuffer: async () => {
+        if (route.unreadableBody) throw new Error('arrayBuffer unavailable');
+        return { byteLength: body.length };
+      },
+      blob: async () => {
+        if (route.unreadableBody) throw new Error('Blob module unavailable');
+        return { size: body.length, type: '' };
+      },
       json: async () => JSON.parse(body) as unknown,
     };
     if (route.bodyWithoutReader) {
@@ -255,7 +265,12 @@ describe('the headers a walk sends', () => {
       'https://node-a.example/stream/abc/seg1.m4s': { status: 206, body: 'b' },
     });
     await preflightHlsSource(source({ headers: { Range: 'bytes=0-' } }), { fetch });
-    expect(calls.every((call) => call.headers.Range === 'bytes=0-65535')).toBe(true);
+    const fragmentCalls = calls.filter((call) => !call.url.endsWith('.m3u8'));
+    expect(fragmentCalls).not.toHaveLength(0);
+    expect(fragmentCalls.every((call) => call.headers.Range === 'bytes=0-65535')).toBe(true);
+    // And a source Range does not leak onto a playlist leg, which asks for none.
+    expect(calls.filter((call) => call.url.endsWith('.m3u8'))
+      .every((call) => call.headers.Range === undefined)).toBe(true);
   });
 });
 
@@ -303,5 +318,85 @@ describe('readiness: has the first fragment arrived', () => {
     const { fetch } = stubFetch({});
     expect(await probeHlsReadiness(source({ isManifest: false }), { fetch }))
       .toEqual({ state: 'unassessable', reason: 'not-a-manifest' });
+  });
+});
+
+describe('reading bytes on a host whose accessors this package cannot use', () => {
+  const MEDIA_ONLY = { 'https://node-a.example/stream/abc/index.m3u8': { body: MEDIA } };
+
+  it('does not condemn a serving node just because the body could not be read', async () => {
+    // The module's own rule, turned on itself. The node answered and the
+    // status says it is serving; all that failed was reading the body on this
+    // host. Returning false would destroy every standby on that platform
+    // silently, with no status and no log line — indistinguishable from
+    // "seamless failover doesn't work on this device".
+    const { fetch } = stubFetch({
+      ...MEDIA_ONLY,
+      'https://node-a.example/stream/abc/init.mp4': { status: 206, body: 'a', bodyWithoutReader: true, unreadableBody: true },
+      'https://node-a.example/stream/abc/seg1.m4s': { status: 206, body: 'b', bodyWithoutReader: true, unreadableBody: true },
+    });
+    expect(await preflightHlsSource(source(), { fetch })).toBe(true);
+  });
+
+  it('still fails a readable body that is genuinely empty', async () => {
+    const { fetch } = stubFetch({
+      ...MEDIA_ONLY,
+      'https://node-a.example/stream/abc/init.mp4': { status: 200, body: '', bodyWithoutReader: true },
+    });
+    expect(await preflightHlsSource(source(), { fetch })).toBe(false);
+  });
+});
+
+describe('what a playlist leg asks for', () => {
+  it('fetches playlists whole, with no Range', async () => {
+    // A readiness probe is documented as reading no payload, and was pulling
+    // up to 64 KB per playlist per attempt. Worse, a long media playlist
+    // exceeds 64 KB — a two-hour film at six-second segments is ~1,200
+    // entries — so a node honouring the range answers 206 with a silently
+    // truncated playlist.
+    const { fetch, calls } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: MASTER },
+      'https://node-a.example/stream/abc/v0/index.m3u8': { body: MEDIA },
+      'https://node-a.example/stream/abc/v0/init.mp4': { status: 206 },
+      'https://node-a.example/stream/abc/v0/seg1.m4s': { status: 206 },
+    });
+    await probeHlsReadiness(source(), { fetch });
+    const playlistCalls = calls.filter((call) => call.url.endsWith('.m3u8'));
+    expect(playlistCalls).toHaveLength(2);
+    expect(playlistCalls.every((call) => call.headers.Range === undefined)).toBe(true);
+    // Cache suppression still applies to the playlist legs.
+    expect(playlistCalls.every((call) => call.headers['Cache-Control'] === 'no-cache, no-store')).toBe(true);
+  });
+});
+
+describe('reporting why a readiness probe failed', () => {
+  it('carries the cause out, because a television has no console', async () => {
+    // The failure trail on screen is the whole mechanism for telling a stalled
+    // node from a timed-out one from a refused one.
+    const fetch = async () => { throw new Error('Network request failed'); };
+    const outcome = await probeHlsReadiness(source(), { fetch });
+    expect(outcome).toEqual({ state: 'unavailable', detail: 'Network request failed' });
+  });
+});
+
+describe('a node that states an implausible Retry-After', () => {
+  it('clamps it rather than abandoning an otherwise healthy node', async () => {
+    // Retry-After is a number a node states about itself and nothing validates
+    // it. Unbounded, one bad header becomes an effectively permanent hold.
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: MEDIA },
+      'https://node-a.example/stream/abc/init.mp4': { status: 500, headers: { 'retry-after': '9999' } },
+    });
+    expect(await probeHlsReadiness(source(), { fetch }))
+      .toEqual({ state: 'holding', retryAfterMs: HLS_MAX_RETRY_AFTER_MS });
+  });
+
+  it('leaves a plausible one alone', async () => {
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: MEDIA },
+      'https://node-a.example/stream/abc/init.mp4': { status: 500, headers: { 'retry-after': '3' } },
+    });
+    expect(await probeHlsReadiness(source(), { fetch }))
+      .toEqual({ state: 'holding', retryAfterMs: 3_000 });
   });
 });

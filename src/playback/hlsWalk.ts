@@ -241,23 +241,38 @@ export function mediaPlaylistTargets(manifestText: string): string[] {
 export type HlsWalkOutcome =
   | { state: 'ready' }
   | { state: 'holding'; retryAfterMs: number }
-  | { state: 'unavailable'; status?: number }
+  | { state: 'unavailable'; status?: number; detail?: string }
   | { state: 'unassessable'; reason: 'not-a-manifest' | 'empty-manifest' };
 
-function requestHeaders(source: PlaybackSource, range: string): Record<string, string> {
+/**
+ * A playlist is fetched whole, with no `Range`.
+ *
+ * Ranging a playlist was wrong twice over. A readiness probe is documented as
+ * reading no payload, yet was pulling up to 64 KB per playlist per attempt —
+ * on a television, against the node already struggling to produce a fragment.
+ * And a long media playlist *exceeds* 64 KB (a two-hour film at six-second
+ * segments is around 1,200 entries), so a node honouring the range answers
+ * `206` with a **silently truncated playlist**. Parsing from the top hid it,
+ * because the first fragment still resolved — the next person to read further
+ * down would not have seen it coming.
+ */
+function requestHeaders(source: PlaybackSource, range: string | undefined): Record<string, string> {
   // Source headers beat cache suppression — a host that must send an
   // Authorization header has no alternative, and a cached answer is a lesser
   // problem than an unauthorized one. `Range` is applied last and is therefore
   // not overridable: a source header that replaced it would silently turn a
   // bounded probe into a full segment fetch, which on a television is a real
   // transfer that nobody would attribute to a health check.
-  return { ...NO_CACHE_HEADERS, ...(source.headers ?? {}), Range: range };
+  const headers: Record<string, string> = { ...NO_CACHE_HEADERS, ...(source.headers ?? {}) };
+  if (range !== undefined) headers.Range = range;
+  else delete headers.Range;
+  return headers;
 }
 
 async function walkFetch(
   url: string,
   source: PlaybackSource,
-  range: string,
+  range: string | undefined,
   options: HlsWalkOptions,
 ): Promise<Response> {
   const controller = new AbortController();
@@ -290,6 +305,19 @@ interface StreamingBody {
 }
 
 /**
+ * Body accessors that exist on real hosts but not on the narrow `Response`
+ * this package declares. Probed structurally because which of them works is a
+ * property of the host, not of the standard.
+ */
+interface BufferedBody {
+  arrayBuffer?: () => Promise<{ byteLength: number }>;
+  blob?: () => Promise<{ size: number }>;
+}
+
+/** What a body read established — including that it established nothing. */
+type ByteEvidence = 'bytes' | 'empty' | 'unreadable';
+
+/**
  * Whether any payload bytes actually arrived.
  *
  * A status alone does not answer this: a proxy can return `200` with an empty
@@ -302,30 +330,66 @@ interface StreamingBody {
  * guard sails straight past before throwing. Guard on the method, not on the
  * object.
  */
-async function receivedBytes(response: Response): Promise<boolean> {
+async function receivedBytes(response: Response): Promise<ByteEvidence> {
   const body = (response as unknown as { body?: StreamingBody }).body;
   const reader = typeof body?.getReader === 'function' ? body.getReader() : undefined;
   if (reader) {
     try {
       const first = await reader.read();
-      return !first.done && (first.value?.length ?? 0) > 0;
+      return !first.done && (first.value?.length ?? 0) > 0 ? 'bytes' : 'empty';
+    } catch {
+      return 'unreadable';
     } finally {
       try { reader.cancel(); } catch { /* the transfer is already finished */ }
     }
   }
-  const blob = await response.blob();
-  return blob.size > 0;
+  // `arrayBuffer` first, `blob` second. React Native's `blob()` depends on the
+  // app having the Blob module, and rejects where it does not — while
+  // `arrayBuffer` is the accessor the client implementations here used before
+  // this module existed. A host that has one usually has the other, so trying
+  // both costs a branch and removes a whole-platform failure mode.
+  const buffered = response as unknown as BufferedBody;
+  if (typeof buffered.arrayBuffer === 'function') {
+    try {
+      return (await buffered.arrayBuffer()).byteLength > 0 ? 'bytes' : 'empty';
+    } catch { /* fall through to blob */ }
+  }
+  if (typeof buffered.blob === 'function') {
+    try {
+      return (await buffered.blob()).size > 0 ? 'bytes' : 'empty';
+    } catch { /* fall through to unreadable */ }
+  }
+  return 'unreadable';
 }
+
+/**
+ * The longest hold this module will report.
+ *
+ * `Retry-After` is a number a node states about itself, and nothing validates
+ * it. An unbounded one turns a single bad header into an effectively
+ * permanent hold: a caller that waits as instructed abandons a node that is
+ * otherwise healthy, having been told to come back in three hours. Clamped
+ * rather than rejected, because a large value still means "longer than usual"
+ * and that part is worth keeping.
+ */
+export const HLS_MAX_RETRY_AFTER_MS = 60_000;
 
 /** `Retry-After` in seconds, or an HTTP-date. Absent or unparseable falls back to the hold. */
 function retryAfterMs(response: Response): number {
   const header = response.headers?.get?.('retry-after');
   if (!header) return SERVER_SEGMENT_HOLD_MS;
+  const clamp = (ms: number) => Math.min(HLS_MAX_RETRY_AFTER_MS, Math.max(0, Math.round(ms)));
   const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1_000);
+  if (Number.isFinite(seconds) && seconds >= 0) return clamp(seconds * 1_000);
   const date = Date.parse(header);
-  if (Number.isFinite(date)) return Math.max(0, date - Date.now());
+  if (Number.isFinite(date)) return clamp(date - Date.now());
   return SERVER_SEGMENT_HOLD_MS;
+}
+
+/** The message of a thrown value, where it has one worth reporting. */
+function causeDetail(error: unknown): string | undefined {
+  if (error instanceof Error && error.message) return error.message;
+  return typeof error === 'string' && error ? error : undefined;
 }
 
 /**
@@ -340,7 +404,7 @@ export async function hlsWalkTargets(
   source: PlaybackSource,
   options: HlsWalkOptions,
 ): Promise<string[]> {
-  const manifest = await walkFetch(source.url, source, HLS_PREFLIGHT_RANGE, options);
+  const manifest = await walkFetch(source.url, source, undefined, options);
   if (!manifest.ok) return [];
   const text = await manifest.text();
   const variant = firstVariantUri(text);
@@ -348,7 +412,7 @@ export async function hlsWalkTargets(
     return mediaPlaylistTargets(text).map((uri) => resolveUrl(source.url, uri));
   }
   const variantUrl = resolveUrl(source.url, variant);
-  const media = await walkFetch(variantUrl, source, HLS_PREFLIGHT_RANGE, options);
+  const media = await walkFetch(variantUrl, source, undefined, options);
   if (!media.ok) return [];
   const mediaText = await media.text();
   const targets = mediaPlaylistTargets(mediaText).map((uri) => resolveUrl(variantUrl, uri));
@@ -396,7 +460,13 @@ export async function preflightHlsSource(
       const response = await walkFetch(target, source, HLS_PREFLIGHT_RANGE, options);
       if (response.status === 500) continue;
       if (!response.ok) return false;
-      if (!(await receivedBytes(response))) return false;
+      // `unreadable` is this module's own rule turned on itself: the node
+      // answered, the status says it is serving, and all that failed was this
+      // package's ability to read the body on this host. Condemning on it
+      // would destroy every standby on a platform whose body accessors this
+      // walk cannot use — silently, with no status and no log line, looking
+      // exactly like "seamless failover does not work on this device".
+      if (await receivedBytes(response) === 'empty') return false;
     } catch {
       return false;
     }
@@ -425,16 +495,20 @@ export async function probeHlsReadiness(
   let targets: string[];
   try {
     targets = await hlsWalkTargets(source, options);
-  } catch {
-    return { state: 'unavailable' };
+  } catch (error) {
+    // The thrown message is the only line that names a cause. On a television
+    // there is no console, so a failure trail on screen is the whole mechanism
+    // for telling a stalled node from a timed-out one from a refused one, and
+    // swallowing this leaves it printing "the node did not answer".
+    return { state: 'unavailable', detail: causeDetail(error) };
   }
   if (targets.length === 0) return { state: 'unassessable', reason: 'empty-manifest' };
   for (const target of targets) {
     let response: Response;
     try {
       response = await walkFetch(target, source, HLS_READINESS_RANGE, options);
-    } catch {
-      return { state: 'unavailable' };
+    } catch (error) {
+      return { state: 'unavailable', detail: causeDetail(error) };
     }
     if (response.status === 500) return { state: 'holding', retryAfterMs: retryAfterMs(response) };
     if (!response.ok) return { state: 'unavailable', status: response.status };
