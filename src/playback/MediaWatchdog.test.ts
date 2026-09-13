@@ -344,3 +344,131 @@ describe('a platform that cannot measure buffering', () => {
     expect(stalled.mock.calls[0][0].bufferedEndMs).toBe(9_000);
   });
 });
+
+describe('a timeline that moves under the watchdog', () => {
+  // On Android TV the D-pad IS the seek affordance, so a rewind burst commits
+  // a seek and this is ordinary viewing rather than an edge case.
+  const playingWellInto = (watchdog: MediaStallWatchdog, harness: ReturnType<typeof controllable>) => {
+    watchdog.note(600_000, 620_000);
+    harness.advance(1_000);
+    watchdog.note(601_000, 621_000);
+    harness.advance(1_000);
+  };
+
+  it('does not evict a node refilling its buffer after a backward seek', () => {
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+    playingWellInto(watchdog, harness);
+
+    // Rewind to the start. The buffer is rebuilt around the new position, so
+    // its end is far below where it had reached — which a running high-water
+    // mark reads as "nothing arriving" for the rest of the film. The picture
+    // is frozen while the node refills, which is a node working, not a node
+    // dead.
+    watchdog.note(60_000, 62_000);
+    for (const bufferedEndMs of [64_000, 66_000, 68_000, 70_000, 72_000]) {
+      harness.advance(2_000);
+      watchdog.note(60_000, bufferedEndMs);
+    }
+
+    // Ten seconds have passed since the seek, comfortably past the budget.
+    expect(stalled).not.toHaveBeenCalled();
+  });
+
+  it('still calls a stall when the buffer stops growing after a seek', () => {
+    // The re-base must not make the watchdog permanently forgiving: a node
+    // that genuinely dies after a seek is still a dead node.
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+    playingWellInto(watchdog, harness);
+
+    watchdog.note(60_000, 62_000);
+    for (let i = 0; i < 5; i += 1) {
+      harness.advance(2_000);
+      watchdog.note(60_000, 62_000);
+    }
+
+    expect(stalled).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not evict a node refilling after a forward seek either', () => {
+    // The same high-water mark defeats a forward seek that lands short of
+    // where the buffer had previously reached, so the fix is about timeline
+    // discontinuity rather than about rewinding.
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+    watchdog.note(600_000, 900_000);
+    harness.advance(1_000);
+    watchdog.note(601_000, 901_000);
+    harness.advance(1_000);
+
+    watchdog.note(700_000, 702_000);
+    for (const bufferedEndMs of [704_000, 706_000, 708_000, 710_000, 712_000]) {
+      harness.advance(2_000);
+      watchdog.note(700_000, bufferedEndMs);
+    }
+
+    expect(stalled).not.toHaveBeenCalled();
+  });
+});
+
+describe('resuming after a pause', () => {
+  it('judges a node that died while the viewer was paused', () => {
+    // Only advancement re-arms the deadline, and a node that died during the
+    // pause produces none. Without a re-arm the picture stays frozen forever
+    // with nothing counting — the exact failure this class exists to prevent,
+    // reached through the one door left open.
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+
+    watchdog.note(10_000, 20_000);
+    watchdog.note(11_000, 21_000);
+
+    watchdog.suspend();
+    harness.advance(60_000);
+    expect(stalled).not.toHaveBeenCalled();
+
+    // Resume onto a node that is no longer producing: nothing advances.
+    watchdog.note(11_000, 21_000);
+    harness.advance(MEDIA_STALL_TIMEOUT_MS + 1_000);
+
+    expect(stalled).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not arm on a resume that never played in the first place', () => {
+    // A generation that has produced nothing has not stalled, it has not
+    // started, and that is the start watchdog's business at its own deadline.
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+
+    watchdog.suspend();
+    watchdog.note(0, 0);
+    harness.advance(MEDIA_STALL_TIMEOUT_MS + 1_000);
+
+    expect(stalled).not.toHaveBeenCalled();
+  });
+
+  it('keeps paused-is-not-stalled intact', () => {
+    const harness = controllable();
+    const stalled = vi.fn();
+    const watchdog = new MediaStallWatchdog(harness.environment);
+    watchdog.watch(stalled);
+
+    watchdog.note(10_000, 20_000);
+    watchdog.note(11_000, 21_000);
+    watchdog.suspend();
+    harness.advance(MEDIA_STALL_TIMEOUT_MS * 10);
+
+    expect(stalled).not.toHaveBeenCalled();
+  });
+});
