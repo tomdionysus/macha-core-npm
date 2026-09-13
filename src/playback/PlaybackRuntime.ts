@@ -370,7 +370,28 @@ export class PlaybackRuntime {
     return this.play({ ...failedRequest }, initialPreferences);
   }
 
-  /** Forwarded verbatim; a player that does not do app volume simply has none. */
+  /**
+   * Apply a level to the active player. Forwarded verbatim; a player that does
+   * not do app volume simply has none.
+   *
+   * **This applies a volume. It does not persist one, and the two share only a
+   * word.** Persisting a viewer's chosen level is a client's own business —
+   * core carried a `VolumeStore` until `0.10.0` and it is gone, because volume
+   * is player logic and a level is a property of one surface on one device.
+   *
+   * The distinction is not academic; it has misled twice. This method was
+   * twice described in core's own plan as a passthrough that existed only to
+   * carry that store, and scheduled for deletion with it — it touches no store
+   * and never did. And a client's volume hook passes *this* method the level
+   * the player should be hearing (zero while muted) while passing its own
+   * store the level to restore on next launch, **four lines apart in the same
+   * file**. Write the wrong one to disk and the television comes up silent
+   * with nothing on screen explaining why, which is the failure the whole area
+   * exists to prevent.
+   *
+   * So: applying takes the effective level, persisting takes the chosen one.
+   * Core only does the first.
+   */
   setVolume(volume: number): void {
     this.player.setVolume?.(volume);
   }
