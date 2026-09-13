@@ -1,5 +1,9 @@
 node_modules/
 dist/
+# Build staging: dist is assembled here, then renamed into place, so a client
+# reading dist over a file: link never sees a half-written tree.
+dist.staging/
+dist.previous/
 *.tsbuildinfo
 .DS_Store
 coverage/

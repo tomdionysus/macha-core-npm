@@ -33,8 +33,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && npm run typecheck && npm run lint:platform && tsc -p tsconfig.build.json",
+    "clean": "node -e \"for (const d of ['dist','dist.staging','dist.previous']) require('node:fs').rmSync(d, { recursive: true, force: true })\"",
+    "build": "npm run typecheck && npm run lint:platform && node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false",
     "lint:platform": "tsc --noEmit -p tsconfig.nodom.json --pretty false",
     "test": "vitest run",
