@@ -128,6 +128,8 @@ The items further down titled *Persisting a sign-in*, *Session manager state gap
 
 **Where things stand.** `0.9.0` is the current version, bumped on `develop` and **not yet merged to `main` or tagged** — that is the first thing to do if you are picking this up. Work happens on `develop`; a release is an annotated bare-semver tag (`0.9.0`, never `v0.9.0`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`.
 
+**Build LAST, after the final `git checkout`.** `dist:check` compares mtimes, and a branch switch rewrites every source file's mtime — so the release sequence "build, merge to `main`, tag, checkout `develop`" leaves `dist` stale *even though no source changed*, and every `file:`-linked client's `pretest` then refuses. This happened on the `0.10.0` release and blocked the web client until it was caught. **Rebuild after the last checkout, always.** Core reported "dist is current" in good faith and was wrong within the minute.
+
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **656 tests in 59 files, all passing** as of 2026-09-13. Run all five; `dist:check` is the one that catches a source change nobody built.
 
 **Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
@@ -373,7 +375,29 @@ What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to
    An independent argument for mute being its own concept, from the same client: `0` **already** carries a second unrelated meaning inside the player — `ExpoVideoAdapter.setVolume` caches the level because a standby is primed at `volume = 0` so it cannot be heard behind the active source, and must come up at the real volume on promotion. One number carrying "muted", "turned down" and "primed standby" is overloaded three ways.
 3. **The artwork source plan — not a straight lift. Decided against; redesign pending evidence.** Tom's position: the caching is inadequate and he wants a better approach, rather than core enshrining the policy both clients already invented. So the original proposal — lift the drop-header/walk-nodes/remember-the-last-URL policy as-is — is **not** what happens. See the item below, which now carries the mechanism.
 
-#### Artwork caching — the mechanism, from the web client
+#### Artwork caching — SOLVED, and both earlier diagnoses were wrong
+**Waiting on:** Tom, to authorise a small change in `MachaMediaApi.artworkUrls`. Measured against the live cluster by the web client on 2026-09-13.
+
+**The cause is the host in the browser's cache key, and it is core's.** Not the signature, and not `Cache-Control`:
+
+- **The signature does not churn.** Two catalogue fetches one second apart: **418 artwork refs, 418 identical URLs, zero changed.** `exp` is pinned to a UTC day boundary and is the same value for every artwork object in the payload (measured against server 0.38.x). *This directly contradicts what the server session reported from source — `exp = unix_ms() + ttl` at millisecond granularity, no bucket — and core relayed that reading to three clients with confidence. The discrepancy is raised with the server; the measurement is from the live cluster and wins until reconciled.*
+- **`Cache-Control` is already correct** on every node: `public, max-age=86400, immutable`. No server work needed.
+
+**What actually happens:** `EndpointHealthMonitor` probes, `evaluatePreferredSwap()` moves the preferred endpoint, catalogue reads follow the new head, and `MachaCatalogueApi.withAbsoluteArtworkUrls` stamps *that node's host* onto every signed artwork URL. `MachaMediaApi.artworkUrls:199-201` then puts that catalogue-stamped URL **first, unconditionally**. Same bytes, new name, full re-download of every visible poster. Caught live: `preemptive-endpoint-swap` at 17:27:13, and in that window 29 posters re-fetched at 2.7–3.0 s each — same artwork id, same `?exp&sig`, three hosts, byte-identical, 3 ms from disk cache on the one already held versus 923 ms on another. **The bytes were in the cache the whole time.**
+
+**Keep the irony, it is the argument:** the swap is chosen *for throughput*, and the swap itself costs a full re-download of every visible poster. "This node is faster" is a claim about streaming video and says nothing about whose artwork this browser already holds.
+
+**The fix is an ordering change and one persisted string**, and the machinery already exists: `artworkUrls` *already* re-hosts the capability onto every known node (`:201`), because the signature covers the id and expiry and **never the host** — core's own comment at `:185-192` says so. All that is missing is that the catalogue-stamped URL leads regardless. Give artwork its own sticky host, persisted, independent of the streaming endpoint, and order the candidates the cluster already offers by it.
+
+It needs **no failure handling**: a host that is down, cooling off or absent from the registry contributes no candidate, so ordinary order and ordinary failover apply, and a single artwork 404 never moves it. Preference follows success only.
+
+**Verified live by the web client** in `src/state/artworkHost.ts`: catalogue served by one node, preference forced to another, all 208 posters went to the preference — *the preference beats the node that signed them*, which is the property that survives a swap. A clean reload was 63/63 requests at 0 ms. 7 unit tests plus a component test watched red first.
+
+**This is not the `lastLoadedUrlById` policy Tom rejected for core** — that was a per-artwork URL map that only works behind an `<img>`. This is one string, and it belongs in `MachaMediaApi.artworkUrls` because every fact it rests on is already core's. **Every client with a URL-keyed image cache has this bug today**, Android TV and the phone client included, and none should have to rediscover it. What stays client-side is only the `<img>` failover, which is genuinely browser-shaped.
+
+**A second symptom from the same cause, client-side:** `<img key={url}>` means a swap destroys and recreates ~200 image elements at once; some async decodes land with the paint invalidation dropped, so a poster is resident, complete, `naturalWidth: 500`, unobscured — and never rastered. Tom was looking at blank posters while the DOM reported 33/33 loaded at every 250 ms sample. Fixing the churn removes the trigger.
+
+#### Superseded: the earlier diagnosis, kept because it was confidently wrong
 **Waiting on:** the server, for one measurement; then core, to design.
 
 **The cause is a wire-format decision, not a client failing to cache.** The server **re-signs a capability URL's `exp`/`sig` on every catalogue fetch of the same artwork**, even when nothing changed and the previous signature is still valid. A signed URL is therefore a **new HTTP cache key on every catalogue read**, so `Cache-Control` never gets the chance to matter — the key is churning, not revalidating.
