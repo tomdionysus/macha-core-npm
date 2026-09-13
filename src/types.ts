@@ -4,14 +4,34 @@ import type { CatalogueKind } from './api/CatalogueApi.js';
 export type MediaKind = CatalogueKind;
 
 export interface ArtworkRef {
+  /**
+   * The SHA-256 of the artwork bytes — **a content address, not a database
+   * key.** It is identical on every node, identical for every client, and
+   * identical across every re-signing of `url`.
+   *
+   * **This is the cache key. `url` is not.** Two clients independently built a
+   * module-scoped `id`-to-last-loaded-`url` map because this was documented
+   * nowhere and the churn in `url` was the visible symptom, and one of them
+   * carries a React lint suppression to keep it: the correct dependency is
+   * `id`, while the value the code reads is `url`. The suppression is the
+   * smell, and this field is the answer to it. Key an image cache, a
+   * decode cache or a memo on `id`, and treat `url` as transport.
+   */
   id: string;
   mimeType: string;
   /**
-   * Short-lived signed capability URL, when the server supplies one.
-   * Renders directly with no client-side blob fetch — the browser owns
-   * fetching, decode and HTTP caching. `LazyArtwork` does remember the last
-   * URL that loaded successfully for this `id`, since the server re-signs
-   * this on every catalogue fetch even when the image hasn't changed.
+   * Signed capability URL, when the server supplies one.
+   *
+   * Renders directly with no blob fetch and no headers — the server owns
+   * fetching, decode and HTTP caching for it, and the response carries a long
+   * `immutable` cache lifetime.
+   *
+   * **Not stable, and not a cache key.** The signature covers the artwork id
+   * and an expiry computed at the moment of signing, so the server currently
+   * mints a different `exp`, `sig` and query string on every catalogue read of
+   * the same unchanged image. Anything keyed on this string therefore misses
+   * every time, including the platform HTTP cache the `immutable` header was
+   * meant to reach. Use {@link ArtworkRef.id}.
    */
   url?: string;
 }
