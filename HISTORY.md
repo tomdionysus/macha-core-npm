@@ -39,6 +39,16 @@ Two orderings in it are deliberate and counter-intuitive:
 
 **The cascade is evaluated as filters against the best, not as a comparator.** Each measured axis keeps everything within threshold of the best value still in contention and puts the rest behind it. The first shape — a pairwise threshold inside `sort` — was not an order at all, because threshold indifference is not transitive: at 20/65/110 ms against a 50 ms floor, A ties B and B ties C while A beats C. Handed that cycle, `sort` returns whatever its implementation returns, so the WAN node reached the head of a three-node cluster on nothing but the order the nodes were typed in, and `selectionAxis()` reported that no measurement had decided it — the exact fault the cascade exists to prevent, arriving through the comparator. Two endpoints hide it completely, which is where every test lived. Against a single reference the same threshold is a total preorder, and the deciding axis is read off the ranking rather than recomputed from the top two afterwards, so it cannot disagree with the list it describes.
 
+## Who closes an abandoned session
+
+Teardown after a failover belongs to `ClusterPlaybackResolver`, immediately, with its own retry ladder. The coordinator's deferred cleanup — hold the old lease until the replacement has buffered data, then DELETE with backoff — was deleted.
+
+Two policies had grown up in parallel and the pair behaved worse than either alone: the resolver's fire-and-forget `stop()` charged the registry for a DELETE to a node that had just died, left the map entry in place because it only deleted on success, and the coordinator's cleanup then found that entry and charged again, with backoff, once per attempt. One observation became N failure records, walking a cooldown ladder built for a node failing repeatedly.
+
+The resolver won on reach. Two of the four clients call `failover` directly and never build a coordinator, so teardown that lives in the coordinator is teardown half the consumers do not get — and the cost of not doing it is not local: a node counts a session against `max_video_transcodes` from admission until the record is erased at `session_idle`, thirty minutes later, so on a one-slot node the next viewer is refused and nothing points at the client that caused it. The deferral it replaced was also protecting nothing: the old session is on the node that just stopped serving, so there is no fallback to hold it for.
+
+What it costs: the retry ladder is bounded at five attempts over roughly half a minute, because nothing can cancel those timers, and a node that comes back later than that keeps the lease until `session_idle`. That case is logged rather than hidden.
+
 ## Two failure postures
 
 A recurring rule, stated once here because it decides a lot of small things: **a device contradiction is performed silently and a node refusal is a loud, recoverable error.** Given a choice between the two, take the error.

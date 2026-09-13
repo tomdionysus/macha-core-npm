@@ -13,6 +13,19 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 
+/**
+ * How many times a session on a node that has just failed is asked to close.
+ *
+ * The DELETE usually goes to a node that is already gone, so one attempt is
+ * not a policy. Bounded rather than open-ended because the node's own
+ * `session_idle` reclaims the lease after thirty minutes and this ladder only
+ * has to cover a node that comes back sooner than that — roughly half a
+ * minute of it. Longer would be a timer nothing in this class can cancel.
+ */
+const FAILED_SESSION_CLOSE_ATTEMPTS = 5;
+const FAILED_SESSION_CLOSE_BASE_DELAY_MS = 1_000;
+const FAILED_SESSION_CLOSE_MAX_DELAY_MS = 16_000;
+
 interface OwnedSession {
   endpoint: MachaEndpoint;
   resolver: MachaPlaybackResolver;
@@ -215,13 +228,68 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * **Never awaited, and never allowed to fail the failover.** A slow node is
    * exactly where failover fires, so awaiting this would hang the recovery it
    * is part of. Sessions are node-local and a `DELETE` for an id a node does
-   * not hold answers a bare `404`, which `stop()` already treats as success —
-   * so there is no need to decide first whether the node is still alive, and
-   * racing a coordinator's own superseded cleanup is harmless rather than a
-   * conflict.
+   * not hold answers a bare `404`, which the node resolver already treats as
+   * success, so there is no need to decide first whether the node is alive.
+   *
+   * Three things it deliberately does *not* do, each of which it used to:
+   *
+   * - **It does not go through `stop()`.** That method records a failure
+   *   against the endpoint when the DELETE throws, and the endpoint has
+   *   already been charged once for this outage by `recordEndpointFailure`
+   *   above. One observation was becoming a fresh record per attempt, walking
+   *   the cooldown ladder — 500 ms, 2 s, 10 s, 30 s — for a node that failed
+   *   exactly once.
+   * - **It does not wait for success to drop the map entry.** `stop()` deletes
+   *   only on success, so a throwing DELETE left the session in `sessions`,
+   *   where every later cleanup path found it and charged the registry again.
+   *   The entry is gone before the first attempt: this session is abandoned
+   *   whether or not the node ever acknowledges it.
+   * - **It does not defer to a coordinator.** Two of the four clients call
+   *   `failover` directly and never build one, so teardown that lives up
+   *   there is teardown half the consumers do not get. This is the only
+   *   layer all of them pass through, which is why the retry ladder is here.
    */
   private releaseFailedSession(failedSession: PlaybackSession): void {
-    void this.stop(failedSession.sessionId).catch(() => undefined);
+    const owned = this.sessions.get(failedSession.sessionId);
+    if (!owned) return;
+    this.sessions.delete(failedSession.sessionId);
+
+    const attempt = (attemptsMade: number): void => {
+      void owned.resolver.stop(owned.nodeSessionId).then(() => {
+        this.log.info('failed-session-closed', {
+          endpointId: owned.endpoint.id,
+          sessionId: owned.nodeSessionId,
+          attempts: attemptsMade + 1,
+        });
+      }).catch((error) => {
+        const attempts = attemptsMade + 1;
+        if (attempts >= FAILED_SESSION_CLOSE_ATTEMPTS) {
+          // Said plainly rather than swallowed: the node is now holding a
+          // transcode slot nothing will release before `session_idle`, and
+          // the next viewer it refuses will have no way to see why.
+          this.log.warn('failed-session-close-abandoned', {
+            endpointId: owned.endpoint.id,
+            sessionId: owned.nodeSessionId,
+            attempts,
+            error,
+          });
+          return;
+        }
+        const delayMs = Math.min(
+          FAILED_SESSION_CLOSE_MAX_DELAY_MS,
+          FAILED_SESSION_CLOSE_BASE_DELAY_MS * (2 ** attemptsMade),
+        );
+        this.log.warn('failed-session-close-retry', {
+          endpointId: owned.endpoint.id,
+          sessionId: owned.nodeSessionId,
+          attempts,
+          delayMs,
+          error,
+        });
+        setTimeout(() => attempt(attempts), delayMs);
+      });
+    };
+    attempt(0);
   }
 
   async prepareAlternate(

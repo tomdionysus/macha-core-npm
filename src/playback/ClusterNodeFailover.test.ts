@@ -67,7 +67,7 @@ describe('Cluster node failover integration', () => {
     ]);
   });
 
-  it('recreates a failed live generation on the surviving node and tears down the failed node lease', async () => {
+  it('recreates a failed live generation on the surviving node and closes the failed lease as it abandons it', async () => {
     const cluster = createFakeCluster(['http://node-a', 'http://node-b']);
     cluster.node('http://node-a').queueSession('session-a');
     cluster.node('http://node-b').queueSession('session-b');
@@ -85,11 +85,11 @@ describe('Cluster node failover integration', () => {
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
 
-    // Buffered evidence on the replacement lets teardown of the old lease proceed.
-    player.emit({
-      positionMs: 0, durationMs: 600_000, paused: false, ended: false,
-      bufferedRangesMs: [{ startMs: 0, endMs: 5_000 }],
-    });
+    // Closed as it is abandoned, inside failover(), with no buffered evidence
+    // on the replacement asked for first. That is the whole policy: the
+    // resolver is the only layer every client passes through, and a node
+    // holds a transcode slot against `max_video_transcodes` from admission
+    // until the record is erased — `session_idle`, thirty minutes.
     await vi.waitFor(() => expect(cluster.calls).toContainEqual({ url: 'http://node-a/api/v1/playback/sessions/session-a', method: 'DELETE' }));
     await coordinator.close();
   });

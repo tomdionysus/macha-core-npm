@@ -1095,14 +1095,6 @@ describe('PlaybackCoordinator player failures', () => {
     player.fail(new Error('node A stream failed'));
 
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8'));
-    player.emit({
-      positionMs: 0,
-      durationMs: 600_000,
-      paused: false,
-      ended: false,
-      bufferedRangesMs: [{ startMs: 0, endMs: 10_000 }],
-    });
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('s1'));
     expect(api.failover).toHaveBeenCalledWith(
       initial,
       expect.objectContaining({ id: 'tmdb:movie:1' }),
@@ -1207,40 +1199,32 @@ describe('PlaybackCoordinator player failures', () => {
     await flush();
   });
 
-  it('backs off cleanup of the old session only after the replacement is streaming', async () => {
-    vi.useFakeTimers();
-    try {
-      const player = new FakePlayer();
-      const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
-      const replacement = session({
-        sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
-        source: { ...initial.source, url: 'http://b/replacement.mp4' },
-      });
-      const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
-      api.failover = vi.fn(async () => replacement);
-      api.stop
-        .mockRejectedValueOnce(new TypeError('old node unreachable'))
-        .mockRejectedValueOnce(new TypeError('old node still unreachable'))
-        .mockResolvedValue(undefined);
-      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
-      await coordinator.start();
+  it('leaves the failed session to the resolver that abandoned it', async () => {
+    // Teardown after a failover belongs to `resolver.failover()`, which
+    // released the old session at the moment it gave up on it. Two of the
+    // four clients call the resolver directly and never build a coordinator,
+    // so teardown up here is teardown half the consumers never get — and a
+    // second owner would DELETE a session already gone and charge the
+    // registry for the dead node failing to answer about it.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => replacement);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
 
-      player.fail(new PlaybackSourceError('primary stream failed', 'stream'));
-      await flush();
-      await flush();
-      expect(api.stop).not.toHaveBeenCalled();
-      player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false, bufferedRangesMs: [{ startMs: 0, endMs: 5_000 }] });
-      await flush();
-      expect(api.stop).toHaveBeenCalledTimes(1);
+    player.fail(new PlaybackSourceError('primary stream failed', 'stream'));
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
+    // The event that used to release the deferred cleanup. Nothing is owed.
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false, bufferedRangesMs: [{ startMs: 0, endMs: 5_000 }] });
+    await flush();
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(api.stop).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(api.stop).toHaveBeenCalledTimes(3);
-      await coordinator.close();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(api.stop).not.toHaveBeenCalled();
+    await coordinator.close();
   });
 
   it('promotes a preflighted transformed generation without negotiating another session', async () => {

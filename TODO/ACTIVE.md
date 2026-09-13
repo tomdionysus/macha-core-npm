@@ -47,15 +47,6 @@ Resolve together with the role-gating item below. The tests here exercise only 2
 
 ## P1 — correctness
 
-### Failover double-charges the failed endpoint, and two teardown policies coexist
-**Waiting on:** Tom (which policy), then core. `src/playback/ClusterPlaybackResolver.ts:189-191`, `:294-304`; `src/playback/PlaybackCoordinator.ts:1447-1453`, `:1531-1553`, `:1601`.
-
-`failover` records the failure once via `recordEndpointFailure` (500 ms cooldown). The fire-and-forget `stop()` then hits the same dead node, throws, and `stop` records again (2 s). Because `sessions.delete` only runs on success the entry survives, so the coordinator's superseded cleanup DELETEs again, records a third (10 s), and retries with backoff — each attempt another record. One observation becomes N failure records. "Racing the coordinator's own cleanup is harmless" is true of the HTTP side and false of the registry side.
-
-Separately: the coordinator defers the old lease's DELETE until the replacement has buffered data, then retries with backoff; the resolver now DELETEs immediately, before the replacement is admitted. With a cluster resolver the coordinator's deferral is dead code and `superseded-session-closed` logs a close that never happened. `ClusterNodeFailover.test.ts:74,88-93` still passes but its single queued 204 is now consumed by the resolver, so **the test no longer exercises the deferral it describes.**
-
-Fix: `releaseFailedSession` should call `owned.resolver.stop` directly and drop the map entry regardless of outcome. Then decide which teardown policy is the paid-for one and delete the other; whichever survives, the integration test must assert it specifically.
-
 ### The exclusion set never ages
 **Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:108`, `:127`, `:342-345`, `:272`.
 
@@ -225,6 +216,7 @@ That does not make the duplication fine. The honest options are a second shared 
 Verified, each real, none urgent. Grouped by area so a session cleaning one area can take the set.
 
 **Coordinator and playback**
+- `PlaybackCoordinator.ts:1207-1250` — both promotion paths record the endpoint failure and then call `resolver.stop()` on the same node, which records again when the DELETE throws. The same double-charge `releaseFailedSession` was just fixed for, one door over; the resolver has no seam for "close this, the node is already known bad" that a coordinator can reach.
 - `PlaybackCoordinator.ts:1153-1189` — `degrade()` does not check `failoverPromise`, so a degradation during failover POSTs a redundant standby on a third node. Churn, not a leak.
 - `PlaybackCoordinator.ts:698-718` — `close()` does not await `failoverPromise`, so `closePromise` can resolve while a failover POST is in flight, against the runtime's stated invariant.
 - `PlaybackCoordinator.ts:1327` — the transcode standby window is keyed on `alternate.mode === 'transcode'`; if the entitlement is video-only, `transform.video === 'transcode'` is the precise test. The 8 s comment records the slot cost but not the quantity it must exceed.
@@ -261,7 +253,6 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 **Simplification, where the payoff is real**
 - `request`/`throwResponseError` is triplicated across Catalogue, Acquisition and Manage (plus PlaybackFacts) with three shape-identical error classes, and has already drifted on 202/204 handling. One `jsonRequest` in `httpCompat` would collapse ~60 lines and make the malformed-body fix a single change. `objectValue`/`asRecord` is re-implemented three times.
 - `route()`/`find()` duplicate the walk skeleton; every `Cluster*Api` repeats the `instanceof ClusterEndpointRouter` constructor; `evaluatePreferredSwap` calls `candidates()` (a re-sort plus an axis side effect) where `snapshot()` would do.
-- With the resolver releasing on failover, the coordinator's deferred superseded cleanup is redundant for failover; stopping immediately would delete ~30 lines and close the gap where `close()` never stops `supersededCleanup.oldSessionId`.
 
 ---
 

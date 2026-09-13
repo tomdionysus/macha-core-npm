@@ -425,7 +425,6 @@ export class PlaybackCoordinator {
   private readonly alternateSessions = new Map<string, PlaybackSession>();
   private readonly alternatePreparations = new Set<Promise<void>>();
   private readonly alternateExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private supersededCleanup?: { oldSessionId: string; newSessionId: string; attempt: number; timer?: ReturnType<typeof setTimeout> };
   private streamOffsetMs = 0;
   /** Latest server-side session state; may be ahead of the source currently visible. */
   private serverSession?: PlaybackSession;
@@ -700,7 +699,6 @@ export class PlaybackCoordinator {
     this.unsubscribePlayer();
     this.unsubscribePlayerFailure?.();
     this.unsubscribePlayerDegradation?.();
-    if (this.supersededCleanup?.timer !== undefined) clearTimeout(this.supersededCleanup.timer);
     // Coordinator teardown ends source acquisition immediately, but deliberately
     // leaves DOM-host ownership to PlaybackRuntime/PlayerHost.
     this.options.player.stop();
@@ -1251,16 +1249,14 @@ export class PlaybackCoordinator {
     if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
     const desiredMs = this.snapshot.intent.positionMs;
     this.activateSession(alternate, desiredMs, alternate.seekMs);
-    // Recorded before it is begun. `beginSupersededCleanup` acts only on the
-    // record it already owns, so a fresh object passed straight in was a
-    // no-op: the primary was never closed, and on a one-slot node its
-    // transcode stayed counted for `session_idle`. Closed now rather than
-    // after buffered evidence on the replacement — the standby was promoted
-    // because the primary stopped serving, so there is nothing to fall back
-    // to and no reason to hold the slot.
-    const cleanup = { oldSessionId: session.sessionId, newSessionId: alternate.sessionId, attempt: 0 };
-    this.supersededCleanup = cleanup;
-    this.beginSupersededCleanup(cleanup);
+    // Closed now rather than after buffered evidence on the replacement: the
+    // standby was promoted because the primary stopped serving, so there is
+    // nothing to fall back to and no reason to hold the slot. Fire and
+    // forget, exactly as the silent direct promotion does — retrying belongs
+    // to the resolver, which is the layer every client passes through.
+    void this.options.resolver.stop(session.sessionId).catch((error) => {
+      this.log.warn('superseded-primary-close-failed', { sessionId: session.sessionId, error });
+    });
   }
 
   private prepareAlternate(session: PlaybackSession, activationRevision: number): void {
@@ -1464,15 +1460,6 @@ export class PlaybackCoordinator {
       return;
     }
 
-    const cleanup = this.supersededCleanup;
-    if (cleanup
-      && session?.sessionId === cleanup.newSessionId
-      && !next.paused
-      && !next.seeking
-      && (next.bufferedRangesMs ?? []).some((range) => range.endMs > next.positionMs)) {
-      this.beginSupersededCleanup(cleanup);
-    }
-
     const target = this.snapshot.intent.positionMs;
     if (this.seekIntentActive && !next.seeking && Math.abs(absolutePositionMs - target) <= 1_500) {
       this.seekIntentActive = false;
@@ -1548,30 +1535,6 @@ export class PlaybackCoordinator {
     this.failTerminal(fatalError);
   }
 
-  private beginSupersededCleanup(cleanup: NonNullable<PlaybackCoordinator['supersededCleanup']>): void {
-    if (this.supersededCleanup !== cleanup || cleanup.timer !== undefined) return;
-    const attempt = () => {
-      if (this.disposed || this.supersededCleanup !== cleanup) return;
-      cleanup.timer = undefined;
-      void this.options.resolver.stop(cleanup.oldSessionId).then(() => {
-        if (this.supersededCleanup === cleanup) this.supersededCleanup = undefined;
-        this.log.info('superseded-session-closed', { sessionId: cleanup.oldSessionId, attempts: cleanup.attempt + 1 });
-      }).catch((error) => {
-        if (this.disposed || this.supersededCleanup !== cleanup) return;
-        cleanup.attempt += 1;
-        const delayMs = Math.min(30_000, 1_000 * (2 ** Math.min(cleanup.attempt - 1, 5)));
-        this.log.warn('superseded-session-close-retry', {
-          sessionId: cleanup.oldSessionId,
-          attempt: cleanup.attempt + 1,
-          delayMs,
-          error,
-        });
-        cleanup.timer = setTimeout(attempt, delayMs);
-      });
-    };
-    attempt();
-  }
-
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
     const requestedPositionMs = this.snapshot.intent.positionMs;
     const requestedPositionRevision = this.positionRevision;
@@ -1618,11 +1581,11 @@ export class PlaybackCoordinator {
       } else {
         this.activateSession(next, currentDesired, requestedPositionMs);
       }
-      this.supersededCleanup = {
-        oldSessionId: failedSession.sessionId,
-        newSessionId: next.sessionId,
-        attempt: 0,
-      };
+      // The failed session is not closed here. `resolver.failover()` released
+      // it as it abandoned it, which is the only layer every client passes
+      // through — two of the four never build a coordinator at all — and a
+      // second owner here would DELETE a session already gone and charge the
+      // registry for the node failing to answer about it.
       this.log.info('source-failover-ready', {
         oldSessionId: failedSession.sessionId,
         newSessionId: next.sessionId,

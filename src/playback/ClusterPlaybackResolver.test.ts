@@ -376,6 +376,38 @@ describe('ClusterPlaybackResolver', () => {
     expect(JSON.parse(String(admissionCalls(fetchMock)[2][1].body)).preferences.container).toBe('mpegts');
   });
 
+  it('charges the failed endpoint once, however the close goes', async () => {
+    // One observation, one record. The DELETE goes to a node that has just
+    // died, so it throws — and going through `stop()` charged the registry
+    // again for the same outage. Worse, `stop()` drops the map entry only on
+    // success, so the entry survived for every later cleanup path to find and
+    // charge a third time. The cooldown ladder — 500 ms, 2 s, 10 s, 30 s —
+    // was being walked by a node that had failed exactly once.
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+        if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') throw new TypeError('node a unreachable');
+        const id = String(url).startsWith('http://a') ? 'session-a' : 'session-b';
+        return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const resolver = new ClusterPlaybackResolver(registry);
+      const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+      await resolver.failover(primary, media, capabilities, 0, { mode: 'direct' });
+      for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+
+      expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+      // And the abandoned session is gone from the map whether or not the node
+      // ever acknowledged the close, so nothing can find it to charge again.
+      await expect(resolver.stop(primary.sessionId)).resolves.toBeUndefined();
+      expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps identical node-local session IDs distinct across endpoints', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('same-id')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
