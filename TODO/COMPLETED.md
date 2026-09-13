@@ -24,6 +24,49 @@ It is milliseconds. Settled from the server source — `unix_ms()` is a `duratio
 
 ---
 
+## 0.11.0 — artwork stops renaming itself, and volume leaves core
+
+**Artwork URLs stop varying the one field that is not the content.** The path is already the SHA-256 of the bytes and the signature covers the id and expiry and **never the host**, so every component was a content address except the origin — and the origin varied by accident: candidates were ordered by the *streaming* preferred endpoint, and the capability in a catalogue payload is absolutised against whichever node answered that read. A pre-emptive swap therefore renamed every poster, and the platform HTTP cache — which keys on the whole URL, and which core neither owns nor can re-key — re-downloaded bytes it already held.
+
+Measured, not reasoned: one swap, then 29 posters re-fetched at 2.7–3.0 s each. Same artwork id, same `?exp&sig`, three hosts, byte-identical — 3 ms from disk cache on the node already held, 923 ms over the wire on another. **The bytes were in the cache the whole time.** Keep the irony, it is the argument: the swap is chosen *for throughput*, and "this node is faster" says nothing about whose artwork this viewer's browser already holds.
+
+`ArtworkHostPreference` gives artwork its own sticky host, persisted, independent of streaming; `MediaApi.noteArtworkLoaded` feeds it. **Not a cache and not a choice of node** — it orders URLs the cluster already offered, so a host that is down or cooling off contributes no candidate and ordinary failover applies untouched. Preference follows success only. Sticky rather than deterministic on purpose: a canonical host would change every key at once when the node set changed and fail every poster when that node was down, losing the warm cache exactly when it is needed. **The goal is warmth, not determinism.** Verified live by the web client: after the fix, a reload issued *zero artwork requests at all* — not cache hits, no requests.
+
+**`VolumeStore` removed.** Zero consumers inside the package, and `PlaybackRuntime.setVolume` forwarded to the player without ever reading it — already disconnected. It could not be universal either: core's own Samsung platform returns 1 from `initialVolume` because the television owns volume. A browser-page preference in a package whose whole claim is that it assumes no browser. Both real consumers took a local copy first, so no build broke at any point.
+
+Kept, and the distinction is the lesson: `Platform.initialVolume?`, `Player.setVolume?` and `PlaybackRuntime.setVolume`. **Applying a volume and persisting one share a word and nothing else.** This plan twice said otherwise and scheduled the runtime method for deletion alongside a store it never touched; both clients caught it from opposite ends — one by reading the code, one by pointing at a hook that passes the *effective* level to the runtime and the *stored* level to the store, four lines apart. Written onto the method.
+
+**The build compiles to a staging directory and renames it into place.** Every client resolves this package through a `file:` link and reads `dist` live. Emitting in place left orphans that `dist:check` is structurally blind to — it compares mtimes of files that *exist*, so a vanished source is the one case it cannot see. Emptying `dist` first made the window *worse*: a client watched its whole suite collapse to "45 files failed / no tests" and went looking for a breakage in its own tree first. Staging plus an atomic `rename` closes both instead of trading one for the other, and a failed compile leaves `dist` untouched.
+
+**The package is called `@machafoundation/core` everywhere at last** — 17 places said `@macha/core`, including both `dist-check` failure messages (read only by someone already blocked, naming a package that did not exist) and a `package-lock.json` that disagreed with its own manifest.
+
+**Comments corrected where they had been measured false rather than merely aged:** the artwork churn is the host and not the signature; the capability expiry bound is a *relationship* (always more than one TTL, at most two) rather than "24 to 48 hours", because the bucket *is* the TTL and a hard-coded figure would quietly rot on a reconfigured cluster; and a re-minted session must not be assumed able to browse.
+
+720 tests in 59 files.
+
+---
+
+## 0.10.0 — one account model, no special anonymous
+
+The type was called `AnonymousSession` and was the type of **every** session, including one minted from a username and password. **That one wrong word produced four defects**, and correcting it made the model simpler rather than more elaborate: one `Session`, one mint, one storage policy, and one question after any re-mint — *did the account change?*
+
+Tom's principle, which is the whole release: the account an empty credential set authenticates is special in exactly three places, all server-side — it cannot be renamed or deleted, it has no password, and it can mint with no credentials where a deployment allows it. **In every other respect it is just another account with variable roles, and core enforces none of those edge cases.** A client reflecting them in its UI reads the server's per-record `mutable`, never a name comparison — right for that account, right for root, right for whatever is protected next.
+
+- **Renamed, hard cut, no aliases:** `Session`, `mintSession`, `mintSessionAnyNode`, `validateSession`, `validateSessionAnyNode`.
+- **The cache keeps the whole session.** `cacheSession` had always written `username` and `roles`; `loadCachedSession` parsed them and threw them away, so a restored session was structurally indistinguishable from a freshly minted anonymous one and core could not tell after a reload that it had ever been signed in. *That single gap explained three items this file had been treating separately.*
+- **One storage policy through `MachaHost.secureStorage?`**, optional, falling back to persistent `storage`, with **every** session going there rather than only a credentialed one. `ephemeralStorage` removed: `SessionManager` was its only reader, and a seam nothing reads would let a host set it expecting session behaviour and get none. Key moved to `macha.session.v1` — free exactly once, because moving out of tab-lifetime storage already forced one fresh mint everywhere.
+- **`lastIdentityChange`** reports when a session stops belonging to the account it belonged to, **as a comparison rather than a special case**. Core records `from`, `to`, `when` and says nothing about what it means: a 401 does not distinguish an expiry from a revoke from a `credential_generation` bump. Signed-in→anonymous is reported; anonymous→anonymous is not; a node too old to state a username reports nothing rather than inventing a sign-out.
+- **`signOut()` revokes server-side and does not mint a replacement.** Forgetting a token is not signing out. Local state clears first and unconditionally, then the revoke runs and its failure is **not** swallowed.
+- **A ready session is published *with* the session, not ahead of it.** `settle()` ran at the top of `adopt()`, so the first notification carried `isReady === true` with no token and no roles — indistinguishable from a session granted nothing, which is how a privileged viewer lands on a login screen. **Predicted by a client from the shape of its own three-state gate before it had written any code.**
+- **Storage keys exported and documented** (`MACHA_STORAGE_KEYS`, `isMachaStorageKey`), after a client filtered its store on one of core's two undocumented key conventions and silently lost every session on every cold start.
+- **The refusal walk is unchanged, by decision.** On a 403 during mint, credentials present stops the walk because the table is replicated; credentials absent continues, because allow-anonymous is per-node configuration and one stale node must not speak for the cluster.
+
+Also in this release: **`hlsWalk`** absorbs both HLS manifest walks from two clients over one shared target primitive — fixing a non-manifest answer that destroyed promotable standbys (an inability to *measure* reported as a failure) and a 5 s deadline that sat *below* the server's 6 s segment hold, so a node producing its first fragment could never pass. **`EndpointHealthMonitor.probeNow()`** for an off-cycle probe. **`PlaybackQueueStore` and `ContinueWatchingStore`** made safe for a reactive caller. **The stall watchdog** no longer condemns a node whose timeline just moved under it — a re-based buffer high-water mark on any discontinuity, a re-arm after `suspend()`, and a budget comment that had claimed the margin made a hold safe.
+
+**Verified on hardware**, which nothing else in the release was: a Blackview A85 against the live cluster — cold start, sign in, **force-stop, relaunch, still signed in.**
+
+---
+
 ## 0.9.0 — liveness without a role, and a failover that stops trusting what it replaced
 
 Every P0 from the 2026-09-12 review is closed in this release, along with the whole of the session-state work four client sessions asked for on 2026-09-13.
