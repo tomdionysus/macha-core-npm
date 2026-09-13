@@ -24,21 +24,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## P0 — open defects with a cluster-wide cost
 
-Each is a one-place defect, verified against the source. Two of the original five are fixed and unreleased — session minting having no timeout, and the ranking comparator; see [COMPLETED.md](COMPLETED.md).
-
-### A second failure during an in-flight failover goes terminal
-**Waiting on:** core. `src/playback/PlaybackCoordinator.ts:1500-1508`.
-
-`failNow` starts recovery only when `!this.failoverPromise`; otherwise it falls through to `failTerminal`. The old player is neither stopped nor unsubscribed during failover, so it keeps emitting. A fatal error starts a failover POST (1–3 s); the element plays out its buffered tail and emits `ended` short of duration; the `premature-source-end` path (`:1443`) calls `fail()` again; terminal. The runtime then closes the coordinator and the freshly created replacement is discarded by the disposed path. The viewer gets the fatal screen with a working replacement seconds away.
-
-Fix: when a failover is in flight and the error is endpoint-retryable, log and drop it — the posture `promoteReadyAlternate` already takes — or `player.stop()` when failover begins. **No test sends two failure signals from one dead source.**
-
-### A slow admission that succeeds after the deadline is stranded
-**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:22-42`, `:226-228`.
-
-`awaitWithEndpointDeadline` rejects at 12 s and deliberately leaves the POST running, but once `settled` is true the late result is dropped: never put in `sessions`, never returned, never deleted. The idempotency key does not help — sessions are node-local. So the slow node the deadline exists to route around is the one left holding a session, and on a one-slot node its only transcode slot, for `session_idle` (30 minutes).
-
-Fix: after a deadline rejection, chain `request.then(session => resolver.stop(session.sessionId))` and log it. Tests only use never-settling promises (`ClusterPlaybackResolver.test.ts:217,246`, `fakeCluster.ts:121`), so the late-success case is untested.
+Four of the original five are fixed and unreleased — see [COMPLETED.md](COMPLETED.md). What remains is the one that is not core's to decide.
 
 ### The connection gate cannot accept any endpoint against the live cluster
 **Waiting on:** server (which of two fixes), then core. `src/connection/connectionConfiguration.ts:63-98`, `src/api/SessionAuth.ts:129-150`. **Measured.**
@@ -72,14 +58,14 @@ Resolve together with the role-gating item below. The tests here exercise only 2
 `session.preferences` has no `container` (the 0.6.3 lesson again), so a retry after a fatal asks for no carriage. And `mode` echoed back as `initialPreferences.mode` is treated as viewer-chosen: `chosenByViewer: true` is reported to the host though the chooser decided, the chooser is skipped, and the 400 downgrade path in `resolveInstructed` is disabled. Fix: seed retry from the snapshot's `instruction`, with `mode: 'choose'` when the chooser decided.
 
 ### The carriage fix misses the standby path
-**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:126-134`, `:174-202`.
+**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:145-153`, `:193-221`.
 
 `withServedSegmentContainer` runs only on the fresh-`create` branch of `failover`. `prepareAlternate` builds from raw preferences, and `failover` accepts a prepared alternate on endpoint id and `mediaId` alone — no mode check, no served-container check.
 
 **Latent, not live:** `prepareAlternate` has exactly one caller, the coordinator, and the phone client (the consumer this would have bitten) never calls it. Fix it before something starts preparing alternates without a coordinator. Fix: apply the helper in `prepareAlternate`; in `failover`, reject a prepared alternate whose mode differs, or where both are transformed and report different containers.
 
 ### Failover double-charges the failed endpoint, and two teardown policies coexist
-**Waiting on:** Tom (which policy), then core. `src/playback/ClusterPlaybackResolver.ts:170-172`, `:271-281`; `src/playback/PlaybackCoordinator.ts:1447-1453`, `:1511-1533`, `:1581`.
+**Waiting on:** Tom (which policy), then core. `src/playback/ClusterPlaybackResolver.ts:189-191`, `:294-304`; `src/playback/PlaybackCoordinator.ts:1447-1453`, `:1531-1553`, `:1601`.
 
 `failover` records the failure once via `recordEndpointFailure` (500 ms cooldown). The fire-and-forget `stop()` then hits the same dead node, throws, and `stop` records again (2 s). Because `sessions.delete` only runs on success the entry survives, so the coordinator's superseded cleanup DELETEs again, records a third (10 s), and retries with backoff — each attempt another record. One observation becomes N failure records. "Racing the coordinator's own cleanup is harmless" is true of the HTTP side and false of the registry side.
 
@@ -88,7 +74,7 @@ Separately: the coordinator defers the old lease's DELETE until the replacement 
 Fix: `releaseFailedSession` should call `owned.resolver.stop` directly and drop the map entry regardless of outcome. Then decide which teardown policy is the paid-for one and delete the other; whichever survives, the integration test must assert it specifically.
 
 ### The exclusion set never ages
-**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:89`, `:108`, `:283-286`, `:249`.
+**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:108`, `:127`, `:342-345`, `:272`.
 
 `failedGenerationEndpoints` resets only on `resolve()`. Two nodes, two-hour film: A blips at minute 10, B at minute 90, candidates empty, bare `Error('No untried Macha playback endpoint remains.')`, terminal — while A has been probed healthy for 80 minutes. Fix: when exclusion empties the list, fall back to registry-ordered candidates whose cooldown has expired, or drop an id on `recordSuccess`/`recordProbeSuccess`.
 
@@ -152,7 +138,7 @@ Changing identity does not close playback sessions — nothing connects them —
 - **An emptied bootstrap set is persisted and treated as configured.** `runtime/configuration.ts:78`, `:88-93`, `:102-106`. `setBootstrapEndpoints([])` writes `{urls: []}`; `[]` is truthy, so `environmentEndpoints` is never consulted again and the client is permanently unconfigured after a "clear". `setDiscoveredEndpoints` already removes the key when empty — the two setters disagree.
 - **`TorrentJob.catalogue` is declared required but version-gated.** `api/AcquisitionApi.ts:72`, "since 0.28.1", and the package supports mixed-version endpoint sets with no runtime check. Make it optional; absent stays absent.
 - **Success bodies are assumed to be the envelope.** `MachaCatalogueApi.ts:61-62,127-128,191-203`, `MachaAcquisitionApi.ts:41-52,99-109`, `MachaManageApi.ts:32-33`. A 200 with HTML throws a raw `SyntaxError` the router treats as non-retryable, so "Unexpected token <" reaches the viewer with no failover; a JSON 200 missing `items`/`jobs` throws `TypeError` at `.map`, which the router treats as a *transport* failure and cools down the node for a schema mismatch. Fix: validate shape and throw a typed `invalid_response`, as `mediaProfile` already does at `:88`.
-- **`ClusterPlaybackFactsApi` records per-title faults as endpoint evidence.** `:63-67` lacks the `!isPerTitleFailure(error)` guard `ClusterPlaybackResolver.create:245` has, so one unreadable extent demotes the node for every title.
+- **`ClusterPlaybackFactsApi` records per-title faults as endpoint evidence.** `:63-67` lacks the `!isPerTitleFailure(error)` guard `ClusterPlaybackResolver.create:268` has, so one unreadable extent demotes the node for every title.
 
 ---
 
@@ -213,7 +199,7 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 
 Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: two failure signals from one dead source; a late admission success after the deadline; `canSeek: false`; the no-facts fallback honouring container policy; retry preserving container and chooser-ness; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**The specific gaps the review named**, each tied to an item above: `canSeek: false`; the no-facts fallback honouring container policy; retry preserving container and chooser-ness; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
 
 ---
 
@@ -256,10 +242,10 @@ That does not make the duplication fine. The honest options are a second shared 
 Verified, each real, none urgent. Grouped by area so a session cleaning one area can take the set.
 
 **Coordinator and playback**
-- `PlaybackCoordinator.ts:1149-1185` — `degrade()` does not check `failoverPromise`, so a degradation during failover POSTs a redundant standby on a third node. Churn, not a leak.
+- `PlaybackCoordinator.ts:1153-1189` — `degrade()` does not check `failoverPromise`, so a degradation during failover POSTs a redundant standby on a third node. Churn, not a leak.
 - `PlaybackCoordinator.ts:698-718` — `close()` does not await `failoverPromise`, so `closePromise` can resolve while a failover POST is in flight, against the runtime's stated invariant.
-- `PlaybackCoordinator.ts:1318` — the transcode standby window is keyed on `alternate.mode === 'transcode'`; if the entitlement is video-only, `transform.video === 'transcode'` is the precise test. The 8 s comment records the slot cost but not the quantity it must exceed.
-- `PlaybackCoordinator.ts:1306-1310` — no disposed/revision re-check after the awaited preflight.
+- `PlaybackCoordinator.ts:1327` — the transcode standby window is keyed on `alternate.mode === 'transcode'`; if the entitlement is video-only, `transform.video === 'transcode'` is the precise test. The 8 s comment records the slot cost but not the quantity it must exceed.
+- `PlaybackCoordinator.ts:1313-1318` — no disposed/revision re-check after the awaited preflight.
 - `PlaybackStatus.ts:12` — header says "only ever from `output.container`" while the code falls back to `output.format`.
 - `MachaPlaybackResolver.ts:243-253` — `reconcileQualityCaps` skips `mode: 'remux'` and runs on `resolve()` but not `update()`, against its own doc.
 - `MediaTechnicalProfile.ts:21-23` — dead ternary with identical branches; `MachaPlaybackFactsApi.ts:45` passes `dolby_vision_profile: 0` through where the other normaliser treats 0 as "not probed".

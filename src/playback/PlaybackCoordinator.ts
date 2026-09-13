@@ -1508,7 +1508,27 @@ export class PlaybackCoordinator {
 
   private failNow(fatalError: Error): void {
     const failedSession = this.snapshot.session ?? this.serverSession;
-    if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError) && !this.failoverPromise) {
+    // A dead source does not fall silent when recovery starts. It is neither
+    // stopped nor unsubscribed while the replacement is negotiated, so it goes
+    // on emitting: the element plays out whatever it had buffered and reports
+    // `ended` short of duration, which `onPlayerEvent` correctly reads as a
+    // premature end and sends back here as a second fatal failure — from the
+    // same source, about the same outage, one to three seconds after the
+    // first. Taken terminal it closes the coordinator and the replacement that
+    // was seconds from ready is discarded by the disposed path, so the viewer
+    // gets the fatal screen instead of the recovery that had already worked.
+    //
+    // Dropped rather than queued: recovery for this outage is already running
+    // and will either produce a source or fail on its own terms. Same posture
+    // `promoteReadyAlternate` takes when a degradation arrives mid-failover.
+    if (this.failoverPromise && isEndpointRetryablePlaybackFailure(fatalError)) {
+      this.log.debug('source-failure-during-failover', {
+        sessionId: failedSession?.sessionId,
+        error: fatalError,
+      });
+      return;
+    }
+    if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.failoverPromise = this.recoverFromSourceFailure(failedSession, fatalError).finally(() => {
         this.failoverPromise = undefined;
       });

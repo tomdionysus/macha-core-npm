@@ -262,6 +262,45 @@ describe('ClusterPlaybackResolver', () => {
     ]);
   });
 
+  it('closes a generation the node admits after the deadline gave up waiting for it', async () => {
+    // The deadline abandons the wait and deliberately leaves the POST
+    // running, so a node slow enough to miss it can still admit the session
+    // afterwards. Sessions are node-local, so the idempotency key does not
+    // reach across to the node that actually served the retry: nothing else
+    // knows this session exists, nothing will ever close it, and on a
+    // one-slot node it holds the only transcode slot until `session_idle`
+    // reclaims it thirty minutes later. The slow node the deadline exists to
+    // route around is the one that pays, in the resource that made it slow.
+    let admitLate: (() => void) | undefined;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        admitLate = () => resolve(new Response(JSON.stringify(wireSession('session-late')), {
+          status: 201, headers: { 'Content-Type': 'application/json' },
+        }));
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    const fetchWithCloses = withSessionCloses(fetchMock);
+    vi.stubGlobal('fetch', fetchWithCloses);
+    const resolver = new ClusterPlaybackResolver(
+      new EndpointRegistry(bootstrapEndpoints(['http://slow', 'http://b'])),
+      undefined,
+      5,
+    );
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    expect(session.endpoint?.id).toBe('http://b');
+
+    admitLate?.();
+
+    // Closed with the node-local session id, which is the only identifier the
+    // slow node has ever heard of — the cluster-prefixed one is minted here,
+    // after the await this attempt never came back from.
+    await vi.waitFor(() => expect(fetchWithCloses.mock.calls).toContainEqual([
+      'http://slow/api/v1/playback/sessions/session-late',
+      expect.objectContaining({ method: 'DELETE' }),
+    ]));
+  });
+
   it('promotes a prepared transformed generation without creating a duplicate lease', async () => {
     const transformed = (id: string) => ({
       ...wireSession(id),

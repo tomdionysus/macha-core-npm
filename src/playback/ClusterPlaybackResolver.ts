@@ -19,7 +19,22 @@ interface OwnedSession {
   nodeSessionId: string;
 }
 
-function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Bounds the wait on one generation attempt, and hands back anything that
+ * arrives after the deadline so the caller can dispose of it.
+ *
+ * The deadline abandons only the local wait: the HTTP operation is left
+ * running and observed rather than cancelled, because a client-cancelled POST
+ * tells the node nothing about whether it should keep the work. That is why
+ * `onAbandoned` has to exist — a request left running is a request that can
+ * still succeed, and a success nobody is waiting for is a session nobody will
+ * ever close.
+ */
+function awaitWithEndpointDeadline<T>(
+  request: Promise<T>,
+  timeoutMs: number,
+  onAbandoned: (value: T) => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
@@ -32,10 +47,14 @@ function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): P
       new Error(`Playback generation attempt exceeded ${timeoutMs} ms.`),
       { status: 504, code: 'client_endpoint_deadline' },
     ))), timeoutMs);
-    // A deadline abandons only the local wait. The HTTP operation remains
-    // independent and observed, avoiding client-generated request cancellation.
     request.then(
-      (value) => finish(() => resolve(value)),
+      (value) => {
+        if (settled) {
+          onAbandoned(value);
+          return;
+        }
+        finish(() => resolve(value));
+      },
       (error) => finish(() => reject(error)),
     );
   });
@@ -224,7 +243,11 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       try {
         const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
         const session = attemptTimeoutMs
-          ? await awaitWithEndpointDeadline(request, attemptTimeoutMs)
+          ? await awaitWithEndpointDeadline(
+            request,
+            attemptTimeoutMs,
+            (late) => this.releaseGenerationAdmittedLate(endpoint, resolver, late),
+          )
           : await request;
         session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
         const nodeSessionId = session.sessionId;
@@ -278,6 +301,42 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
+  }
+
+  /**
+   * Close a generation the attempt deadline gave up on but the node went on to
+   * admit.
+   *
+   * The idempotency key is no help: sessions are node-local, so the retry
+   * lands somewhere else and this node is left holding a session nothing
+   * refers to — on a one-slot node, its only transcode slot — until
+   * `session_idle` reclaims it thirty minutes later. The slow node the
+   * deadline exists to route around is exactly the one that pays for it, and
+   * it pays in the resource that made it slow.
+   *
+   * Never recorded as endpoint evidence, in either direction. The node did
+   * nothing wrong; it was slower than we were prepared to wait, and it has
+   * already been charged for that by the attempt that timed out.
+   */
+  private releaseGenerationAdmittedLate(
+    endpoint: MachaEndpoint,
+    resolver: MachaPlaybackResolver,
+    session: PlaybackSession,
+  ): void {
+    this.log.warn('generation-admitted-after-deadline', {
+      endpointId: endpoint.id,
+      endpoint: endpoint.baseUrl,
+      sessionId: session.sessionId,
+    });
+    void resolver.stop(session.sessionId).catch((error) => {
+      // Nothing else will try: this session was never recorded, so no cleanup
+      // path knows it exists. Saying so is the whole of what can be done.
+      this.log.warn('late-generation-close-failed', {
+        endpointId: endpoint.id,
+        sessionId: session.sessionId,
+        error,
+      });
+    });
   }
 
   recordEndpointFailure(endpointId: string): void {
