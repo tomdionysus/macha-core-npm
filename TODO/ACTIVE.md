@@ -22,6 +22,8 @@ Most of the defects below were found *from outside*, by those clients; that is t
 
 **Two clients do not use `PlaybackCoordinator` at all.** The phone client calls `ClusterPlaybackResolver.failover` directly and never prepares an alternate. So a fix landed in the coordinator reaches three clients of four, and a defect on the coordinator path does not reach the phone. **Check which layer a client actually uses before telling it a fix matters to it.**
 
+**How to find out you are wrong, cheaply: ship a seam to a client before releasing it.** On 2026-09-13 the Android TV client swapped onto core's new `hlsWalk` and ran its existing suite against it, and **three of its four findings came from the swap rather than from reading the code** — including one that would have destroyed every warm standby on that platform silently. The `blob()` defect surfaced only because that client's test doubles were shaped around `arrayBuffer()`, which its deleted implementation had used. *A client porting onto shared code is a cheap fuzzer for the assumptions in it*, and it works because the seam is on `develop` where a `file:` link picks it up, not behind a release. Do this deliberately: land the seam, name it to the client, let it swap, and fix what the swap finds before tagging.
+
 **How to be wrong here, in the three ways this project keeps finding.** Each has cost real time:
 
 1. *Inferring a difference instead of reading both bodies.* Two findings in the 2026-09-12 review were wrong this way. `codegraph_explore` returns both bodies in one call.
