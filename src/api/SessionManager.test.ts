@@ -53,7 +53,7 @@ describe('SessionManager', () => {
   });
 
   it('mints and becomes ready, attaching the token to subsequent requests', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -73,7 +73,7 @@ describe('SessionManager', () => {
     // Three client sessions built something on the guess in one day and all
     // three removed it — one a login wall that would have replaced a playing
     // film with a sign-in screen on a network blip.
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
     const manager = new SessionManager();
 
@@ -89,7 +89,7 @@ describe('SessionManager', () => {
   });
 
   it('distinguishes nothing answering from a node saying no', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockRejectedValue(new Error('unreachable'));
     const manager = new SessionManager();
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -103,7 +103,7 @@ describe('SessionManager', () => {
     // Published through the same subscribe() as everything else, and cleared
     // before the notification, so a subscriber reacting to it never acts on a
     // reason that has already been resolved.
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockRejectedValueOnce(new SessionAuthError('refused', 403, 'anonymous_disabled'))
       .mockResolvedValue({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS });
     const manager = new SessionManager();
@@ -127,7 +127,7 @@ describe('SessionManager', () => {
     reportClusterReachable(); // clear any latch left by an earlier test
     const events: string[] = [];
     const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
     const manager = new SessionManager();
 
@@ -142,7 +142,7 @@ describe('SessionManager', () => {
     reportClusterReachable();
     const events: string[] = [];
     const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockRejectedValue(new Error('unreachable'));
     const manager = new SessionManager();
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -153,7 +153,7 @@ describe('SessionManager', () => {
   });
 
   it('becomes ready even when minting fails, so callers do not hang forever', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockRejectedValue(new Error('unreachable'));
     const manager = new SessionManager();
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -161,7 +161,7 @@ describe('SessionManager', () => {
   });
 
   it('notifies subscribers when readiness changes', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
     const manager = new SessionManager();
@@ -173,7 +173,7 @@ describe('SessionManager', () => {
   });
 
   it('re-mints on a 401 from a request made through fetch()', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
       .mockResolvedValueOnce({ token: 'token-b', expiresAtMs: Date.now() + DAY_MS });
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
@@ -191,8 +191,8 @@ describe('SessionManager', () => {
     // A caller that races ahead of the very first mint (e.g. an effect that
     // fires on mount) must not go out tokenless — that can only 401. It waits
     // for the bootstrap already in flight and carries the resulting token.
-    let resolveMint: (session: SessionAuth.AnonymousSession) => void;
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    let resolveMint: (session: SessionAuth.Session) => void;
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockImplementation(() => new Promise((resolve) => { resolveMint = resolve; }));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -211,7 +211,7 @@ describe('SessionManager', () => {
   });
 
   it('retries once with the re-minted token when the token it sent is rejected', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
       .mockResolvedValueOnce({ token: 'token-b', expiresAtMs: Date.now() + DAY_MS });
     const fetchMock = vi.fn()
@@ -235,7 +235,7 @@ describe('SessionManager', () => {
     // to token-b and retries. By the time the second, slower 401 arrives the
     // session it was sent on has already been replaced — minting again would
     // throw away a perfectly good token-b. It must simply retry with token-b.
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
       .mockResolvedValue({ token: 'token-b', expiresAtMs: Date.now() + DAY_MS });
     const fetchMock = vi.fn().mockImplementation((_url: string, init: RequestInit) => Promise.resolve(
@@ -254,7 +254,7 @@ describe('SessionManager', () => {
   });
 
   it('returns the original 401 when re-minting fails, rather than retrying tokenless or looping', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
       .mockRejectedValueOnce(new Error('unreachable'));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
@@ -276,7 +276,7 @@ describe('SessionManager', () => {
     // multi-week session (this contract's own example is 30 days) silently
     // overflows to ~0ms and re-mints in a tight infinite loop.
     vi.useFakeTimers();
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + 30 * DAY_MS,
     });
     const manager = new SessionManager();
@@ -291,7 +291,7 @@ describe('SessionManager', () => {
 
   it('re-mints once the real remaining time reaches the refresh safety margin', async () => {
     vi.useFakeTimers();
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + 2 * DAY_MS })
       .mockResolvedValue({ token: 'token-b', expiresAtMs: Date.now() + 30 * DAY_MS });
     const manager = new SessionManager();
@@ -305,7 +305,7 @@ describe('SessionManager', () => {
 
   it('stops scheduling further mints after stop()', async () => {
     vi.useFakeTimers();
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
     const manager = new SessionManager();
@@ -319,7 +319,7 @@ describe('SessionManager', () => {
   });
 
   it('restarting against a new registry resets readiness until the new mint settles', async () => {
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
     const manager = new SessionManager();
@@ -339,11 +339,11 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
   });
 
   it('adopts a validated cached session without minting a new one', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode');
-    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode');
+    const validate = vi.spyOn(SessionAuth, 'validateSessionAnyNode')
       .mockResolvedValue({ roles: ['media_viewer'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
-    storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const manager = new SessionManager(storage);
@@ -365,10 +365,10 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     // identity never re-asked, because failover changes the preferred
     // endpoint inside the registry without changing that identity, and one
     // transient failure left roles unknown for a whole run.
-    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode')
       .mockResolvedValue({ roles: ['media_viewer', 'view_status'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
-    storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);
     expect(manager.roles).toBeUndefined();
 
@@ -379,9 +379,9 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
   });
 
   it('takes the roles a mint states, and forgets them when the token goes', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
-      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS, roles: [] })
-      .mockRejectedValue(new Error('unreachable'));
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS, roles: [] });
+    const revoke = vi.spyOn(SessionAuth, 'revokeSessionAnyNode').mockResolvedValue(undefined);
     const manager = new SessionManager();
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -391,35 +391,38 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     // real state and not an absence. Losing the token makes it unknown again
     // rather than leaving a stale answer that says the viewer may do nothing.
     await manager.signOut();
-    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(2));
+    expect(revoke).toHaveBeenCalledWith(expect.anything(), 'token-a');
     expect(manager.roles).toBeUndefined();
+    // And no replacement was minted. Signing out and obtaining a session are
+    // two decisions, and this call makes only the first.
+    expect(mint).toHaveBeenCalledTimes(1);
   });
 
   it('mints fresh when the cached session fails validation, and re-caches the result', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
-    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(undefined);
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue(undefined);
     const storage = new MemoryStorage();
-    storage.setItem('macha-session', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.session.v1', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
 
     expect(mint).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(storage.getItem('macha-session') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.session.v1') ?? '')).toEqual({
       token: 'fresh-token', expiresAtMs: expect.any(Number),
     });
   });
 
   it('mints fresh without validating when the cached session is already expired', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
-    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode');
+    const validate = vi.spyOn(SessionAuth, 'validateSessionAnyNode');
     const storage = new MemoryStorage();
-    storage.setItem('macha-session', JSON.stringify({ token: 'old-token', expiresAtMs: Date.now() - 1_000 }));
+    storage.setItem('macha.session.v1', JSON.stringify({ token: 'old-token', expiresAtMs: Date.now() - 1_000 }));
     const manager = new SessionManager(storage);
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -430,7 +433,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
   });
 
   it('mints fresh when there is nothing cached, and caches the result for next time', async () => {
-    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
     const storage = new MemoryStorage();
@@ -440,7 +443,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
 
     expect(mint).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(storage.getItem('macha-session') ?? '').token).toBe('fresh-token');
+    expect(JSON.parse(storage.getItem('macha.session.v1') ?? '').token).toBe('fresh-token');
   });
 });
 
@@ -458,33 +461,33 @@ describe('session cache storage resolution', () => {
     // into the auto-detected default and silently ignore the real one.
     const manager = new SessionManager();
     const configured = memoryStorage();
-    configureMachaHost({ ephemeralStorage: configured });
+    configureMachaHost({ secureStorage: configured });
 
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(JSON.parse(configured.getItem('macha-session') ?? 'null')).toMatchObject({ token: 'token-a' });
+    expect(JSON.parse(configured.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-a' });
   });
 
   it('still honours an explicitly supplied storage over the host', async () => {
     const explicit = memoryStorage();
     const manager = new SessionManager(explicit);
     const hostStorage = memoryStorage();
-    configureMachaHost({ ephemeralStorage: hostStorage });
+    configureMachaHost({ secureStorage: hostStorage });
 
-    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-b', expiresAtMs: Date.now() + DAY_MS,
     });
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(explicit.getItem('macha-session')).not.toBeNull();
-    expect(hostStorage.getItem('macha-session')).toBeNull();
+    expect(explicit.getItem('macha.session.v1')).not.toBeNull();
+    expect(hostStorage.getItem('macha.session.v1')).toBeNull();
   });
 
   describe('authorization for requests this client does not make', () => {
@@ -498,5 +501,210 @@ describe('session cache storage resolution', () => {
       expect(await fixedBearerToken(undefined).authorization()).toBeUndefined();
       expect(await fixedBearerToken('   ').authorization()).toBeUndefined();
     });
+  });
+});
+
+describe('a session that stops belonging to the account it belonged to', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const registry = () => new EndpointRegistry(bootstrapEndpoints(['http://a']));
+
+  it('reports a signed-in session becoming somebody else', async () => {
+    // The defect this exists for: a 401 is answered by re-minting, a re-mint
+    // presenting no credentials gets whatever an empty set of credentials
+    // authenticates, and an administrator whose roles changed underneath them
+    // silently becomes that account. Sections vanish, writes fail, nothing
+    // says why — an auth event wearing the costume of a UI bug.
+    const manager = new SessionManager(new MemoryStorage());
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 't1', expiresAtMs: Date.now() + DAY_MS, username: 'tom' })
+      .mockResolvedValueOnce({ token: 't2', expiresAtMs: Date.now() + DAY_MS, username: 'anonymous' });
+
+    manager.start(registry());
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    expect(manager.lastIdentityChange).toBeUndefined();
+
+    await manager['mint']();
+
+    expect(manager.lastIdentityChange).toMatchObject({ from: 'tom', to: 'anonymous' });
+    manager.stop();
+  });
+
+  it('says nothing when the account did not change', async () => {
+    // Anonymous is not special here. Anonymous-to-anonymous is not a change,
+    // and it is silent for the same reason tom-to-tom would be: the names
+    // match. No branch tests the name.
+    const manager = new SessionManager(new MemoryStorage());
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 't', expiresAtMs: Date.now() + DAY_MS, username: 'anonymous' });
+
+    manager.start(registry());
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    await manager['mint']();
+
+    expect(manager.lastIdentityChange).toBeUndefined();
+    manager.stop();
+  });
+
+  it('does not report the first session as a change', async () => {
+    const manager = new SessionManager(new MemoryStorage());
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 't', expiresAtMs: Date.now() + DAY_MS, username: 'tom' });
+
+    manager.start(registry());
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    // An arrival, not a change. There was nobody to stop being.
+    expect(manager.lastIdentityChange).toBeUndefined();
+    manager.stop();
+  });
+
+  it('does not report a change when the node never says who this is', async () => {
+    // A node too old to state `username` says nothing about the account, which
+    // is not evidence that it changed. A false "you were signed out" is worse
+    // than a missing one.
+    const manager = new SessionManager(new MemoryStorage());
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 't1', expiresAtMs: Date.now() + DAY_MS, username: 'tom' })
+      .mockResolvedValueOnce({ token: 't2', expiresAtMs: Date.now() + DAY_MS });
+
+    manager.start(registry());
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    await manager['mint']();
+
+    expect(manager.lastIdentityChange).toBeUndefined();
+    manager.stop();
+  });
+
+  it('does not report the sign-in the viewer just performed', async () => {
+    const manager = new SessionManager(new MemoryStorage());
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 't1', expiresAtMs: Date.now() + DAY_MS, username: 'anonymous' })
+      .mockResolvedValueOnce({ token: 't2', expiresAtMs: Date.now() + DAY_MS, username: 'tom' });
+
+    manager.start(registry());
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    await manager.signIn({ username: 'tom', password: 'pw' });
+
+    // Deliberate, so not a change to report. Handing the application a "you
+    // were signed out" to show someone who has just signed in is the failure.
+    expect(manager.lastIdentityChange).toBeUndefined();
+    manager.stop();
+  });
+});
+
+describe('a session that survives a restart', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('restores the whole session, not just the credential', async () => {
+    // This used to parse `username` and `roles` and throw them away, which
+    // made a restored session indistinguishable from a freshly minted
+    // anonymous one — so after a reload core could not tell it had ever been
+    // signed in, and had nothing to compare an identity change against.
+    const storage = new MemoryStorage();
+    storage.setItem('macha.session.v1', JSON.stringify({
+      token: 'cached', expiresAtMs: Date.now() + DAY_MS, username: 'tom', roles: ['manager'],
+    }));
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue({
+      roles: ['manager'], expires_unix_ms: Date.now() + DAY_MS,
+    } as never);
+    const manager = new SessionManager(storage);
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    // The restored identity is real enough to be compared against: a re-mint
+    // that lands on a different account is now reportable.
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 'fresh', expiresAtMs: Date.now() + DAY_MS, username: 'anonymous' });
+    await manager['mint']();
+
+    expect(manager.lastIdentityChange).toMatchObject({ from: 'tom', to: 'anonymous' });
+    manager.stop();
+  });
+
+  it('caches into the host secure store ahead of persistent storage', async () => {
+    // Every session goes there, not only a credentialed one. A session is a
+    // session; the account it belongs to may have no password, and that does
+    // not make the bearer less worth protecting.
+    const secure = memoryStorage();
+    const persistent = memoryStorage();
+    configureMachaHost({ storage: persistent, secureStorage: secure });
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 'token-s', expiresAtMs: Date.now() + DAY_MS });
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    manager.stop();
+
+    expect(JSON.parse(secure.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-s' });
+    expect(persistent.getItem('macha.session.v1')).toBeNull();
+  });
+
+  it('falls back to persistent storage when the host offers no secure store', async () => {
+    // Stated rather than implied: core cannot make a platform safer than it
+    // is, and a host that supplies nothing gets durable storage rather than
+    // storage that dies with the run.
+    const persistent = memoryStorage();
+    configureMachaHost({ storage: persistent, secureStorage: undefined });
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 'token-p', expiresAtMs: Date.now() + DAY_MS });
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    manager.stop();
+
+    expect(JSON.parse(persistent.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-p' });
+  });
+});
+
+describe('signing out', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('revokes server-side rather than only forgetting', async () => {
+    // Dropping a token locally leaves the session valid on every node until it
+    // expires, and anyone holding it keeps the access it grants.
+    const revoke = vi.spyOn(SessionAuth, 'revokeSessionAnyNode').mockResolvedValue(undefined);
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 'live', expiresAtMs: Date.now() + DAY_MS, username: 'tom' });
+    const manager = new SessionManager(new MemoryStorage());
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+    await manager.signOut();
+
+    expect(revoke).toHaveBeenCalledWith(expect.anything(), 'live');
+    expect(await manager.authorization()).toBeUndefined();
+  });
+
+  it('clears local state even when the revoke fails, and still reports the failure', async () => {
+    // Ordered so the two cannot conflict: once the viewer has asked to be
+    // signed out, ending up still signed in is the outcome that must not
+    // happen — but a caller showing "signed out" needs to be able to learn
+    // that the session is still live somewhere.
+    const storage = new MemoryStorage();
+    vi.spyOn(SessionAuth, 'revokeSessionAnyNode').mockRejectedValue(new Error('no node answered'));
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValue({ token: 'live', expiresAtMs: Date.now() + DAY_MS, username: 'tom' });
+    const manager = new SessionManager(storage);
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    await expect(manager.signOut()).rejects.toThrow('no node answered');
+    expect(await manager.authorization()).toBeUndefined();
+    expect(storage.getItem('macha.session.v1')).toBeNull();
+    expect(manager.roles).toBeUndefined();
   });
 });

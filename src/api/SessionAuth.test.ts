@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mintAnonymousSession, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode } from './SessionAuth.js';
+import { mintSession, mintSessionAnyNode, SessionAuthError, validateSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
 import { MachaConnectionError } from './serverConnection.js';
@@ -27,7 +27,7 @@ function sessionResponse(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe('mintAnonymousSession', () => {
+describe('mintSession', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('POSTs an empty body with no Authorization header and returns the token and expiry', async () => {
@@ -37,7 +37,7 @@ describe('mintAnonymousSession', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const session = await mintAnonymousSession('http://node.test/');
+    const session = await mintSession('http://node.test/');
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://node.test/api/v1/session');
@@ -55,7 +55,7 @@ describe('mintAnonymousSession', () => {
       { status: 400, headers: { 'Content-Type': 'application/json' } },
     )));
 
-    await expect(mintAnonymousSession('http://node.test')).rejects.toMatchObject({
+    await expect(mintSession('http://node.test')).rejects.toMatchObject({
       status: 400,
     });
   });
@@ -66,12 +66,12 @@ describe('mintAnonymousSession', () => {
       { status: 201, headers: { 'Content-Type': 'application/json' } },
     )));
 
-    await expect(mintAnonymousSession('http://node.test')).rejects.toBeInstanceOf(SessionAuthError);
+    await expect(mintSession('http://node.test')).rejects.toBeInstanceOf(SessionAuthError);
   });
 
   it('reports a network failure as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    await expect(mintAnonymousSession('http://node.test')).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(mintSession('http://node.test')).rejects.toThrow('The Macha server cannot be reached.');
   });
 });
 
@@ -90,7 +90,7 @@ describe('validating a session the cluster no longer accepts', () => {
     )));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBeUndefined();
+    await expect(validateSessionAnyNode(registry, 'stale')).resolves.toBeUndefined();
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
   });
 });
@@ -109,7 +109,7 @@ describe('a node refusing to mint', () => {
       { status: 403, headers: { 'Content-Type': 'application/json' } },
     )));
 
-    await expect(mintAnonymousSession('http://node.test')).rejects.toMatchObject({
+    await expect(mintSession('http://node.test')).rejects.toMatchObject({
       status: 403,
       code: 'anonymous_disabled',
       message: 'Could not start a session: anonymous access is disabled',
@@ -135,7 +135,7 @@ describe('a node refusing to mint', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://stale.test', 'http://a.test']));
 
-    await expect(mintAnonymousSessionAnyNode(registry)).resolves.toMatchObject({ token: 'token-secret' });
+    await expect(mintSessionAnyNode(registry)).resolves.toMatchObject({ token: 'token-secret' });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     // And the refusing node is still healthy: it answered, which is what a
@@ -153,7 +153,7 @@ describe('a node refusing to mint', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(mintAnonymousSessionAnyNode(registry)).rejects.toMatchObject({
+    await expect(mintSessionAnyNode(registry)).rejects.toMatchObject({
       status: 403,
       code: 'anonymous_disabled',
     });
@@ -171,7 +171,7 @@ describe('a node that accepts the connection and never answers', () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', vi.fn(blackHoled()));
 
-    const request = mintAnonymousSession('http://node.test');
+    const request = mintSession('http://node.test');
     const assertion = expect(request).rejects.toBeInstanceOf(MachaConnectionError);
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
     await assertion;
@@ -190,7 +190,7 @@ describe('a node that accepts the connection and never answers', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    const request = mintAnonymousSessionAnyNode(registry);
+    const request = mintSessionAnyNode(registry);
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
 
     await expect(request).resolves.toMatchObject({ token: 'token-secret' });
@@ -207,7 +207,7 @@ describe('a node that accepts the connection and never answers', () => {
     vi.stubGlobal('fetch', vi.fn(blackHoled()));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
 
-    const request = validateAnonymousSessionAnyNode(registry, 'cached');
+    const request = validateSessionAnyNode(registry, 'cached');
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
 
     await expect(request).resolves.toBeUndefined();
@@ -224,7 +224,7 @@ describe('signing in with credentials', () => {
     ));
     vi.stubGlobal('fetch', fetchMock);
 
-    const session = await mintAnonymousSession('http://node.test', { username: 'alice', password: 'hunter2000' });
+    const session = await mintSession('http://node.test', { username: 'alice', password: 'hunter2000' });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ credentials: { username: 'alice', password: 'hunter2000' } });
@@ -243,7 +243,7 @@ describe('signing in with credentials', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(mintAnonymousSessionAnyNode(registry, { username: 'alice', password: 'wrong' }))
+    await expect(mintSessionAnyNode(registry, { username: 'alice', password: 'wrong' }))
       .rejects.toMatchObject({ status: 401 });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -261,13 +261,13 @@ describe('signing in with credentials', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(mintAnonymousSessionAnyNode(registry, { username: 'alice', password: 'right' }))
+    await expect(mintSessionAnyNode(registry, { username: 'alice', password: 'right' }))
       .resolves.toMatchObject({ token: 'token-secret' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
-describe('mintAnonymousSessionAnyNode', () => {
+describe('mintSessionAnyNode', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('mints against whichever endpoint answers first and records the outcome', async () => {
@@ -280,7 +280,7 @@ describe('mintAnonymousSessionAnyNode', () => {
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
 
-    const session = await mintAnonymousSessionAnyNode(registry);
+    const session = await mintSessionAnyNode(registry);
 
     expect(session.token).toBe('token-secret');
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -291,6 +291,6 @@ describe('mintAnonymousSessionAnyNode', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('unreachable')));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
 
-    await expect(mintAnonymousSessionAnyNode(registry)).rejects.toThrow();
+    await expect(mintSessionAnyNode(registry)).rejects.toThrow();
   });
 });

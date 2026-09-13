@@ -43,12 +43,23 @@ describe('host detection', () => {
     expect(() => machaHost().storage.setItem('macha-probe', 'x')).not.toThrow();
   });
 
-  it('keeps persistent and ephemeral storage distinct', () => {
+  it('offers no secure storage until a host supplies one', () => {
+    // Optional on purpose: a browser has nowhere JavaScript can read that an
+    // injected script cannot, so the honest default is to say so and let
+    // `SessionManager` fall back to `storage` rather than imply a safety the
+    // platform does not provide.
     resetMachaHost();
-    const host = machaHost();
+    expect(machaHost().secureStorage).toBeUndefined();
+  });
+
+  it('takes a secure store from the host and keeps it distinct from persistent storage', () => {
+    resetMachaHost();
+    const secure = memoryStorage();
+    const host = configureMachaHost({ secureStorage: secure });
     host.storage.setItem('shared-key', 'persistent');
 
-    expect(host.ephemeralStorage.getItem('shared-key')).toBeNull();
+    expect(host.secureStorage).toBe(secure);
+    expect(host.secureStorage?.getItem('shared-key')).toBeNull();
   });
 
   it('mints distinct RFC 4122 identifiers without a platform crypto', () => {

@@ -4,7 +4,25 @@ import type { CurrentSession, UserRole } from './UsersApi.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
-export interface AnonymousSession {
+/**
+ * A session, for whatever account minted it.
+ *
+ * **There is no separate anonymous session type, and there was never a reason
+ * for one.** This carried the name `Session` while being the type of
+ * every session in the package, including one minted from a username and
+ * password — and that one wrong word produced four defects: the cache dropped
+ * `username` and `roles` on the way back in (why keep them, for anonymous?),
+ * the token was persisted to tab-lifetime storage (an anonymous session dies
+ * with the tab), and a 401 re-minted and adopted whatever came back without
+ * checking whose session it now held (they are all anonymous, so who cares).
+ *
+ * The account an empty set of credentials authenticates is special in exactly
+ * three places, all server-side: it cannot be renamed or deleted, it has no
+ * password, and it can mint with no credentials where a deployment allows it.
+ * **Core enforces none of those**, and a client that needs to reflect them
+ * reads the server's per-record `mutable` rather than comparing a name.
+ */
+export interface Session {
   token: string;
   expiresAtMs: number;
   /**
@@ -67,7 +85,7 @@ export class SessionAuthError extends Error {
  * whether the credentials are right.
  *
  * Whether a refusal is *final* is a separate question, and it depends on what
- * was asked — see `mintAnonymousSessionAnyNode`. This only says the node
+ * was asked — see `mintSessionAnyNode`. This only says the node
  * answered and said no.
  */
 export function isSessionRefusal(error: unknown): boolean {
@@ -82,9 +100,10 @@ export function isSessionRefusal(error: unknown): boolean {
  * unauthenticated session: omitting them authenticates the `anonymous` user
  * and supplying them authenticates whoever they name. Same route, same
  * response, one lifecycle — which is why signing in does not need a parallel
- * set of everything below.
+ * set of everything below. Credentials are the only difference between the
+ * two calls, and they are an argument rather than a code path.
  */
-export async function mintAnonymousSession(baseUrl: string, credentials?: SessionCredentials): Promise<AnonymousSession> {
+export async function mintSession(baseUrl: string, credentials?: SessionCredentials): Promise<Session> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   // Bounded here, because nothing above can bound it. Every request in the
   // application waits on a mint — `SessionManager.fetch` blocks on `inFlight`
@@ -147,11 +166,11 @@ function sessionRoles(record: Record<string, unknown> | undefined): UserRole[] |
  * any node is valid cluster-wide, so a single down node must not block
  * getting a token.
  */
-export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, credentials?: SessionCredentials): Promise<AnonymousSession> {
+export async function mintSessionAnyNode(registry: EndpointRegistry, credentials?: SessionCredentials): Promise<Session> {
   let lastError: unknown;
   for (const { endpoint } of registry.candidates()) {
     try {
-      const session = await mintAnonymousSession(endpoint.baseUrl, credentials);
+      const session = await mintSession(endpoint.baseUrl, credentials);
       registry.recordSuccess(endpoint.id);
       return session;
     } catch (error) {
@@ -178,6 +197,49 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
         lastError = error;
         continue;
       }
+      registry.recordFailure(endpoint.id);
+      lastError = error;
+    }
+  }
+  throw lastError ?? new SessionAuthError('No Macha endpoint is configured.');
+}
+
+/**
+ * `DELETE /api/v1/session` — end this session server-side.
+ *
+ * **Dropping a token locally is not a logout.** The session stays valid on
+ * every node until it expires, and anyone holding the token keeps the access
+ * it grants. This is what actually revokes it, and the revocation propagates.
+ *
+ * A mutation, so it executes **once**: the walk continues only while nodes
+ * fail to *answer*. A node that answers at all has taken the request — and a
+ * refusal is an answer, because a token the cluster will not accept is a
+ * token that no longer needs revoking. Retrying elsewhere after an answer
+ * could only revoke something already gone, while masking the first attempt
+ * having worked.
+ */
+export async function revokeSessionAnyNode(registry: EndpointRegistry, token: string): Promise<void> {
+  let lastError: unknown;
+  for (const { endpoint } of registry.candidates()) {
+    try {
+      const url = `${normalizeBaseUrl(endpoint.baseUrl)}/api/v1/session`;
+      const response = await fetchWithTimeout(
+        (target, init) => fetch(target, init),
+        url,
+        { method: 'DELETE', headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }) },
+        DEFAULT_REQUEST_TIMEOUT_MS,
+      );
+      const { body, wasJson } = await readResponseBody(response);
+      if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
+      registry.recordSuccess(endpoint.id);
+      // Already unacceptable is already revoked, as far as the caller is
+      // concerned. Anything else the node says is a real failure to revoke and
+      // the caller must hear about it rather than be told it signed out.
+      if (response.ok || response.status === 401 || response.status === 403) return;
+      const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+      throw new SessionAuthError(`Could not end the session: ${message}`, response.status, code);
+    } catch (error) {
+      if (error instanceof SessionAuthError) throw error;
       registry.recordFailure(endpoint.id);
       lastError = error;
     }
@@ -217,7 +279,7 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
  * response is the same either way — mint fresh — but a caller that reports
  * the reason to a viewer must not claim the session timed out.
  */
-export async function validateAnonymousSession(baseUrl: string, token: string): Promise<CurrentSession | undefined> {
+export async function validateSession(baseUrl: string, token: string): Promise<CurrentSession | undefined> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   const response = await fetchWithTimeout(
     (target, init) => fetch(target, init),
@@ -257,20 +319,20 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
 }
 
 /**
- * Any-node counterpart to `mintAnonymousSessionAnyNode`: tries known
+ * Any-node counterpart to `mintSessionAnyNode`: tries known
  * endpoints in order until one actually answers the validity question.
  * Resolves `false` only for a genuine rejection; an endpoint that merely
  * failed to answer is skipped in favor of the next candidate, and if none
  * can be reached the caller falls back to minting fresh (which will hit the
  * same unreachable nodes and fail the same way — no worse than today).
  */
-export async function validateAnonymousSessionAnyNode(
+export async function validateSessionAnyNode(
   registry: EndpointRegistry,
   token: string,
 ): Promise<CurrentSession | undefined> {
   for (const { endpoint } of registry.candidates()) {
     try {
-      const session = await validateAnonymousSession(endpoint.baseUrl, token);
+      const session = await validateSession(endpoint.baseUrl, token);
       registry.recordSuccess(endpoint.id);
       return session;
     } catch {

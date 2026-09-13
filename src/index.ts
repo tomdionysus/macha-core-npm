@@ -35,6 +35,12 @@ export {
   normalizeUrls,
   type MachaClientConfigurationOptions,
 } from './runtime/configuration.js';
+export {
+  MACHA_STORAGE_KEYS,
+  MACHA_STORAGE_KEY_PREFIXES,
+  MACHA_STORAGE_PROBE_KEY,
+  isMachaStorageKey,
+} from './runtime/storageKeys.js';
 
 // ------------------------------------------------------------------ model
 export * from './types.js';
