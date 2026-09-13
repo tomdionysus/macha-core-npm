@@ -36,7 +36,19 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 *The client half is what made 30 days acceptable, and it is worth knowing why: the phone client was writing its token to disk and never reading it back, so a login's practical lifetime was one process rather than thirty days. The server's expiry only became the binding constraint once the client stopped being the tighter one.*
 
-**What is waiting:** client swaps; then tag.
+**ADOPTION, as of 2026-09-13. All three clients are on `0.10.0` and green; none has ported.** The distinction is the web client's and it is worth keeping: *compiles and passes against* is not *ported*.
+
+| Client | On `0.10.0` | Suite green | Ported |
+|---|---|---|---|
+| Web | yes | 45 files / 317 | no — `AccountMenu.signOut`, `lastIdentityChange` queued |
+| Android TV | yes | 159 | no — `secureStorage` **not supplied**, token in app-private storage |
+| Phone | yes | 12 files / 90 | no — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow` |
+
+**Verified on hardware, which nothing else in this release was.** The phone client ran a Blackview A85 against the live cluster (both nodes on server `0.40.0`): cold start, sign in, **force-stop, relaunch — still signed in.** That is `macha.session.v1` and the restored-session path working end to end on a real device, and it is the first evidence that the central claim of `0.10.0` holds outside a test. The predicted one-time sign-out on first launch after the key rename happened exactly as described, and did not recur.
+
+*Two clients adopted `0.10.0` without deciding to: `dist` changed under a `file:` link mid-release and broke their typecheck. Every break was a deletion rather than a migration — `AnonymousSession`, `mintAnonymousSession`, `ephemeralStorage` — which is the shape a hard cut should have, but it is also why the atomic `dist` staging above matters: one of them hit it during a **release build** that had already typechecked, and on a worse day would have tagged a tree that did not build.*
+
+**What is waiting:** the ports, on Tom's sequencing. The tag is already out.
 
 ### The principle, in Tom's words
 
