@@ -6,6 +6,89 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ---
 
+## THE CURRENT PIECE OF WORK — one account model, no special anonymous
+
+**Decided by Tom on 2026-09-13. This is `0.10.0` and it is a hard cut.** Every client refactors against it; there are no aliases, shims or staged migrations (three in-house consumers, rebuild them).
+
+### The principle, in Tom's words
+
+> The anonymous account is special in exactly three places, all server-side: it can't be renamed or deleted, it has no password, and it can mint a session with no credentials if allow-anonymous is enabled. **In every other respect, and especially for core — which shouldn't enforce even those edge cases — it is just another account, with variable roles.**
+
+Core violated this in naming and, through the naming, in behaviour. The type is `AnonymousSession` and it is used for every session. `mintAnonymousSessionAnyNode(registry, credentials)` is a function called "mint anonymous" that takes a password. Everything below follows from that one wrong word: the cache drops `username`/`roles` on load (why keep them for anonymous?), storage is ephemeral for everything (an anonymous session's lifetime is the tab's), and a 401 re-mints and adopts whatever comes back without checking whose session it now holds (all sessions are anonymous, so who cares). **Four defects, one assumption.**
+
+The corrected model is *simpler*, not more elaborate: **one `Session`, one mint, one storage policy, one post-mint check — did the account change?** No `kind` field. No branch on the account name. A comparison.
+
+### What changes in core, in the order it lands
+
+**1. Rename. Hard cut.** `src/api/SessionAuth.ts`, `src/api/SessionManager.ts`; 71 references in core.
+- `AnonymousSession` → `Session`
+- `mintAnonymousSession` → `mintSession`; `mintAnonymousSessionAnyNode` → `mintSessionAnyNode`
+- `validateAnonymousSession` → `validateSession`; `validateAnonymousSessionAnyNode` → `validateSessionAnyNode`
+- `SessionManager`'s class comment ("Owns the client's anonymous session end to end") and every comment that says "anonymous" where it means "a session" — fix as they are met. `isSessionRefusal`'s comment references the old name.
+
+**2. The cache keeps the whole session.** `loadCachedSession` (`SessionManager.ts:313-323`) reconstructs `{ token, expiresAtMs }` and discards `username` and `roles` that `cacheSession` already wrote. Restore all of it. A restored session must be as informative as a freshly minted one, or core cannot do step 4.
+
+**3. One storage policy, through one optional host seam.**
+- `MachaHost` gains `secureStorage?: StorageLike`. **Every session goes there**, not only credentialed ones — a session is a session. Falls back to `storage` (persistent), **not** to `ephemeralStorage`. `SessionManager` stops reading `ephemeralStorage` entirely.
+- The key becomes **`macha.session.v1`**, joining the dotted convention. Renaming costs nothing here because the storage move already forces one fresh mint on every client; doing it later would cost a second one. Record the retirement of `macha-session` and the remaining hyphenated keys as the next candidates.
+- Consequence on web: sessions land in `localStorage` (was `sessionStorage`), so tabs share one and it survives a tab close. That is the model — a session is worth keeping — and the XSS exposure is unchanged *in kind*. The httpOnly-cookie path is a **separate, later** piece of work on the transport axis (`AuthenticatedFetch`, `credentials: 'include'`, core holding no bearer); it does not go through this seam and does not block this.
+- Consequence on Tizen: app-private storage is the ceiling; it supplies nothing and falls back. **Say so in the seam's comment** rather than implying parity — core cannot make a platform safer than it is, only use what the host offers.
+
+**4. The post-mint identity check — the general rule that replaces every special case.** After *any* re-obtained session — the 401 path in `fetch()`, the refresh timer, `mintNow` after a failure retry — **compare `username` before and after.** Same account → carry on silently (anonymous→anonymous included; nothing special about it). Different account → the session's identity changed; core records it and notifies, and the application decides what to show. Shape: `SessionManager.lastIdentityChange?: { from?: string; to?: string; at: number }`, cleared on the next `signIn`. **Core does not throw and does not guess at wording** — "your session ended", "your account changed", "you were signed out elsewhere" are all possible causes and the application knows its viewer. This is the fix for the silent administrator-to-anonymous downgrade, arrived at without a `kind` flag: tom→anonymous is a change, and that is all core needs to know.
+
+   Core still *attempts* the credential-less re-mint on a 401 for a non-anonymous session, deliberately: the only thing it can present is nothing, and a session for whatever account nothing authenticates to is better than no session — anonymous browsing is still allowed. If the cluster refuses, `lastMintFailure` already says so. The check makes the outcome visible; it does not prevent it.
+
+**5. `signOut()` is a server logout, and a fresh session is a separate call.** Per Tom's earlier ruling ("explicit server logout; then a separate call to get an anonymous token *if required*"). Today `signOut()` drops the token and **unconditionally** mints anonymous (`SessionManager.ts:234-244`). It becomes: `DELETE /api/v1/session` with the current token against any node (mutation semantics — once, not walked on refusal), then forget locally, then notify. **It does not mint.** The application calls `start(registry)` again when it wants a session, which bootstraps and mints with nothing. `UsersApi.logout()` stays for callers with no `SessionManager`, and its doc comment states the composition.
+
+**6. Discoverable keys.** Export the list of storage keys core owns (`MACHA_STORAGE_KEYS` or similar, with the two conventions named until they are one), so a host filtering its own namespace can be correct without grepping a dependency. This is the fix for the phone client's silently-lost-session defect, which was caused by core shipping two conventions and naming neither.
+
+### What does not change
+
+`sessionPermits`, `sessionLockedOut`, `hasRole` — already role-based, already right. `roles`, `lastMintFailure`, `isReady`, `subscribe`, `AuthenticatedFetch`. `SessionCredentials`. The `0.9.0` refusal-versus-unreachable distinction.
+
+### Two things still Tom's
+
+- **The refusal walk** (`SessionAuth.ts:158-180`). On a 403 during mint, with credentials core stops (replicated table, every node agrees); without credentials it tries the next node, because allow-anonymous is per-node and one stale node must not speak for the cluster (observed live by the Android TV client). It is keyed on "was a credential presented", not on the account name, and it is a cluster rule rather than an anonymous rule — but it is core reasoning about a server edge case. **Recommendation: keep it.** Tom to confirm.
+- **`isSignedIn()` and `ANONYMOUS_USERNAME`** (`UsersApi.ts:234-247`). The one remaining place core knows the account's name. It is a display hint — "offer sign-in rather than account management" — and its own comment already says the session is not special. **Recommendation: keep it as the hint it is**, or replace with a server-stated fact (`UserMutability` exists) if core is to know nothing at all. Tom to decide.
+
+### Every client refactors. Notes per client.
+
+**All four:**
+- Import renames, if they import `AnonymousSession` or the mint/validate functions directly. Most go through `SessionManager` and are unaffected by the rename.
+- **A cold start is no longer an anonymous session.** Sessions persist and are validated on reload. Anything that assumes "app launched ⇒ nobody is signed in" is now wrong. Check onboarding, first-run, and any "sign in" prompt shown unconditionally at launch.
+- **Subscribe to `lastIdentityChange`** and decide what to show. The phone client re-reads `currentSession` on every notification so its marker self-corrects; it should now read the explicit signal instead of inferring from the marker moving. Web and both TVs have nothing here today and will silently downgrade an administrator until they add it.
+- **`signOut()` no longer mints.** Call `start(registry)` after it if the screen wants an anonymous session. A client that calls `signOut()` and then renders "signed out" while expecting to keep browsing will find itself with no token until it does.
+- **Playback must be stopped before `signIn` and `signOut`** — unchanged obligation, now stated on both doc comments. A session created under the old identity cannot be closed after the token changes and holds a transcode slot for `session_idle`.
+
+**Web client** (`macha-client`):
+- Supplies no `secureStorage`. Sessions move from `sessionStorage` to `localStorage`: **tabs now share a session** and a session survives closing the tab. Its `useSession` and anything keyed on tab lifetime should be reviewed. This is the intended behaviour.
+- `AccountMenu.signOut` (`src/components/AccountMenu.tsx:51-64`) calls `api.logout()` and never `sessionManager.signOut()`, so it carries a revoked token until a later 401. It becomes `sessionManager.signOut()` then `sessionManager.start(...)`. It has already agreed to land this *after* core states the composition, because today every logout fires the downgrade path by design.
+- The httpOnly-cookie question is **its** future work with the server, on the transport axis. Not this release.
+
+**Phone client** (`macha-client-rn`):
+- Supplies `expo-secure-store` as `secureStorage`. **The bearer is in AsyncStorage plaintext today** — readable on a rooted device or in a backup — and this is the change that fixes it.
+- Its AsyncStorage hydration filter (fixed 2026-09-13 to accept both `macha.` and `macha-`) keeps working; after the key rename the session is under `macha.session.v1` and the hyphenated branch becomes dead code it can drop when the last hyphenated key is retired.
+- Drop the `stop()`/`start()` probe workaround for `probeNow()` (already told; unrelated but same refactor pass).
+
+**Android TV client** (`macha-client-androidtv`):
+- Supplies a Keystore-backed store as `secureStorage` (`expo-secure-store` runs on Android TV). If it cannot, it supplies nothing and falls back to app-private storage — say so in its own notes rather than assume.
+- Has no identity-change handling today. On a D-pad UI with no console, a silent downgrade is the worst possible failure shape: sections vanish, nothing explains why. This is the client most in need of step 4.
+
+**Tizen** (the web client's Samsung build):
+- Supplies nothing. App-private storage, no hardware backing. Document the ceiling; do not pretend parity.
+
+**Server** (`macha-server`): nothing required. Worth asking for: a `code` on the 401 that distinguishes *expired* from *invalidated by `credential_generation`* from *revoked*, so core can pass a cause through `lastIdentityChange` rather than only the fact. Not blocking.
+
+### Sequencing
+
+One release. Steps 1–6 are one model change and splitting them would ship an intermediate model nobody wants. Land on `develop`, name the surface to all four clients, **let at least one swap and run its suite before tagging** (see the rule under *Start here*: a client porting onto a seam is the cheapest fuzzer for it). Then `0.10.0`.
+
+### Superseded by this plan
+
+The items further down titled *Persisting a sign-in*, *Session manager state gaps* (sub-items 1–3 and the 401 downgrade), *Two clients disagree about what logout means*, and *Core ships two storage-key conventions* are all absorbed here. They are left in place for their reasoning and marked as superseded; do not work them separately.
+
+---
+
 ## Start here if you are new to this
 
 **Where things stand.** `0.9.0` is the current version, bumped on `develop` and **not yet merged to `main` or tagged** — that is the first thing to do if you are picking this up. Work happens on `develop`; a release is an annotated bare-semver tag (`0.9.0`, never `v0.9.0`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`.
@@ -115,6 +198,7 @@ What *does* need doing is the doc comment above it, which currently states as fa
 It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` says 503 is a broken generation and terminal, and `:54` maps 503 with 404 to `stream`. **Not merely inconsistent — inverted.** An author following the public seam makes both mistakes at once and in opposite directions: retrying the terminal status, and condemning the node on the benign one. Both shipped adapters are already right (`PlayerEngine.kt:450` retries 500), so this is a trap for the next author rather than a live defect. Fix the comment, not the docs: `docs/writing-a-player.md` is already correct and is what people actually read.
 
 ### Persisting a sign-in — the cache is lossy in the field that decides everything
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** Tom, on the scheme. Raised by the phone client 2026-09-13, relaying a requirement from Tom that **signing in be permanent until logout across all four clients**. *That requirement reached core second-hand; confirm it before changing how a bearer is stored.*
 
 **The finding, and it is core's:** `cacheSession` serialises the whole `AnonymousSession`, but `loadCachedSession` (`SessionManager.ts:313-323`) reconstructs only `{ token, expiresAtMs }` — `username` and `roles` are parsed and discarded. **A restored session is structurally indistinguishable from an anonymous one**, so after a reload core cannot tell it was ever signed in.
@@ -132,6 +216,7 @@ That one gap explains three items this file has been treating separately:
 - **Tizen has no hardware backing** — app-private storage only. Document that core cannot make a platform safer than it is, only use what the host offers, rather than implying parity.
 
 ### Core ships two storage-key conventions and documents neither
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** core for the doc/export; Tom for any rename.
 
 Audited 2026-09-13, every literal in the package:
@@ -143,6 +228,7 @@ Audited 2026-09-13, every literal in the package:
 Fix now: **make core's owned keys discoverable** — documented and exported — so a host filtering its own namespace can be correct without grepping a dependency. **Do not rename yet:** `macha-session` is the key whose rename signs out every user on every client simultaneously, so it belongs with the storage scheme above and its migration, not ahead of it.
 
 ### Session manager state gaps, and the roles work landing on them
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** core. `src/api/SessionManager.ts`. **Take these three together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
 
 1. `authorization()` hands out the dead token during a reactive re-mint, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
@@ -158,6 +244,7 @@ The phone client has covered the *display* half — it re-reads `currentSession`
 **`0.9.0` supplies the parts this needs but does not do it.** `SessionManager.roles` now tracks what the session may do and clears when the token goes, and `lastMintFailure` distinguishes a refusal from an outage — so the remaining work is the *decision* the session has to make: remember whether it was authenticated, keep re-minting invisibly for an anonymous 401, and stop and surface the end of the session for an authenticated one. The server session confirmed a 401 from `GET /api/v1/session` can mean the account changed underneath the token rather than expiry, so a client must not tell a viewer their session timed out.
 
 ### Two clients disagree about what logout means — decided
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** core. `src/api/UsersApi.ts:128-135` (`logout`), `src/api/SessionManager.ts:148-166` (`signOut`).
 
 **Tom decided on 2026-09-13:** if you know you have revoked a token, you should not be using it at all. So logout is an *explicit server logout*, and obtaining an anonymous token afterwards is a **separate call, made only if one is actually required**. The phone client's composition is the correct one; the web client is wrong, has confirmed it (`AccountMenu.signOut` calls `api.logout()` and never `sessionManager.signOut()`), and will change. State it on the `UsersApi.logout` and `SessionManager.signOut` doc comments — the only place all four clients read. The conditional half is the part a client will otherwise get wrong: the web client's instinct was to always re-mint.
