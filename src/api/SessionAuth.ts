@@ -1,4 +1,5 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
+import { parseErrorEnvelope } from './errorEnvelope.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
@@ -21,21 +22,40 @@ export interface SessionCredentials {
 }
 
 export class SessionAuthError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    /**
+     * The server's machine-readable reason, where it sent one.
+     *
+     * Load-bearing rather than diagnostic: `anonymous_disabled` is how a
+     * deployment says "this cluster requires an account", and a client that
+     * cannot read it has to guess from an empty token — which reads exactly
+     * the same as a node being unreachable. Two clients built a login wall on
+     * that guess and removed it again, because telling a viewer who is merely
+     * away from home that they need an account is the worst version of being
+     * wrong here.
+     */
+    public readonly code?: string,
+  ) {
     super(message);
   }
 }
 
 /**
- * Whether the server refused who you claim to be, rather than failing to
- * answer.
+ * Whether a node refused to mint, rather than failing to answer.
  *
  * 401 is a wrong username or password; 403 is a refusal to mint at all, such
  * as anonymous access being switched off. Both are the node working
- * correctly. 429 is deliberately absent: a rate limit is worth trying
- * elsewhere, and it says nothing about whether the credentials are right.
+ * correctly, which is why neither is endpoint evidence. 429 is deliberately
+ * absent: a rate limit is worth trying elsewhere, and it says nothing about
+ * whether the credentials are right.
+ *
+ * Whether a refusal is *final* is a separate question, and it depends on what
+ * was asked — see `mintAnonymousSessionAnyNode`. This only says the node
+ * answered and said no.
  */
-function refusedCredentials(error: unknown): boolean {
+export function isSessionRefusal(error: unknown): boolean {
   const status = error instanceof SessionAuthError ? error.status : undefined;
   return status === 401 || status === 403;
 }
@@ -72,8 +92,15 @@ export async function mintAnonymousSession(baseUrl: string, credentials?: Sessio
   if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
   const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
   if (!response.ok) {
-    const message = typeof record?.message === 'string' ? record.message : `${response.status} ${response.statusText}`;
-    throw new SessionAuthError(`Could not start a session: ${message}`, response.status);
+    // Through the envelope parser, not off the top level. Macha answers
+    // `{ error: { code, message } }`, so reading `record.message` found
+    // nothing and every refusal degraded to status plus statusText — and
+    // `statusText` is empty on React Native's fetch, so a wrong password
+    // reached the viewer as "Could not start a session: 401" while the
+    // server's own sentence, and the code the client needed, were both in the
+    // body all along.
+    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code);
   }
   const token = typeof record?.token === 'string' ? record.token : undefined;
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
@@ -96,19 +123,28 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
       registry.recordSuccess(endpoint.id);
       return session;
     } catch (error) {
-      // A refusal is not a fault. A node that answers "those credentials are
-      // wrong" has done its job perfectly, and marking it unhealthy for
-      // saying so would let one mistyped password walk the whole cluster and
-      // mark every node failed — degrading endpoint ranking and playback
-      // failover because somebody fumbled a login.
-      //
-      // It is also cluster-wide and final, the same reasoning session
-      // validation already uses for a rejected token: every node checks the
-      // same credentials against the same replicated table, so asking the
-      // next one is a slower way to be told the same thing.
-      if (refusedCredentials(error)) {
+      if (isSessionRefusal(error)) {
+        // A refusal is not a fault. A node that answers "those credentials are
+        // wrong" has done its job perfectly, and marking it unhealthy for
+        // saying so would let one mistyped password walk the whole cluster and
+        // mark every node failed — degrading endpoint ranking and playback
+        // failover because somebody fumbled a login.
         registry.recordSuccess(endpoint.id);
-        throw error;
+        // Whether that refusal settles the question depends on what was asked.
+        //
+        // Credentials are checked against a replicated table, so every node
+        // reaches the same verdict and asking the next one is a slower way to
+        // be told the same thing. But an *anonymous* mint offers no
+        // credentials: a 403 there means "this node does not allow anonymous",
+        // which is that node's configuration and nothing else's. Observed
+        // mid-deployment by the Android TV client — one stale node answered
+        // 403 while the rest would have minted happily, and stopping at its
+        // opinion denied a session the cluster was willing to grant. Taking
+        // one node's word for the cluster is the thing this package exists
+        // not to do.
+        if (credentials) throw error;
+        lastError = error;
+        continue;
       }
       registry.recordFailure(endpoint.id);
       lastError = error;

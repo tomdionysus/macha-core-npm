@@ -1,6 +1,6 @@
 import { machaHost } from '../runtime/host.js';
 import type { StorageLike } from '../state/storage.js';
-import { mintAnonymousSessionAnyNode, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
+import { isSessionRefusal, mintAnonymousSessionAnyNode, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
 import { mergeRequestHeaders } from './httpCompat.js';
 import { reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
@@ -303,12 +303,19 @@ export class SessionManager implements AuthenticatedFetch {
       const session = await mintAnonymousSessionAnyNode(registry);
       this.cacheSession(session);
       this.adopt(session);
-    } catch {
+    } catch (error) {
       this.settle();
       if (this.cancelled) return;
       this.token = undefined;
       this.notify();
-      reportClusterUnreachable();
+      // Only "we could not ask" is a connection state. A node that answered
+      // 403 in forty milliseconds has demonstrably been reached and has
+      // stated a policy; publishing "All configured API endpoints are
+      // unreachable" for it is a sentence no node said, and it sends a viewer
+      // to check a server that is up and working exactly as configured.
+      // `isGatewayConnectionFailure`, one file over, draws this distinction
+      // for every other request in the package.
+      if (!isSessionRefusal(error)) reportClusterUnreachable();
       this.refreshTimer = setTimeout(() => { void this.mint(); }, RETRY_AFTER_MINT_FAILURE_MS);
     }
   }

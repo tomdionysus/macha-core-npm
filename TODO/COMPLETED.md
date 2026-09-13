@@ -26,6 +26,16 @@ It is milliseconds. Settled from the server source — `unix_ms()` is a `duratio
 
 ## Unreleased
 
+**A refusal stops being reported as an unreachable cluster.** Three client sessions reported the same gap on the same day, each with different evidence, and two had built and removed a dangerous workaround for it. Three fixes, all in the mint path:
+
+*The server's error envelope is parsed.* `mintAnonymousSession` read `record.message` off the top level, but Macha answers `{ error: { code, message } }`, so every refusal degraded to status plus `statusText` — and `statusText` is empty on React Native's fetch, so a wrong password reached a viewer on a device as *"Could not start a session: 401"* while the server's own sentence sat unread in the body. It now goes through `parseErrorEnvelope`, which `MachaUsersApi` already used for exactly this, and `SessionAuthError` carries the `code`. That code is load-bearing, not diagnostic: `anonymous_disabled` is how a deployment says "this cluster requires an account".
+
+*An anonymous refusal is one node's configuration, not the cluster's verdict.* `mintAnonymousSessionAnyNode` threw on the first 401/403 without asking anyone else, justified by credentials being checked against a replicated table — true for a sign-in, false for an anonymous mint, where 403 means "this node does not allow anonymous". The Android TV client watched one stale node answer 403 mid-deployment while the rest would have minted happily. Taking one node's word for the cluster is the thing this package exists not to do. Now: refusal with credentials is final, refusal without them walks on, and the refusal is only reported once every node has given it.
+
+*`mintNow` no longer publishes an unreachable cluster for a refusal.* A node that answered 403 in forty milliseconds has been reached and has stated a policy; `isGatewayConnectionFailure` one file over draws this distinction for every other request in the package.
+
+Still open, and the thing all three clients actually asked for: nothing exposes *why* there is no token. See ACTIVE.md — the shape is a decision rather than a defect.
+
 **Two ways a failover still trusted what it had given up on.** Both found by auditing the batch above against the thing this package is for, rather than by a failing test.
 
 *The exclusion relaxation only worked in a two-node cluster.* It relaxed when the candidate list was **empty**, which is a different question from whether anything usable is left: with three nodes, one cooling down from failed health probes keeps the list non-empty, so the recovery walked to the endpoint already known to be unwell, failed, and gave up while a node that recovered an hour ago sat excluded and idle. It now relaxes when nothing outside the exclusion is **ready**. That needed `EndpointCandidate.ready`, because `retryAt` is a reading of the registry's own clock and no caller can compare against it — `MachaHost.now()` is a duration clock with an arbitrary origin. Talked myself out of adding that field the first time; it was the whole fix. Nothing waits for a cooldown: an attempt that fails costs one request, and waiting on a timer is not a trade this package makes.

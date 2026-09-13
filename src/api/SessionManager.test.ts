@@ -3,6 +3,9 @@ import { fixedBearerToken, NO_AUTH, SessionManager } from './SessionManager.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { configureMachaHost, memoryStorage } from '../runtime/host.js';
 import * as SessionAuth from './SessionAuth.js';
+import { SessionAuthError } from './SessionAuth.js';
+import { reportClusterReachable } from './serverConnection.js';
+import { subscribeConnectionState } from '../runtime/events.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -62,6 +65,41 @@ describe('SessionManager', () => {
 
     await manager.fetch('http://a/x');
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer token-a');
+  });
+
+  it('does not call the cluster unreachable when a node refused to mint', async () => {
+    // A node that answered 403 in forty milliseconds has been reached and has
+    // stated a policy. Publishing "All configured API endpoints are
+    // unreachable" for it is a sentence no node said, and it sends a viewer
+    // to check a server that is up and working exactly as configured. Three
+    // clients hit this in one day; two built a login wall on the guess and
+    // removed it again.
+    reportClusterReachable(); // clear any latch left by an earlier test
+    const events: string[] = [];
+    const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(events).not.toContain('unreachable');
+    unsubscribe();
+  });
+
+  it('still calls the cluster unreachable when no node could be asked', async () => {
+    reportClusterReachable();
+    const events: string[] = [];
+    const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(events).toContain('unreachable');
+    unsubscribe();
   });
 
   it('becomes ready even when minting fails, so callers do not hang forever', async () => {

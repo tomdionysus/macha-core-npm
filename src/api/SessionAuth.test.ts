@@ -93,6 +93,72 @@ describe('validating a session the cluster no longer accepts', () => {
   });
 });
 
+describe('a node refusing to mint', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries the server\'s own sentence and machine code, not the status line', async () => {
+    // Macha answers `{ error: { code, message } }`. Read off the top level,
+    // `record.message` found nothing and every refusal degraded to status
+    // plus statusText — and statusText is empty on React Native's fetch, so a
+    // wrong password reached a viewer on a device as "Could not start a
+    // session: 401" while the server's own sentence sat in the body.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )));
+
+    await expect(mintAnonymousSession('http://node.test')).rejects.toMatchObject({
+      status: 403,
+      code: 'anonymous_disabled',
+      message: 'Could not start a session: anonymous access is disabled',
+    });
+  });
+
+  it('asks the next node when no credentials were offered, because that is one node\'s configuration', async () => {
+    // A credential refusal is checked against a replicated table and every
+    // node reaches the same verdict. An anonymous refusal is not: 403 there
+    // means "this node does not allow anonymous", which is that node's own
+    // configuration. Seen mid-deployment by the Android TV client — one stale
+    // node answered 403 while the rest would have minted happily, and
+    // stopping at its opinion denied a session the cluster was willing to
+    // grant.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://stale.test', 'http://a.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry)).resolves.toMatchObject({ token: 'token-secret' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // And the refusing node is still healthy: it answered, which is what a
+    // working node does.
+    for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it('reports the refusal once every node has refused, rather than an unreachable cluster', async () => {
+    // A fresh Response per call: a body can only be read once, and reusing
+    // one would have this test assert the empty-body fallback by accident.
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry)).rejects.toMatchObject({
+      status: 403,
+      code: 'anonymous_disabled',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('a node that accepts the connection and never answers', () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
