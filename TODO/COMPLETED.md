@@ -4,7 +4,23 @@ Finished work, newest first, with the version it shipped in. Items arrive here f
 
 This is a record of what was done and what it cost to find. [HISTORY.md](../HISTORY.md) is the same story arranged by decision rather than by date, and is the better read if you want to know *why* rather than *when*.
 
-Anything reverted or retracted stays here, marked, because knowing what was tried and abandoned is the half that otherwise disappears.
+Anything reverted or retracted stays here, marked, because knowing what was tried and abandoned is the half that otherwise disappears. That includes findings investigated and dismissed — a defect someone has already disproved is worth exactly as much as one someone has fixed, and costs the same to rediscover.
+
+---
+
+## Checked and dismissed — from the 2026-09-12 review
+
+Four findings that did not survive contact with the evidence. Recorded because each looked right, and the reasoning that killed them is the part worth keeping.
+
+**A capability expiry unit mismatch — not a defect.** `expiredCapability` parses `exp` from a signed artwork URL and compares it against `Date.now()`. If the server signed `exp` in *seconds*, as JWT does, every real capability would read as already expired: the re-hosting would never fire, `artworkUrls` would return exactly what it returned before, and the feature would be green in tests and absent in production. The tests could not catch it, because both construct their own URLs in milliseconds.
+
+It is milliseconds. Settled from the server source — `unix_ms()` is a `duration_cast<milliseconds>`, the TTL field is declared `std::chrono::milliseconds`, and verification compares the two with no conversion on either side — and then on the wire, by running core's own parse over 41 live capability URLs: all thirteen digits, all live, all within the 24-hour default TTL. **The gap was real even though the answer was not:** nothing pinned the unit, and a test now does. A digit-count normalisation was deliberately *not* added, because a format that changes units should break loudly rather than be absorbed.
+
+**"Three components should use the host clock" — wrong, and acting on it would have caused a silent bug.** The original finding read as a consistency tidy-up. Two of the three must never move. `MachaHost.now()` is a *duration* clock — `performance.now()`, arbitrary origin, restarting near zero every run — so `EndpointBandwidth`, which persists `updatedAt` and compares it after a restart against a six-hour window, would have had its cutoff go negative and every stored record read as fresh forever. `expiredCapability` compares against an instant another machine signed, which that clock cannot express at all. Both were correct as written. The rule now lives beside the `now()` declaration with its three cases; see `0.8.0`.
+
+**"Two endpoint normalisers disagree" — wrong, they are identical.** `normalizeUrl` and `normalizeBaseUrl` are the same four lines under two names, verified across trailing slash, doubled slash, whitespace, `/`, empty, a path, mixed case and a trailing-slash query, with zero disagreements. The real finding is duplication that could drift, which is a much weaker claim needing a different fix. Both this and the clock item came from inferring a difference from two names instead of reading both bodies, and both were caught by client sessions rather than here.
+
+**The standby carriage gap is latent, not live.** `prepareAlternate` does not restate the served container, which looked like the same silent-starvation bug one door over. But `prepareAlternate` has exactly one caller — the coordinator — and the client that would have been bitten does not use the coordinator at all. Downgraded to a trap to close before something starts preparing alternates without one. The unreleased change's claim that the fix "reaches every consumer" was right about `failover` and overstated about the standby path.
 
 ---
 
