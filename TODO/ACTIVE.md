@@ -10,6 +10,18 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Decided by Tom on 2026-09-13. This is `0.10.0` and it is a hard cut.** Every client refactors against it; there are no aliases, shims or staged migrations (three in-house consumers, rebuild them).
 
+### STATUS: implemented on `develop`, NOT tagged — waiting on a client to go green
+
+**All six steps are built and committed.** Version bumped to `0.10.0`, `dist` rebuilt, **719 tests in 60 files**, all five gates pass. Every client has been sent a tailored refactor brief.
+
+**Do not tag until at least one client has swapped and run its suite.** That is not caution, it is the cheapest test available — the Android TV client found four real `hlsWalk` defects this morning purely by porting onto it, three of which came from the swap rather than from reading the code, and one would have destroyed every warm standby on that platform silently.
+
+**Two judgement calls made during implementation that went beyond the letter of this plan**, both easy to reverse if Tom disagrees:
+1. **`MachaHost.ephemeralStorage` was removed, not merely unused.** `SessionManager` was its only reader. Leaving a seam nothing reads would let a host set it expecting session behaviour and get none, which is worse than no seam.
+2. **`signOut()` throws when the revoke fails**, after clearing local state unconditionally. The plan said "forget, then revoke" without saying what a failed revoke does. Swallowing it would let a client show "signed out" while the token is still live cluster-wide.
+
+**What is waiting:** client swaps; then tag. `VolumeStore` is still parked on the phone client confirming whether it is a third consumer.
+
 ### The principle, in Tom's words
 
 > The anonymous account is special in exactly three places, all server-side: it can't be renamed or deleted, it has no password, and it can mint a session with no credentials if allow-anonymous is enabled. **In every other respect, and especially for core — which shouldn't enforce even those edge cases — it is just another account, with variable roles.**
