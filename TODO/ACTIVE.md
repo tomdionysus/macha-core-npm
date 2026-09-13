@@ -24,7 +24,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## P0 — open defects with a cluster-wide cost
 
-Each is a one-place defect. All were verified against the source; two were reproduced by running code. A fifth — session minting having no timeout — is fixed and unreleased; see [COMPLETED.md](COMPLETED.md).
+Each is a one-place defect, verified against the source. Two of the original five are fixed and unreleased — session minting having no timeout, and the ranking comparator; see [COMPLETED.md](COMPLETED.md).
 
 ### A second failure during an in-flight failover goes terminal
 **Waiting on:** core. `src/playback/PlaybackCoordinator.ts:1500-1508`.
@@ -39,15 +39,6 @@ Fix: when a failover is in flight and the error is endpoint-retryable, log and d
 `awaitWithEndpointDeadline` rejects at 12 s and deliberately leaves the POST running, but once `settled` is true the late result is dropped: never put in `sessions`, never returned, never deleted. The idempotency key does not help — sessions are node-local. So the slow node the deadline exists to route around is the one left holding a session, and on a one-slot node its only transcode slot, for `session_idle` (30 minutes).
 
 Fix: after a deadline rejection, chain `request.then(session => resolver.stop(session.sessionId))` and log it. Tests only use never-settling promises (`ClusterPlaybackResolver.test.ts:217,246`, `fakeCluster.ts:121`), so the late-success case is untested.
-
-### The ranking comparator is not a consistent order
-**Waiting on:** core. `src/cluster/EndpointRegistry.ts:245`, `:281-309`, `:415-437`, `:469-479`. **Reproduced** by compiling the registry and driving it with three endpoints.
-
-Every measured axis compares pairs against a threshold (40% relative, 50 ms absolute). Threshold indifference is not transitive: A≈B, B≈C, A<C. When the tie falls through to configured order in the other direction the comparator is cyclic and `sort` output is implementation-defined. With latencies 20/65/110 ms, configured `wan, wireless, wired` puts `wan` at the head with axis `configured-order`; configured `wan, wired, wireless` puts `wired` at the head with axis `latency`. Same evidence, different typing order, and the WAN node can win while `selectionAxis()` tells the operator there was no evidence at all. Throughput behaves identically.
-
-This is the fault the cascade was built to prevent — see the *Routing on evidence* section of [HISTORY.md](../HISTORY.md). **Every registry test uses two endpoints, which is why it is invisible.**
-
-Fix: stop using pairwise thresholds inside `sort`. Evaluate the cascade as successive filters against the *best* value on each axis — keep everything within threshold of the best throughput, then of the best latency, then capacity, then configured order. Thresholds against one reference are a total preorder, and `selectionAxis` becomes the last axis that eliminated anyone, true by construction. Add a three-endpoint test.
 
 ### The connection gate cannot accept any endpoint against the live cluster
 **Waiting on:** server (which of two fixes), then core. `src/connection/connectionConfiguration.ts:63-98`, `src/api/SessionAuth.ts:129-150`. **Measured.**
@@ -222,7 +213,7 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 
 Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: two failure signals from one dead source; a late admission success after the deadline; three-endpoint ranking; `canSeek: false`; the no-facts fallback honouring container policy; retry preserving container and chooser-ness; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**The specific gaps the review named**, each tied to an item above: two failure signals from one dead source; a late admission success after the deadline; `canSeek: false`; the no-facts fallback honouring container policy; retry preserving container and chooser-ness; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
 
 ---
 
@@ -274,12 +265,12 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `MediaTechnicalProfile.ts:21-23` — dead ternary with identical branches; `MachaPlaybackFactsApi.ts:45` passes `dolby_vision_profile: 0` through where the other normaliser treats 0 as "not probed".
 
 **Cluster and routing**
-- `EndpointRegistry.ts:289-294` — sticky is checked before the both-cooling order, so a sticky node on a 30 s cooldown is walked before a non-sticky one on 0.5 s.
-- `EndpointRegistry.ts:336-338` — capacity never expires; `observedAt` is written and never read.
-- `EndpointHealthMonitor.ts:136` + `EndpointRegistry.ts:222` — capacity keyed by `api_endpoint` string, so a typed IP versus an advertised hostname yields the same node twice and the in-use bootstrap entry never gets capacity.
-- `EndpointRegistry.ts:593-595` — `notify()` does not isolate listeners; a throwing host listener turns a succeeded `route()` into a rejection and can kill the monitor loop. `publishConnectionState` already guards.
+- `EndpointRegistry.ts:397-407` — sticky is checked before the both-cooling order, so a sticky node on a 30 s cooldown is walked before a non-sticky one on 0.5 s.
+- `EndpointRegistry.ts:495-505` — capacity never expires; `observedAt` is written and never read.
+- `EndpointHealthMonitor.ts:136` + `EndpointRegistry.ts:495` — capacity keyed by `api_endpoint` string, so a typed IP versus an advertised hostname yields the same node twice and the in-use bootstrap entry never gets capacity.
+- `EndpointRegistry.ts:713-715` — `notify()` does not isolate listeners; a throwing host listener turns a succeeded `route()` into a rejection and can kill the monitor loop. `publishConnectionState` already guards.
 - `EndpointHealthMonitor.ts:106-148` — no abort check after `stop()`; an in-flight discovery still applies advertisement and fires listeners.
-- `EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,406` — restore re-enters at one sample and the threshold is two, so persisted throughput never ranks. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
+- `EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample and the threshold is two, so persisted throughput never ranks. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
 - `EndpointHealthMonitor.ts:69,164,235` vs `serverConnection.ts:41-44` — a proxy's bodiless 502/503/504 counts as reachable and clears the outage state forever.
 - `EndpointRegistry.ts:85` vs `EndpointHealthMonitor.ts:10` — the cooldown ladder (500 ms, 2 s) is uncalibrated against the 10 s probe interval; a probe-failed sticky node is "ready" 0.5 s later. Neither constant records the relation.
 
