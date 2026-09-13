@@ -2,12 +2,12 @@
 
 The server does not choose. It reports what the media is and performs what it is told. There is no `auto`: `preferences.mode` is required and must be `direct`, `remux` or `transcode`.
 
-So something has to look at the media facts and the device's real capabilities and conclude what to ask for. That decision lives **here**, once, in `@macha/core` — not in the web client, the TV client and the phone client separately. Three clients deciding independently is three clients that disagree about the same file, and the disagreement shows up as a black screen on whichever one got it wrong.
+So something has to look at the media facts and the device's real capabilities and conclude what to ask for. That decision lives **here**, once, in `@machafoundation/core` — not in the web client, the TV client and the phone client separately. Three clients deciding independently is three clients that disagree about the same file, and the disagreement shows up as a black screen on whichever one got it wrong.
 
 ## The one function
 
 ```ts
-import { choosePlaybackInstruction, technicalProfileFromCatalogue } from '@macha/core';
+import { choosePlaybackInstruction, technicalProfileFromCatalogue } from '@machafoundation/core';
 
 const profile = technicalProfileFromCatalogue(await catalogueApi.mediaProfile(mediaId));
 const instruction = choosePlaybackInstruction(profile, capabilities, { overrides });

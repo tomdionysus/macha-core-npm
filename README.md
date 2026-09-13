@@ -1,4 +1,4 @@
-# @macha/core
+# @machafoundation/core
 
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
@@ -63,7 +63,7 @@ Run `npm run dist:check` from a consumer's `pretest` to catch that automatically
 Install the host environment once, at application start, **before any service is constructed** — several module-level singletons read it lazily on first use and keep whatever they find.
 
 ```ts
-import { configureMachaHost, MachaClientConfiguration } from '@macha/core';
+import { configureMachaHost, MachaClientConfiguration } from '@machafoundation/core';
 
 configureMachaHost({
   storage: persistentStorage,       // survives a restart
@@ -84,7 +84,7 @@ Then bring up the session, the registry and the services over them:
 import {
   bootstrapEndpoints, createMachaServices, EndpointHealthMonitor,
   EndpointRegistry, sessionManager,
-} from '@macha/core';
+} from '@machafoundation/core';
 
 const registry = new EndpointRegistry(bootstrapEndpoints([
   ...configuration.bootstrapEndpoints(),
@@ -110,7 +110,7 @@ The core drives a `Player` that the host implements. It never touches a media el
 
 `PlaybackResolver` is an interface, and every consumer takes the interface rather than a concrete class — so a resolver can be composed in front of another to answer what it can and delegate the rest, which is how offline playback is meant to work.
 
-`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform and several of its contracts are not visible in the types — read [Writing a player](docs/writing-a-player.md), and start from `FakePlayer` in `@macha/core/testing`.
+`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform and several of its contracts are not visible in the types — read [Writing a player](docs/writing-a-player.md), and start from `FakePlayer` in `@machafoundation/core/testing`.
 
 ## Tests and checks
 
@@ -127,7 +127,7 @@ Several defaults — request timeouts, retry cooldowns, throughput thresholds, t
 
 ## Why the name is scoped
 
-`@macha/core` rather than `macha-client`, on readability grounds: the web app's own package is `macha-client`, and a dependency sharing its dependant's name is hard to read in a lockfile or a stack trace. It is **not** a workaround for a Metro haste-map collision — that was raised, tested on Metro 0.84.5 / React Native 0.86, and bundled clean.
+`@machafoundation/core` rather than `macha-client`, on readability grounds: the web app's own package is `macha-client`, and a dependency sharing its dependant's name is hard to read in a lockfile or a stack trace. It is **not** a workaround for a Metro haste-map collision — that was raised, tested on Metro 0.84.5 / React Native 0.86, and bundled clean.
 
 ## Licence
 

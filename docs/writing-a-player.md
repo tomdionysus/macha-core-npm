@@ -6,10 +6,10 @@ The core never touches a media element, a decoder or a view. It decides *what* s
 
 ## Start from the fake
 
-`@macha/core/testing` ships `FakePlayer`, the same fixture the core's own playback suites run against. It implements every method including the optional ones, so it is both a working skeleton to copy and a control to test against.
+`@machafoundation/core/testing` ships `FakePlayer`, the same fixture the core's own playback suites run against. It implements every method including the optional ones, so it is both a working skeleton to copy and a control to test against.
 
 ```ts
-import { createFakePlayer } from '@macha/core/testing';
+import { createFakePlayer } from '@machafoundation/core/testing';
 
 const player = createFakePlayer();
 player.emit({ positionMs: 5_000, durationMs: 600_000, paused: false, ended: false });
