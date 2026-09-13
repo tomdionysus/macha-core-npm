@@ -135,8 +135,8 @@ describe('API endpoint health probes', () => {
     // project's hosts and nothing at all on Tizen 3, so a unique URL is what
     // actually stops a dead node answering 200 from a WebView cache.
     expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
-      'http://a/api/v1/catalogue/status',
-      'http://b/api/v1/catalogue/status',
+      'http://a/api/v1/health',
+      'http://b/api/v1/health',
     ]);
     expect(fetchSpy.mock.calls.every(([url]) => /\?_=\d+-\d+$/.test(String(url)))).toBe(true);
     expect(new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get('authorization')).toBe('Bearer secret');
@@ -191,6 +191,63 @@ describe('API endpoint health probes', () => {
     finish(new Response(null, { status: 200 }));
     await probe;
 
+    expect(registry.snapshot()[0]?.health).toEqual({ consecutiveFailures: 0 });
+  });
+
+  it('falls back to the old route for a node too old to have the liveness one', async () => {
+    // One of Tom's nodes is stranded on 0.38.1 and will 404 `/api/v1/health`
+    // until someone can reach its console. Leaving it ungraded would cost it
+    // latency samples, so it could never rank on the one axis that can see a
+    // bad path, and it would be a second-class node for having an old build.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://old']));
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => new Response(null, {
+      status: String(url).includes('/api/v1/health') ? 404 : 200,
+    }));
+
+    await probeKnownEndpoints(registry, fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch), new AbortController().signal);
+
+    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
+      'http://old/api/v1/health',
+      'http://old/api/v1/catalogue/status',
+    ]);
+    expect(registry.snapshot()[0]?.health.consecutiveFailures).toBe(0);
+  });
+
+  it('asks the old route when the liveness one does not answer the liveness question', async () => {
+    // A node too old to have /api/v1/health answers 401, not 404, because
+    // authentication runs before routing — so it never reaches the part that
+    // would report the route missing. A 404-only fallback fires on every node
+    // except the single one that needs it. Without this that node is
+    // permanently ungraded: no latency, no pre-emptive swap.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://old-build']));
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => new Response('{}', {
+      status: String(url).includes('/api/v1/health') ? 401 : 200,
+    }));
+
+    await probeKnownEndpoints(registry, fixedBearerToken('secret', fetchSpy as unknown as typeof fetch), new AbortController().signal);
+
+    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
+      'http://old-build/api/v1/health',
+      'http://old-build/api/v1/catalogue/status',
+    ]);
+    // Graded on the fallback's answer, not left blind.
+    expect(registry.snapshot()[0]?.latencyMs).toBeDefined();
+  });
+
+  it('records nothing either way for a node that answered without saying it is serving', async () => {
+    // A cluster that requires an account answers 401 to everything a
+    // session-less client asks. Every node is perfectly healthy and every
+    // call is refused, and the React Native client measured `probe-cycle`
+    // holding at reachable: 3, known: 3 through exactly that state. An answer
+    // is not a fault — but it is not evidence of health either, so nothing is
+    // recorded in either direction rather than a success being invented.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    // Both routes refuse: the liveness one and the fallback alike.
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
+
+    const reachable = await probeKnownEndpoints(registry, fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch), new AbortController().signal);
+
+    expect(reachable).toBe(1);
     expect(registry.snapshot()[0]?.health).toEqual({ consecutiveFailures: 0 });
   });
 

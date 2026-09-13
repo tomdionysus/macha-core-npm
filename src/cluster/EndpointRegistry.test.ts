@@ -437,4 +437,75 @@ describe('EndpointRegistry', () => {
       expect(b.bytesPerSecond).toBeUndefined();
     });
   });
+
+  describe('three endpoints, where a pairwise threshold stops being an order', () => {
+    // Every other ranking test above uses two endpoints, which is exactly why
+    // this was invisible: a threshold compared pairwise is only an order when
+    // there is one pair. At three it is not transitive, and `sort` handed a
+    // cycle produces whatever its implementation happens to produce.
+    const ids = (registry: EndpointRegistry) => registry.candidates().map((candidate) => candidate.endpoint.id);
+
+    const configured = (order: readonly string[], latencies: Record<string, number>) => {
+      const registry = new EndpointRegistry(bootstrapEndpoints([...order]));
+      for (const [id, latencyMs] of Object.entries(latencies)) registry.recordLatency(id, latencyMs);
+      return registry;
+    };
+
+    it('never puts the furthest node at the head because of the order the three were typed in', () => {
+      // 20/65/110 ms against a 50 ms floor: wired ties wireless and wireless
+      // ties wan, while wired beats wan. Pairwise, that is a cycle — and the
+      // measured evidence below is the case that was reproduced: typing the
+      // same three nodes in a different order moved the WAN node to the head,
+      // where `selectionAxis()` then reported that nothing had decided it.
+      const latencies = { 'http://wired': 20, 'http://wireless': 65, 'http://wan': 110 };
+      const first = configured(['http://wan', 'http://wireless', 'http://wired'], latencies);
+      const second = configured(['http://wan', 'http://wired', 'http://wireless'], latencies);
+
+      expect(ids(first)).toEqual(['http://wireless', 'http://wired', 'http://wan']);
+      expect(ids(second)).toEqual(['http://wired', 'http://wireless', 'http://wan']);
+      // Which of the two near nodes leads does depend on configured order,
+      // because 45 ms apart is below the floor that says they differ at all —
+      // and that is what the axis reports. The WAN node loses in both.
+      expect(first.selectionAxis()).toBe('configured-order');
+      expect(second.selectionAxis()).toBe('configured-order');
+    });
+
+    it('picks the same head, on the same axis, whichever order the same three are configured in', () => {
+      const latencies = { 'http://wired': 20, 'http://wireless': 300, 'http://wan': 310 };
+      const first = configured(['http://wan', 'http://wireless', 'http://wired'], latencies);
+      const second = configured(['http://wired', 'http://wan', 'http://wireless'], latencies);
+
+      for (const registry of [first, second]) {
+        expect(ids(registry)[0]).toBe('http://wired');
+        expect(registry.selectionAxis()).toBe('latency');
+      }
+    });
+
+    it('orders what it eliminated rather than treating it as one undifferentiated tail', () => {
+      // The list is walked to the end on failover, so second-worst against
+      // worst is a real question. Configured in reverse to prove the ordering
+      // is the evidence rather than the typing.
+      const registry = configured(['http://slow', 'http://mid', 'http://fast'], {
+        'http://fast': 20, 'http://mid': 300, 'http://slow': 1_000,
+      });
+
+      expect(ids(registry)).toEqual(['http://fast', 'http://mid', 'http://slow']);
+      expect(registry.selectionAxis()).toBe('latency');
+    });
+
+    it('never lets an endpoint that is out of contention eliminate one that is not', () => {
+      // The best is taken within the surviving pool, never globally. A node
+      // in a failure cooldown with the fastest link must not rank the two
+      // healthy ones behind it on evidence it is in no position to offer.
+      const now = 1_000;
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://dead']), () => now);
+      registry.recordLatency('http://a', 200);
+      registry.recordLatency('http://b', 210);
+      registry.recordLatency('http://dead', 10);
+      registry.recordFailure('http://dead');
+
+      expect(ids(registry)).toEqual(['http://a', 'http://b', 'http://dead']);
+      expect(registry.selectionAxis()).toBe('configured-order');
+    });
+  });
 });

@@ -3,6 +3,9 @@ import { fixedBearerToken, NO_AUTH, SessionManager } from './SessionManager.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { configureMachaHost, memoryStorage } from '../runtime/host.js';
 import * as SessionAuth from './SessionAuth.js';
+import { SessionAuthError } from './SessionAuth.js';
+import { reportClusterReachable } from './serverConnection.js';
+import { subscribeConnectionState } from '../runtime/events.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -62,6 +65,91 @@ describe('SessionManager', () => {
 
     await manager.fetch('http://a/x');
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer token-a');
+  });
+
+  it('says why there is no token, so a client is not left guessing from an empty one', async () => {
+    // An empty token and isReady true are the same two facts whether the
+    // cluster refused or nothing answered, and those need opposite handling.
+    // Three client sessions built something on the guess in one day and all
+    // three removed it — one a login wall that would have replaced a playing
+    // film with a sign-in screen on a network blip.
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.lastMintFailure).toEqual({
+      reason: 'refused',
+      status: 403,
+      code: 'anonymous_disabled',
+      message: 'Could not start a session: anonymous access is disabled',
+    });
+  });
+
+  it('distinguishes nothing answering from a node saying no', async () => {
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.lastMintFailure).toMatchObject({ reason: 'unreachable' });
+    expect(manager.lastMintFailure?.status).toBeUndefined();
+  });
+
+  it('clears the reason the moment a session is adopted', async () => {
+    // Published through the same subscribe() as everything else, and cleared
+    // before the notification, so a subscriber reacting to it never acts on a
+    // reason that has already been resolved.
+    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValueOnce(new SessionAuthError('refused', 403, 'anonymous_disabled'))
+      .mockResolvedValue({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS });
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.lastMintFailure?.reason).toBe('refused'));
+
+    await manager.signIn({ username: 'alice', password: 'hunter2000' }).catch(() => undefined);
+
+    expect(manager.lastMintFailure).toBeUndefined();
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not call the cluster unreachable when a node refused to mint', async () => {
+    // A node that answered 403 in forty milliseconds has been reached and has
+    // stated a policy. Publishing "All configured API endpoints are
+    // unreachable" for it is a sentence no node said, and it sends a viewer
+    // to check a server that is up and working exactly as configured. Three
+    // clients hit this in one day; two built a login wall on the guess and
+    // removed it again.
+    reportClusterReachable(); // clear any latch left by an earlier test
+    const events: string[] = [];
+    const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(events).not.toContain('unreachable');
+    unsubscribe();
+  });
+
+  it('still calls the cluster unreachable when no node could be asked', async () => {
+    reportClusterReachable();
+    const events: string[] = [];
+    const unsubscribe = subscribeConnectionState((event) => events.push(event.type));
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(events).toContain('unreachable');
+    unsubscribe();
   });
 
   it('becomes ready even when minting fails, so callers do not hang forever', async () => {
@@ -252,7 +340,8 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
 
   it('adopts a validated cached session without minting a new one', async () => {
     const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode');
-    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(true);
+    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+      .mockResolvedValue({ roles: ['media_viewer'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
     storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -268,11 +357,49 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer cached-token');
   });
 
+  it('takes the roles from whichever request already had them', async () => {
+    // Roles arrive with the token on every path: the mint response states
+    // them, and so does the record returned by validating a cached token. So
+    // there is no separate fetch to fail and nothing to retry — which is what
+    // made this worth moving here. A client fetching them once per API
+    // identity never re-asked, because failover changes the preferred
+    // endpoint inside the registry without changing that identity, and one
+    // transient failure left roles unknown for a whole run.
+    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+      .mockResolvedValue({ roles: ['media_viewer', 'view_status'], expires_unix_ms: Date.now() + DAY_MS });
+    const storage = new MemoryStorage();
+    storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    const manager = new SessionManager(storage);
+    expect(manager.roles).toBeUndefined();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.roles).toEqual(['media_viewer', 'view_status']);
+  });
+
+  it('takes the roles a mint states, and forgets them when the token goes', async () => {
+    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS, roles: [] })
+      .mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.roles).toEqual([]));
+
+    // An empty array is a session the cluster granted nothing, which is a
+    // real state and not an absence. Losing the token makes it unknown again
+    // rather than leaving a stale answer that says the viewer may do nothing.
+    await manager.signOut();
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(2));
+    expect(manager.roles).toBeUndefined();
+  });
+
   it('mints fresh when the cached session fails validation, and re-caches the result', async () => {
     const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
-    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(false);
+    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(undefined);
     const storage = new MemoryStorage();
     storage.setItem('macha-session', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);

@@ -7,9 +7,41 @@
  * closed set. A client that infers "a manager can obviously also import" is
  * reimplementing policy the server already decided, and the two will drift.
  */
-export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users';
+export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users' | 'view_status';
 
-export const USER_ROLES: readonly UserRole[] = ['media_viewer', 'importer', 'manager', 'manage_users'];
+/**
+ * Declared as a record so the compiler enforces completeness. A role added to
+ * `UserRole` and forgotten here would exist in the type and be invisible in
+ * every client's role picker — a silent failure four clients would each have
+ * to discover separately. Key order is the listing order; insertion order is
+ * guaranteed for string keys.
+ */
+const ROLE_LISTING: Record<UserRole, true> = {
+  media_viewer: true,
+  importer: true,
+  manager: true,
+  manage_users: true,
+  view_status: true,
+};
+
+export const USER_ROLES: readonly UserRole[] = Object.keys(ROLE_LISTING) as UserRole[];
+
+/**
+ * `view_status` gates the cluster and node status screens — `/api/v1/status`
+ * and `/api/v1/status/*` from server 0.38.5.
+ *
+ * It gates the *diagnostic* view: the node roster, per-node capacity, and who
+ * is being asked for what. It does not gate liveness. Whether a node is alive
+ * is answered by `/api/v1/health`, which needs no session and no role, and
+ * that is the route this package probes — so nothing about health, ranking or
+ * failover depends on a viewer holding this.
+ *
+ * Every existing capability implies it, resolved at mint, so no account that
+ * could read Status before loses it and there is no migration. The case it
+ * changes is a session the cluster granted nothing, which is a legitimate
+ * state for a registered-users-only deployment: that session gets a refusal
+ * rather than the node roster.
+ */
 
 /**
  * What may be changed about this user, decided by the server and stated per
@@ -90,6 +122,61 @@ export interface CurrentSession {
   roles: UserRole[];
   expires_unix_ms: number;
   password_policy?: PasswordPolicy;
+}
+
+/**
+ * What a session may do, where "we have not been told yet" is a third answer.
+ *
+ * Both of the rules below were written independently in two clients before
+ * they were written here, which is the strongest argument for their being
+ * policy rather than presentation: if two clients disagree about what a role
+ * list means, the same account behaves differently on a television and a
+ * phone, and nobody finds that quickly because neither client looks wrong on
+ * its own.
+ *
+ * The unknown state is `undefined` rather than a separate `known` flag, so it
+ * cannot be forgotten at a call site. A caller holding `roles` it has not
+ * fetched has `undefined`, and gets the permissive answer by construction.
+ */
+
+/**
+ * Whether this session may do the thing `role` gates.
+ *
+ * **Unknown is not none.** A session record that has not answered — still in
+ * flight, the node unreachable, or a node too old to have the route — must
+ * never read as a session with no privileges, or a client's navigation empties
+ * for everyone the moment one node is slow. The failure of guessing wrong in
+ * the permissive direction is a control that errors when pressed; the failure
+ * of guessing wrong the other way is an application that appears to have
+ * nothing in it. The first is recoverable and explains itself, the second
+ * looks exactly like a broken server.
+ *
+ * Roles are capabilities and not a ladder, so this is a membership test and
+ * deliberately expands nothing: see the note at the top of this file.
+ */
+export function sessionPermits(roles: readonly UserRole[] | undefined, role: UserRole): boolean {
+  if (roles === undefined) return true;
+  return roles.includes(role);
+}
+
+/**
+ * Whether this session may do nothing at all, and so must be asked to sign in.
+ *
+ * An empty role array is a real state a server mints, not an error and not an
+ * absence: from server 0.38.4, removing `media_viewer` from the anonymous
+ * account is how a registered-users-only deployment is configured, and the
+ * mint then returns a valid token alongside no roles. A client that reads that
+ * as "something went wrong" shows an error for a cluster behaving exactly as
+ * its operator intended.
+ *
+ * Distinct from `undefined`, which is the unknown state and is never locked
+ * out — see `sessionPermits`. The distinction is the whole point: a client
+ * that collapses them puts a login wall in front of a viewer whose only
+ * problem is a slow node, and one of the four clients built exactly that and
+ * removed it before it shipped.
+ */
+export function sessionLockedOut(roles: readonly UserRole[] | undefined): boolean {
+  return roles !== undefined && roles.length === 0;
 }
 
 export interface CreateUserRequest {

@@ -1095,14 +1095,6 @@ describe('PlaybackCoordinator player failures', () => {
     player.fail(new Error('node A stream failed'));
 
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8'));
-    player.emit({
-      positionMs: 0,
-      durationMs: 600_000,
-      paused: false,
-      ended: false,
-      bufferedRangesMs: [{ startMs: 0, endMs: 10_000 }],
-    });
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('s1'));
     expect(api.failover).toHaveBeenCalledWith(
       initial,
       expect.objectContaining({ id: 'tmdb:movie:1' }),
@@ -1207,40 +1199,73 @@ describe('PlaybackCoordinator player failures', () => {
     await flush();
   });
 
-  it('backs off cleanup of the old session only after the replacement is streaming', async () => {
-    vi.useFakeTimers();
-    try {
-      const player = new FakePlayer();
-      const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
-      const replacement = session({
-        sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
-        source: { ...initial.source, url: 'http://b/replacement.mp4' },
-      });
-      const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
-      api.failover = vi.fn(async () => replacement);
-      api.stop
-        .mockRejectedValueOnce(new TypeError('old node unreachable'))
-        .mockRejectedValueOnce(new TypeError('old node still unreachable'))
-        .mockResolvedValue(undefined);
-      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
-      await coordinator.start();
+  it('does not let a source it is replacing move the resume point backwards', async () => {
+    // The dying source is left playing on purpose — its buffered tail is what
+    // covers the failover, and stopping it to silence it would be the black
+    // screen the whole mechanism exists to avoid. But it has stopped being a
+    // witness: an element reporting zero as it tears down would otherwise
+    // become the position the replacement is activated at, and the viewer
+    // returns to the start of the film with no way to tell why.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    const negotiation = deferred<PlaybackSession>();
+    api.failover = vi.fn(() => negotiation.promise);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 300_000, durationMs: 600_000, paused: false, ended: false });
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
 
-      player.fail(new PlaybackSourceError('primary stream failed', 'stream'));
-      await flush();
-      await flush();
-      expect(api.stop).not.toHaveBeenCalled();
-      player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false, bufferedRangesMs: [{ startMs: 0, endMs: 5_000 }] });
-      await flush();
-      expect(api.stop).toHaveBeenCalledTimes(1);
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await flush();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    await flush();
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(api.stop).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(api.stop).toHaveBeenCalledTimes(3);
-      await coordinator.close();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
+
+    // Forward is still forward: the tail it plays out is real progress, and
+    // the replacement should start after what the viewer actually saw.
+    player.emit({ positionMs: 303_000, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(303_000);
+
+    negotiation.resolve(replacement);
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
+    expect(player.playCalls.at(-1)?.positionMs).toBe(303_000);
+    await coordinator.close();
+  });
+
+  it('leaves the failed session to the resolver that abandoned it', async () => {
+    // Teardown after a failover belongs to `resolver.failover()`, which
+    // released the old session at the moment it gave up on it. Two of the
+    // four clients call the resolver directly and never build a coordinator,
+    // so teardown up here is teardown half the consumers never get — and a
+    // second owner would DELETE a session already gone and charge the
+    // registry for the dead node failing to answer about it.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => replacement);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('primary stream failed', 'stream'));
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
+    // The event that used to release the deferred cleanup. Nothing is owed.
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false, bufferedRangesMs: [{ startMs: 0, endMs: 5_000 }] });
+    await flush();
+
+    expect(api.stop).not.toHaveBeenCalled();
+    await coordinator.close();
   });
 
   it('promotes a preflighted transformed generation without negotiating another session', async () => {
@@ -1473,6 +1498,30 @@ describe('the instruction has a symptom when it is a fallback', () => {
     expect(report?.chosenByViewer).toBe(false);
     expect(report?.mode).toBe('transcode');
     expect(report?.reasons).toContain('no-technical-facts');
+  });
+
+  it('still asks for the host\'s container when it has no facts to reason from', async () => {
+    // A Samsung host asks for MPEG-TS because fragmented MP4 black-screens on
+    // the device, and a failed facts lookup says nothing about that: carriage
+    // is decided by the host and the device, and `segmentContainer` needs
+    // neither the profile nor the node's operations to decide it. Asked for
+    // no container at all, the node defaults to fMP4 — and failover then
+    // restates that wrong answer into every replacement, which is the silent
+    // starvation 0.6.3 already paid for once.
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'transcode' }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => ({ ...capabilities(), hlsTs: true }),
+      initialPositionMs: 0,
+      policyOverrides: { preferSegmentContainer: 'mpegts' },
+      facts: async () => undefined,
+    });
+
+    await coordinator.start();
+
+    expect(api.resolve.mock.calls[0][3]).toMatchObject({ mode: 'transcode', container: 'mpegts' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ withoutFacts: true, container: 'mpegts' });
   });
 
   it('shows the container it asked for beside the one it got', async () => {

@@ -1,4 +1,6 @@
-import { mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
+import { parseErrorEnvelope } from './errorEnvelope.js';
+import type { CurrentSession, UserRole } from './UsersApi.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
@@ -13,6 +15,20 @@ export interface AnonymousSession {
    * server did not say" from "the server said anonymous".
    */
   username?: string;
+  /**
+   * What this session may do, as the minting node resolved it.
+   *
+   * Absent means the node did not say, which is not the same as an empty
+   * array — that is a session the cluster deliberately granted nothing, and
+   * the two need opposite handling. See `sessionPermits` and
+   * `sessionLockedOut`.
+   *
+   * Unknown strings are passed through rather than filtered to `UserRole`.
+   * Dropping a role the server granted because this build has not heard of it
+   * yet would understate what the viewer may do, and understating is the
+   * direction that hides working features behind a lock.
+   */
+  roles?: UserRole[];
 }
 
 export interface SessionCredentials {
@@ -21,21 +37,40 @@ export interface SessionCredentials {
 }
 
 export class SessionAuthError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    /**
+     * The server's machine-readable reason, where it sent one.
+     *
+     * Load-bearing rather than diagnostic: `anonymous_disabled` is how a
+     * deployment says "this cluster requires an account", and a client that
+     * cannot read it has to guess from an empty token — which reads exactly
+     * the same as a node being unreachable. Two clients built a login wall on
+     * that guess and removed it again, because telling a viewer who is merely
+     * away from home that they need an account is the worst version of being
+     * wrong here.
+     */
+    public readonly code?: string,
+  ) {
     super(message);
   }
 }
 
 /**
- * Whether the server refused who you claim to be, rather than failing to
- * answer.
+ * Whether a node refused to mint, rather than failing to answer.
  *
  * 401 is a wrong username or password; 403 is a refusal to mint at all, such
  * as anonymous access being switched off. Both are the node working
- * correctly. 429 is deliberately absent: a rate limit is worth trying
- * elsewhere, and it says nothing about whether the credentials are right.
+ * correctly, which is why neither is endpoint evidence. 429 is deliberately
+ * absent: a rate limit is worth trying elsewhere, and it says nothing about
+ * whether the credentials are right.
+ *
+ * Whether a refusal is *final* is a separate question, and it depends on what
+ * was asked — see `mintAnonymousSessionAnyNode`. This only says the node
+ * answered and said no.
  */
-function refusedCredentials(error: unknown): boolean {
+export function isSessionRefusal(error: unknown): boolean {
   const status = error instanceof SessionAuthError ? error.status : undefined;
   return status === 401 || status === 403;
 }
@@ -51,28 +86,59 @@ function refusedCredentials(error: unknown): boolean {
  */
 export async function mintAnonymousSession(baseUrl: string, credentials?: SessionCredentials): Promise<AnonymousSession> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  // Bounded here, because nothing above can bound it. Every request in the
+  // application waits on a mint — `SessionManager.fetch` blocks on `inFlight`
+  // through bootstrap and through a 401 re-mint — and a `fetchWithTimeout`
+  // wrapped around one of those callers composes a controller this request
+  // never sees. Unbounded, a node that died without an RST leaves a half-open
+  // connection that costs the OS timeout, and a cold start pays that per
+  // candidate while the whole client waits.
+  const response = await fetchWithTimeout(
+    (target, init) => fetch(target, init),
+    url,
+    {
       method: 'POST',
       headers: mergeRequestHeaders(undefined, { Accept: 'application/json', 'Content-Type': 'application/json' }),
       body: JSON.stringify(credentials ? { credentials } : {}),
-    });
-  } catch {
-    throw serverUnreachable();
-  }
+    },
+    DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   const { body, wasJson } = await readResponseBody(response);
   if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
   const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
   if (!response.ok) {
-    const message = typeof record?.message === 'string' ? record.message : `${response.status} ${response.statusText}`;
-    throw new SessionAuthError(`Could not start a session: ${message}`, response.status);
+    // Through the envelope parser, not off the top level. Macha answers
+    // `{ error: { code, message } }`, so reading `record.message` found
+    // nothing and every refusal degraded to status plus statusText — and
+    // `statusText` is empty on React Native's fetch, so a wrong password
+    // reached the viewer as "Could not start a session: 401" while the
+    // server's own sentence, and the code the client needed, were both in the
+    // body all along.
+    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code);
   }
   const token = typeof record?.token === 'string' ? record.token : undefined;
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
   if (!token || expiresAtMs === undefined) throw new SessionAuthError('Server returned a malformed session response.');
   const username = typeof record?.username === 'string' ? record.username : undefined;
-  return username === undefined ? { token, expiresAtMs } : { token, expiresAtMs, username };
+  return {
+    token,
+    expiresAtMs,
+    ...(username !== undefined ? { username } : {}),
+    ...(sessionRoles(record) !== undefined ? { roles: sessionRoles(record)! } : {}),
+  };
+}
+
+/**
+ * The roles a session record states, or `undefined` where it states none.
+ *
+ * Absent and empty are kept apart all the way down: a node that did not
+ * answer the question and a cluster that granted nothing look identical in a
+ * boolean and need opposite handling.
+ */
+function sessionRoles(record: Record<string, unknown> | undefined): UserRole[] | undefined {
+  if (!Array.isArray(record?.roles)) return undefined;
+  return (record.roles as unknown[]).filter((value): value is UserRole => typeof value === 'string');
 }
 
 /**
@@ -89,19 +155,28 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
       registry.recordSuccess(endpoint.id);
       return session;
     } catch (error) {
-      // A refusal is not a fault. A node that answers "those credentials are
-      // wrong" has done its job perfectly, and marking it unhealthy for
-      // saying so would let one mistyped password walk the whole cluster and
-      // mark every node failed — degrading endpoint ranking and playback
-      // failover because somebody fumbled a login.
-      //
-      // It is also cluster-wide and final, the same reasoning session
-      // validation already uses for a rejected token: every node checks the
-      // same credentials against the same replicated table, so asking the
-      // next one is a slower way to be told the same thing.
-      if (refusedCredentials(error)) {
+      if (isSessionRefusal(error)) {
+        // A refusal is not a fault. A node that answers "those credentials are
+        // wrong" has done its job perfectly, and marking it unhealthy for
+        // saying so would let one mistyped password walk the whole cluster and
+        // mark every node failed — degrading endpoint ranking and playback
+        // failover because somebody fumbled a login.
         registry.recordSuccess(endpoint.id);
-        throw error;
+        // Whether that refusal settles the question depends on what was asked.
+        //
+        // Credentials are checked against a replicated table, so every node
+        // reaches the same verdict and asking the next one is a slower way to
+        // be told the same thing. But an *anonymous* mint offers no
+        // credentials: a 403 there means "this node does not allow anonymous",
+        // which is that node's configuration and nothing else's. Observed
+        // mid-deployment by the Android TV client — one stale node answered
+        // 403 while the rest would have minted happily, and stopping at its
+        // opinion denied a session the cluster was willing to grant. Taking
+        // one node's word for the cluster is the thing this package exists
+        // not to do.
+        if (credentials) throw error;
+        lastError = error;
+        continue;
       }
       registry.recordFailure(endpoint.id);
       lastError = error;
@@ -111,19 +186,45 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
 }
 
 /**
- * Cheaply proves whether an already-held token is still accepted, reusing the
- * same lightweight status endpoint the health monitor already probes.
+ * Cheaply proves whether an already-held token is still accepted.
+ *
  * Minting a brand new session does real server-side work (creating a session
- * record); checking one an existing token still authenticates is far cheaper
+ * record); checking that an existing token still authenticates is far cheaper
  * and, as a side effect, proves the node actually answers — so a warm reload
  * with a live cached token never pays for a full mint (Law 2: Thou Shalt Not
  * Make The Viewer Wait, `docs/principles-and-laws.md`).
+ *
+ * It asks the session about itself, and deliberately not a catalogue or
+ * status route. Under the roles model those need a role — `media_viewer` for
+ * the catalogue, `view_status` for cluster status from server 0.38.5 — so a
+ * session the cluster granted nothing would have every cached token
+ * classified dead on every reload and re-mint forever, having been told
+ * nothing about the token at all. A session's own record is the one thing it
+ * can always ask about, because the answer is about the asker.
+ *
+ * Confirmed with the server session: it is the one route explicitly exempt
+ * from the role gate, on that same reasoning — needing a role to find out
+ * which roles you have is not a thing that can work.
+ *
+ * It also answers a stronger question than "is this token well formed". The
+ * authenticator re-checks the session's `credential_generation` against the
+ * user record on every request, so a password change, a role change or a
+ * deletion invalidates the token the moment that record reaches the node.
+ * This therefore catches revocation, not only expiry, at no extra cost.
+ *
+ * The corollary matters more than it looks: a 401 here does **not** only mean
+ * "expired". It can mean the account changed underneath the token. The
+ * response is the same either way — mint fresh — but a caller that reports
+ * the reason to a viewer must not claim the session timed out.
  */
-export async function validateAnonymousSession(baseUrl: string, token: string): Promise<boolean> {
-  const url = `${normalizeBaseUrl(baseUrl)}/api/v1/catalogue/status`;
-  const response = await fetch(url, {
-    headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }),
-  });
+export async function validateAnonymousSession(baseUrl: string, token: string): Promise<CurrentSession | undefined> {
+  const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
+  const response = await fetchWithTimeout(
+    (target, init) => fetch(target, init),
+    url,
+    { headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }) },
+    DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   // A reachable node that rejects the token is a definitive, cluster-wide
   // answer (sessions are valid cluster-wide, so a rejection is not
   // node-specific) — no point asking another node the same question.
@@ -134,9 +235,25 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
   // would mark all four nodes unhealthy on the way to re-minting, wrecking
   // endpoint ranking at exactly the moment the cluster is already in flux.
   // The token is simply no longer acceptable anywhere; say so and re-mint.
-  if (response.status === 401 || response.status === 403) return false;
-  if (!response.ok) throw new SessionAuthError(`${response.status} ${response.statusText}`, response.status);
-  return true;
+  const { body, wasJson } = await readResponseBody(response);
+  if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
+  if (response.status === 401 || response.status === 403) return undefined;
+  if (!response.ok) {
+    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(message, response.status, code);
+  }
+  // The record is returned rather than a boolean because this request already
+  // carries the answer to a second question nothing else was asking: what the
+  // session may do. Re-reading roles was the one part of the session
+  // lifecycle living outside this module, and a client that fetched them once
+  // per API identity never re-asked — failover changes the preferred endpoint
+  // inside the registry without changing that identity, so one transient
+  // failure left roles unknown for a whole run.
+  const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
+  if (!record || !Array.isArray(record.roles)) {
+    throw new SessionAuthError('Server returned a malformed session record.', response.status);
+  }
+  return record as unknown as CurrentSession;
 }
 
 /**
@@ -147,15 +264,18 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
  * can be reached the caller falls back to minting fresh (which will hit the
  * same unreachable nodes and fail the same way — no worse than today).
  */
-export async function validateAnonymousSessionAnyNode(registry: EndpointRegistry, token: string): Promise<boolean> {
+export async function validateAnonymousSessionAnyNode(
+  registry: EndpointRegistry,
+  token: string,
+): Promise<CurrentSession | undefined> {
   for (const { endpoint } of registry.candidates()) {
     try {
-      const valid = await validateAnonymousSession(endpoint.baseUrl, token);
+      const session = await validateAnonymousSession(endpoint.baseUrl, token);
       registry.recordSuccess(endpoint.id);
-      return valid;
+      return session;
     } catch {
       registry.recordFailure(endpoint.id);
     }
   }
-  return false;
+  return undefined;
 }

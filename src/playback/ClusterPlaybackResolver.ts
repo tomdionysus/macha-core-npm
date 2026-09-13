@@ -13,13 +13,41 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 
+/**
+ * How many times a session on a node that has just failed is asked to close.
+ *
+ * The DELETE usually goes to a node that is already gone, so one attempt is
+ * not a policy. Bounded rather than open-ended because the node's own
+ * `session_idle` reclaims the lease after thirty minutes and this ladder only
+ * has to cover a node that comes back sooner than that — roughly half a
+ * minute of it. Longer would be a timer nothing in this class can cancel.
+ */
+const FAILED_SESSION_CLOSE_ATTEMPTS = 5;
+const FAILED_SESSION_CLOSE_BASE_DELAY_MS = 1_000;
+const FAILED_SESSION_CLOSE_MAX_DELAY_MS = 16_000;
+
 interface OwnedSession {
   endpoint: MachaEndpoint;
   resolver: MachaPlaybackResolver;
   nodeSessionId: string;
 }
 
-function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+/**
+ * Bounds the wait on one generation attempt, and hands back anything that
+ * arrives after the deadline so the caller can dispose of it.
+ *
+ * The deadline abandons only the local wait: the HTTP operation is left
+ * running and observed rather than cancelled, because a client-cancelled POST
+ * tells the node nothing about whether it should keep the work. That is why
+ * `onAbandoned` has to exist — a request left running is a request that can
+ * still succeed, and a success nobody is waiting for is a session nobody will
+ * ever close.
+ */
+function awaitWithEndpointDeadline<T>(
+  request: Promise<T>,
+  timeoutMs: number,
+  onAbandoned: (value: T) => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
@@ -32,10 +60,14 @@ function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): P
       new Error(`Playback generation attempt exceeded ${timeoutMs} ms.`),
       { status: 504, code: 'client_endpoint_deadline' },
     ))), timeoutMs);
-    // A deadline abandons only the local wait. The HTTP operation remains
-    // independent and observed, avoiding client-generated request cancellation.
     request.then(
-      (value) => finish(() => resolve(value)),
+      (value) => {
+        if (settled) {
+          onAbandoned(value);
+          return;
+        }
+        finish(() => resolve(value));
+      },
       (error) => finish(() => reject(error)),
     );
   });
@@ -52,6 +84,11 @@ function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): P
  * carriage it cannot play — and a native player given that fetches nothing and
  * reports nothing, so each silent starvation is charged to a healthy node until
  * the candidate list is empty.
+ *
+ * Applies to the standby path as well as the replacement path: a generation
+ * prepared ahead of time is asked for on the same terms as one created after
+ * the fact, or the carriage a host needs goes missing through whichever of the
+ * two nobody looked at.
  *
  * `PlaybackCoordinator` already restates it on the paths it owns. This is the
  * same fix one layer down, where **every** consumer passes rather than only the
@@ -71,14 +108,42 @@ function awaitWithEndpointDeadline<T>(request: Promise<T>, timeoutMs: number): P
  */
 function withServedSegmentContainer(
   preferences: PlaybackPreferencesUpdate,
-  failedSession: PlaybackSession,
+  servingSession: PlaybackSession,
 ): PlaybackPreferencesUpdate {
   if (preferences.container !== undefined) return preferences;
-  const mode = preferences.mode ?? failedSession.mode;
+  const mode = preferences.mode ?? servingSession.mode;
   if (mode !== 'remux' && mode !== 'transcode') return preferences;
-  const served = failedSession.output?.container?.trim().toLowerCase();
+  const served = servingSession.output?.container?.trim().toLowerCase();
   if (served !== 'fmp4' && served !== 'mpegts') return preferences;
   return { ...preferences, container: served };
+}
+
+/**
+ * Whether a standby can stand in for the generation it would replace.
+ *
+ * Same media on a different node were the only questions asked, and they are
+ * not enough. A standby prepared as a remux cannot replace a transcode, and
+ * two transformed generations reporting different segment containers hand the
+ * device carriage it may not be able to play — the exact case
+ * `withServedSegmentContainer` exists for, arriving through the standby door
+ * rather than the fresh-create one.
+ *
+ * An unreported container is not a mismatch. A node that does not say what it
+ * served gives no grounds to reject a standby that is otherwise right, and
+ * refusing one costs a viewer a rescue that is already built and ready over a
+ * fact nobody stated.
+ *
+ * A rejected standby is not closed here. The coordinator stops every alternate
+ * that is not the session it activates, so adding a second teardown on this
+ * path would be the two-owners problem rather than a fix.
+ */
+function interchangeableGeneration(alternate: PlaybackSession, replaced: PlaybackSession): boolean {
+  if (alternate.mode !== replaced.mode) return false;
+  if (alternate.mode === 'direct') return true;
+  const alternateContainer = alternate.output?.container?.trim().toLowerCase();
+  const replacedContainer = replaced.output?.container?.trim().toLowerCase();
+  if (!alternateContainer || !replacedContainer) return true;
+  return alternateContainer === replacedContainer;
 }
 
 export class ClusterPlaybackResolver implements PlaybackResolver {
@@ -127,7 +192,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       const owned = this.sessions.get(preparedAlternate.sessionId);
       if (owned
         && owned.endpoint.id !== failedSession.endpoint?.id
-        && preparedAlternate.mediaId === failedSession.mediaId) {
+        && preparedAlternate.mediaId === failedSession.mediaId
+        && interchangeableGeneration(preparedAlternate, failedSession)) {
         this.registry.recordSuccess(owned.endpoint.id);
         return preparedAlternate;
       }
@@ -137,10 +203,55 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       capabilities,
       seekMs,
       withServedSegmentContainer(preferences, failedSession),
-      this.failedGenerationEndpoints,
+      this.failoverExclusion(failedSession),
       true,
       this.generationAttemptTimeoutMs,
     );
+  }
+
+  /**
+   * Which endpoints this failover may not use.
+   *
+   * Normally every endpoint that has failed during this playback, so one
+   * recovery does not walk back onto a node another recovery already gave up
+   * on. But that set only ever grows — it is cleared by `resolve()` and
+   * nothing else — so on a long item it eventually names every node. Two
+   * nodes and a two-hour film: A blips at minute ten, B at minute ninety, the
+   * candidate list is empty, and the viewer gets a bare "No untried Macha
+   * playback endpoint remains" while A has been probed healthy for eighty
+   * minutes.
+   *
+   * The test is whether anything outside it is *usable*, not whether anything
+   * is left in the list. "Is the list empty" only answers correctly in a two
+   * node cluster: with three, one node cooling down from a failed health
+   * probe keeps the list non-empty, so the recovery walks to the one endpoint
+   * that is known to be unwell, fails, and gives up — while two nodes that
+   * recovered an hour ago sit excluded and idle. Readiness is a question only
+   * the registry can answer, because `retryAt` is a reading of its clock.
+   *
+   * When nothing outside the exclusion is ready, it collapses to the one
+   * endpoint that must never be chosen — the one being failed away from this
+   * second. Everything else has had a cooldown, and probably a successful
+   * probe, since it last misbehaved; the registry's ordering decides between
+   * them and already puts anything out of cooldown ahead of anything still in
+   * it. Nothing waits for a cooldown to expire: an attempt that fails costs
+   * one request, and making the viewer wait for a timer is not a trade this
+   * package makes.
+   *
+   * Not relaxed for standby preparation, which excludes the endpoint
+   * currently in service: relaxing there would prepare a rescue on the node
+   * the rescue exists to escape.
+   */
+  private failoverExclusion(failedSession: PlaybackSession): ReadonlySet<string> {
+    if (this.registry.candidates(this.failedGenerationEndpoints).some((candidate) => candidate.ready)) {
+      return this.failedGenerationEndpoints;
+    }
+    const current = new Set(failedSession.endpoint ? [failedSession.endpoint.id] : []);
+    this.log.warn('generation-exclusion-relaxed', {
+      excluded: [...this.failedGenerationEndpoints],
+      stillExcluded: [...current],
+    });
+    return current;
   }
 
   /**
@@ -162,13 +273,68 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * **Never awaited, and never allowed to fail the failover.** A slow node is
    * exactly where failover fires, so awaiting this would hang the recovery it
    * is part of. Sessions are node-local and a `DELETE` for an id a node does
-   * not hold answers a bare `404`, which `stop()` already treats as success —
-   * so there is no need to decide first whether the node is still alive, and
-   * racing a coordinator's own superseded cleanup is harmless rather than a
-   * conflict.
+   * not hold answers a bare `404`, which the node resolver already treats as
+   * success, so there is no need to decide first whether the node is alive.
+   *
+   * Three things it deliberately does *not* do, each of which it used to:
+   *
+   * - **It does not go through `stop()`.** That method records a failure
+   *   against the endpoint when the DELETE throws, and the endpoint has
+   *   already been charged once for this outage by `recordEndpointFailure`
+   *   above. One observation was becoming a fresh record per attempt, walking
+   *   the cooldown ladder — 500 ms, 2 s, 10 s, 30 s — for a node that failed
+   *   exactly once.
+   * - **It does not wait for success to drop the map entry.** `stop()` deletes
+   *   only on success, so a throwing DELETE left the session in `sessions`,
+   *   where every later cleanup path found it and charged the registry again.
+   *   The entry is gone before the first attempt: this session is abandoned
+   *   whether or not the node ever acknowledges it.
+   * - **It does not defer to a coordinator.** Two of the four clients call
+   *   `failover` directly and never build one, so teardown that lives up
+   *   there is teardown half the consumers do not get. This is the only
+   *   layer all of them pass through, which is why the retry ladder is here.
    */
   private releaseFailedSession(failedSession: PlaybackSession): void {
-    void this.stop(failedSession.sessionId).catch(() => undefined);
+    const owned = this.sessions.get(failedSession.sessionId);
+    if (!owned) return;
+    this.sessions.delete(failedSession.sessionId);
+
+    const attempt = (attemptsMade: number): void => {
+      void owned.resolver.stop(owned.nodeSessionId).then(() => {
+        this.log.info('failed-session-closed', {
+          endpointId: owned.endpoint.id,
+          sessionId: owned.nodeSessionId,
+          attempts: attemptsMade + 1,
+        });
+      }).catch((error) => {
+        const attempts = attemptsMade + 1;
+        if (attempts >= FAILED_SESSION_CLOSE_ATTEMPTS) {
+          // Said plainly rather than swallowed: the node is now holding a
+          // transcode slot nothing will release before `session_idle`, and
+          // the next viewer it refuses will have no way to see why.
+          this.log.warn('failed-session-close-abandoned', {
+            endpointId: owned.endpoint.id,
+            sessionId: owned.nodeSessionId,
+            attempts,
+            error,
+          });
+          return;
+        }
+        const delayMs = Math.min(
+          FAILED_SESSION_CLOSE_MAX_DELAY_MS,
+          FAILED_SESSION_CLOSE_BASE_DELAY_MS * (2 ** attemptsMade),
+        );
+        this.log.warn('failed-session-close-retry', {
+          endpointId: owned.endpoint.id,
+          sessionId: owned.nodeSessionId,
+          attempts,
+          delayMs,
+          error,
+        });
+        setTimeout(() => attempt(attempts), delayMs);
+      });
+    };
+    attempt(0);
   }
 
   async prepareAlternate(
@@ -186,7 +352,10 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         media,
         capabilities,
         seekMs,
-        { ...preferences, mode: activeSession.mode === 'direct' ? 'direct' : preferences.mode },
+        withServedSegmentContainer(
+          { ...preferences, mode: activeSession.mode === 'direct' ? 'direct' : preferences.mode },
+          activeSession,
+        ),
         excluded,
         false,
         this.generationAttemptTimeoutMs,
@@ -224,7 +393,11 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       try {
         const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
         const session = attemptTimeoutMs
-          ? await awaitWithEndpointDeadline(request, attemptTimeoutMs)
+          ? await awaitWithEndpointDeadline(
+            request,
+            attemptTimeoutMs,
+            (late) => this.releaseGenerationAdmittedLate(endpoint, resolver, late),
+          )
           : await request;
         session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
         const nodeSessionId = session.sessionId;
@@ -278,6 +451,42 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
+  }
+
+  /**
+   * Close a generation the attempt deadline gave up on but the node went on to
+   * admit.
+   *
+   * The idempotency key is no help: sessions are node-local, so the retry
+   * lands somewhere else and this node is left holding a session nothing
+   * refers to — on a one-slot node, its only transcode slot — until
+   * `session_idle` reclaims it thirty minutes later. The slow node the
+   * deadline exists to route around is exactly the one that pays for it, and
+   * it pays in the resource that made it slow.
+   *
+   * Never recorded as endpoint evidence, in either direction. The node did
+   * nothing wrong; it was slower than we were prepared to wait, and it has
+   * already been charged for that by the attempt that timed out.
+   */
+  private releaseGenerationAdmittedLate(
+    endpoint: MachaEndpoint,
+    resolver: MachaPlaybackResolver,
+    session: PlaybackSession,
+  ): void {
+    this.log.warn('generation-admitted-after-deadline', {
+      endpointId: endpoint.id,
+      endpoint: endpoint.baseUrl,
+      sessionId: session.sessionId,
+    });
+    void resolver.stop(session.sessionId).catch((error) => {
+      // Nothing else will try: this session was never recorded, so no cleanup
+      // path knows it exists. Saying so is the whole of what can be done.
+      this.log.warn('late-generation-close-failed', {
+        endpointId: endpoint.id,
+        sessionId: session.sessionId,
+        error,
+      });
+    });
   }
 
   recordEndpointFailure(endpointId: string): void {

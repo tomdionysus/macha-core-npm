@@ -1,6 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mintAnonymousSession, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
+import { MachaConnectionError } from './serverConnection.js';
+
+/**
+ * A node that accepted the connection and then said nothing — the half-open
+ * socket a machine that died without an RST leaves behind. It answers the
+ * abort and nothing else, which is what a real fetch() does.
+ */
+function blackHoled() {
+  return (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  });
+}
 
 function sessionResponse(overrides: Record<string, unknown> = {}) {
   return {
@@ -31,7 +44,9 @@ describe('mintAnonymousSession', () => {
     expect(init.method).toBe('POST');
     expect(init.body).toBe('{}');
     expect(new Headers(init.headers).has('Authorization')).toBe(false);
-    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000 });
+    // The mint response states the roles, so the token never arrives without
+    // them and nothing has to go back and ask.
+    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, roles: ['anonymous'] });
   });
 
   it('rejects with a SessionAuthError carrying the status on a non-ok response', async () => {
@@ -75,8 +90,127 @@ describe('validating a session the cluster no longer accepts', () => {
     )));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBe(false);
+    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBeUndefined();
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
+  });
+});
+
+describe('a node refusing to mint', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries the server\'s own sentence and machine code, not the status line', async () => {
+    // Macha answers `{ error: { code, message } }`. Read off the top level,
+    // `record.message` found nothing and every refusal degraded to status
+    // plus statusText — and statusText is empty on React Native's fetch, so a
+    // wrong password reached a viewer on a device as "Could not start a
+    // session: 401" while the server's own sentence sat in the body.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    )));
+
+    await expect(mintAnonymousSession('http://node.test')).rejects.toMatchObject({
+      status: 403,
+      code: 'anonymous_disabled',
+      message: 'Could not start a session: anonymous access is disabled',
+    });
+  });
+
+  it('asks the next node when no credentials were offered, because that is one node\'s configuration', async () => {
+    // A credential refusal is checked against a replicated table and every
+    // node reaches the same verdict. An anonymous refusal is not: 403 there
+    // means "this node does not allow anonymous", which is that node's own
+    // configuration. Seen mid-deployment by the Android TV client — one stale
+    // node answered 403 while the rest would have minted happily, and
+    // stopping at its opinion denied a session the cluster was willing to
+    // grant.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      ))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://stale.test', 'http://a.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry)).resolves.toMatchObject({ token: 'token-secret' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // And the refusing node is still healthy: it answered, which is what a
+    // working node does.
+    for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it('reports the refusal once every node has refused, rather than an unreachable cluster', async () => {
+    // A fresh Response per call: a body can only be read once, and reusing
+    // one would have this test assert the empty-body fallback by accident.
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(mintAnonymousSessionAnyNode(registry)).rejects.toMatchObject({
+      status: 403,
+      code: 'anonymous_disabled',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a node that accepts the connection and never answers', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('gives up on a mint at the request deadline rather than waiting on the OS', async () => {
+    // Nothing above this can impose the deadline: the callers that wait on a
+    // mint are waiting on `SessionManager.inFlight`, and a fetchWithTimeout
+    // wrapped around one of them holds a controller this request never sees.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(blackHoled()));
+
+    const request = mintAnonymousSession('http://node.test');
+    const assertion = expect(request).rejects.toBeInstanceOf(MachaConnectionError);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+    await assertion;
+  });
+
+  it('walks to the next node instead of stranding the whole client on the first', async () => {
+    // The cost of the missing deadline was never one slow request: every
+    // fetch() in the application queues behind the bootstrap mint, so an
+    // unbounded first candidate froze the client for an OS timeout per node.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(blackHoled())
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    const request = mintAnonymousSessionAnyNode(registry);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+
+    await expect(request).resolves.toMatchObject({ token: 'token-secret' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // A node that never answered is a node fault, unlike a refusal.
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a.test')?.health.consecutiveFailures)
+      .toBeGreaterThan(0);
+  });
+
+  it('gives up on validating a cached token on the same deadline', async () => {
+    // The warm-reload path. Un-deadlined it turned the cheap alternative to
+    // minting into the slowest thing in a reload.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(blackHoled()));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+
+    const request = validateAnonymousSessionAnyNode(registry, 'cached');
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+
+    await expect(request).resolves.toBeUndefined();
   });
 });
 
@@ -94,7 +228,7 @@ describe('signing in with credentials', () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ credentials: { username: 'alice', password: 'hunter2000' } });
-    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, username: 'alice' });
+    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, username: 'alice', roles: ['media_viewer'] });
   });
 
   it('does not mark a node unhealthy for refusing a password, and does not ask the next one', async () => {

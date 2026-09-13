@@ -68,6 +68,18 @@ export type EndpointSelectionAxis =
 export interface EndpointCandidate {
   endpoint: MachaEndpoint;
   health: EndpointHealth;
+  /**
+   * Whether this endpoint is out of any failure cooldown as of this call.
+   *
+   * Answered here because it cannot be answered anywhere else: `health.retryAt`
+   * is a reading of the registry's own clock, and a caller has no way to
+   * compare against it — `MachaHost.now()` is a duration clock with an
+   * arbitrary origin, so a caller using `Date.now()` would be comparing two
+   * unrelated number lines. Without this, "is anything actually usable right
+   * now" can only be approximated by "is the list empty", which is a different
+   * question and answers wrong the moment a third node exists.
+   */
+  ready: boolean;
   /** Rolling average probe round-trip, where any probe has succeeded. */
   latencyMs?: number;
   /** Measured transfer rate, where enough transfers back it. */
@@ -110,6 +122,91 @@ const THROUGHPUT_MIN_RELATIVE_DIFFERENCE = 0.4;
 const LATENCY_RANK_MIN_ABSOLUTE_MS = 50;
 const LATENCY_RANK_MIN_RELATIVE_DIFFERENCE = 0.4;
 const CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE = 0.4;
+
+/**
+ * The measured axes, in the order the ranking cascade consults them. Most
+ * direct first:
+ *
+ * - **Throughput** is the closest thing to the question actually being asked —
+ *   can this link carry the bytes — so where it is known it wins.
+ * - **Latency** is the only signal held about the *path*. It has to outrank
+ *   capacity, because the failure this ordering exists to prevent is a
+ *   healthy, lightly loaded node behind a bad wireless hop, and no
+ *   server-reported metric can see that. Rank capacity above latency and the
+ *   axis that is blind to the fault decides before the one that can see it.
+ * - **Capacity** is last of the three, and is a comparison rather than a
+ *   threshold on purpose: `load1` cannot be turned into "saturated" without a
+ *   core count, which the status payload does not carry, so `load1: 2.67` is
+ *   comfortable on eight cores and dire on two. A relative comparison between
+ *   two nodes at least has bounded error; an absolute gate would be
+ *   confidently wrong on any node whose size we guessed. If a core count ever
+ *   arrives, a saturation gate ahead of latency is the better shape, because a
+ *   saturated node is a harder blocker than a longer round trip.
+ */
+const MEASURED_AXES = ['throughput', 'latency', 'capacity'] as const;
+type MeasuredAxis = typeof MEASURED_AXES[number];
+
+/**
+ * The axes settled before any measurement is consulted, in order, as the slots
+ * of one sort key: reachable before cooling, the sticky preference, then —
+ * among endpoints that are all cooling — whichever is ready soonest, then the
+ * consecutive failure count.
+ *
+ * They come first because they are about whether an endpoint can be used at
+ * all rather than how well it performs. They are also a total order for free:
+ * each is a number compared against the same number on every other endpoint —
+ * a flag, a deadline, a count — so unlike the measured axes they can be a sort
+ * key rather than a filter.
+ */
+const ABSOLUTE_AXES: readonly EndpointSelectionAxis[] = ['availability', 'sticky', 'availability', 'failures'];
+
+/** One endpoint on its way through the cascade, before it is described to a caller. */
+interface RankEntry {
+  endpoint: MachaEndpoint;
+  health: EndpointHealth;
+  /** Where the endpoint sits in the configured list — the last tie-break of all. */
+  order: number;
+}
+
+function compareRankKeys(left: readonly number[], right: readonly number[]): number {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+function firstRankKeyDifference(left: readonly number[], right: readonly number[]): number {
+  for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return index;
+  return left.length - 1;
+}
+
+/**
+ * Whether a measurement is far enough behind the best on its axis to be ranked
+ * below it. Deliberately blunt on every axis, because ordering must not
+ * reshuffle on noise.
+ *
+ * Latency needs an absolute floor as well as a ratio, or two nodes at 3 ms and
+ * 5 ms trade places every probe cycle over a 40% "difference" nobody can
+ * perceive. Capacity is blunter still, because it is the one measurement that
+ * responds to our own routing: send work to a node and its load rises, which
+ * demotes it, which moves the work away, which lowers the load, which promotes
+ * it again. The minimum relative difference is the damping on that loop —
+ * together with the sticky preference, which is settled before any measured
+ * axis and so holds authority in place while the numbers move underneath it.
+ *
+ * Never true of the best value against itself, on any axis. That is what keeps
+ * an elimination round from emptying the field.
+ */
+function materiallyWorseThanBest(axis: MeasuredAxis, value: number, best: number): boolean {
+  if (axis === 'throughput') return value < best && best >= value / (1 - THROUGHPUT_MIN_RELATIVE_DIFFERENCE);
+  if (axis === 'latency') {
+    return value - best >= LATENCY_RANK_MIN_ABSOLUTE_MS && best <= value * (1 - LATENCY_RANK_MIN_RELATIVE_DIFFERENCE);
+  }
+  // Two idle nodes are not distinguishable, and a ratio against zero is not a
+  // number. Neither is worth reshuffling for.
+  if (value <= 0 && best <= 0) return false;
+  return value > best && (value - best) / Math.max(value, best) >= CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE;
+}
 
 export interface PreferredEndpointSwap {
   fromId: string;
@@ -234,7 +331,7 @@ export class EndpointRegistry {
 
   candidates(excludedIds: ReadonlySet<string> = new Set()): EndpointCandidate[] {
     const now = this.now();
-    const candidates = this.endpoints
+    const entries = this.endpoints
       .filter((endpoint) => !excludedIds.has(endpoint.id))
       .map((endpoint, order) => ({
         endpoint,
@@ -242,79 +339,154 @@ export class EndpointRegistry {
         order,
       }));
 
-    candidates.sort((left, right) => this.compare(left, right, now).order);
+    const { ordered, axis } = this.rank(entries, now);
 
     // The axis that separated the winner from the runner-up is the one that
-    // actually decided; the rest never got a say. Recorded rather than
+    // actually decided; the rest never got a say. Read off the ranking that
+    // produced this order rather than recomputed afterwards from the top two,
+    // so it cannot disagree with the list it describes. Recorded rather than
     // returned so the ordinary call site stays a list of candidates.
-    this.lastSelectionAxis = candidates.length > 1
-      ? this.compare(candidates[0], candidates[1], now).axis
-      : candidates.length === 1 ? 'configured-order' : undefined;
+    this.lastSelectionAxis = entries.length === 0 ? undefined : axis;
 
-    return candidates.map(({ endpoint, health }) => this.describe(endpoint, health));
+    return ordered.map(({ endpoint, health }) => this.describe(endpoint, health, now));
   }
 
   /**
-   * One comparison, reported with the axis that settled it.
+   * Rank every candidate, and report which axis separated the head from the
+   * runner-up.
    *
-   * The order of the axes is the argument, so it is written down here rather
-   * than spread across the sort. Reachability and the sticky preference come
-   * first because they are about whether an endpoint can be used at all.
-   * Then the three measurements, most direct first:
+   * The measured axes eliminate against the *best* value still in contention
+   * rather than comparing pairs, because a threshold applied pairwise is not a
+   * consistent order. At 20/65/110 ms with a 50 ms floor, A ties B and B ties
+   * C while A beats C: `sort` is handed a cycle, its output becomes
+   * implementation-defined, and which node ends up at the head depends on the
+   * order the endpoints happened to be configured in — the WAN node can win
+   * while `selectionAxis()` reports that no measurement decided anything. This
+   * is the fault the cascade was built to prevent, arriving through the
+   * comparator itself; see *Routing on evidence* in `HISTORY.md`.
    *
-   * - **Throughput** is the closest thing to the question actually being
-   *   asked — can this link carry the bytes — so where it is known it wins.
-   * - **Latency** is the only signal held about the *path*. It has to outrank
-   *   capacity, because the failure this ordering exists to prevent is a
-   *   healthy, lightly loaded node behind a bad wireless hop, and no
-   *   server-reported metric can see that. Rank capacity above latency and the
-   *   axis that is blind to the fault decides before the one that can see it.
-   * - **Capacity** is last of the three, and is a comparison rather than a
-   *   threshold on purpose: `load1` cannot be turned into "saturated" without
-   *   a core count, which the status payload does not carry, so `load1: 2.67`
-   *   is comfortable on eight cores and dire on two. A relative comparison
-   *   between two nodes at least has bounded error; an absolute gate would be
-   *   confidently wrong on any node whose size we guessed. If a core count
-   *   ever arrives, a saturation gate ahead of latency is the better shape,
-   *   because a saturated node is a harder blocker than a longer round trip.
+   * Against a single reference the same threshold is a total preorder: an
+   * endpoint either is within it of the best or it is not, and that answer
+   * does not depend on which other endpoint it is asked about.
+   *
+   * The best is always taken within the surviving pool and never globally, so
+   * evidence from an endpoint already out of contention — a node in a failure
+   * cooldown that happens to have the fastest link — cannot eliminate a
+   * healthy one.
    */
-  private compare(
-    left: { endpoint: MachaEndpoint; health: EndpointHealth; order: number },
-    right: { endpoint: MachaEndpoint; health: EndpointHealth; order: number },
-    now: number,
-  ): { order: number; axis: EndpointSelectionAxis } {
-    const leftReady = (left.health.retryAt ?? 0) <= now;
-    const rightReady = (right.health.retryAt ?? 0) <= now;
-    if (leftReady !== rightReady) return { order: leftReady ? -1 : 1, axis: 'availability' };
-    const leftPreferred = left.endpoint.id === this.preferredId;
-    const rightPreferred = right.endpoint.id === this.preferredId;
-    if (leftPreferred !== rightPreferred) return { order: leftPreferred ? -1 : 1, axis: 'sticky' };
-    if (!leftReady && !rightReady) {
-      return { order: (left.health.retryAt ?? 0) - (right.health.retryAt ?? 0), axis: 'availability' };
+  private rank(entries: RankEntry[], now: number): { ordered: RankEntry[]; axis: EndpointSelectionAxis } {
+    if (entries.length === 0) return { ordered: [], axis: 'configured-order' };
+    const keyed = entries.map((entry) => ({ entry, key: this.absoluteKey(entry, now) }));
+    keyed.sort((left, right) => compareRankKeys(left.key, right.key) || left.entry.order - right.entry.order);
+
+    const ordered: RankEntry[] = [];
+    let axis: EndpointSelectionAxis = 'configured-order';
+    let tierStart = 0;
+    for (let index = 1; index <= keyed.length; index += 1) {
+      if (index < keyed.length && compareRankKeys(keyed[tierStart].key, keyed[index].key) === 0) continue;
+      const tier = keyed.slice(tierStart, index).map(({ entry }) => entry);
+      const ranked = this.rankTier(tier, 0);
+      if (tierStart === 0) {
+        // The runner-up is either inside this first tier, in which case the
+        // measured cascade separated them, or it is the head of the next tier
+        // and one of the absolute axes did.
+        axis = tier.length > 1
+          ? ranked.axis
+          : keyed.length > 1
+            ? ABSOLUTE_AXES[firstRankKeyDifference(keyed[0].key, keyed[1].key)]
+            : 'configured-order';
+      }
+      ordered.push(...ranked.ordered);
+      tierStart = index;
     }
-    if (left.health.consecutiveFailures !== right.health.consecutiveFailures) {
-      return { order: left.health.consecutiveFailures - right.health.consecutiveFailures, axis: 'failures' };
-    }
-    // Measured evidence outranks the order the endpoints happened to be
-    // configured in. Without this, a failover from the preferred node walks
-    // the list as typed — which is a stand-in for "nearest" that a mixed
-    // wired/wireless/WAN cluster falsifies routinely.
-    const throughput = this.compareThroughput(left.endpoint.id, right.endpoint.id);
-    if (throughput !== 0) return { order: throughput, axis: 'throughput' };
-    const latency = this.compareLatency(left.endpoint.id, right.endpoint.id);
-    if (latency !== 0) return { order: latency, axis: 'latency' };
-    const capacity = this.compareCapacity(left.endpoint.id, right.endpoint.id);
-    if (capacity !== 0) return { order: capacity, axis: 'capacity' };
-    return { order: left.order - right.order, axis: 'configured-order' };
+    return { ordered, axis };
   }
 
-  private describe(endpoint: MachaEndpoint, health: EndpointHealth): EndpointCandidate {
+  /**
+   * The absolute axes as one sort key, in the order `ABSOLUTE_AXES` names
+   * them. The cooldown deadline is flattened to zero for a reachable endpoint,
+   * so it only ever separates endpoints that are all still cooling — the
+   * availability slot above it has already dealt with the mixed case.
+   */
+  private absoluteKey(entry: RankEntry, now: number): number[] {
+    const ready = (entry.health.retryAt ?? 0) <= now;
+    return [
+      ready ? 0 : 1,
+      entry.endpoint.id === this.preferredId ? 0 : 1,
+      ready ? 0 : entry.health.retryAt ?? 0,
+      entry.health.consecutiveFailures,
+    ];
+  }
+
+  /**
+   * Order one tier — endpoints no absolute axis could separate — by the
+   * measured cascade, reporting the axis that separated its own head from its
+   * own runner-up.
+   *
+   * Each round keeps whatever is within threshold of the best and pushes the
+   * rest behind it, then re-runs the *same* axis on those: the best of the
+   * eliminated can still be materially ahead of the rest of them, and a
+   * candidate list is walked to the end on failover, so the tail is an
+   * ordering question and not a discard.
+   */
+  private rankTier(tier: RankEntry[], axisIndex: number): { ordered: RankEntry[]; axis: EndpointSelectionAxis } {
+    if (tier.length <= 1 || axisIndex >= MEASURED_AXES.length) {
+      return { ordered: [...tier].sort((left, right) => left.order - right.order), axis: 'configured-order' };
+    }
+    const axis = MEASURED_AXES[axisIndex];
+    const { kept, dropped } = this.eliminateAgainstBest(tier, axis);
+    if (dropped.length === 0) return this.rankTier(tier, axisIndex + 1);
+    const ahead = this.rankTier(kept, axisIndex + 1);
+    const behind = this.rankTier(dropped, axisIndex);
+    return {
+      ordered: [...ahead.ordered, ...behind.ordered],
+      // With more than one survivor the head and the runner-up are both in it,
+      // so whatever separated them is further down the cascade. With exactly
+      // one, this axis is what put the next endpoint behind it.
+      axis: kept.length > 1 ? ahead.axis : axis,
+    };
+  }
+
+  /**
+   * Split a tier into what is still in contention on one axis and what the
+   * best value on it eliminates.
+   *
+   * An endpoint with no evidence on an axis is never eliminated by it: absent
+   * is not a poor measurement, and a node that has not been probed yet must
+   * not be ranked as though it had been and done badly. It carries on to the
+   * next axis alongside the best, which is what the pairwise comparator did
+   * for the same reason.
+   */
+  private eliminateAgainstBest(tier: RankEntry[], axis: MeasuredAxis): { kept: RankEntry[]; dropped: RankEntry[] } {
+    const valued = tier.map((entry) => ({ entry, value: this.axisValue(entry.endpoint.id, axis) }));
+    const measured = valued.map(({ value }) => value).filter((value): value is number => value !== undefined);
+    if (measured.length === 0) return { kept: tier, dropped: [] };
+    const best = axis === 'throughput' ? Math.max(...measured) : Math.min(...measured);
+
+    const kept: RankEntry[] = [];
+    const dropped: RankEntry[] = [];
+    for (const { entry, value } of valued) {
+      const eliminated = value !== undefined && materiallyWorseThanBest(axis, value, best);
+      (eliminated ? dropped : kept).push(entry);
+    }
+    return { kept, dropped };
+  }
+
+  /** The evidence one axis ranks on, or undefined where this endpoint has none of it yet. */
+  private axisValue(endpointIdValue: string, axis: MeasuredAxis): number | undefined {
+    if (axis === 'throughput') return this.bytesPerSecond(endpointIdValue);
+    if (axis === 'latency') return this.latencyMs(endpointIdValue);
+    return this.loadPerCore(endpointIdValue);
+  }
+
+  private describe(endpoint: MachaEndpoint, health: EndpointHealth, now: number): EndpointCandidate {
     const latencyMs = this.latencyMs(endpoint.id);
     const bytesPerSecond = this.bytesPerSecond(endpoint.id);
     const capacity = this.capacities.get(endpoint.id);
     return {
       endpoint,
       health,
+      ready: (health.retryAt ?? 0) <= now,
       ...(latencyMs !== undefined ? { latencyMs } : {}),
       ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
       ...(capacity ? { capacity: { ...capacity } } : {}),
@@ -422,21 +594,6 @@ export class EndpointRegistry {
   }
 
   /**
-   * -1 when `leftId` is materially closer, 1 when `rightId` is, 0 otherwise.
-   * Needs both a ratio and an absolute floor: without the floor two nodes a
-   * few milliseconds apart trade places on noise every probe cycle.
-   */
-  private compareLatency(leftId: string, rightId: string): number {
-    const left = this.latencyMs(leftId);
-    const right = this.latencyMs(rightId);
-    if (left === undefined || right === undefined) return 0;
-    if (Math.abs(left - right) < LATENCY_RANK_MIN_ABSOLUTE_MS) return 0;
-    if (left <= right * (1 - LATENCY_RANK_MIN_RELATIVE_DIFFERENCE)) return -1;
-    if (right <= left * (1 - LATENCY_RANK_MIN_RELATIVE_DIFFERENCE)) return 1;
-    return 0;
-  }
-
-  /**
    * Load per CPU, or undefined where the node has not said enough to compute it.
    *
    * `load1` describes the machine and `process_cpu_percent` describes one
@@ -452,30 +609,6 @@ export class EndpointRegistry {
     if (capacity.load1 !== undefined) return capacity.load1 / capacity.cores;
     if (capacity.cpuPercent !== undefined) return capacity.cpuPercent / 100 / capacity.cores;
     return undefined;
-  }
-
-  /**
-   * -1 when `leftId` has materially more headroom, 1 when `rightId` does, 0
-   * otherwise or where either has not reported enough to say.
-   *
-   * Blunt on purpose, and more so than the other axes: capacity is the one
-   * measurement that responds to our own routing. Send work to a node and its
-   * load rises, which demotes it, which moves the work away, which lowers the
-   * load, which promotes it again. The minimum relative difference is the
-   * damping on that loop — together with the sticky preference, which sits
-   * above every measured axis in `compare` and so holds authority in place
-   * while the numbers move underneath it.
-   */
-  private compareCapacity(leftId: string, rightId: string): number {
-    const left = this.loadPerCore(leftId);
-    const right = this.loadPerCore(rightId);
-    if (left === undefined || right === undefined) return 0;
-    // Two idle nodes are not distinguishable, and a ratio against zero is not
-    // a number. Neither is worth reshuffling for.
-    if (left <= 0 && right <= 0) return 0;
-    const higher = Math.max(left, right);
-    if (Math.abs(left - right) / higher < CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE) return 0;
-    return left < right ? -1 : 1;
   }
 
   /**
@@ -566,9 +699,11 @@ export class EndpointRegistry {
   }
 
   snapshot(): EndpointCandidate[] {
+    const now = this.now();
     return this.endpoints.map((endpoint) => this.describe(
       endpoint,
       { ...(this.health.get(endpoint.id) ?? { consecutiveFailures: 0 }) },
+      now,
     ));
   }
 

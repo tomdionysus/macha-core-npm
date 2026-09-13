@@ -150,19 +150,95 @@ describe('ClusterPlaybackResolver', () => {
     expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health).not.toBe('unreachable');
   });
 
-  it('recreates a failed generation on an untried node and then exhausts candidates', async () => {
+  it('retries a node excluded earlier rather than going terminal while it sits healthy', async () => {
+    // The exclusion set only grows — `resolve()` clears it and nothing else —
+    // so on a long item it eventually names every node. Two nodes and a
+    // two-hour film: A blips at minute ten, B at minute ninety, and the
+    // viewer got a bare "No untried Macha playback endpoint remains" while A
+    // had been probed healthy for eighty minutes. It exists to stop one
+    // recovery walking back onto a node another recovery gave up on, not to
+    // retire that node for the rest of the film.
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-c')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
     const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
     expect(second.endpoint?.id).toBe('http://b');
+
+    const third = await resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' });
+
+    // A again — and not B, which is the one endpoint that must never be
+    // chosen here, because it is the one being failed away from this second.
+    expect(third.endpoint?.id).toBe('http://a');
+    expect(admissionCalls(fetchMock).map(([url]) => url.split('?')[0])).toEqual([
+      'http://a/api/v1/playback/sessions',
+      'http://b/api/v1/playback/sessions',
+      'http://a/api/v1/playback/sessions',
+    ]);
+  });
+
+  it('retries a recovered node rather than the one node it has not excluded yet', async () => {
+    // "Is the candidate list empty" only answers this correctly in a two-node
+    // cluster, and two nodes is not the cluster. With three, a node cooling
+    // down from failed health probes keeps the list non-empty, so the
+    // recovery walks to the one endpoint already known to be unwell, fails,
+    // and gives up — while a node that recovered long ago sits excluded and
+    // idle. The question is whether anything outside the exclusion is
+    // *usable*, which only the registry can answer: `retryAt` is a reading of
+    // its clock and nothing else shares it.
+    let now = 1_000;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      if (target.startsWith('http://c')) throw new TypeError('node c is down');
+      const id = target.startsWith('http://a') ? 'session-a' : 'session-b';
+      return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']), () => now);
+    const resolver = new ClusterPlaybackResolver(registry);
+
+    const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
+    expect(second.endpoint?.id).toBe('http://b');
+
+    // The health loop finds C unwell and puts it on the long end of the
+    // cooldown ladder; A's own blip has long since expired.
+    for (let probe = 0; probe < 4; probe += 1) registry.recordProbeFailure('http://c');
+    now += 1_000;
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.ready).toBe(true);
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://c')?.ready).toBe(false);
+
+    const third = await resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' });
+
+    expect(third.endpoint?.id).toBe('http://a');
+    expect(admissionCalls(fetchMock).map(([url]) => url.split('?')[0])).toEqual([
+      'http://a/api/v1/playback/sessions',
+      'http://b/api/v1/playback/sessions',
+      'http://a/api/v1/playback/sessions',
+    ]);
+  });
+
+  it('reports the endpoint that actually failed when the relaxed retry fails too', async () => {
+    // The bare "no untried endpoint remains" said nothing about why. Once the
+    // exclusion relaxes there is always an endpoint left to try, so what
+    // reaches the viewer is the real failure of a real node.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockRejectedValue(new TypeError('node A unreachable'));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+
+    const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
+
     await expect(resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' }))
-      .rejects.toThrow('No untried Macha playback endpoint remains');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+      .rejects.toThrow('http://a');
   });
 
   it('continues failover after one surviving node cannot open the media', async () => {
@@ -262,6 +338,45 @@ describe('ClusterPlaybackResolver', () => {
     ]);
   });
 
+  it('closes a generation the node admits after the deadline gave up waiting for it', async () => {
+    // The deadline abandons the wait and deliberately leaves the POST
+    // running, so a node slow enough to miss it can still admit the session
+    // afterwards. Sessions are node-local, so the idempotency key does not
+    // reach across to the node that actually served the retry: nothing else
+    // knows this session exists, nothing will ever close it, and on a
+    // one-slot node it holds the only transcode slot until `session_idle`
+    // reclaims it thirty minutes later. The slow node the deadline exists to
+    // route around is the one that pays, in the resource that made it slow.
+    let admitLate: (() => void) | undefined;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        admitLate = () => resolve(new Response(JSON.stringify(wireSession('session-late')), {
+          status: 201, headers: { 'Content-Type': 'application/json' },
+        }));
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    const fetchWithCloses = withSessionCloses(fetchMock);
+    vi.stubGlobal('fetch', fetchWithCloses);
+    const resolver = new ClusterPlaybackResolver(
+      new EndpointRegistry(bootstrapEndpoints(['http://slow', 'http://b'])),
+      undefined,
+      5,
+    );
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    expect(session.endpoint?.id).toBe('http://b');
+
+    admitLate?.();
+
+    // Closed with the node-local session id, which is the only identifier the
+    // slow node has ever heard of — the cluster-prefixed one is minted here,
+    // after the await this attempt never came back from.
+    await vi.waitFor(() => expect(fetchWithCloses.mock.calls).toContainEqual([
+      'http://slow/api/v1/playback/sessions/session-late',
+      expect.objectContaining({ method: 'DELETE' }),
+    ]));
+  });
+
   it('promotes a prepared transformed generation without creating a duplicate lease', async () => {
     const transformed = (id: string) => ({
       ...wireSession(id),
@@ -282,6 +397,91 @@ describe('ClusterPlaybackResolver', () => {
     expect(promoted.sessionId).toBe(standby?.sessionId);
     expect(promoted.endpoint?.id).toBe('http://b');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks a standby for the carriage the generation it stands by for is actually being served', async () => {
+    // The fix that put this on `failover` stopped at the fresh-create branch.
+    // A host that needs MPEG-TS because fMP4 black-screens on its device gets
+    // the right thing when a replacement is built after the fact and the
+    // wrong thing when one was prepared in advance — same defect, through
+    // whichever door nobody looked at.
+    const served = (id: string, container: string) => ({
+      ...wireSession(id),
+      mode: 'transcode',
+      preferences: { ...wireSession(id).preferences, mode: 'transcode' },
+      output: { container },
+      stream: { url: `/api/v1/playback/stream/${id}/index.m3u8`, mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-a', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-b', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'transcode' });
+
+    await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'transcode' });
+
+    expect(JSON.parse(String(admissionCalls(fetchMock)[1][1].body)).preferences.container).toBe('mpegts');
+  });
+
+  it('refuses a prepared standby that is being served a different carriage', async () => {
+    // A standby is only a rescue if the device can play it. Two transformed
+    // generations reporting different segment containers are not
+    // interchangeable, and promoting one because it is on another node and
+    // holds the same media is how the carriage check gets bypassed entirely.
+    const served = (id: string, container: string) => ({
+      ...wireSession(id),
+      mode: 'transcode',
+      preferences: { ...wireSession(id).preferences, mode: 'transcode' },
+      output: { container },
+      stream: { url: `/api/v1/playback/stream/${id}/index.m3u8`, mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-a', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-b', 'fmp4')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-c', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'transcode' });
+    const standby = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'transcode' });
+    expect(standby?.output?.container).toBe('fmp4');
+
+    const promoted = await resolver.failover(primary, media, capabilities, 5_000, { mode: 'transcode' }, standby);
+
+    expect(promoted.sessionId).not.toBe(standby?.sessionId);
+    expect(JSON.parse(String(admissionCalls(fetchMock)[2][1].body)).preferences.container).toBe('mpegts');
+  });
+
+  it('charges the failed endpoint once, however the close goes', async () => {
+    // One observation, one record. The DELETE goes to a node that has just
+    // died, so it throws — and going through `stop()` charged the registry
+    // again for the same outage. Worse, `stop()` drops the map entry only on
+    // success, so the entry survived for every later cleanup path to find and
+    // charge a third time. The cooldown ladder — 500 ms, 2 s, 10 s, 30 s —
+    // was being walked by a node that had failed exactly once.
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+        if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') throw new TypeError('node a unreachable');
+        const id = String(url).startsWith('http://a') ? 'session-a' : 'session-b';
+        return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const resolver = new ClusterPlaybackResolver(registry);
+      const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+      await resolver.failover(primary, media, capabilities, 0, { mode: 'direct' });
+      for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+
+      expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+      // And the abandoned session is gone from the map whether or not the node
+      // ever acknowledged the close, so nothing can find it to charge again.
+      await expect(resolver.stop(primary.sessionId)).resolves.toBeUndefined();
+      expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps identical node-local session IDs distinct across endpoints', async () => {

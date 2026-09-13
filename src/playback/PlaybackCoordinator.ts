@@ -10,7 +10,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { choosePlaybackInstruction, degradeInstruction, segmentContainer, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -425,7 +425,6 @@ export class PlaybackCoordinator {
   private readonly alternateSessions = new Map<string, PlaybackSession>();
   private readonly alternatePreparations = new Set<Promise<void>>();
   private readonly alternateExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private supersededCleanup?: { oldSessionId: string; newSessionId: string; attempt: number; timer?: ReturnType<typeof setTimeout> };
   private streamOffsetMs = 0;
   /** Latest server-side session state; may be ahead of the source currently visible. */
   private serverSession?: PlaybackSession;
@@ -542,15 +541,26 @@ export class PlaybackCoordinator {
       } else if (this.options.facts === undefined) {
         this.log.warn('instruction-without-facts-supplier', { mediaId: this.options.media.id });
       }
-      this.patchSnapshot({ instruction: {
-        mode: 'transcode', video: 'transcode', audio: 'transcode',
-        reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
-      } });
       // No facts to reason from. Transcode is the only instruction that is
       // always performable, so it is the safe answer — never a corrupt
       // picture, at the cost of quality nobody can verify was needed.
-      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id });
-      return { ...preferences, mode: 'transcode' };
+      //
+      // The carriage is not part of that concession, and asking for none was
+      // not a neutral omission. A host states a segment container because the
+      // other one is broken on its device, which is true whether or not a
+      // facts lookup answered: `segmentContainer` needs neither the profile
+      // nor the node's operations to decide it. Left out, a Samsung host that
+      // asked for MPEG-TS got whatever the node defaults to — fMP4 — and
+      // failover then faithfully restated that wrong answer into every
+      // replacement. Silent starvation, which is the class 0.6.3 already paid
+      // for once.
+      const { container } = segmentContainer(capabilities, this.options.policyOverrides);
+      this.patchSnapshot({ instruction: {
+        mode: 'transcode', video: 'transcode', audio: 'transcode', container,
+        reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
+      } });
+      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container });
+      return { ...preferences, mode: 'transcode', container };
     }
 
     const instruction = choosePlaybackInstruction(facts.profile, capabilities, {
@@ -689,7 +699,6 @@ export class PlaybackCoordinator {
     this.unsubscribePlayer();
     this.unsubscribePlayerFailure?.();
     this.unsubscribePlayerDegradation?.();
-    if (this.supersededCleanup?.timer !== undefined) clearTimeout(this.supersededCleanup.timer);
     // Coordinator teardown ends source acquisition immediately, but deliberately
     // leaves DOM-host ownership to PlaybackRuntime/PlayerHost.
     this.options.player.stop();
@@ -1240,16 +1249,14 @@ export class PlaybackCoordinator {
     if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
     const desiredMs = this.snapshot.intent.positionMs;
     this.activateSession(alternate, desiredMs, alternate.seekMs);
-    // Recorded before it is begun. `beginSupersededCleanup` acts only on the
-    // record it already owns, so a fresh object passed straight in was a
-    // no-op: the primary was never closed, and on a one-slot node its
-    // transcode stayed counted for `session_idle`. Closed now rather than
-    // after buffered evidence on the replacement — the standby was promoted
-    // because the primary stopped serving, so there is nothing to fall back
-    // to and no reason to hold the slot.
-    const cleanup = { oldSessionId: session.sessionId, newSessionId: alternate.sessionId, attempt: 0 };
-    this.supersededCleanup = cleanup;
-    this.beginSupersededCleanup(cleanup);
+    // Closed now rather than after buffered evidence on the replacement: the
+    // standby was promoted because the primary stopped serving, so there is
+    // nothing to fall back to and no reason to hold the slot. Fire and
+    // forget, exactly as the silent direct promotion does — retrying belongs
+    // to the resolver, which is the layer every client passes through.
+    void this.options.resolver.stop(session.sessionId).catch((error) => {
+      this.log.warn('superseded-primary-close-failed', { sessionId: session.sessionId, error });
+    });
   }
 
   private prepareAlternate(session: PlaybackSession, activationRevision: number): void {
@@ -1416,7 +1423,25 @@ export class PlaybackCoordinator {
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
     const session = this.snapshot.session;
-    const absolutePositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
+    const reportedPositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
+    // A source being replaced goes on rendering, and must: the tail it has
+    // already buffered is the thing covering the gap, and stopping it to
+    // silence it would produce exactly the black screen failover exists to
+    // prevent (Law 2, `docs/principles-and-laws.md`). It has stopped being a
+    // *witness*, though. As an element tears down it can report a position of
+    // zero, and the replacement is activated from `intent.positionMs`, so one
+    // reading from a source already given up on sends the viewer back to the
+    // start of the film.
+    //
+    // Forward only, therefore. Real progress through the buffered tail should
+    // move the resume point — the replacement ought to start after what the
+    // viewer actually saw — but nothing a dying source says can move it back.
+    // A viewer seek during a failover is exempt: that is a position the
+    // viewer chose, not one the source reported.
+    const replacingSource = this.failoverPromise !== undefined && !this.seekIntentActive;
+    const absolutePositionMs = replacingSource && this.lastObservedPositionMs !== undefined
+      ? Math.max(reportedPositionMs, this.lastObservedPositionMs)
+      : reportedPositionMs;
     this.lastObservedPositionMs = absolutePositionMs;
     const absolute: PlaybackEvent = {
       ...next,
@@ -1451,15 +1476,6 @@ export class PlaybackCoordinator {
       });
       this.fail(new PlaybackSourceError('Playback source ended before the media was complete', 'stream'));
       return;
-    }
-
-    const cleanup = this.supersededCleanup;
-    if (cleanup
-      && session?.sessionId === cleanup.newSessionId
-      && !next.paused
-      && !next.seeking
-      && (next.bufferedRangesMs ?? []).some((range) => range.endMs > next.positionMs)) {
-      this.beginSupersededCleanup(cleanup);
     }
 
     const target = this.snapshot.intent.positionMs;
@@ -1508,37 +1524,33 @@ export class PlaybackCoordinator {
 
   private failNow(fatalError: Error): void {
     const failedSession = this.snapshot.session ?? this.serverSession;
-    if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError) && !this.failoverPromise) {
+    // A dead source does not fall silent when recovery starts. It is neither
+    // stopped nor unsubscribed while the replacement is negotiated, so it goes
+    // on emitting: the element plays out whatever it had buffered and reports
+    // `ended` short of duration, which `onPlayerEvent` correctly reads as a
+    // premature end and sends back here as a second fatal failure — from the
+    // same source, about the same outage, one to three seconds after the
+    // first. Taken terminal it closes the coordinator and the replacement that
+    // was seconds from ready is discarded by the disposed path, so the viewer
+    // gets the fatal screen instead of the recovery that had already worked.
+    //
+    // Dropped rather than queued: recovery for this outage is already running
+    // and will either produce a source or fail on its own terms. Same posture
+    // `promoteReadyAlternate` takes when a degradation arrives mid-failover.
+    if (this.failoverPromise && isEndpointRetryablePlaybackFailure(fatalError)) {
+      this.log.debug('source-failure-during-failover', {
+        sessionId: failedSession?.sessionId,
+        error: fatalError,
+      });
+      return;
+    }
+    if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.failoverPromise = this.recoverFromSourceFailure(failedSession, fatalError).finally(() => {
         this.failoverPromise = undefined;
       });
       return;
     }
     this.failTerminal(fatalError);
-  }
-
-  private beginSupersededCleanup(cleanup: NonNullable<PlaybackCoordinator['supersededCleanup']>): void {
-    if (this.supersededCleanup !== cleanup || cleanup.timer !== undefined) return;
-    const attempt = () => {
-      if (this.disposed || this.supersededCleanup !== cleanup) return;
-      cleanup.timer = undefined;
-      void this.options.resolver.stop(cleanup.oldSessionId).then(() => {
-        if (this.supersededCleanup === cleanup) this.supersededCleanup = undefined;
-        this.log.info('superseded-session-closed', { sessionId: cleanup.oldSessionId, attempts: cleanup.attempt + 1 });
-      }).catch((error) => {
-        if (this.disposed || this.supersededCleanup !== cleanup) return;
-        cleanup.attempt += 1;
-        const delayMs = Math.min(30_000, 1_000 * (2 ** Math.min(cleanup.attempt - 1, 5)));
-        this.log.warn('superseded-session-close-retry', {
-          sessionId: cleanup.oldSessionId,
-          attempt: cleanup.attempt + 1,
-          delayMs,
-          error,
-        });
-        cleanup.timer = setTimeout(attempt, delayMs);
-      });
-    };
-    attempt();
   }
 
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
@@ -1587,11 +1599,11 @@ export class PlaybackCoordinator {
       } else {
         this.activateSession(next, currentDesired, requestedPositionMs);
       }
-      this.supersededCleanup = {
-        oldSessionId: failedSession.sessionId,
-        newSessionId: next.sessionId,
-        attempt: 0,
-      };
+      // The failed session is not closed here. `resolver.failover()` released
+      // it as it abandoned it, which is the only layer every client passes
+      // through — two of the four never build a coordinator at all — and a
+      // second owner here would DELETE a session already gone and charge the
+      // registry for the node failing to answer about it.
       this.log.info('source-failover-ready', {
         oldSessionId: failedSession.sessionId,
         newSessionId: next.sessionId,

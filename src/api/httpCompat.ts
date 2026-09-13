@@ -2,7 +2,13 @@ import { MachaConnectionError, serverUnreachable } from './serverConnection.js';
 
 export type HeaderValues = Record<string, string | undefined>;
 
-/** Applies to every request in the cluster status/catalogue/routing layer. Playback/streaming transfers are exempt and manage their own deadlines. */
+/**
+ * Applies to every request in the cluster status/catalogue/routing layer, and
+ * to session minting and validation — which are not part of that layer, but
+ * are the one path the whole application waits on, so an unbounded one there
+ * stalls every request behind it. Playback/streaming transfers are exempt and
+ * manage their own deadlines.
+ */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 
 function isAbortError(error: unknown): boolean {

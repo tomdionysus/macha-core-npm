@@ -1,6 +1,7 @@
 import { machaHost } from '../runtime/host.js';
 import type { StorageLike } from '../state/storage.js';
-import { mintAnonymousSessionAnyNode, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
+import { isSessionRefusal, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
+import type { CurrentSession, UserRole } from './UsersApi.js';
 import { mergeRequestHeaders } from './httpCompat.js';
 import { reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
@@ -82,6 +83,48 @@ export const NO_AUTH: AuthenticatedFetch = fixedBearerToken(undefined);
  * host's own session binding is a thin interface onto it, not an owner —
  * tests instantiate their own via `new SessionManager()`.
  */
+/**
+ * Why there is no token, when there is no token.
+ *
+ * `authorization()` returning `undefined` and `isReady` settling `true` are
+ * the same two facts whether a node refused to mint or no node could be
+ * asked, and those need opposite handling: a refusal deserves a login, and
+ * being away from home deserves a notice over whatever is already on screen
+ * and a retry. Three client sessions built something on the guess in one day
+ * and all three removed it — one had a login wall that would have replaced a
+ * playing film with a sign-in screen on a network blip, because its condition
+ * re-evaluated on every notification and an empty token looked like a policy.
+ *
+ * So this is the fact core already had and was throwing away, not a new
+ * lifecycle. `isReady === false` still means "still asking"; this answers the
+ * other two.
+ */
+export interface SessionMintFailure {
+  /**
+   * `refused` — a node answered and said no. `unreachable` — nothing answered.
+   *
+   * A refusal is a policy a cluster stated; the client may be able to do
+   * something about it, and telling a viewer to sign in is only honest here.
+   */
+  reason: 'refused' | 'unreachable';
+  /** The HTTP status, where a node gave one. */
+  status?: number;
+  /** The server's machine-readable reason, e.g. `anonymous_disabled`. */
+  code?: string;
+  /** The server's own sentence where it sent one, otherwise ours. Never assume it is fit to show a viewer. */
+  message: string;
+}
+
+function describeMintFailure(error: unknown): SessionMintFailure {
+  const authError = error instanceof SessionAuthError ? error : undefined;
+  return {
+    reason: isSessionRefusal(error) ? 'refused' : 'unreachable',
+    ...(authError?.status !== undefined ? { status: authError.status } : {}),
+    ...(authError?.code !== undefined ? { code: authError.code } : {}),
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
 export class SessionManager implements AuthenticatedFetch {
   private token: string | undefined;
   private ready = false;
@@ -110,8 +153,43 @@ export class SessionManager implements AuthenticatedFetch {
     return this.storageOverride ?? machaHost().ephemeralStorage;
   }
 
+  private mintFailure?: SessionMintFailure;
+  private sessionRoles?: UserRole[];
+
   get isReady(): boolean {
     return this.ready;
+  }
+
+  /**
+   * What the current session may do, or `undefined` if nothing has said yet.
+   *
+   * Roles arrive with the token on every path — the mint response states them,
+   * and so does the record returned by validating a cached token — so there is
+   * no separate fetch to fail and nothing to retry. That is the point: this
+   * was the one part of the session lifecycle living outside this class, and a
+   * client fetching it once per API identity never re-asked, because failover
+   * changes the preferred endpoint *inside* the registry without changing that
+   * identity. One transient failure left roles unknown for a whole run.
+   *
+   * `undefined` is unknown and an empty array is a session granted nothing;
+   * feed it to `sessionPermits` and `sessionLockedOut`, which keep them apart.
+   * A node too old to state roles leaves this `undefined` forever, which is
+   * the permissive answer and the right one.
+   */
+  get roles(): UserRole[] | undefined {
+    return this.sessionRoles;
+  }
+
+  /**
+   * Why the last mint failed, or `undefined` if the current session is good.
+   *
+   * Cleared the moment a session is adopted, and every change to it is
+   * published through `subscribe()`, so a consumer reading it on notification
+   * is never looking at a reason that has already been resolved. Read it
+   * together with `isReady`: not ready means the question is still open.
+   */
+  get lastMintFailure(): SessionMintFailure | undefined {
+    return this.mintFailure;
   }
 
   subscribe(listener: () => void): () => void {
@@ -257,6 +335,12 @@ export class SessionManager implements AuthenticatedFetch {
     this.settle();
     if (this.cancelled) return;
     this.token = session.token;
+    this.mintFailure = undefined;
+    // Left alone when the node did not state them: a token that arrived with
+    // no roles attached says nothing about the roles, and overwriting a known
+    // answer with `undefined` would turn a session granted nothing back into
+    // a session permitted everything.
+    if (session.roles !== undefined) this.sessionRoles = session.roles;
     this.notify();
     reportClusterReachable();
     this.scheduleRefresh(session.expiresAtMs);
@@ -281,15 +365,18 @@ export class SessionManager implements AuthenticatedFetch {
     const cached = this.loadCachedSession();
     this.inFlight = (async () => {
       if (cached && cached.expiresAtMs > Date.now()) {
-        let valid = false;
+        let record: CurrentSession | undefined;
         try {
-          valid = await validateAnonymousSessionAnyNode(registry, cached.token);
+          record = await validateAnonymousSessionAnyNode(registry, cached.token);
         } catch {
-          valid = false;
+          record = undefined;
         }
         if (this.cancelled) return;
-        if (valid) {
-          this.adopt(cached);
+        if (record) {
+          // The validation request is also the only request that states what
+          // this session may do, so the warm path adopts the roles it already
+          // paid for rather than asking again.
+          this.adopt({ ...cached, roles: record.roles });
           return;
         }
       }
@@ -303,12 +390,22 @@ export class SessionManager implements AuthenticatedFetch {
       const session = await mintAnonymousSessionAnyNode(registry);
       this.cacheSession(session);
       this.adopt(session);
-    } catch {
+    } catch (error) {
       this.settle();
       if (this.cancelled) return;
       this.token = undefined;
+      // No token, nothing known about what it may do.
+      this.sessionRoles = undefined;
+      this.mintFailure = describeMintFailure(error);
       this.notify();
-      reportClusterUnreachable();
+      // Only "we could not ask" is a connection state. A node that answered
+      // 403 in forty milliseconds has demonstrably been reached and has
+      // stated a policy; publishing "All configured API endpoints are
+      // unreachable" for it is a sentence no node said, and it sends a viewer
+      // to check a server that is up and working exactly as configured.
+      // `isGatewayConnectionFailure`, one file over, draws this distinction
+      // for every other request in the package.
+      if (this.mintFailure.reason !== 'refused') reportClusterUnreachable();
       this.refreshTimer = setTimeout(() => { void this.mint(); }, RETRY_AFTER_MINT_FAILURE_MS);
     }
   }
