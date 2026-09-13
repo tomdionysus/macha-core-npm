@@ -46,9 +46,9 @@ The corrected model is *simpler*, not more elaborate: **one `Session`, one mint,
 
 `sessionPermits`, `sessionLockedOut`, `hasRole` — already role-based, already right. `roles`, `lastMintFailure`, `isReady`, `subscribe`, `AuthenticatedFetch`. `SessionCredentials`. The `0.9.0` refusal-versus-unreachable distinction.
 
-### One thing still Tom's
+### Nothing still Tom's — the refusal walk stays
 
-- **The refusal walk** (`SessionAuth.ts:158-180`). On a 403 during mint, with credentials core stops (replicated table, every node agrees); without credentials it tries the next node, because allow-anonymous is per-node and one stale node must not speak for the cluster (observed live by the Android TV client). It is keyed on "was a credential presented", not on the account name, and it is a cluster rule rather than an anonymous rule — but it is core reasoning about a server edge case. **Recommendation: keep it.** Tom to confirm.
+- **The refusal walk** (`SessionAuth.ts:158-180`) — **decided 2026-09-13: keep.** On a 403 during mint, with credentials core stops (replicated table, every node agrees); without credentials it tries the next node, because allow-anonymous is per-node and one stale node must not speak for the cluster (observed live by the Android TV client). It is keyed on "was a credential presented", not on the account name, and it is a cluster rule rather than an anonymous rule — but it is core reasoning about a server edge case. **Recommendation: keep it.** Tom to confirm.
 - ~~**`isSignedIn()` and `ANONYMOUS_USERNAME`**~~ — **decided, keep.** See *What the clients SHOULD special-case* below: it is the one display hint for "this session belongs to someone who chose to be someone", the users-screen special-casing is driven by the server's per-record `mutable` instead, and core enforces nothing.
 
 ### What the clients SHOULD special-case — and what they should not
