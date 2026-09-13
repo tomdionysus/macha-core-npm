@@ -7,9 +7,41 @@
  * closed set. A client that infers "a manager can obviously also import" is
  * reimplementing policy the server already decided, and the two will drift.
  */
-export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users';
+export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users' | 'view_status';
 
-export const USER_ROLES: readonly UserRole[] = ['media_viewer', 'importer', 'manager', 'manage_users'];
+/**
+ * Declared as a record so the compiler enforces completeness. A role added to
+ * `UserRole` and forgotten here would exist in the type and be invisible in
+ * every client's role picker — a silent failure four clients would each have
+ * to discover separately. Key order is the listing order; insertion order is
+ * guaranteed for string keys.
+ */
+const ROLE_LISTING: Record<UserRole, true> = {
+  media_viewer: true,
+  importer: true,
+  manager: true,
+  manage_users: true,
+  view_status: true,
+};
+
+export const USER_ROLES: readonly UserRole[] = Object.keys(ROLE_LISTING) as UserRole[];
+
+/**
+ * `view_status` gates the cluster and node status screens — `/api/v1/status`
+ * and `/api/v1/status/*` from server 0.38.5.
+ *
+ * It gates the *diagnostic* view: the node roster, per-node capacity, and who
+ * is being asked for what. It does not gate liveness. Whether a node is alive
+ * is answered by `/api/v1/health`, which needs no session and no role, and
+ * that is the route this package probes — so nothing about health, ranking or
+ * failover depends on a viewer holding this.
+ *
+ * Every existing capability implies it, resolved at mint, so no account that
+ * could read Status before loses it and there is no migration. The case it
+ * changes is a session the cluster granted nothing, which is a legitimate
+ * state for a registered-users-only deployment: that session gets a refusal
+ * rather than the node roster.
+ */
 
 /**
  * What may be changed about this user, decided by the server and stated per

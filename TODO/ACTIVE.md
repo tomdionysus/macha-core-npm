@@ -89,19 +89,9 @@ Changing identity does not close playback sessions — nothing connects them —
 
 ## Waiting on Tom — asked for by clients, not core's to decide
 
-Four client sessions reported into core on 2026-09-13. The defects among their findings are fixed and in [COMPLETED.md](COMPLETED.md); what is left is shape, and shape decided unilaterally is how four clients end up adapting to the wrong thing.
+Four client sessions reported into core on 2026-09-13. The defects among their findings are fixed and in [COMPLETED.md](COMPLETED.md); what is left is where the boundary falls, and a boundary decided unilaterally is how four clients end up adapting to the wrong thing.
 
-### `view_status` in `UserRole`
-**Waiting on:** Tom, then server. The web client cannot offer the role in Manage → Users until it exists in `UserRole`/`USER_ROLES`, and is rightly refusing to invent the string locally.
-
-Declined for now, on three grounds. The server session has **not** built it and has argued against it: `/api/v1/status` is deliberately ungated today, and an importer-only account watching an ingest is exactly who needs cluster health most — gating the diagnostic screen takes it away at the moment it earns its place. The name is unsettled. And the web client measured `/api/v1/status` answering **200 with zero nodes** to a role-less session on es-1, which is a *reduced payload* rather than a refusal — if that is what ships, a role in the type is the wrong shape for it, and an empty node list reads to a viewer as "the cluster has no nodes", a sentence no node said.
-
-Adding a role to this type makes it real for four clients at once. That is the whole reason to wait.
-
-### Membership discovery is unavailable to a session granted nothing
-**Waiting on:** Tom. `discoverClusterEndpoints` reads `/api/v1/status`, which needs `view_status` on updated builds, so a role-less session learns no membership and no self-reported capacity. The failover pool stays at the bootstrap list and never tracks the real cluster — permanently, not only during a rollout.
-
-Academic for most clients, since such a session has nothing to play. Not academic for the login state: the viewer must reach *some* node in order to sign in, and that is the moment the pool is frozen. Liveness still grades the bootstrap endpoints, so a dead node is still avoided. Raised by the Android TV client, who asked that it be a decision rather than a side effect, which is the right ask.
+Two of the four questions are settled. `view_status` is in `UserRole` and `USER_ROLES`. And **a role-less session learning no cluster membership is correct, not a defect**: such a session sees only the endpoint it was configured with. Nothing to build; recorded so it is not raised a third time.
 
 ### Session role policy, offered by the web client
 **Waiting on:** Tom, on the boundary. Three rules it has built and would delete in favour of core's:
