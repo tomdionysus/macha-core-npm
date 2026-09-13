@@ -181,6 +181,48 @@ describe('ClusterPlaybackResolver', () => {
     ]);
   });
 
+  it('retries a recovered node rather than the one node it has not excluded yet', async () => {
+    // "Is the candidate list empty" only answers this correctly in a two-node
+    // cluster, and two nodes is not the cluster. With three, a node cooling
+    // down from failed health probes keeps the list non-empty, so the
+    // recovery walks to the one endpoint already known to be unwell, fails,
+    // and gives up — while a node that recovered long ago sits excluded and
+    // idle. The question is whether anything outside the exclusion is
+    // *usable*, which only the registry can answer: `retryAt` is a reading of
+    // its clock and nothing else shares it.
+    let now = 1_000;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      if (target.startsWith('http://c')) throw new TypeError('node c is down');
+      const id = target.startsWith('http://a') ? 'session-a' : 'session-b';
+      return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']), () => now);
+    const resolver = new ClusterPlaybackResolver(registry);
+
+    const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
+    expect(second.endpoint?.id).toBe('http://b');
+
+    // The health loop finds C unwell and puts it on the long end of the
+    // cooldown ladder; A's own blip has long since expired.
+    for (let probe = 0; probe < 4; probe += 1) registry.recordProbeFailure('http://c');
+    now += 1_000;
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.ready).toBe(true);
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://c')?.ready).toBe(false);
+
+    const third = await resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' });
+
+    expect(third.endpoint?.id).toBe('http://a');
+    expect(admissionCalls(fetchMock).map(([url]) => url.split('?')[0])).toEqual([
+      'http://a/api/v1/playback/sessions',
+      'http://b/api/v1/playback/sessions',
+      'http://a/api/v1/playback/sessions',
+    ]);
+  });
+
   it('reports the endpoint that actually failed when the relaxed retry fails too', async () => {
     // The bare "no untried endpoint remains" said nothing about why. Once the
     // exclusion relaxes there is always an endpoint left to try, so what

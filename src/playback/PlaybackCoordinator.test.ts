@@ -1199,6 +1199,47 @@ describe('PlaybackCoordinator player failures', () => {
     await flush();
   });
 
+  it('does not let a source it is replacing move the resume point backwards', async () => {
+    // The dying source is left playing on purpose — its buffered tail is what
+    // covers the failover, and stopping it to silence it would be the black
+    // screen the whole mechanism exists to avoid. But it has stopped being a
+    // witness: an element reporting zero as it tears down would otherwise
+    // become the position the replacement is activated at, and the viewer
+    // returns to the start of the film with no way to tell why.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    const negotiation = deferred<PlaybackSession>();
+    api.failover = vi.fn(() => negotiation.promise);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 300_000, durationMs: 600_000, paused: false, ended: false });
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
+
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await flush();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
+
+    // Forward is still forward: the tail it plays out is real progress, and
+    // the replacement should start after what the viewer actually saw.
+    player.emit({ positionMs: 303_000, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(303_000);
+
+    negotiation.resolve(replacement);
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
+    expect(player.playCalls.at(-1)?.positionMs).toBe(303_000);
+    await coordinator.close();
+  });
+
   it('leaves the failed session to the resolver that abandoned it', async () => {
     // Teardown after a failover belongs to `resolver.failover()`, which
     // released the old session at the moment it gave up on it. Two of the

@@ -1423,7 +1423,25 @@ export class PlaybackCoordinator {
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
     const session = this.snapshot.session;
-    const absolutePositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
+    const reportedPositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
+    // A source being replaced goes on rendering, and must: the tail it has
+    // already buffered is the thing covering the gap, and stopping it to
+    // silence it would produce exactly the black screen failover exists to
+    // prevent (Law 2, `docs/principles-and-laws.md`). It has stopped being a
+    // *witness*, though. As an element tears down it can report a position of
+    // zero, and the replacement is activated from `intent.positionMs`, so one
+    // reading from a source already given up on sends the viewer back to the
+    // start of the film.
+    //
+    // Forward only, therefore. Real progress through the buffered tail should
+    // move the resume point — the replacement ought to start after what the
+    // viewer actually saw — but nothing a dying source says can move it back.
+    // A viewer seek during a failover is exempt: that is a position the
+    // viewer chose, not one the source reported.
+    const replacingSource = this.failoverPromise !== undefined && !this.seekIntentActive;
+    const absolutePositionMs = replacingSource && this.lastObservedPositionMs !== undefined
+      ? Math.max(reportedPositionMs, this.lastObservedPositionMs)
+      : reportedPositionMs;
     this.lastObservedPositionMs = absolutePositionMs;
     const absolute: PlaybackEvent = {
       ...next,

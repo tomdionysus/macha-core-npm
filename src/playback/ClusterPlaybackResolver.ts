@@ -221,18 +221,29 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * playback endpoint remains" while A has been probed healthy for eighty
    * minutes.
    *
-   * When it would leave nothing, it collapses to the one endpoint that must
-   * never be chosen — the one being failed away from this second. Everything
-   * else has had a cooldown, and probably a successful probe, since it last
-   * misbehaved; the registry's own ordering decides between them and already
-   * puts anything out of cooldown ahead of anything still in it.
+   * The test is whether anything outside it is *usable*, not whether anything
+   * is left in the list. "Is the list empty" only answers correctly in a two
+   * node cluster: with three, one node cooling down from a failed health
+   * probe keeps the list non-empty, so the recovery walks to the one endpoint
+   * that is known to be unwell, fails, and gives up — while two nodes that
+   * recovered an hour ago sit excluded and idle. Readiness is a question only
+   * the registry can answer, because `retryAt` is a reading of its clock.
+   *
+   * When nothing outside the exclusion is ready, it collapses to the one
+   * endpoint that must never be chosen — the one being failed away from this
+   * second. Everything else has had a cooldown, and probably a successful
+   * probe, since it last misbehaved; the registry's ordering decides between
+   * them and already puts anything out of cooldown ahead of anything still in
+   * it. Nothing waits for a cooldown to expire: an attempt that fails costs
+   * one request, and making the viewer wait for a timer is not a trade this
+   * package makes.
    *
    * Not relaxed for standby preparation, which excludes the endpoint
    * currently in service: relaxing there would prepare a rescue on the node
    * the rescue exists to escape.
    */
   private failoverExclusion(failedSession: PlaybackSession): ReadonlySet<string> {
-    if (this.registry.candidates(this.failedGenerationEndpoints).length > 0) {
+    if (this.registry.candidates(this.failedGenerationEndpoints).some((candidate) => candidate.ready)) {
       return this.failedGenerationEndpoints;
     }
     const current = new Set(failedSession.endpoint ? [failedSession.endpoint.id] : []);

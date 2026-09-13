@@ -68,6 +68,18 @@ export type EndpointSelectionAxis =
 export interface EndpointCandidate {
   endpoint: MachaEndpoint;
   health: EndpointHealth;
+  /**
+   * Whether this endpoint is out of any failure cooldown as of this call.
+   *
+   * Answered here because it cannot be answered anywhere else: `health.retryAt`
+   * is a reading of the registry's own clock, and a caller has no way to
+   * compare against it — `MachaHost.now()` is a duration clock with an
+   * arbitrary origin, so a caller using `Date.now()` would be comparing two
+   * unrelated number lines. Without this, "is anything actually usable right
+   * now" can only be approximated by "is the list empty", which is a different
+   * question and answers wrong the moment a third node exists.
+   */
+  ready: boolean;
   /** Rolling average probe round-trip, where any probe has succeeded. */
   latencyMs?: number;
   /** Measured transfer rate, where enough transfers back it. */
@@ -336,7 +348,7 @@ export class EndpointRegistry {
     // returned so the ordinary call site stays a list of candidates.
     this.lastSelectionAxis = entries.length === 0 ? undefined : axis;
 
-    return ordered.map(({ endpoint, health }) => this.describe(endpoint, health));
+    return ordered.map(({ endpoint, health }) => this.describe(endpoint, health, now));
   }
 
   /**
@@ -467,13 +479,14 @@ export class EndpointRegistry {
     return this.loadPerCore(endpointIdValue);
   }
 
-  private describe(endpoint: MachaEndpoint, health: EndpointHealth): EndpointCandidate {
+  private describe(endpoint: MachaEndpoint, health: EndpointHealth, now: number): EndpointCandidate {
     const latencyMs = this.latencyMs(endpoint.id);
     const bytesPerSecond = this.bytesPerSecond(endpoint.id);
     const capacity = this.capacities.get(endpoint.id);
     return {
       endpoint,
       health,
+      ready: (health.retryAt ?? 0) <= now,
       ...(latencyMs !== undefined ? { latencyMs } : {}),
       ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
       ...(capacity ? { capacity: { ...capacity } } : {}),
@@ -686,9 +699,11 @@ export class EndpointRegistry {
   }
 
   snapshot(): EndpointCandidate[] {
+    const now = this.now();
     return this.endpoints.map((endpoint) => this.describe(
       endpoint,
       { ...(this.health.get(endpoint.id) ?? { consecutiveFailures: 0 }) },
+      now,
     ));
   }
 
