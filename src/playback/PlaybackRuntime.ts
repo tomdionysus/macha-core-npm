@@ -370,8 +370,9 @@ export class PlaybackRuntime {
     return this.play({ ...failedRequest }, initialPreferences);
   }
 
+  /** Forwarded verbatim; a player that does not do app volume simply has none. */
   setVolume(volume: number): void {
-    this.player.setVolume(volume);
+    this.player.setVolume?.(volume);
   }
 
   /**

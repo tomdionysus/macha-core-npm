@@ -38,6 +38,18 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 
 ---
 
+## Shipped on `develop` since `0.9.0`, not yet released
+
+All of it is built, so the four `file:`-linked clients see it now; none of it is tagged. Run the five gates before releasing. **702 tests in 61 files.**
+
+- **`hlsWalk.ts`** — both HLS walks absorbed over one shared target primitive, with the five client divergences resolved. See the audit item below for the two that were defects rather than differences.
+- **`EndpointHealthMonitor.probeNow()`** — the off-cycle probe. Coalesces with a cycle in flight; does not resurrect a stopped monitor.
+- **`PlaybackQueueStore` / `ContinueWatchingStore`** — reactive-safe. Two of the four the file named needed nothing; see that item.
+- **`MediaStallWatchdog`** — the timeline-discontinuity fix, the re-arm after `suspend()`, and the budget comment that overclaimed.
+- **`ArtworkRef` / `ArtworkSource` comments** — the artwork id is the cache key. See the artwork item; core ships nothing else there.
+
+---
+
 ## P1 — correctness
 
 **The order Tom set on 2026-09-13**, and the only thing in this file that is a sequencing instruction rather than a judgement: work the *Android TV audit* items first — the HLS preflight walk, then volume and mute, then the artwork source plan — and **then** the watchdog item below.
@@ -48,8 +60,12 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 
 The watchdog's first sub-item is a live defect on the Android TV client rather than a latent one, which is why it comes before the rest of P1 once the audit is done.
 
-### Watchdog blind spots on the platform it was written for
-**Waiting on:** core. `src/playback/MediaWatchdog.ts:324-352`, `:326-332`, `:226-233`.
+### ~~Watchdog blind spots on the platform it was written for~~ — all three shipped
+**Waiting on:** nobody. Shipped on `develop` 2026-09-13; kept here until released.
+
+The discontinuity fix turned out **not to be rewind-specific**: a forward seek landing short of the old high-water mark fails identically, so the test is "did the position or the buffered end move *backwards*", either of which means the timeline being measured no longer exists and ordinary playback can do neither. Both re-base the mark and count as progress in their own right, because a seek is not a stall. All three were confirmed red first.
+
+The original description follows, since the reasoning is what makes the tests readable. `src/playback/MediaWatchdog.ts`.
 
 1. **Backward seek defeats the baseline — take this one first.** `lastBufferedEndMs` is a running max, so after a backward seek buffer growth at the new position never counts as advancing and a healthy below-realtime transcode is evicted 7 s later, which is the eviction the class comment says it exists to avoid. **On Android TV the D-pad *is* the seek affordance** and `PlayerScreen.nudge()` commits a `runtime.seek` after every rewind burst, so it would condemn healthy nodes as ordinary viewing, not as an edge case. The observable would be a failover roughly 7 s after any rewind. Web and phone have scrubbers people touch rarely, which is what kept it invisible.
 
@@ -57,8 +73,12 @@ The watchdog's first sub-item is a live defect on the Android TV client rather t
 2. **No re-arm after `suspend()`.** `lastPositionMs` is kept and only `note()` re-arms, but `note()` returns early unless something advanced. Pause, node dies, resume: nothing advances, nothing arms, frozen forever. Only "paused is not stalled" is tested.
 3. **The +1 s margin comment overclaims.** It says the budget only has to outlast the hold, but the watchdog reads only `currentTime`/`buffered` and a `500` carries no bytes; hold + player retry delay + first byte exceeds 7 s. Either record the real relationship or say plainly that holds do trip it and that is accepted.
 
-### No way to ask for an off-cycle probe
-**Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts`. Small, and a client is working around it today.
+### ~~No way to ask for an off-cycle probe~~ — shipped
+**Waiting on:** the phone client to drop its `stop()`/`start()` workaround; it has been told. Shipped on `develop` 2026-09-13.
+
+Two decisions worth keeping: a cycle already in flight is **awaited rather than duplicated**, because two concurrent cycles would probe every endpoint twice and race each other's persist; and a **stopped monitor stays stopped**, because resurrecting a torn-down loop makes teardown conditional on nobody holding a reference. The re-base test was confirmed red against a version that left the pending timer in place.
+
+The original description follows. `src/cluster/EndpointHealthMonitor.ts`.
 
 A mobile client watching the radio knows the network came back well before the next 10 s cycle, and there is no way to say so. `stop()` then `start()` works and is safe — `stop()` aborts the controller and clears it, `start()` returns early only when a controller exists, and the in-flight cycle discards its results at the abort check — but it throws away a probe already in flight and restarts the interval from zero. The phone client is doing exactly that.
 
@@ -162,7 +182,9 @@ What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to
 ### The Android TV audit — all three decided on 2026-09-13
 **Waiting on:** core for the first two; the clients for the third. In the order to take them:
 
-1. **The HLS preflight walk — into core. Decided.** Tom's reasoning was the boundary rule applied plainly: if it is everywhere, it is core's. Duplicated in two clients today — `preflightWebHlsSource` in the web client (`macha-client/src/platform/WebPlatform.ts:71-144`), `src/player/preflight.ts` on Android TV. Manifest one variant deep, `Range: bytes=0-65535` each media target, require bytes. Core keeps the `Player.preflightSource` seam and additionally ships the walk, which a host calls.
+1. **~~The HLS preflight walk~~ — shipped as `hlsWalk.ts`, both walks.** Exported from the package root: `preflightHlsSource`, `probeHlsReadiness`, `hlsWalkTargets`, `resolveUrl`, plus `HLS_WALK_TIMEOUT_MS` and the parse helpers. **Two of the five divergences were defects, not differences** — the non-manifest answer (core ships the TV client's `true`; the web client's `false` was destroying promotable standbys), and a deadline of 5 s in *both* copies against a 6 s `SERVER_SEGMENT_HOLD_MS`, so a node producing its first fragment could never pass and a standby seconds from servable was destroyed as unreachable. The new constant asserts the inequality rather than a number, so it cannot drift back. Neither client deletes its copy until it has swapped and run its suite. The reasoning that got it here follows.
+
+   **The HLS preflight walk — into core. Decided.** Tom's reasoning was the boundary rule applied plainly: if it is everywhere, it is core's. Duplicated in two clients today — `preflightWebHlsSource` in the web client (`macha-client/src/platform/WebPlatform.ts:71-144`), `src/player/preflight.ts` on Android TV. Manifest one variant deep, `Range: bytes=0-65535` each media target, require bytes. Core keeps the `Player.preflightSource` seam and additionally ships the walk, which a host calls.
 
    **Take BOTH walks, over one shared target-extraction primitive — not preflight alone.** The web client's readiness walk (`WebPlatform.ts:146-215`: `probeFirstFragment`, `NATIVE_HLS_FIRST_FRAGMENT_TIMEOUT_MS`, `statedRetryMs`, `refusal`) is built on the *same* target extraction, differing mainly in `Range: bytes=0-0` and in treating `500 segment_not_ready` as a **hold with a `Retry-After`** rather than a failure. The Android TV client was told by Tom to build that walk there on 2026-09-13 — moving to `expo-video` lost `PlayerEngine.kt:450`'s same-node hold-aware retry and it now fails over spuriously under load — so a *fourth* copy is imminent. Taking preflight alone leaves the manifest walk half in core and half in two clients, and leaves the hold semantics duplicated. **The hold semantics are a protocol rule about what a node means by a 500, not presentation**, and core already documents them wrongly in one of the two places an author reads (see the `Platform.ts:13` inversion below) — duplicating them into a third tree is how that inversion spreads. The Android TV client has been told to build against core's seam rather than free-standing.
 
@@ -175,7 +197,11 @@ What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to
    - **Body-reader guard.** Android TV guards `!body?.getReader`, not just `!response.body`; RN can hand back a `body` that exists without a `getReader`, which the web check sails past and then throws. Both fall back to `arrayBuffer().byteLength > 0` — and on RN **that buffered path is the normal one, not the fallback**, which is worth saying in the comment because the web-shaped reading is that it is rare.
 
    Everything else is line-for-line the same shape: two-level descent, `#EXT-X-STREAM-INF` detection, `#EXT-X-MAP` URI extraction, first-non-tag-line playlist pick, dedupe, 5 s `AbortController`, `finally clearTimeout`. **Neither client deletes its copy until core's version has landed and the signature has been named to them.**
-2. **Volume and mute — explicit mute. Decided.** Tom, verbatim: "explicit mute please." `state/volume.ts` persists a bare clamped number and has no concept of mute, so each client decides what to write when a viewer mutes — and writing `0` is indistinguishable from turning the sound down, so the next launch comes up silent with nothing explaining why.
+2. **Volume and mute — REVERSED on the same day. Core ships nothing.** Tom first said "explicit mute please"; shown the proposed model, he reversed it: *"Don't second guess the client. If the user muted, or starts with zero volume, that's what you do. That's not core. In fact, why is this in core at all? It's player logic."* **So there is no mute concept in core and `state/volume.ts` is unchanged.** The Android TV client's `{effective, setting, muted}` model was right and stays in its tree.
+
+   He is also right about the boundary, and the code agrees more than the first reading did: `VolumeStore` is 27 lines that clamp a number and write it to storage, and `PlaybackRuntime.setVolume` forwards straight to the player **without ever reading the store** — the two were already disconnected. **Whether `VolumeStore` is deleted outright is open and Tom's**; it has one caller. Deleting it is a hard cut across four clients, so it waits on him rather than on the hard-cuts rule alone.
+
+   *Recorded as a process note: core proposed matching a client's model and told that client so before the decision was made. The client was told of the reversal.* The original reasoning, now superseded, was: `state/volume.ts` persists a bare clamped number and has no concept of mute, so each client decides what to write when a viewer mutes — and writing `0` is indistinguishable from turning the sound down, so the next launch comes up silent with nothing explaining why.
 
    **The Android TV client has already solved this and core is matching its model rather than inventing one** (`src/player/volume.ts`; it has never written `0`). Every one of these is a correctness rule about the store, not a preference:
 
@@ -231,8 +257,12 @@ There is a live report of exactly that — 5.1 playing into stereo with no downm
 
 If it becomes real work, the shape is roughly: a render-capability field on `PlaybackCapabilities`, and a channel target on the instruction — which needs the server to accept one, so it is a wire question too.
 
-### Four state stores are not safe for a reactive caller — fix all four
-**Waiting on:** core. **Tom decided on 2026-09-13: fix all four, and tell every client that they are fixed.** That second half is the point — a fixed shared function whose fix nobody announces grows a permanent copy in each client (see the register at the foot of this file).
+### ~~Four state stores are not safe for a reactive caller~~ — two fixed, two did not need it
+**Waiting on:** nobody. Shipped on `develop` 2026-09-13; all four clients told.
+
+**It was two, not four, and this file was wrong about the other two.** `PlaybackQueueStore` and `ContinueWatchingStore` now have `subscribe` and a stable `getSnapshot`, matching `PlaylistStore`; both identity tests were confirmed red. But **`VolumeStore` returns a number**, and a primitive is stable by value, so it had no identity problem — and Tom ruled the same day that volume behaviour is player logic that does not belong in core at all, so extending it would have built in the wrong direction. **`MusicPlaylistStore` is superseded** by `PlaylistStore`, which adopts its key on first read; giving a store that should be deleted a new reactive surface would entrench it. *Another instance of the file's own rule: two of four were asserted to disagree without both being read.*
+
+**The web client checked and found the real shape, which was not the predicted one.** It had never subscribed, so no memo was going stale — but `PlaybackQueueStore` **already has two consumers**, not the hypothetical future second one this file assumed: one owner holding `load()` in `useState`, and a music controller that calls `load()` then `insertNext`/`append` and hands the result back through a single `onQueueChange` callback. Correct today, held together by that one callback, asserted by no test. So **the queue is where a client's subscription work should start, not the playlist** — the playlist was the original evidence but is the case with one owner. Worth recording that the finding was reached only because the client was told to look, and that what it found was not what was predicted.
 
 `PlaylistStore` exposes `getSnapshot()` with a stable reference, as `useSyncExternalStore` requires. `playbackQueue`, `continueWatching`, `musicPlaylist` and `volume` return a fresh array or object on every call. Fine for imperative callers, wrong for reactive ones, and **all four clients are reactive**.
 

@@ -81,7 +81,21 @@ export interface Player {
    * exposing these ranges; seek() uses this same coordinate system.
    */
   localSeekCoverage(): readonly PlaybackTimeRange[];
-  setVolume(volume: number): void;
+  /**
+   * Set the output level, where the host owns app-level volume at all.
+   *
+   * **Optional, because on most platforms there is nothing here to own.** A
+   * television and a phone both put volume on the hardware and the OS; only a
+   * browser tab has an app-level level to set. Core's own three `Player`
+   * fakes all satisfy this with an empty body, which is the interface saying
+   * it is optional and not being believed.
+   *
+   * {@link Platform.initialVolume} is the related seam and the one that
+   * carries the genuinely cross-client fact: whether the host does app volume
+   * at all, and therefore whether a client should restore a remembered level
+   * or leave it to the device.
+   */
+  setVolume?(volume: number): void;
   /** Replace the subtitle resource without touching active A/V playback. */
   setSubtitle?(subtitleUrl?: string): Promise<void> | void;
   /** Add an equivalent Direct Play byte source without replacing active media. */
