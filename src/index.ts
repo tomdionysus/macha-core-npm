@@ -104,7 +104,6 @@ export * from './state/musicPlaylist.js';
 export * from './state/playlist.js';
 export * from './state/playbackQueue.js';
 export * from './state/storage.js';
-export * from './state/volume.js';
 
 // --------------------------------------------------------------- platform
 export * from './platform/Platform.js';
