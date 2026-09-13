@@ -12,14 +12,31 @@ export interface MachaHost {
   /** Survives an application restart. Configuration, client identity, resumable position. */
   storage: StorageLike;
   /**
-   * Lives only as long as one run of the application.
+   * Where a secret belongs on this platform, when the host has somewhere
+   * better than `storage`.
    *
-   * On the web this is `sessionStorage`: an anonymous session is meant to die
-   * with the tab. A native app has no tab, so its "run" is the process — a
-   * host that wants sessions to survive a relaunch must say so explicitly by
-   * passing persistent storage here, rather than inheriting it by accident.
+   * The session token is the only thing core puts here, and **every** session
+   * goes here — there is no disposable kind. A session is a session: the
+   * account it belongs to may have no password and may be the one an empty
+   * set of credentials authenticates, and none of that makes the bearer less
+   * worth protecting or less worth keeping.
+   *
+   * Optional because platforms genuinely differ, and core will not pretend
+   * otherwise: React Native reaches the Keychain and the Keystore through
+   * `expo-secure-store`; a Tizen widget has app-private storage and no
+   * hardware backing, which is its ceiling; a browser has nothing JavaScript
+   * can read that an injected script cannot. **Core cannot make a platform
+   * safer than it is — it can only use what the host offers.** A host that
+   * supplies nothing falls back to `storage`, which is exactly today's
+   * behaviour and is stated rather than implied.
+   *
+   * The browser's real answer is not a storage slot at all: it is an
+   * `httpOnly` cookie the server sets and JavaScript never touches. That is a
+   * property of transport rather than of storage, so it belongs on the fetch
+   * path and not here — a `StorageLike` contorted to express "no storage"
+   * could not say what it meant.
    */
-  ephemeralStorage: StorageLike;
+  secureStorage?: StorageLike;
   /**
    * Milliseconds from an arbitrary origin, for measuring durations only.
    *
@@ -95,7 +112,6 @@ export function defaultNow(): number {
 function detectHost(): MachaHost {
   return {
     storage: globalStorage('localStorage') ?? memoryStorage(),
-    ephemeralStorage: globalStorage('sessionStorage') ?? memoryStorage(),
     now: defaultNow,
     uuid: defaultUuid,
     origin: (globalThis as { location?: { origin?: string } }).location?.origin,

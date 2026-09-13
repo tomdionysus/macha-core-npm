@@ -226,9 +226,24 @@ export class MediaStartWatchdog {
  *
  * That is why this is now expressed against `SERVER_SEGMENT_HOLD_MS` rather
  * than written as a number. The relationship is the requirement; the figure is
- * a consequence. A second of margin is enough because the hold ends with a
- * response rather than with silence — this only has to outlast the wait, not
- * the round trip after it.
+ * a consequence.
+ *
+ * **The margin does not make a hold safe, and an earlier version of this
+ * comment claimed it did.** It argued that a second was enough because the
+ * hold ends with a response rather than with silence, so the budget only had
+ * to outlast the wait. That is wrong about what this watchdog can see. It
+ * reads `currentTime` and `buffered` and nothing else, and a `500` carries no
+ * bytes — so the response that ends the hold moves neither. What has to fit
+ * inside the budget is the hold *plus* the player's retry delay *plus* the
+ * first byte of the fragment that finally arrives, and that total exceeds
+ * seven seconds routinely.
+ *
+ * So: **a node that holds a fragment for its full timeout will trip this, and
+ * that is accepted.** It is the same trade the budget is built on — the
+ * viewer has been waiting six seconds and the client has somewhere better to
+ * be, whether or not the node deserves blame. Recorded plainly because the
+ * previous phrasing invited someone to shave the margin on the strength of an
+ * argument that was never true.
  */
 export const MEDIA_STALL_TIMEOUT_MS = SERVER_SEGMENT_HOLD_MS + 1_000;
 
@@ -273,6 +288,8 @@ export class MediaStallWatchdog {
   private stalled?: (detail: StallDetail) => void;
   private lastPositionMs?: number;
   private lastBufferedEndMs?: number;
+  /** Set by `suspend()`, cleared by the first `note()` after it. */
+  private suspended = false;
 
   constructor(
     environment: MediaWatchdogEnvironment,
@@ -324,14 +341,42 @@ export class MediaStallWatchdog {
   note(positionMs: number, bufferedEndMs?: number): void {
     if (!this.stalled) return;
     const first = this.lastPositionMs === undefined;
+
+    // A discontinuity: the timeline this was measuring against no longer
+    // exists. Either the position moved backwards, or the buffered end did —
+    // and ordinary playback can do neither. A seek is the ordinary cause, and
+    // on a D-pad it is the *only* seek affordance, so on a television this is
+    // routine viewing rather than an edge case.
+    const movedBack = !first && positionMs < this.lastPositionMs!;
+    const bufferRebuilt = bufferedEndMs !== undefined
+      && this.lastBufferedEndMs !== undefined
+      && bufferedEndMs < this.lastBufferedEndMs;
+    const discontinuity = movedBack || bufferRebuilt;
+    // Re-base rather than carry the old high-water mark forward. `advanced`
+    // compares the buffer against a running max, so without this the buffer
+    // growing at the new position never counts — it is still below where the
+    // buffer had reached before the seek — and a node busy refilling is called
+    // dead 7 s later. That is precisely the eviction of a healthy
+    // below-realtime transcode this class exists to avoid, arrived at from the
+    // other direction.
+    if (discontinuity) this.lastBufferedEndMs = undefined;
+
+    // Playback is running again after a deliberate pause. The countdown was
+    // disarmed and only advancement re-arms it, so without this a node that
+    // died during the pause leaves the picture frozen forever: nothing
+    // advances, so nothing arms, so nothing is ever judged.
+    const resumed = this.suspended && !first;
+    this.suspended = false;
+
     const advanced = !first
-      && (positionMs > this.lastPositionMs!
+      && (discontinuity
+        || positionMs > this.lastPositionMs!
         || (bufferedEndMs !== undefined && bufferedEndMs > (this.lastBufferedEndMs ?? 0)));
     this.lastPositionMs = positionMs;
     if (bufferedEndMs !== undefined) {
       this.lastBufferedEndMs = Math.max(bufferedEndMs, this.lastBufferedEndMs ?? 0);
     }
-    if (first || !advanced) {
+    if (first || !(advanced || resumed)) {
       // Nothing has ever moved: leave the start watchdog to it. Once something
       // has moved, a later report that has not moved is what the deadline is
       // measuring, so an already-running countdown is deliberately left alone.
@@ -348,8 +393,17 @@ export class MediaStallWatchdog {
     });
   }
 
-  /** Paused is not stalled: the viewer stopped it on purpose. */
+  /**
+   * Paused is not stalled: the viewer stopped it on purpose.
+   *
+   * The flag matters as much as the disarm. Only advancement re-arms the
+   * deadline, and a node that dies while paused produces none — so resuming
+   * onto a dead node would leave the picture frozen with nothing counting,
+   * which is the failure this whole class exists to prevent, reached through
+   * the one door that was left open.
+   */
   suspend(): void {
+    this.suspended = true;
     this.deadline.disarm();
   }
 
@@ -358,5 +412,6 @@ export class MediaStallWatchdog {
     this.stalled = undefined;
     this.lastPositionMs = undefined;
     this.lastBufferedEndMs = undefined;
+    this.suspended = false;
   }
 }

@@ -501,4 +501,119 @@ describe('EndpointHealthMonitor lifecycle', () => {
     monitor.stop();
     vi.useRealTimers();
   });
+
+  describe('asking for a probe off-cycle', () => {
+    // A mobile client watching the radio knows the network came back well
+    // before the next cycle is due, and the monitor cannot see a radio — that
+    // is a host fact. Clients were reaching for stop()/start(), which works
+    // but discards a probe already in flight and restarts the interval from
+    // zero.
+    const monitorWith = (fetchImpl: typeof fetch) => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+      const monitor = new EndpointHealthMonitor({
+        registry,
+        clusterStatusApi: fakeClusterStatusApi([]),
+        auth: fixedBearerToken(undefined, fetchImpl),
+        intervalMs: 10_000,
+      });
+      return { registry, monitor };
+    };
+
+    it('probes immediately instead of waiting out the interval', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const { monitor } = monitorWith(fetchImpl);
+
+      monitor.start();
+      await vi.waitFor(() => expect(calls()).toBe(1));
+
+      await monitor.probeNow();
+      expect(calls()).toBe(2);
+
+      monitor.stop();
+      vi.useRealTimers();
+    });
+
+    it('re-bases the interval from the off-cycle probe rather than leaving a short remainder', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const { monitor } = monitorWith(fetchImpl);
+
+      monitor.start();
+      await vi.waitFor(() => expect(calls()).toBe(1));
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(calls()).toBe(1);
+      await monitor.probeNow();
+      expect(calls()).toBe(2);
+
+      // The old schedule would have fired one second from here. A re-based
+      // interval does not.
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(calls()).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(calls()).toBe(3);
+
+      monitor.stop();
+      vi.useRealTimers();
+    });
+
+    it('keeps the loop alive, unlike the stop/start it replaces', async () => {
+      vi.useFakeTimers();
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const { monitor } = monitorWith(fetchImpl);
+
+      monitor.start();
+      await vi.waitFor(() => expect(calls()).toBe(1));
+      await monitor.probeNow();
+      expect(monitor.running).toBe(true);
+
+      monitor.stop();
+      vi.useRealTimers();
+    });
+
+    it('awaits a cycle already in flight rather than probing everything twice', async () => {
+      vi.useFakeTimers();
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fetchImpl = vi.fn(async () => {
+        await gate;
+        return new Response(null, { status: 200 });
+      }) as unknown as typeof fetch;
+      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const { monitor } = monitorWith(fetchImpl);
+
+      monitor.start();
+      await vi.waitFor(() => expect(calls()).toBe(1));
+
+      // Two concurrent cycles would probe every endpoint twice and race each
+      // other's persist. The honest answer to "probe now" while a probe is
+      // running is the one already being taken.
+      const first = monitor.probeNow();
+      const second = monitor.probeNow();
+      expect(second).toBe(first);
+      release?.();
+      await first;
+      expect(calls()).toBe(1);
+
+      monitor.stop();
+      vi.useRealTimers();
+    });
+
+    it('does not resurrect a monitor that was deliberately stopped', async () => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const { monitor } = monitorWith(fetchImpl);
+
+      // Otherwise teardown becomes conditional on nobody holding a reference,
+      // which is how a disposed client keeps polling.
+      await monitor.probeNow();
+      expect(calls()).toBe(0);
+      expect(monitor.running).toBe(false);
+    });
+  });
 });

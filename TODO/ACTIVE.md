@@ -6,6 +6,124 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ---
 
+## THE CURRENT PIECE OF WORK — one account model, no special anonymous
+
+**Decided by Tom on 2026-09-13. This is `0.10.0` and it is a hard cut.** Every client refactors against it; there are no aliases, shims or staged migrations (three in-house consumers, rebuild them).
+
+### STATUS: implemented on `develop`, NOT tagged — waiting on a client to go green
+
+**All six steps are built and committed.** Version bumped to `0.10.0`, `dist` rebuilt, **719 tests in 60 files**, all five gates pass. Every client has been sent a tailored refactor brief.
+
+**Do not tag until at least one client has swapped and run its suite.** That is not caution, it is the cheapest test available — the Android TV client found four real `hlsWalk` defects this morning purely by porting onto it, three of which came from the swap rather than from reading the code, and one would have destroyed every warm standby on that platform silently.
+
+**Two judgement calls made during implementation that went beyond the letter of this plan**, both easy to reverse if Tom disagrees:
+1. **`MachaHost.ephemeralStorage` was removed, not merely unused.** `SessionManager` was its only reader. Leaving a seam nothing reads would let a host set it expecting session behaviour and get none, which is worse than no seam.
+2. **`signOut()` throws when the revoke fails**, after clearing local state unconditionally. The plan said "forget, then revoke" without saying what a failed revoke does. Swallowing it would let a client show "signed out" while the token is still live cluster-wide.
+
+**Found during the rollout, before any client wrote a line of the port.** The phone client, scoping its migration against its own three-state gate (`unknown`/`granted`/`denied`), predicted the cold-start ordering would shift and that this is where a privileged viewer ends up on a login screen. It was right, and the defect was core's: **`settle()` ran at the top of `adopt()`, so the first notification a subscriber received carried `isReady === true` with no token and no roles** — momentarily indistinguishable from a session the cluster granted nothing. The window always existed; a *restored signed-in* session is what turned a harmless flicker into a signed-in administrator being shown a sign-in screen. Fixed, confirmed red first. **721 tests.**
+
+*Worth generalising: that bug was found by a client reading a brief and comparing it against the shape of its own state machine, not by running anything. Writing the brief was what surfaced it.*
+
+**One latent defect the clients must check for themselves.** The lossy cache meant a restored session lost its `username`. The phone client never saw it because it re-reads `currentSession` on every token change rather than trusting the cached record. **A client that trusted the cache was showing a signed-in viewer as anonymous after every restart.** `0.10.0` fixes it either way, but an affected client has user-visible behaviour about to silently correct itself and should know that rather than meet it as an unexplained change. Both remaining clients asked.
+
+**What is waiting:** client swaps; then tag.
+
+### The principle, in Tom's words
+
+> The anonymous account is special in exactly three places, all server-side: it can't be renamed or deleted, it has no password, and it can mint a session with no credentials if allow-anonymous is enabled. **In every other respect, and especially for core — which shouldn't enforce even those edge cases — it is just another account, with variable roles.**
+
+Core violated this in naming and, through the naming, in behaviour. The type is `AnonymousSession` and it is used for every session. `mintAnonymousSessionAnyNode(registry, credentials)` is a function called "mint anonymous" that takes a password. Everything below follows from that one wrong word: the cache drops `username`/`roles` on load (why keep them for anonymous?), storage is ephemeral for everything (an anonymous session's lifetime is the tab's), and a 401 re-mints and adopts whatever comes back without checking whose session it now holds (all sessions are anonymous, so who cares). **Four defects, one assumption.**
+
+The corrected model is *simpler*, not more elaborate: **one `Session`, one mint, one storage policy, one post-mint check — did the account change?** No `kind` field. No branch on the account name. A comparison.
+
+### What changes in core, in the order it lands
+
+**1. Rename. Hard cut.** `src/api/SessionAuth.ts`, `src/api/SessionManager.ts`; 71 references in core.
+- `AnonymousSession` → `Session`
+- `mintAnonymousSession` → `mintSession`; `mintAnonymousSessionAnyNode` → `mintSessionAnyNode`
+- `validateAnonymousSession` → `validateSession`; `validateAnonymousSessionAnyNode` → `validateSessionAnyNode`
+- `SessionManager`'s class comment ("Owns the client's anonymous session end to end") and every comment that says "anonymous" where it means "a session" — fix as they are met. `isSessionRefusal`'s comment references the old name.
+
+**2. The cache keeps the whole session.** `loadCachedSession` (`SessionManager.ts:313-323`) reconstructs `{ token, expiresAtMs }` and discards `username` and `roles` that `cacheSession` already wrote. Restore all of it. A restored session must be as informative as a freshly minted one, or core cannot do step 4.
+
+**3. One storage policy, through one optional host seam.**
+- `MachaHost` gains `secureStorage?: StorageLike`. **Every session goes there**, not only credentialed ones — a session is a session. Falls back to `storage` (persistent), **not** to `ephemeralStorage`. `SessionManager` stops reading `ephemeralStorage` entirely.
+- The key becomes **`macha.session.v1`**, joining the dotted convention. Renaming costs nothing here because the storage move already forces one fresh mint on every client; doing it later would cost a second one. Record the retirement of `macha-session` and the remaining hyphenated keys as the next candidates.
+- Consequence on web: sessions land in `localStorage` (was `sessionStorage`), so tabs share one and it survives a tab close. That is the model — a session is worth keeping — and the XSS exposure is unchanged *in kind*. The httpOnly-cookie path is a **separate, later** piece of work on the transport axis (`AuthenticatedFetch`, `credentials: 'include'`, core holding no bearer); it does not go through this seam and does not block this.
+- Consequence on Tizen: app-private storage is the ceiling; it supplies nothing and falls back. **Say so in the seam's comment** rather than implying parity — core cannot make a platform safer than it is, only use what the host offers.
+
+**4. The post-mint identity check — the general rule that replaces every special case.** After *any* re-obtained session — the 401 path in `fetch()`, the refresh timer, `mintNow` after a failure retry — **compare `username` before and after.** Same account → carry on silently (anonymous→anonymous included; nothing special about it). Different account → the session's identity changed; core records it and notifies, and the application decides what to show. Shape: `SessionManager.lastIdentityChange?: { from?: string; to?: string; at: number }`, cleared on the next `signIn`. **Core does not throw and does not guess at wording** — "your session ended", "your account changed", "you were signed out elsewhere" are all possible causes and the application knows its viewer. This is the fix for the silent administrator-to-anonymous downgrade, arrived at without a `kind` flag: tom→anonymous is a change, and that is all core needs to know.
+
+   Core still *attempts* the credential-less re-mint on a 401 for a non-anonymous session, deliberately: the only thing it can present is nothing, and a session for whatever account nothing authenticates to is better than no session — anonymous browsing is still allowed. If the cluster refuses, `lastMintFailure` already says so. The check makes the outcome visible; it does not prevent it.
+
+**5. `signOut()` is a server logout, and a fresh session is a separate call.** Per Tom's earlier ruling ("explicit server logout; then a separate call to get an anonymous token *if required*"). Today `signOut()` drops the token and **unconditionally** mints anonymous (`SessionManager.ts:234-244`). It becomes: `DELETE /api/v1/session` with the current token against any node (mutation semantics — once, not walked on refusal), then forget locally, then notify. **It does not mint.** The application calls `start(registry)` again when it wants a session, which bootstraps and mints with nothing. `UsersApi.logout()` stays for callers with no `SessionManager`, and its doc comment states the composition.
+
+**6. Discoverable keys.** Export the list of storage keys core owns (`MACHA_STORAGE_KEYS` or similar, with the two conventions named until they are one), so a host filtering its own namespace can be correct without grepping a dependency. This is the fix for the phone client's silently-lost-session defect, which was caused by core shipping two conventions and naming neither.
+
+### What does not change
+
+`sessionPermits`, `sessionLockedOut`, `hasRole` — already role-based, already right. `roles`, `lastMintFailure`, `isReady`, `subscribe`, `AuthenticatedFetch`. `SessionCredentials`. The `0.9.0` refusal-versus-unreachable distinction.
+
+### Nothing still Tom's — the refusal walk stays
+
+- **The refusal walk** (`SessionAuth.ts:158-180`) — **decided 2026-09-13: keep.** On a 403 during mint, with credentials core stops (replicated table, every node agrees); without credentials it tries the next node, because allow-anonymous is per-node and one stale node must not speak for the cluster (observed live by the Android TV client). It is keyed on "was a credential presented", not on the account name, and it is a cluster rule rather than an anonymous rule — but it is core reasoning about a server edge case. **Recommendation: keep it.** Tom to confirm.
+- ~~**`isSignedIn()` and `ANONYMOUS_USERNAME`**~~ — **decided, keep.** See *What the clients SHOULD special-case* below: it is the one display hint for "this session belongs to someone who chose to be someone", the users-screen special-casing is driven by the server's per-record `mutable` instead, and core enforces nothing.
+
+### What the clients SHOULD special-case — and what they should not
+
+**Tom, 2026-09-13:** the root and anonymous accounts *are* special in the UI, where it is obvious, and clients should treat them so. **There should be no option to rename or delete them; anonymous has no password and no change-password.** The web client already does this correctly and is the reference.
+
+**The rule is "render what the server says is mutable", not "know the account's name".** Every `MachaUser` carries `mutable: { rename, delete, set_password, set_roles, set_roles_blocked_by? }` (`UsersApi.ts:61-68`), stated per record by the server, which is the only party that knows which accounts are protected and why. A client that greys a control because `mutable.rename === false` is right for root, right for anonymous, and right for whatever the server protects next; a client that greys it because `username === 'anonymous'` is right today and wrong the first time the rule moves. `set_roles_blocked_by` exists precisely so the UI can say *why* — protected account versus last-manager rule — rather than greying for no stated reason.
+
+So:
+- **Users screen** (`manage_users` role): rename, delete and set-password controls follow `mutable` per row. Anonymous and root will arrive with `rename: false`, `delete: false`; anonymous with `set_password: false`. **Do not hard-code the names.** Do not hide the rows — a manager should see that the accounts exist and see them as protected.
+- **Account screen** (the signed-in user's own): a change-password control belongs to a session whose account has a password. `isSignedIn()` (`UsersApi.ts:244`) is the one core hint for this — it says "this session belongs to a person who chose to be someone" — and stays. It is the only place core compares against `ANONYMOUS_USERNAME`, it is a *display* hint, and its own comment already says the session itself is not special. **This closes the second open item above: keep it, as the hint it is.**
+- **Core enforces nothing.** It does not refuse a rename of root, does not strip a password change for anonymous, does not filter the list. A client that sends one gets the server's `403` with `reserved_user` / `reserved_username` (`MachaUsersApiError` codes, `MachaUsersApi.ts:21-29`), which is the correct source of the refusal. Core's job is to carry `mutable` and the error code faithfully, which it does.
+
+**Per client, against this:**
+- **Web** — reference implementation. Nothing to change here; re-check only that it reads `mutable` rather than the name, since either passes today.
+- **Phone** — has an account screen and a sign-in flow; verify change-password is gated on `isSignedIn()` and that no rename/delete UI exists for the protected rows if it has a users screen.
+- **Android TV** — likely no users screen yet. When one is built, build it from `mutable` from the start.
+- **Tizen** — the web client's build; inherits the reference behaviour.
+
+### Every client refactors. Notes per client.
+
+**All four:**
+- Import renames, if they import `AnonymousSession` or the mint/validate functions directly. Most go through `SessionManager` and are unaffected by the rename.
+- **A cold start is no longer an anonymous session.** Sessions persist and are validated on reload. Anything that assumes "app launched ⇒ nobody is signed in" is now wrong. Check onboarding, first-run, and any "sign in" prompt shown unconditionally at launch.
+- **Subscribe to `lastIdentityChange`** and decide what to show. The phone client re-reads `currentSession` on every notification so its marker self-corrects; it should now read the explicit signal instead of inferring from the marker moving. Web and both TVs have nothing here today and will silently downgrade an administrator until they add it.
+- **`signOut()` no longer mints.** Call `start(registry)` after it if the screen wants an anonymous session. A client that calls `signOut()` and then renders "signed out" while expecting to keep browsing will find itself with no token until it does.
+- **Playback must be stopped before `signIn` and `signOut`** — unchanged obligation, now stated on both doc comments. A session created under the old identity cannot be closed after the token changes and holds a transcode slot for `session_idle`.
+
+**Web client** (`macha-client`):
+- Supplies no `secureStorage`. Sessions move from `sessionStorage` to `localStorage`: **tabs now share a session** and a session survives closing the tab. Its `useSession` and anything keyed on tab lifetime should be reviewed. This is the intended behaviour.
+- `AccountMenu.signOut` (`src/components/AccountMenu.tsx:51-64`) calls `api.logout()` and never `sessionManager.signOut()`, so it carries a revoked token until a later 401. It becomes `sessionManager.signOut()` then `sessionManager.start(...)`. It has already agreed to land this *after* core states the composition, because today every logout fires the downgrade path by design.
+- The httpOnly-cookie question is **its** future work with the server, on the transport axis. Not this release.
+
+**Phone client** (`macha-client-rn`):
+- Supplies `expo-secure-store` as `secureStorage`. **The bearer is in AsyncStorage plaintext today** — readable on a rooted device or in a backup — and this is the change that fixes it.
+- Its AsyncStorage hydration filter (fixed 2026-09-13 to accept both `macha.` and `macha-`) keeps working; after the key rename the session is under `macha.session.v1` and the hyphenated branch becomes dead code it can drop when the last hyphenated key is retired.
+- Drop the `stop()`/`start()` probe workaround for `probeNow()` (already told; unrelated but same refactor pass).
+
+**Android TV client** (`macha-client-androidtv`):
+- Supplies a Keystore-backed store as `secureStorage` (`expo-secure-store` runs on Android TV). If it cannot, it supplies nothing and falls back to app-private storage — say so in its own notes rather than assume.
+- Has no identity-change handling today. On a D-pad UI with no console, a silent downgrade is the worst possible failure shape: sections vanish, nothing explains why. This is the client most in need of step 4.
+
+**Tizen** (the web client's Samsung build):
+- Supplies nothing. App-private storage, no hardware backing. Document the ceiling; do not pretend parity.
+
+**Server** (`macha-server`): nothing required. Worth asking for: a `code` on the 401 that distinguishes *expired* from *invalidated by `credential_generation`* from *revoked*, so core can pass a cause through `lastIdentityChange` rather than only the fact. Not blocking.
+
+### Sequencing
+
+One release. Steps 1–6 are one model change and splitting them would ship an intermediate model nobody wants. Land on `develop`, name the surface to all four clients, **let at least one swap and run its suite before tagging** (see the rule under *Start here*: a client porting onto a seam is the cheapest fuzzer for it). Then `0.10.0`.
+
+### Superseded by this plan
+
+The items further down titled *Persisting a sign-in*, *Session manager state gaps* (sub-items 1–3 and the 401 downgrade), *Two clients disagree about what logout means*, and *Core ships two storage-key conventions* are all absorbed here. They are left in place for their reasoning and marked as superseded; do not work them separately.
+
+---
+
 ## Start here if you are new to this
 
 **Where things stand.** `0.9.0` is the current version, bumped on `develop` and **not yet merged to `main` or tagged** — that is the first thing to do if you are picking this up. Work happens on `develop`; a release is an annotated bare-semver tag (`0.9.0`, never `v0.9.0`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`.
@@ -21,6 +139,8 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
 
 **Two clients do not use `PlaybackCoordinator` at all.** The phone client calls `ClusterPlaybackResolver.failover` directly and never prepares an alternate. So a fix landed in the coordinator reaches three clients of four, and a defect on the coordinator path does not reach the phone. **Check which layer a client actually uses before telling it a fix matters to it.**
+
+**How to find out you are wrong, cheaply: ship a seam to a client before releasing it.** On 2026-09-13 the Android TV client swapped onto core's new `hlsWalk` and ran its existing suite against it, and **three of its four findings came from the swap rather than from reading the code** — including one that would have destroyed every warm standby on that platform silently. The `blob()` defect surfaced only because that client's test doubles were shaped around `arrayBuffer()`, which its deleted implementation had used. *A client porting onto shared code is a cheap fuzzer for the assumptions in it*, and it works because the seam is on `develop` where a `file:` link picks it up, not behind a release. Do this deliberately: land the seam, name it to the client, let it swap, and fix what the swap finds before tagging.
 
 **How to be wrong here, in the three ways this project keeps finding.** Each has cost real time:
 
@@ -38,6 +158,18 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 
 ---
 
+## Shipped on `develop` since `0.9.0`, not yet released
+
+All of it is built, so the four `file:`-linked clients see it now; none of it is tagged. Run the five gates before releasing. **702 tests in 61 files.**
+
+- **`hlsWalk.ts`** — both HLS walks absorbed over one shared target primitive, with the five client divergences resolved. See the audit item below for the two that were defects rather than differences.
+- **`EndpointHealthMonitor.probeNow()`** — the off-cycle probe. Coalesces with a cycle in flight; does not resurrect a stopped monitor.
+- **`PlaybackQueueStore` / `ContinueWatchingStore`** — reactive-safe. Two of the four the file named needed nothing; see that item.
+- **`MediaStallWatchdog`** — the timeline-discontinuity fix, the re-arm after `suspend()`, and the budget comment that overclaimed.
+- **`ArtworkRef` / `ArtworkSource` comments** — the artwork id is the cache key. See the artwork item; core ships nothing else there.
+
+---
+
 ## P1 — correctness
 
 **The order Tom set on 2026-09-13**, and the only thing in this file that is a sequencing instruction rather than a judgement: work the *Android TV audit* items first — the HLS preflight walk, then volume and mute, then the artwork source plan — and **then** the watchdog item below.
@@ -48,8 +180,12 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 
 The watchdog's first sub-item is a live defect on the Android TV client rather than a latent one, which is why it comes before the rest of P1 once the audit is done.
 
-### Watchdog blind spots on the platform it was written for
-**Waiting on:** core. `src/playback/MediaWatchdog.ts:324-352`, `:326-332`, `:226-233`.
+### ~~Watchdog blind spots on the platform it was written for~~ — all three shipped
+**Waiting on:** nobody. Shipped on `develop` 2026-09-13; kept here until released.
+
+The discontinuity fix turned out **not to be rewind-specific**: a forward seek landing short of the old high-water mark fails identically, so the test is "did the position or the buffered end move *backwards*", either of which means the timeline being measured no longer exists and ordinary playback can do neither. Both re-base the mark and count as progress in their own right, because a seek is not a stall. All three were confirmed red first.
+
+The original description follows, since the reasoning is what makes the tests readable. `src/playback/MediaWatchdog.ts`.
 
 1. **Backward seek defeats the baseline — take this one first.** `lastBufferedEndMs` is a running max, so after a backward seek buffer growth at the new position never counts as advancing and a healthy below-realtime transcode is evicted 7 s later, which is the eviction the class comment says it exists to avoid. **On Android TV the D-pad *is* the seek affordance** and `PlayerScreen.nudge()` commits a `runtime.seek` after every rewind burst, so it would condemn healthy nodes as ordinary viewing, not as an edge case. The observable would be a failover roughly 7 s after any rewind. Web and phone have scrubbers people touch rarely, which is what kept it invisible.
 
@@ -57,8 +193,12 @@ The watchdog's first sub-item is a live defect on the Android TV client rather t
 2. **No re-arm after `suspend()`.** `lastPositionMs` is kept and only `note()` re-arms, but `note()` returns early unless something advanced. Pause, node dies, resume: nothing advances, nothing arms, frozen forever. Only "paused is not stalled" is tested.
 3. **The +1 s margin comment overclaims.** It says the budget only has to outlast the hold, but the watchdog reads only `currentTime`/`buffered` and a `500` carries no bytes; hold + player retry delay + first byte exceeds 7 s. Either record the real relationship or say plainly that holds do trip it and that is accepted.
 
-### No way to ask for an off-cycle probe
-**Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts`. Small, and a client is working around it today.
+### ~~No way to ask for an off-cycle probe~~ — shipped
+**Waiting on:** the phone client to drop its `stop()`/`start()` workaround; it has been told. Shipped on `develop` 2026-09-13.
+
+Two decisions worth keeping: a cycle already in flight is **awaited rather than duplicated**, because two concurrent cycles would probe every endpoint twice and race each other's persist; and a **stopped monitor stays stopped**, because resurrecting a torn-down loop makes teardown conditional on nobody holding a reference. The re-base test was confirmed red against a version that left the pending timer in place.
+
+The original description follows. `src/cluster/EndpointHealthMonitor.ts`.
 
 A mobile client watching the radio knows the network came back well before the next 10 s cycle, and there is no way to say so. `stop()` then `start()` works and is safe — `stop()` aborts the controller and clears it, `start()` returns early only when a controller exists, and the in-flight cycle discards its results at the abort check — but it throws away a probe already in flight and restarts the interval from zero. The phone client is doing exactly that.
 
@@ -92,7 +232,38 @@ What *does* need doing is the doc comment above it, which currently states as fa
 
 It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` says 503 is a broken generation and terminal, and `:54` maps 503 with 404 to `stream`. **Not merely inconsistent — inverted.** An author following the public seam makes both mistakes at once and in opposite directions: retrying the terminal status, and condemning the node on the benign one. Both shipped adapters are already right (`PlayerEngine.kt:450` retries 500), so this is a trap for the next author rather than a live defect. Fix the comment, not the docs: `docs/writing-a-player.md` is already correct and is what people actually read.
 
+### Persisting a sign-in — the cache is lossy in the field that decides everything
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
+**Waiting on:** Tom, on the scheme. Raised by the phone client 2026-09-13, relaying a requirement from Tom that **signing in be permanent until logout across all four clients**. *That requirement reached core second-hand; confirm it before changing how a bearer is stored.*
+
+**The finding, and it is core's:** `cacheSession` serialises the whole `AnonymousSession`, but `loadCachedSession` (`SessionManager.ts:313-323`) reconstructs only `{ token, expiresAtMs }` — `username` and `roles` are parsed and discarded. **A restored session is structurally indistinguishable from an anonymous one**, so after a reload core cannot tell it was ever signed in.
+
+That one gap explains three items this file has been treating separately:
+1. **Sign-in does not survive a restart.** `signIn` (`:219-222`) caches into `this.storage`, which is `machaHost().ephemeralStorage` — `sessionStorage` on web. A credentialed session dies with the tab *by construction*.
+2. **The silent anonymous downgrade** in the item below. Core answers a 401 by re-minting, and a re-mint without credentials is an anonymous mint; it cannot do better while it does not know the session was credentialed.
+3. **The storage-tier question.** "Anonymous is disposable, credentialed is worth keeping" is unanswerable while core cannot tell them apart at the point of persistence.
+
+**Core's position, given to the phone client:**
+- **First, and needing no new seam: the session must know what kind it is.** Record the kind in the cached record, route persistence by kind, restore it on load. Entirely internal, and **every candidate scheme needs it**, so it lands first regardless of what Tom picks — and it unblocks the 401 fix at the same time.
+- **Then `secureStorage?: StorageLike`**, optional, credentialed-only, falling back to `storage`. The host names its own safe place (Keychain/Keystore via `expo-secure-store`) rather than core guessing; a host supplying nothing keeps today's behaviour. *The phone client stores the bearer in AsyncStorage plaintext today — readable on a rooted device or in a backup.*
+- **Not the callback alternative**, for now: it still hands the host a token, so it does not solve the web case that partly motivates it, and it makes the common case harder — three clients wanting a safer slot would each write a store.
+- **The web httpOnly-cookie answer is a different axis and must not be forced through `StorageLike`.** A cookie means core holds no bearer at all, which is transport and auth (`AuthenticatedFetch`, the `Authorization` header, `send()`), not storage. A storage seam contorted to express "no storage" cannot say what it means. If web goes cookie-based the shape is a mode where core holds no token plus `credentials: 'include'`; **separate work, must not block this.** Put to the server session by the phone client.
+- **Tizen has no hardware backing** — app-private storage only. Document that core cannot make a platform safer than it is, only use what the host offers, rather than implying parity.
+
+### Core ships two storage-key conventions and documents neither
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
+**Waiting on:** core for the doc/export; Tom for any rename.
+
+Audited 2026-09-13, every literal in the package:
+- **`macha-` hyphenated:** `macha-session`, `macha-client-id`, `macha-server-url`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-server-endpoints-v1`, `macha-probe`, `macha-storage-probe`
+- **`macha.` dotted:** `macha.continueWatching.v1.*`, `macha.playbackQueue.v1.*`, `macha.playlists.v1.*`, `macha.musicPlaylist.v1.*`, `macha.volume.v1.*`
+
+**This cost the phone client a real defect.** It namespaces its own keys `macha.` and hydrated AsyncStorage with a `startsWith('macha.')` filter — which matches one of core's two conventions exactly and misses the other, **including the session**. The token was written faithfully on every launch and never read back. Nothing errored and nothing logged, because an anonymous session re-mints in milliseconds; the only symptom was *a person* being signed out on every cold start, which nobody notices until an account matters. **Not a careless filter — a foreseeable consequence of core shipping two conventions and naming neither.**
+
+Fix now: **make core's owned keys discoverable** — documented and exported — so a host filtering its own namespace can be correct without grepping a dependency. **Do not rename yet:** `macha-session` is the key whose rename signs out every user on every client simultaneously, so it belongs with the storage scheme above and its migration, not ahead of it.
+
 ### Session manager state gaps, and the roles work landing on them
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** core. `src/api/SessionManager.ts`. **Take these three together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
 
 1. `authorization()` hands out the dead token during a reactive re-mint, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
@@ -108,6 +279,7 @@ The phone client has covered the *display* half — it re-reads `currentSession`
 **`0.9.0` supplies the parts this needs but does not do it.** `SessionManager.roles` now tracks what the session may do and clears when the token goes, and `lastMintFailure` distinguishes a refusal from an outage — so the remaining work is the *decision* the session has to make: remember whether it was authenticated, keep re-minting invisibly for an anonymous 401, and stop and surface the end of the session for an authenticated one. The server session confirmed a 401 from `GET /api/v1/session` can mean the account changed underneath the token rather than expiry, so a client must not tell a viewer their session timed out.
 
 ### Two clients disagree about what logout means — decided
+**SUPERSEDED — absorbed into the plan at the top of this file. Kept for its reasoning; do not work separately.**
 **Waiting on:** core. `src/api/UsersApi.ts:128-135` (`logout`), `src/api/SessionManager.ts:148-166` (`signOut`).
 
 **Tom decided on 2026-09-13:** if you know you have revoked a token, you should not be using it at all. So logout is an *explicit server logout*, and obtaining an anonymous token afterwards is a **separate call, made only if one is actually required**. The phone client's composition is the correct one; the web client is wrong, has confirmed it (`AccountMenu.signOut` calls `api.logout()` and never `sessionManager.signOut()`), and will change. State it on the `UsersApi.logout` and `SessionManager.signOut` doc comments — the only place all four clients read. The conditional half is the part a client will otherwise get wrong: the web client's instinct was to always re-mint.
@@ -162,7 +334,9 @@ What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to
 ### The Android TV audit — all three decided on 2026-09-13
 **Waiting on:** core for the first two; the clients for the third. In the order to take them:
 
-1. **The HLS preflight walk — into core. Decided.** Tom's reasoning was the boundary rule applied plainly: if it is everywhere, it is core's. Duplicated in two clients today — `preflightWebHlsSource` in the web client (`macha-client/src/platform/WebPlatform.ts:71-144`), `src/player/preflight.ts` on Android TV. Manifest one variant deep, `Range: bytes=0-65535` each media target, require bytes. Core keeps the `Player.preflightSource` seam and additionally ships the walk, which a host calls.
+1. **~~The HLS preflight walk~~ — shipped as `hlsWalk.ts`, both walks.** Exported from the package root: `preflightHlsSource`, `probeHlsReadiness`, `hlsWalkTargets`, `resolveUrl`, plus `HLS_WALK_TIMEOUT_MS` and the parse helpers. **Two of the five divergences were defects, not differences** — the non-manifest answer (core ships the TV client's `true`; the web client's `false` was destroying promotable standbys), and a deadline of 5 s in *both* copies against a 6 s `SERVER_SEGMENT_HOLD_MS`, so a node producing its first fragment could never pass and a standby seconds from servable was destroyed as unreachable. The new constant asserts the inequality rather than a number, so it cannot drift back. Neither client deletes its copy until it has swapped and run its suite. The reasoning that got it here follows.
+
+   **The HLS preflight walk — into core. Decided.** Tom's reasoning was the boundary rule applied plainly: if it is everywhere, it is core's. Duplicated in two clients today — `preflightWebHlsSource` in the web client (`macha-client/src/platform/WebPlatform.ts:71-144`), `src/player/preflight.ts` on Android TV. Manifest one variant deep, `Range: bytes=0-65535` each media target, require bytes. Core keeps the `Player.preflightSource` seam and additionally ships the walk, which a host calls.
 
    **Take BOTH walks, over one shared target-extraction primitive — not preflight alone.** The web client's readiness walk (`WebPlatform.ts:146-215`: `probeFirstFragment`, `NATIVE_HLS_FIRST_FRAGMENT_TIMEOUT_MS`, `statedRetryMs`, `refusal`) is built on the *same* target extraction, differing mainly in `Range: bytes=0-0` and in treating `500 segment_not_ready` as a **hold with a `Retry-After`** rather than a failure. The Android TV client was told by Tom to build that walk there on 2026-09-13 — moving to `expo-video` lost `PlayerEngine.kt:450`'s same-node hold-aware retry and it now fails over spuriously under load — so a *fourth* copy is imminent. Taking preflight alone leaves the manifest walk half in core and half in two clients, and leaves the hold semantics duplicated. **The hold semantics are a protocol rule about what a node means by a 500, not presentation**, and core already documents them wrongly in one of the two places an author reads (see the `Platform.ts:13` inversion below) — duplicating them into a third tree is how that inversion spreads. The Android TV client has been told to build against core's seam rather than free-standing.
 
@@ -175,7 +349,17 @@ What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to
    - **Body-reader guard.** Android TV guards `!body?.getReader`, not just `!response.body`; RN can hand back a `body` that exists without a `getReader`, which the web check sails past and then throws. Both fall back to `arrayBuffer().byteLength > 0` — and on RN **that buffered path is the normal one, not the fallback**, which is worth saying in the comment because the web-shaped reading is that it is rare.
 
    Everything else is line-for-line the same shape: two-level descent, `#EXT-X-STREAM-INF` detection, `#EXT-X-MAP` URI extraction, first-non-tag-line playlist pick, dedupe, 5 s `AbortController`, `finally clearTimeout`. **Neither client deletes its copy until core's version has landed and the signature has been named to them.**
-2. **Volume and mute — explicit mute. Decided.** Tom, verbatim: "explicit mute please." `state/volume.ts` persists a bare clamped number and has no concept of mute, so each client decides what to write when a viewer mutes — and writing `0` is indistinguishable from turning the sound down, so the next launch comes up silent with nothing explaining why.
+2. **Volume and mute — REVERSED on the same day. Core ships nothing.** Tom first said "explicit mute please"; shown the proposed model, he reversed it: *"Don't second guess the client. If the user muted, or starts with zero volume, that's what you do. That's not core. In fact, why is this in core at all? It's player logic."* **So there is no mute concept in core and `state/volume.ts` is unchanged.** The Android TV client's `{effective, setting, muted}` model was right and stays in its tree.
+
+   He is also right about the boundary, and the code agrees more than the first reading did: `VolumeStore` is 27 lines that clamp a number and write it to storage, and `PlaybackRuntime.setVolume` forwards straight to the player **without ever reading the store** — the two were already disconnected. **Whether `VolumeStore` is deleted outright is open and Tom's**; it has one caller. Deleting it is a hard cut across four clients, so it waits on him rather than on the hard-cuts rule alone.
+
+   **What followed, and it goes further than the mute question.** The web client audited everything volume-shaped in core and found four things of unequal merit:
+   - **`VolumeStore` — MOVE OUT, one copy per client. Two consumers, confirmed. Waiting only on Tom.** Verified: **zero consumers inside this package**, only its own file and test — so core genuinely has no stake. **Exactly two consumers outside**: the web client (`App.tsx:263`), and the Android TV client, which wired it *on 2026-09-13* (`MachaProvider.tsx:95`, `hooks/usePlayerVolume.ts`). **The phone client is not a third** — confirmed with corroborating evidence rather than a bare absence: it imports neither `VolumeStore` nor `setVolume`, and its `PlaybackProvider` holds a constant `intendedVolumeRef` whose comment states the client offers no in-app volume control because a phone has hardware buttons and a system slider. So: **web and Android TV, one local copy each**, which is what the per-client `macha.volume.v1.<clientId>` key shape implied from the start. Sequence: both clients take their copy, *then* core deletes — no build breaks at any point. The first report said "the only consumer in the world"; that was wrong, and the grep behind it was probably *right when it ran* — the second consumer appeared the same day. **When the consumer is a separate repo with its own session, ask the session; do not grep the tree.** No amount of care with the search would have helped. The phone client has not answered, so a third consumer is still possible. And it cannot be universal by core's own evidence — `SamsungWebPlatform.initialVolume()` returns 1 with a comment saying the television owns volume and a stale persisted value must not be inherited; a phone is the same. So it is a browser-page preference living in a package whose whole claim is that it assumes no browser. **Waiting on Tom** (a cross-client hard cut) and on the two RN clients confirming they do not import it. Sequence agreed with the web client: it takes a local copy *first*, then core deletes, so the code never exists nowhere.
+   - **`Player.setVolume` — made optional. Shipped 2026-09-13, with a doc comment corrected hours later.** The change stands; the *reason* first published for it did not. It is optional because **whether a host has an app-level volume is platform-specific** — a Tizen widget has none and leaves it to the set, an Android TV player on Media3 has a real one independent of the television's own output stage — **not** because no host implements it. The first comment claimed televisions and phones leave volume to the hardware so only a browser has an app-level level: that is one television (Samsung, where `initialVolume()` returning 1 is correct) generalised into all televisions. It also argued from core's three `Player` fakes implementing the member emptily. **A fake implementing something emptily says nothing about what real hosts need** — a shipped adapter implements this for real, setting the level *and* remembering it, because a warm standby is primed at `0` and must come up audible when promoted. That inference is now *warned against* in the comment rather than quietly removed: two people found it convincing enough to publish, which is the definition of something needing a note.
+   - **`PlaybackRuntime.setVolume`** — a one-line passthrough that exists only to carry the above. Goes with the store, if the store goes.
+   - **`Platform.initialVolume?()` — keep.** It is the one that earns its place: *whether the host owns audio at all* is a genuine cross-client fact, and it already expresses the only part of volume that varies by platform. It is also what makes the other three unnecessary.
+
+   *Recorded as a process note: core proposed matching a client's model and told that client so before the decision was made. The client was told of the reversal.* The original reasoning, now superseded, was: `state/volume.ts` persists a bare clamped number and has no concept of mute, so each client decides what to write when a viewer mutes — and writing `0` is indistinguishable from turning the sound down, so the next launch comes up silent with nothing explaining why.
 
    **The Android TV client has already solved this and core is matching its model rather than inventing one** (`src/player/volume.ts`; it has never written `0`). Every one of these is a correctness rule about the store, not a preference:
 
@@ -205,7 +389,16 @@ The web client's countermeasure, all in `src/components/LazyArtwork.tsx`: a modu
 
 **Two clients independently built the same hack with the same two holes** (module-scoped, so unbounded within a session and empty across a restart). Android TV adds four more, all verified on its tree: a whole class of artwork **cannot be displayed there at all** — refs with no `url` and every source with `requiresAuthorization` are dropped, because a native `Image` cannot carry a header and there is no `URL.createObjectURL` for the web client's Blob fallback, so they render as a letter placeholder; `Image.onError` **carries no HTTP status**, so "expired signature" and "this node refused" are indistinguishable; the node walk is **one-way and never recovers** (`index` only increments, no retry or backoff, so a wifi blip blanks a poster for the life of the mount — the web client's `artworkRetry` is not ported); and memory/disk behaviour on the panel is **unmeasured**, with no instrumentation and nothing ever having played on that set.
 
-**The blocking questions, and they are the server's.** All five are asked:
+**Answered by the server on 2026-09-13, and core ships nothing.** The whole item resolves to one server change plus both clients keying on a hash they already had:
+
+- **The stable identity already exists.** `ArtworkRef.id` **is** the SHA-256 of the artwork bytes — content-addressed, identical on every node, identical across every re-sign, and already on the wire. Core's own `MachaMediaApi` has been caching Blobs on it all along. Both clients had the key and neither could see it, because nothing said so. **Fixed: the comments on `ArtworkRef` and `ArtworkSource` now say it.** No new API.
+- **Header-free URLs are already guaranteed**, and the Android TV report that a class of artwork is unrenderable cannot be caused by the `requiresAuthorization` drop: `artworkUrls` emits the signed capability, then that capability re-hosted onto every node, all header-free, before any authenticated URL. The residue is refs arriving with no `url` at all. Client asked to re-check; **treat "a whole class cannot be displayed" as unverified.**
+- **`Cache-Control` was never the problem** — already `public, max-age=86400, immutable`, tied to the capability TTL. No `ETag` on that route, deliberately.
+- **The re-sign is the bug and is the server's.** `exp` was computed per call at millisecond granularity, so there was **no window in which the URL was stable** — no bucket length for anyone to hunt for. Fixed server-side in `0.40.0` (built, tested, **not deployed**): `exp` rounds up to the bucket *after* next, so a URL is byte-identical within a bucket and still carries 24–48 h of validity rather than dying in a client's hand; identity across the separately-signing list and item routes is pinned by test.
+- **Core predicted the wrong consequence and was corrected.** I said the expired-capability path would fire *more* often under bucketing. It fires *less*: `exp` is never nearer than a full TTL at signing, and it is the *stability* window the bucket bounds, not *validity*. The case that does fire — a payload held across a boundary in persisted state — is already covered by `MachaMediaApi.test.ts`'s "re-hosts an expired capability nowhere", which does not depend on why `exp` passed.
+- **One symptom remains unexplained, and must not be quietly counted as fixed.** Tom's "waiting a minute or two and they all load from scratch" was **never** the bucket expiring, because there was no bucket. Its cause is unmeasured. The web client is taking one poster across a reload and across a minute. **Take it before `0.40.0` deploys** — afterwards the URL churn stops and, if the cause is a remount, the symptom becomes invisible while remaining real.
+
+The original questions, now all answered:
 1. What `Cache-Control` does a node actually send on an artwork response? If it is not long-lived and `immutable`, no client-side scheme saves this.
 2. Is the per-fetch re-signing necessary at all?
 3. **Is `exp` bucketed, or does the same id signed twice differ within one second?** The web client's question, and it may explain Tom's complaint better than the re-sign story alone: a coarse bucket gives a cache key that is stable for a while and then churns — which is exactly "cached ones are just less slow, and after a minute or two they all load from scratch again". The bucket length would then be the number that matters.
@@ -231,8 +424,12 @@ There is a live report of exactly that — 5.1 playing into stereo with no downm
 
 If it becomes real work, the shape is roughly: a render-capability field on `PlaybackCapabilities`, and a channel target on the instruction — which needs the server to accept one, so it is a wire question too.
 
-### Four state stores are not safe for a reactive caller — fix all four
-**Waiting on:** core. **Tom decided on 2026-09-13: fix all four, and tell every client that they are fixed.** That second half is the point — a fixed shared function whose fix nobody announces grows a permanent copy in each client (see the register at the foot of this file).
+### ~~Four state stores are not safe for a reactive caller~~ — two fixed, two did not need it
+**Waiting on:** nobody. Shipped on `develop` 2026-09-13; all four clients told.
+
+**It was two, not four, and this file was wrong about the other two.** `PlaybackQueueStore` and `ContinueWatchingStore` now have `subscribe` and a stable `getSnapshot`, matching `PlaylistStore`; both identity tests were confirmed red. (`ContinueWatchingStore` **currently** has one consumer rather than being safe — the same accident of who happens to read it that the queue enjoyed until a second controller arrived.) But **`VolumeStore` returns a number**, and a primitive is stable by value, so it had no identity problem — and Tom ruled the same day that volume behaviour is player logic that does not belong in core at all, so extending it would have built in the wrong direction. **`MusicPlaylistStore` is superseded** by `PlaylistStore`, which adopts its key on first read; giving a store that should be deleted a new reactive surface would entrench it. *Another instance of the file's own rule: two of four were asserted to disagree without both being read.*
+
+**The web client checked and found the real shape, which was not the predicted one.** It had never subscribed, so no memo was going stale — but `PlaybackQueueStore` **already has two consumers**, not the hypothetical future second one this file assumed: one owner holding `load()` in `useState`, and a music controller that calls `load()` then `insertNext`/`append` and hands the result back through a single `onQueueChange` callback. Correct today, held together by that one callback, asserted by no test. So **the queue is where a client's subscription work should start, not the playlist** — the playlist was the original evidence but is the case with one owner. Worth recording that the finding was reached only because the client was told to look, and that what it found was not what was predicted.
 
 `PlaylistStore` exposes `getSnapshot()` with a stable reference, as `useSyncExternalStore` requires. `playbackQueue`, `continueWatching`, `musicPlaylist` and `volume` return a fresh array or object on every call. Fine for imperative callers, wrong for reactive ones, and **all four clients are reactive**.
 

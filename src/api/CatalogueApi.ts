@@ -127,6 +127,20 @@ export interface CatalogueMediaProfile {
  */
 export interface ArtworkSource {
   url: string;
+  /**
+   * Whether a bearer token must accompany this URL.
+   *
+   * **A caller that cannot set headers is not thereby short of sources.** An
+   * image loader — `<img src>`, a native `Image` — can use every entry marked
+   * `false`, and `MachaMediaApi.artworkUrls` emits the signed capability
+   * first, then that same capability re-hosted onto every known node, all
+   * header-free, before any authenticated URL. So dropping every `true` entry
+   * still leaves a capability plus one usable entry per node to fail over
+   * between. A client that finds itself with nothing to render after that drop
+   * has a ref that arrived with no `url` at all, which is a different problem
+   * and a much smaller one — do not reach for a blob-to-file path before
+   * checking which it is.
+   */
   requiresAuthorization: boolean;
 }
 
@@ -145,6 +159,13 @@ export interface CatalogueApi {
    * A list because artwork is content-addressed: any node holding it will do,
    * so a node that fails to serve one image should not cost the viewer the
    * image. A caller walks the list on a decode or transport failure.
+   *
+   * **Every URL here is transport for one set of bytes, and none of them
+   * identifies those bytes.** The identity is the artwork id — the SHA-256 of
+   * the content — which is what this is keyed by and what a caller should key
+   * its own caching on. Walking to the next entry changes where the bytes come
+   * from and never what they are, and a re-signed capability is the same image
+   * at a different string.
    *
    * Synchronous, and the primitive `artwork()` is built on: a URL can always
    * be fetched into a `Blob`, while a `Blob` cannot be handed to an image

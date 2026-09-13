@@ -35,6 +35,12 @@ export {
   normalizeUrls,
   type MachaClientConfigurationOptions,
 } from './runtime/configuration.js';
+export {
+  MACHA_STORAGE_KEYS,
+  MACHA_STORAGE_KEY_PREFIXES,
+  MACHA_STORAGE_PROBE_KEY,
+  isMachaStorageKey,
+} from './runtime/storageKeys.js';
 
 // ------------------------------------------------------------------ model
 export * from './types.js';
@@ -80,6 +86,7 @@ export * from './playback/BufferedTimeline.js';
 export * from './playback/formatDuration.js';
 export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
+export * from './playback/hlsWalk.js';
 export * from './playback/MachaPlaybackResolver.js';
 export * from './playback/MediaTechnicalProfile.js';
 export * from './playback/MediaWatchdog.js';

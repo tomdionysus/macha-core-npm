@@ -286,6 +286,8 @@ export interface EndpointHealthMonitorOptions {
 export class EndpointHealthMonitor {
   private controller?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
+  private inFlight?: Promise<void>;
+  private cycleToken = 0;
   private readonly auth: AuthenticatedFetch;
   private readonly intervalMs: number;
 
@@ -309,9 +311,52 @@ export class EndpointHealthMonitor {
     this.controller = undefined;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
+    this.inFlight = undefined;
   }
 
-  private async cycle(controller: AbortController): Promise<void> {
+  /**
+   * Run a cycle now, and re-base the interval from it.
+   *
+   * **The monitor cannot see the one event that most justifies a probe.** A
+   * radio coming back is a host fact — no timer here can observe it — and it
+   * is simultaneously the moment the cluster's state is most likely to have
+   * changed and the viewer most likely to be waiting. Waiting out the
+   * remainder of a ten second cycle is a real cost, not a tidy-up. The seam is
+   * right and only the trigger was missing, which is why this is a method
+   * rather than the monitor growing a subscription of its own.
+   *
+   * Clients were achieving this with `stop()` then `start()`. That is safe,
+   * but it aborts a probe already in flight and restarts the interval from
+   * zero — it throws away the answer it was about to get in order to ask the
+   * question again.
+   *
+   * **A cycle already running is awaited rather than duplicated.** Two
+   * concurrent cycles would probe every endpoint twice and race each other's
+   * `persistConfirmedEndpoints`, so the honest answer to "probe now" while a
+   * probe is in progress is the one already being taken.
+   *
+   * **A stopped monitor stays stopped.** Resurrecting a loop that was
+   * deliberately torn down would make teardown conditional on nobody holding a
+   * reference, which is how a disposed client keeps polling. Call `start()`.
+   */
+  probeNow(): Promise<void> {
+    const controller = this.controller;
+    if (!controller) return Promise.resolve();
+    if (this.inFlight) return this.inFlight;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = undefined;
+    return this.cycle(controller);
+  }
+
+  private cycle(controller: AbortController): Promise<void> {
+    const token = ++this.cycleToken;
+    const settle = () => { if (this.cycleToken === token) this.inFlight = undefined; };
+    const run = this.runCycle(controller).then(settle, (error: unknown) => { settle(); throw error; });
+    this.inFlight = run;
+    return run;
+  }
+
+  private async runCycle(controller: AbortController): Promise<void> {
     const { registry, clusterStatusApi, configuration } = this.options;
     await discoverClusterEndpoints(registry, clusterStatusApi);
     if (controller.signal.aborted) return;
@@ -321,6 +366,10 @@ export class EndpointHealthMonitor {
       if (reachable > 0) reportClusterReachable(); else reportClusterUnreachable();
     }
     if (configuration) persistConfirmedEndpoints(registry, configuration);
+    // Scheduling here rather than in `cycle` is what re-bases the interval: an
+    // off-cycle probe clears the pending timer and this sets the next one from
+    // the moment this probe finished, so `probeNow()` does not leave a short
+    // remainder behind it.
     this.timer = setTimeout(() => void this.cycle(controller), this.intervalMs);
   }
 }

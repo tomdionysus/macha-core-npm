@@ -1,13 +1,20 @@
 import { machaHost } from '../runtime/host.js';
 import type { StorageLike } from '../state/storage.js';
-import { isSessionRefusal, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode, type AnonymousSession, type SessionCredentials } from './SessionAuth.js';
+import { isSessionRefusal, mintSessionAnyNode, revokeSessionAnyNode, SessionAuthError, validateSessionAnyNode, type Session, type SessionCredentials } from './SessionAuth.js';
 import type { CurrentSession, UserRole } from './UsersApi.js';
 import { mergeRequestHeaders } from './httpCompat.js';
 import { reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
-/** sessionStorage (not localStorage): scoped to this tab, and gone with it — matching an anonymous session's own lifetime. */
-const SESSION_CACHE_KEY = 'macha-session';
+/**
+ * Where the session is cached. Dotted, joining the convention the state stores
+ * already use; the hyphenated `macha-session` it replaces is retired.
+ *
+ * Renaming is free exactly once, and this is the release: moving the session
+ * out of tab-lifetime storage already forces one fresh mint everywhere, so the
+ * key change costs nothing on top of it. Doing it later would cost a second.
+ */
+const SESSION_CACHE_KEY = 'macha.session.v1';
 const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
 /** No sliding renewal in v1: re-mint shortly before the server-declared expiry rather than waiting to be 401'd. */
 const REFRESH_SAFETY_MARGIN_MS = 30_000;
@@ -125,6 +132,20 @@ function describeMintFailure(error: unknown): SessionMintFailure {
   };
 }
 
+/**
+ * A session that now belongs to a different account than it did.
+ *
+ * `from`/`to` are usernames as the server stated them, and either may be
+ * absent where a node did not say. The application decides what this means to
+ * a viewer; see {@link SessionManager.lastIdentityChange}.
+ */
+export interface SessionIdentityChange {
+  from?: string;
+  to?: string;
+  /** `Date.now()` at the moment the new session was adopted — an absolute instant, not `machaHost().now()`. */
+  at: number;
+}
+
 export class SessionManager implements AuthenticatedFetch {
   private token: string | undefined;
   private ready = false;
@@ -150,11 +171,16 @@ export class SessionManager implements AuthenticatedFetch {
    * somewhere nothing ever reads back.
    */
   private get storage(): StorageLike | undefined {
-    return this.storageOverride ?? machaHost().ephemeralStorage;
+    const host = machaHost();
+    return this.storageOverride ?? host.secureStorage ?? host.storage;
   }
 
   private mintFailure?: SessionMintFailure;
   private sessionRoles?: UserRole[];
+  private sessionUsername?: string;
+  /** Whether a session has ever been adopted, so the first is an arrival rather than a change. */
+  private adopted = false;
+  private identityChange?: SessionIdentityChange;
 
   get isReady(): boolean {
     return this.ready;
@@ -192,6 +218,41 @@ export class SessionManager implements AuthenticatedFetch {
     return this.mintFailure;
   }
 
+  /**
+   * The last time the session stopped belonging to the account it belonged to
+   * before, or `undefined` if that has not happened since the last `signIn()`.
+   *
+   * **This is the whole of core's answer to "was the viewer signed out?", and
+   * it is a comparison rather than a special case.** A 401 is answered by
+   * re-minting, and a re-mint presenting no credentials gets a session for
+   * whatever account an empty set of credentials authenticates. That is the
+   * right thing to attempt — it is the only thing core can present, and
+   * browsing anonymously beats no session at all — but it means an
+   * administrator whose roles changed underneath them, or whose password was
+   * changed elsewhere, silently becomes somebody else. Sections vanish, writes
+   * start failing, and nothing says why: an auth event wearing the costume of
+   * a UI bug.
+   *
+   * Core records the change and says nothing about what it means. *Why* the
+   * identity moved — an expiry, a revoke, a `credential_generation` bump from
+   * a role change, someone signing out on another device — is not something a
+   * 401 distinguishes, and "your session timed out" is the wrong sentence for
+   * most of those. The application knows its viewer; it decides the wording
+   * and whether to interrupt.
+   *
+   * **Anonymous is not special here either.** Signed-in-to-anonymous is a
+   * change and is reported; anonymous-to-anonymous is not a change and is
+   * silent. Both fall out of comparing the name rather than testing it.
+   *
+   * A node too old to state `username` cannot support this, and core will not
+   * invent it: with nothing to compare, no change is reported. Said plainly
+   * rather than approximated, because a false "you were signed out" is worse
+   * than a missing one.
+   */
+  get lastIdentityChange(): SessionIdentityChange | undefined {
+    return this.identityChange;
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -218,21 +279,60 @@ export class SessionManager implements AuthenticatedFetch {
    */
   async signIn(credentials: SessionCredentials): Promise<void> {
     if (!this.registry) throw new Error('Cannot sign in before the session lifecycle has started.');
-    const session = await mintAnonymousSessionAnyNode(this.registry, credentials);
+    const session = await mintSessionAnyNode(this.registry, credentials);
     this.cacheSession(session);
     this.adopt(session);
+    // Deliberate, so not a change to report: the viewer just asked for this
+    // identity. Cleared *after* `adopt`, which would otherwise record the very
+    // transition the viewer performed and hand the application a "you were
+    // signed out" to show someone who has just signed in.
+    this.identityChange = undefined;
   }
 
   /**
-   * Drop this session and take an anonymous one.
+   * End this session, server-side and locally. **Does not mint a replacement.**
    *
-   * Revoking the old token server-side is the caller's to do before calling
-   * this, because a revoke is a request that can fail and this cannot: once
-   * the viewer has asked to be signed out, ending up still signed in is the
-   * one outcome that must not happen.
+   * This used to drop the token and immediately mint an anonymous one, which
+   * made two decisions look like one. They are separate, and the composition
+   * is now the caller's: sign out, then `start(registry)` again if and when a
+   * session is wanted. A screen that signs the viewer out on the way to a
+   * login form does not need a session in between, and minting one it never
+   * uses costs a round trip and takes a slot on a node.
+   *
+   * Revoking is done here rather than left to the caller, because forgetting a
+   * token is not signing out: the session stays valid on every node until it
+   * expires and anyone holding it keeps the access. The two halves are ordered
+   * so they cannot conflict — **local state is cleared first and
+   * unconditionally**, since once the viewer has asked to be signed out,
+   * ending up still signed in is the one outcome that must not happen; then
+   * the revoke runs and **its failure is not swallowed**. A caller that shows
+   * "signed out" needs to be able to learn that the session is still live
+   * somewhere.
+   *
+   * Playback must be stopped before calling this. Nothing connects a playback
+   * session to an identity, and once the token changes a session created under
+   * the old one can no longer be closed — the node then holds its transcode
+   * entitlement until `session_idle`, thirty minutes, and on a one-slot node
+   * the next viewer gets `429 resource_limit` with nothing pointing at the
+   * client that caused it.
+   *
+   * @throws SessionAuthError if the cluster could not be told. Local state is
+   * cleared regardless.
    */
   async signOut(): Promise<void> {
+    const token = this.token;
+    const registry = this.registry;
+    // Local state first, unconditionally. The viewer has asked to be signed
+    // out, and ending up still signed in is the one outcome that must not
+    // happen — so nothing below is allowed to leave a token behind, however
+    // it fails.
     this.token = undefined;
+    this.sessionRoles = undefined;
+    this.sessionUsername = undefined;
+    this.adopted = false;
+    this.identityChange = undefined;
+    if (this.refreshTimer !== undefined) clearTimeout(this.refreshTimer);
+    this.refreshTimer = undefined;
     try {
       this.storage?.removeItem(SESSION_CACHE_KEY);
     } catch {
@@ -240,7 +340,15 @@ export class SessionManager implements AuthenticatedFetch {
       // already gone, and a stale cached one is rejected on the next reload.
     }
     this.notify();
-    if (this.registry) await this.mintNow(this.registry);
+    // Then the part that actually ends it. Dropping the token locally leaves
+    // the session valid on every node until it expires, and anyone holding
+    // that token keeps the access — so a "sign out" that only forgets is a
+    // sign-out in name only.
+    //
+    // The error is not swallowed. A failed revoke means the session is still
+    // live somewhere, and a caller that shows "signed out" on the strength of
+    // this call needs to be able to say otherwise.
+    if (token && registry) await revokeSessionAnyNode(registry, token);
   }
 
   /** Halts the lifecycle (pending timers, in-flight tracking) without clearing the current token. */
@@ -310,19 +418,30 @@ export class SessionManager implements AuthenticatedFetch {
     for (const listener of this.listeners) listener();
   }
 
-  private loadCachedSession(): AnonymousSession | undefined {
+  private loadCachedSession(): Session | undefined {
     const raw = this.storage?.getItem(SESSION_CACHE_KEY);
     if (!raw) return undefined;
     try {
-      const parsed = JSON.parse(raw) as Partial<AnonymousSession>;
+      const parsed = JSON.parse(raw) as Partial<Session>;
       if (typeof parsed.token !== 'string' || typeof parsed.expiresAtMs !== 'number') return undefined;
-      return { token: parsed.token, expiresAtMs: parsed.expiresAtMs };
+      // The whole record, not just the credential. `cacheSession` has always
+      // written `username` and `roles`; this used to parse them and throw them
+      // away, which made a restored session structurally indistinguishable
+      // from a freshly minted anonymous one — so after a reload core could not
+      // tell it had ever been signed in, and the identity check below had
+      // nothing to compare against.
+      return {
+        token: parsed.token,
+        expiresAtMs: parsed.expiresAtMs,
+        ...(typeof parsed.username === 'string' ? { username: parsed.username } : {}),
+        ...(Array.isArray(parsed.roles) ? { roles: parsed.roles.filter((role): role is UserRole => typeof role === 'string') } : {}),
+      };
     } catch {
       return undefined;
     }
   }
 
-  private cacheSession(session: AnonymousSession): void {
+  private cacheSession(session: Session): void {
     try {
       this.storage?.setItem(SESSION_CACHE_KEY, JSON.stringify(session));
     } catch {
@@ -331,16 +450,40 @@ export class SessionManager implements AuthenticatedFetch {
     }
   }
 
-  private adopt(session: AnonymousSession): void {
-    this.settle();
-    if (this.cancelled) return;
+  private adopt(session: Session): void {
+    // Ready is published *with* the session, never ahead of it.
+    //
+    // `settle()` used to run here, at the top, so the first notification a
+    // subscriber received carried `isReady === true` with no token and no
+    // roles — momentarily indistinguishable from a session the cluster
+    // granted nothing. A three-state gate reading unknown / granted / denied
+    // sees that window as a refusal, which is how a privileged viewer lands on
+    // a login screen. The window always existed; a restored signed-in session
+    // is what makes it matter rather than merely exist.
+    if (this.cancelled) {
+      this.settle();
+      return;
+    }
     this.token = session.token;
     this.mintFailure = undefined;
+    // Compared only when the node actually named an account. A node too old to
+    // state `username` says nothing about who this is, which is not evidence
+    // that the account changed — the same reasoning as the roles line below,
+    // and the direction that avoids inventing a sign-out nobody performed.
+    if (session.username !== undefined) {
+      if (this.adopted && this.sessionUsername !== session.username) {
+        this.identityChange = { from: this.sessionUsername, to: session.username, at: Date.now() };
+      }
+      this.sessionUsername = session.username;
+    }
+    this.adopted = true;
     // Left alone when the node did not state them: a token that arrived with
     // no roles attached says nothing about the roles, and overwriting a known
     // answer with `undefined` would turn a session granted nothing back into
     // a session permitted everything.
     if (session.roles !== undefined) this.sessionRoles = session.roles;
+    this.settled = true;
+    this.ready = true;
     this.notify();
     reportClusterReachable();
     this.scheduleRefresh(session.expiresAtMs);
@@ -367,7 +510,7 @@ export class SessionManager implements AuthenticatedFetch {
       if (cached && cached.expiresAtMs > Date.now()) {
         let record: CurrentSession | undefined;
         try {
-          record = await validateAnonymousSessionAnyNode(registry, cached.token);
+          record = await validateSessionAnyNode(registry, cached.token);
         } catch {
           record = undefined;
         }
@@ -387,7 +530,7 @@ export class SessionManager implements AuthenticatedFetch {
 
   private async mintNow(registry: EndpointRegistry): Promise<void> {
     try {
-      const session = await mintAnonymousSessionAnyNode(registry);
+      const session = await mintSessionAnyNode(registry);
       this.cacheSession(session);
       this.adopt(session);
     } catch (error) {

@@ -81,7 +81,32 @@ export interface Player {
    * exposing these ranges; seek() uses this same coordinate system.
    */
   localSeekCoverage(): readonly PlaybackTimeRange[];
-  setVolume(volume: number): void;
+  /**
+   * Set the output level, where the host has an app-level volume at all.
+   *
+   * **Optional because whether a host has one is platform-specific — not
+   * because none do.** A Tizen widget has no meaningful per-app level and
+   * leaves it to the set; an Android TV player built on Media3 exposes a real
+   * per-player volume that is genuinely independent of the television's own
+   * output stage, so the remote's volume keys drive the set while the app's
+   * 0–1 rides underneath. Both are real hosts and they need opposite things,
+   * which is what makes this skippable rather than required.
+   *
+   * *Do not argue from the fakes.* An earlier version of this comment cited
+   * core's three `Player` fakes all implementing it with an empty body as
+   * evidence the member was unnecessary. A fake implementing something
+   * emptily says nothing about whether real hosts need it, and at least one
+   * shipped adapter implements this for real — setting the active player's
+   * level and remembering it, because a warm standby is primed at `0` so it
+   * cannot be heard behind the active source and must come up at the real
+   * level when promoted.
+   *
+   * {@link Platform.initialVolume} is the related seam and the one that
+   * carries the genuinely cross-client fact: whether the host does app volume
+   * at all, and therefore whether a client should restore a remembered level
+   * or leave it to the device.
+   */
+  setVolume?(volume: number): void;
   /** Replace the subtitle resource without touching active A/V playback. */
   setSubtitle?(subtitleUrl?: string): Promise<void> | void;
   /** Add an equivalent Direct Play byte source without replacing active media. */

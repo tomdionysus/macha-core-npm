@@ -37,10 +37,41 @@ export function progressFor(media: MediaSummary, positionMs: number, durationMs:
 }
 
 export class ContinueWatchingStore {
+  private readonly listeners = new Set<() => void>();
+  /**
+   * The list handed to reactive callers, held so its identity is stable
+   * between mutations.
+   *
+   * Without this, `list()` filters, sorts and slices a fresh array on every
+   * call. A hook that subscribes and then reads memoises on the store — whose
+   * identity never changes — so the row freezes at whatever it first computed
+   * while the store underneath goes on changing. Code that looks correct,
+   * producing a list that silently stops updating.
+   */
+  private cached?: PlaybackProgress[];
+
   constructor(
     private readonly clientId: string,
     private readonly storage: StorageLike = machaHost().storage,
   ) {}
+
+  /** Stable between mutations, as `useSyncExternalStore` requires. */
+  getSnapshot = (): PlaybackProgress[] => {
+    this.cached ??= this.list();
+    return this.cached;
+  };
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  private changed(): void {
+    this.cached = undefined;
+    for (const listener of this.listeners) listener();
+  }
 
   list(): PlaybackProgress[] {
     return this.read()
@@ -96,6 +127,7 @@ export class ContinueWatchingStore {
   clearAll(): void {
     this.storage.removeItem(this.key());
     this.storage.removeItem(`${LEGACY_PREFIX}${this.clientId}`);
+    this.changed();
   }
 
   private key(): string {
@@ -127,6 +159,7 @@ export class ContinueWatchingStore {
 
   private write(entries: PlaybackProgress[]): void {
     this.storage.setItem(this.key(), JSON.stringify(entries));
+    this.changed();
   }
 }
 
