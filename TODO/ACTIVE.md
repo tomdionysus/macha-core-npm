@@ -47,11 +47,6 @@ Resolve together with the role-gating item below. The tests here exercise only 2
 
 ## P1 — correctness
 
-### The exclusion set never ages
-**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:108`, `:127`, `:342-345`, `:272`.
-
-`failedGenerationEndpoints` resets only on `resolve()`. Two nodes, two-hour film: A blips at minute 10, B at minute 90, candidates empty, bare `Error('No untried Macha playback endpoint remains.')`, terminal — while A has been probed healthy for 80 minutes. Fix: when exclusion empties the list, fall back to registry-ordered candidates whose cooldown has expired, or drop an id on `recordSuccess`/`recordProbeSuccess`.
-
 ### Watchdog blind spots on the platform it was written for
 **Waiting on:** core. `src/playback/MediaWatchdog.ts:324-352`, `:326-332`, `:226-233`.
 

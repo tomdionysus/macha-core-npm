@@ -150,19 +150,53 @@ describe('ClusterPlaybackResolver', () => {
     expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health).not.toBe('unreachable');
   });
 
-  it('recreates a failed generation on an untried node and then exhausts candidates', async () => {
+  it('retries a node excluded earlier rather than going terminal while it sits healthy', async () => {
+    // The exclusion set only grows — `resolve()` clears it and nothing else —
+    // so on a long item it eventually names every node. Two nodes and a
+    // two-hour film: A blips at minute ten, B at minute ninety, and the
+    // viewer got a bare "No untried Macha playback endpoint remains" while A
+    // had been probed healthy for eighty minutes. It exists to stop one
+    // recovery walking back onto a node another recovery gave up on, not to
+    // retire that node for the rest of the film.
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-c')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     vi.stubGlobal('fetch', withSessionCloses(fetchMock));
     const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
     const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
     expect(second.endpoint?.id).toBe('http://b');
+
+    const third = await resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' });
+
+    // A again — and not B, which is the one endpoint that must never be
+    // chosen here, because it is the one being failed away from this second.
+    expect(third.endpoint?.id).toBe('http://a');
+    expect(admissionCalls(fetchMock).map(([url]) => url.split('?')[0])).toEqual([
+      'http://a/api/v1/playback/sessions',
+      'http://b/api/v1/playback/sessions',
+      'http://a/api/v1/playback/sessions',
+    ]);
+  });
+
+  it('reports the endpoint that actually failed when the relaxed retry fails too', async () => {
+    // The bare "no untried endpoint remains" said nothing about why. Once the
+    // exclusion relaxes there is always an endpoint left to try, so what
+    // reaches the viewer is the real failure of a real node.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockRejectedValue(new TypeError('node A unreachable'));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+
+    const first = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const second = await resolver.failover(first, media, capabilities, 21_000, { mode: 'direct' });
+
     await expect(resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' }))
-      .rejects.toThrow('No untried Macha playback endpoint remains');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+      .rejects.toThrow('http://a');
   });
 
   it('continues failover after one surviving node cannot open the media', async () => {

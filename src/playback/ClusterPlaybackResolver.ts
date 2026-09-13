@@ -203,10 +203,44 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       capabilities,
       seekMs,
       withServedSegmentContainer(preferences, failedSession),
-      this.failedGenerationEndpoints,
+      this.failoverExclusion(failedSession),
       true,
       this.generationAttemptTimeoutMs,
     );
+  }
+
+  /**
+   * Which endpoints this failover may not use.
+   *
+   * Normally every endpoint that has failed during this playback, so one
+   * recovery does not walk back onto a node another recovery already gave up
+   * on. But that set only ever grows — it is cleared by `resolve()` and
+   * nothing else — so on a long item it eventually names every node. Two
+   * nodes and a two-hour film: A blips at minute ten, B at minute ninety, the
+   * candidate list is empty, and the viewer gets a bare "No untried Macha
+   * playback endpoint remains" while A has been probed healthy for eighty
+   * minutes.
+   *
+   * When it would leave nothing, it collapses to the one endpoint that must
+   * never be chosen — the one being failed away from this second. Everything
+   * else has had a cooldown, and probably a successful probe, since it last
+   * misbehaved; the registry's own ordering decides between them and already
+   * puts anything out of cooldown ahead of anything still in it.
+   *
+   * Not relaxed for standby preparation, which excludes the endpoint
+   * currently in service: relaxing there would prepare a rescue on the node
+   * the rescue exists to escape.
+   */
+  private failoverExclusion(failedSession: PlaybackSession): ReadonlySet<string> {
+    if (this.registry.candidates(this.failedGenerationEndpoints).length > 0) {
+      return this.failedGenerationEndpoints;
+    }
+    const current = new Set(failedSession.endpoint ? [failedSession.endpoint.id] : []);
+    this.log.warn('generation-exclusion-relaxed', {
+      excluded: [...this.failedGenerationEndpoints],
+      stillExcluded: [...current],
+    });
+    return current;
   }
 
   /**
