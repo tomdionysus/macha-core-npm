@@ -1,4 +1,4 @@
-import { mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
@@ -51,16 +51,23 @@ function refusedCredentials(error: unknown): boolean {
  */
 export async function mintAnonymousSession(baseUrl: string, credentials?: SessionCredentials): Promise<AnonymousSession> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
+  // Bounded here, because nothing above can bound it. Every request in the
+  // application waits on a mint — `SessionManager.fetch` blocks on `inFlight`
+  // through bootstrap and through a 401 re-mint — and a `fetchWithTimeout`
+  // wrapped around one of those callers composes a controller this request
+  // never sees. Unbounded, a node that died without an RST leaves a half-open
+  // connection that costs the OS timeout, and a cold start pays that per
+  // candidate while the whole client waits.
+  const response = await fetchWithTimeout(
+    (target, init) => fetch(target, init),
+    url,
+    {
       method: 'POST',
       headers: mergeRequestHeaders(undefined, { Accept: 'application/json', 'Content-Type': 'application/json' }),
       body: JSON.stringify(credentials ? { credentials } : {}),
-    });
-  } catch {
-    throw serverUnreachable();
-  }
+    },
+    DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   const { body, wasJson } = await readResponseBody(response);
   if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
   const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
@@ -121,9 +128,12 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
  */
 export async function validateAnonymousSession(baseUrl: string, token: string): Promise<boolean> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/catalogue/status`;
-  const response = await fetch(url, {
-    headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }),
-  });
+  const response = await fetchWithTimeout(
+    (target, init) => fetch(target, init),
+    url,
+    { headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }) },
+    DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   // A reachable node that rejects the token is a definitive, cluster-wide
   // answer (sessions are valid cluster-wide, so a rejection is not
   // node-specific) — no point asking another node the same question.

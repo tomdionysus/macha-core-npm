@@ -24,6 +24,14 @@ It is milliseconds. Settled from the server source — `unix_ms()` is a `duratio
 
 ---
 
+## Unreleased
+
+**Session minting has a deadline.** `mintAnonymousSession` and `validateAnonymousSession` called bare `fetch` with no signal, and they are the one path the whole application waits on: `SessionManager.fetch` holds every request on `inFlight` through bootstrap and through a 401 re-mint. Nothing above could impose the deadline either — a `fetchWithTimeout` wrapped around one of those callers composes a controller the mint never sees — so a node that died without an RST left a half-open socket that cost the OS timeout, per candidate, with the client frozen behind it. Both now go through `fetchWithTimeout` at `DEFAULT_REQUEST_TIMEOUT_MS`, which makes that constant's doc claim true for the first time; it now names this path, because a mint is not part of the layer the comment described.
+
+Three tests, all confirmed red first — and red in the shape that matters: against the old source they do not fail, they hang until the harness kills them. A mint into a black hole now ends as a `MachaConnectionError` at the deadline, the any-node walk reaches the second node and charges the first with a failure, and the warm-reload validation gives up on the same deadline instead of becoming the slowest thing in a reload.
+
+---
+
 ## 0.8.1 — the first tests on the accounts work
 
 **`signIn` has coverage.** The three users modules shipped in 0.8.0 with no test file at all. This is the first of it, on the credential path: that credentials go out on the same route as an anonymous mint and the username the server names is kept, that a refused password does **not** mark the node unhealthy and does not walk to the next node, and that a node which cannot answer at all still walks.

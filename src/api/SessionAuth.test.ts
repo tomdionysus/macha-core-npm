@@ -1,6 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mintAnonymousSession, mintAnonymousSessionAnyNode, SessionAuthError, validateAnonymousSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
+import { MachaConnectionError } from './serverConnection.js';
+
+/**
+ * A node that accepted the connection and then said nothing — the half-open
+ * socket a machine that died without an RST leaves behind. It answers the
+ * abort and nothing else, which is what a real fetch() does.
+ */
+function blackHoled() {
+  return (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+  });
+}
 
 function sessionResponse(overrides: Record<string, unknown> = {}) {
   return {
@@ -77,6 +90,59 @@ describe('validating a session the cluster no longer accepts', () => {
 
     await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBe(false);
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
+  });
+});
+
+describe('a node that accepts the connection and never answers', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('gives up on a mint at the request deadline rather than waiting on the OS', async () => {
+    // Nothing above this can impose the deadline: the callers that wait on a
+    // mint are waiting on `SessionManager.inFlight`, and a fetchWithTimeout
+    // wrapped around one of them holds a controller this request never sees.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(blackHoled()));
+
+    const request = mintAnonymousSession('http://node.test');
+    const assertion = expect(request).rejects.toBeInstanceOf(MachaConnectionError);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+    await assertion;
+  });
+
+  it('walks to the next node instead of stranding the whole client on the first', async () => {
+    // The cost of the missing deadline was never one slow request: every
+    // fetch() in the application queues behind the bootstrap mint, so an
+    // unbounded first candidate froze the client for an OS timeout per node.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(blackHoled())
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    const request = mintAnonymousSessionAnyNode(registry);
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+
+    await expect(request).resolves.toMatchObject({ token: 'token-secret' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // A node that never answered is a node fault, unlike a refusal.
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a.test')?.health.consecutiveFailures)
+      .toBeGreaterThan(0);
+  });
+
+  it('gives up on validating a cached token on the same deadline', async () => {
+    // The warm-reload path. Un-deadlined it turned the cheap alternative to
+    // minting into the slowest thing in a reload.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(blackHoled()));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+
+    const request = validateAnonymousSessionAnyNode(registry, 'cached');
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+
+    await expect(request).resolves.toBe(false);
   });
 });
 

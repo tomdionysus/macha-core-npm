@@ -10,7 +10,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Where things stand.** Released `0.8.1`, tagged on `main`. Work happens on `develop`; a release is an annotated bare-semver tag (`0.8.1`, never `v0.8.1`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`, one per release.
 
-**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **615 tests in 57 files, all passing** as of 2026-09-13, verified over three consecutive runs.
+**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **618 tests in 57 files, all passing** as of 2026-09-13.
 
 **Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app — and they resolve it through a `file:` link, so they pick up whatever `dist` holds. Build after changing source or you silently block their test suites. Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
 
@@ -24,7 +24,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## P0 — open defects with a cluster-wide cost
 
-Each is a one-place defect. All five were verified against the source; two were reproduced by running code.
+Each is a one-place defect. All were verified against the source; two were reproduced by running code. A fifth — session minting having no timeout — is fixed and unreleased; see [COMPLETED.md](COMPLETED.md).
 
 ### A second failure during an in-flight failover goes terminal
 **Waiting on:** core. `src/playback/PlaybackCoordinator.ts:1500-1508`.
@@ -49,15 +49,8 @@ This is the fault the cascade was built to prevent — see the *Routing on evide
 
 Fix: stop using pairwise thresholds inside `sort`. Evaluate the cascade as successive filters against the *best* value on each axis — keep everything within threshold of the best throughput, then of the best latency, then capacity, then configured order. Thresholds against one reference are a total preorder, and `selectionAxis` becomes the last axis that eliminated anyone, true by construction. Add a three-endpoint test.
 
-### Session minting has no timeout, and every request can inherit the hang
-**Waiting on:** core. `src/api/SessionAuth.ts:21`, `:74`; `src/api/SessionManager.ts:171`, `:175`.
-
-Both mint and validate call bare `fetch` with no signal. `SessionManager.fetch` awaits them on bootstrap and on 401 re-mint, and `fetchWithTimeout` cannot help because its controller is one the mint never observes. A black-holed first candidate (half-open TCP after a node dies) makes a cold start walk 2N untimed fetches, each waiting for the OS timeout, while every `fetch()` in the app blocks on `inFlight`. `DEFAULT_REQUEST_TIMEOUT_MS`'s doc claim — "every request in the cluster status/catalogue/routing layer" — is untrue for this path.
-
-Fix: route both through `fetchWithTimeout(fetch, url, init, DEFAULT_REQUEST_TIMEOUT_MS)`.
-
 ### The connection gate cannot accept any endpoint against the live cluster
-**Waiting on:** server (which of two fixes), then core. `src/connection/connectionConfiguration.ts:63-98`, `src/api/SessionAuth.ts:72-82`. **Measured.**
+**Waiting on:** server (which of two fixes), then core. `src/connection/connectionConfiguration.ts:63-98`, `src/api/SessionAuth.ts:129-150`. **Measured.**
 
 `checkEndpointConfiguration` requests `/api/v1/catalogue/status` unauthenticated and counts an endpoint available only on `response.ok`. **All three of Tom's nodes answer 401 unauthenticated** (measured by the web client), so `available` comes back empty and the result carries *"No configured endpoint accepted these connection details."* A caller that refuses to save on an empty list cannot accept any endpoint a viewer types: no endpoint saved, so no session ever minted, so the client cannot be configured at all. Same path is the post-outage reconnect.
 
@@ -145,7 +138,7 @@ The phone client has covered the *display* half — it re-reads `currentSession`
 ### The probe endpoint becomes role-gated
 **Waiting on:** server. Same question as the connection gate above, from the other side.
 
-`validateAnonymousSession` (`SessionAuth.ts:72`) and `EndpointHealthMonitor` both probe `/api/v1/catalogue/status`, which under the roles model needs `media_viewer`. A user without that role has **every cached token classified dead on reload**, and **every node left permanently ungraded by the health loop** — which silently takes latency sampling and the preemptive swap with it. The ask with the server is one authenticated endpoint needing no role (`whoami` suggested). If they agree, two call-site changes.
+`validateAnonymousSession` (`SessionAuth.ts:129`) and `EndpointHealthMonitor` both probe `/api/v1/catalogue/status`, which under the roles model needs `media_viewer`. A user without that role has **every cached token classified dead on reload**, and **every node left permanently ungraded by the health loop** — which silently takes latency sampling and the preemptive swap with it. The ask with the server is one authenticated endpoint needing no role (`whoami` suggested). If they agree, two call-site changes.
 
 ### Two clients disagree about what logout means, and core documents no answer
 **Waiting on:** Tom. `src/api/UsersApi.ts:128-135` (`logout`), `src/api/SessionManager.ts:148-166` (`signOut`).
