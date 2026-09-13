@@ -32,13 +32,20 @@ const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
  * Re-minting is still the right thing to attempt — it is the only thing this
  * can present — but **do not assume the result is a usable browsing session.**
  *
- * On a cluster where the anonymous account holds no roles, and that is the
- * shape of any deployment that requires accounts, the re-mint degrades a
- * signed-in viewer not to browsing but **to nothing**: the library empties
- * mid-use and the application renders its refused state, unannounced, looking
- * exactly like a fault. That is worse than a logout, because a logout at least
- * says what happened. *Observed on the development cluster, where
- * `media_viewer` had been removed from the anonymous account.*
+ * On a cluster where the anonymous account holds no roles — the shape of any
+ * deployment that requires accounts — the re-mint degrades a signed-in viewer
+ * not to browsing but **to nothing**: the library empties mid-use and the
+ * application renders its refused state, unannounced, looking exactly like a
+ * fault. That is worse than a logout, because a logout at least says what
+ * happened.
+ *
+ * *Measured rather than hypothesised, on the development cluster with
+ * `media_viewer` removed from the anonymous account: `POST /api/v1/session`
+ * with empty credentials mints successfully on every node and returns
+ * `roles: []`, and `/catalogue/items` then answers `403 requires the
+ * 'media_viewer' role`. So the degraded session is not merely limited — it
+ * cannot read the catalogue at all, which presents as an empty client rather
+ * than as a sign-out.*
  *
  * **Core gives a host both halves of the answer and invents neither.**
  * {@link SessionManager.lastIdentityChange} says the session stopped belonging
