@@ -46,10 +46,27 @@ The corrected model is *simpler*, not more elaborate: **one `Session`, one mint,
 
 `sessionPermits`, `sessionLockedOut`, `hasRole` — already role-based, already right. `roles`, `lastMintFailure`, `isReady`, `subscribe`, `AuthenticatedFetch`. `SessionCredentials`. The `0.9.0` refusal-versus-unreachable distinction.
 
-### Two things still Tom's
+### One thing still Tom's
 
 - **The refusal walk** (`SessionAuth.ts:158-180`). On a 403 during mint, with credentials core stops (replicated table, every node agrees); without credentials it tries the next node, because allow-anonymous is per-node and one stale node must not speak for the cluster (observed live by the Android TV client). It is keyed on "was a credential presented", not on the account name, and it is a cluster rule rather than an anonymous rule — but it is core reasoning about a server edge case. **Recommendation: keep it.** Tom to confirm.
-- **`isSignedIn()` and `ANONYMOUS_USERNAME`** (`UsersApi.ts:234-247`). The one remaining place core knows the account's name. It is a display hint — "offer sign-in rather than account management" — and its own comment already says the session is not special. **Recommendation: keep it as the hint it is**, or replace with a server-stated fact (`UserMutability` exists) if core is to know nothing at all. Tom to decide.
+- ~~**`isSignedIn()` and `ANONYMOUS_USERNAME`**~~ — **decided, keep.** See *What the clients SHOULD special-case* below: it is the one display hint for "this session belongs to someone who chose to be someone", the users-screen special-casing is driven by the server's per-record `mutable` instead, and core enforces nothing.
+
+### What the clients SHOULD special-case — and what they should not
+
+**Tom, 2026-09-13:** the root and anonymous accounts *are* special in the UI, where it is obvious, and clients should treat them so. **There should be no option to rename or delete them; anonymous has no password and no change-password.** The web client already does this correctly and is the reference.
+
+**The rule is "render what the server says is mutable", not "know the account's name".** Every `MachaUser` carries `mutable: { rename, delete, set_password, set_roles, set_roles_blocked_by? }` (`UsersApi.ts:61-68`), stated per record by the server, which is the only party that knows which accounts are protected and why. A client that greys a control because `mutable.rename === false` is right for root, right for anonymous, and right for whatever the server protects next; a client that greys it because `username === 'anonymous'` is right today and wrong the first time the rule moves. `set_roles_blocked_by` exists precisely so the UI can say *why* — protected account versus last-manager rule — rather than greying for no stated reason.
+
+So:
+- **Users screen** (`manage_users` role): rename, delete and set-password controls follow `mutable` per row. Anonymous and root will arrive with `rename: false`, `delete: false`; anonymous with `set_password: false`. **Do not hard-code the names.** Do not hide the rows — a manager should see that the accounts exist and see them as protected.
+- **Account screen** (the signed-in user's own): a change-password control belongs to a session whose account has a password. `isSignedIn()` (`UsersApi.ts:244`) is the one core hint for this — it says "this session belongs to a person who chose to be someone" — and stays. It is the only place core compares against `ANONYMOUS_USERNAME`, it is a *display* hint, and its own comment already says the session itself is not special. **This closes the second open item above: keep it, as the hint it is.**
+- **Core enforces nothing.** It does not refuse a rename of root, does not strip a password change for anonymous, does not filter the list. A client that sends one gets the server's `403` with `reserved_user` / `reserved_username` (`MachaUsersApiError` codes, `MachaUsersApi.ts:21-29`), which is the correct source of the refusal. Core's job is to carry `mutable` and the error code faithfully, which it does.
+
+**Per client, against this:**
+- **Web** — reference implementation. Nothing to change here; re-check only that it reads `mutable` rather than the name, since either passes today.
+- **Phone** — has an account screen and a sign-in flow; verify change-password is gated on `isSignedIn()` and that no rename/delete UI exists for the protected rows if it has a users screen.
+- **Android TV** — likely no users screen yet. When one is built, build it from `mutable` from the start.
+- **Tizen** — the web client's build; inherits the reference behaviour.
 
 ### Every client refactors. Notes per client.
 
