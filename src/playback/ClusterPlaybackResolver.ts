@@ -72,6 +72,11 @@ function awaitWithEndpointDeadline<T>(
  * reports nothing, so each silent starvation is charged to a healthy node until
  * the candidate list is empty.
  *
+ * Applies to the standby path as well as the replacement path: a generation
+ * prepared ahead of time is asked for on the same terms as one created after
+ * the fact, or the carriage a host needs goes missing through whichever of the
+ * two nobody looked at.
+ *
  * `PlaybackCoordinator` already restates it on the paths it owns. This is the
  * same fix one layer down, where **every** consumer passes rather than only the
  * three that drive the coordinator — a fix landing in the coordinator reaches
@@ -90,14 +95,42 @@ function awaitWithEndpointDeadline<T>(
  */
 function withServedSegmentContainer(
   preferences: PlaybackPreferencesUpdate,
-  failedSession: PlaybackSession,
+  servingSession: PlaybackSession,
 ): PlaybackPreferencesUpdate {
   if (preferences.container !== undefined) return preferences;
-  const mode = preferences.mode ?? failedSession.mode;
+  const mode = preferences.mode ?? servingSession.mode;
   if (mode !== 'remux' && mode !== 'transcode') return preferences;
-  const served = failedSession.output?.container?.trim().toLowerCase();
+  const served = servingSession.output?.container?.trim().toLowerCase();
   if (served !== 'fmp4' && served !== 'mpegts') return preferences;
   return { ...preferences, container: served };
+}
+
+/**
+ * Whether a standby can stand in for the generation it would replace.
+ *
+ * Same media on a different node were the only questions asked, and they are
+ * not enough. A standby prepared as a remux cannot replace a transcode, and
+ * two transformed generations reporting different segment containers hand the
+ * device carriage it may not be able to play — the exact case
+ * `withServedSegmentContainer` exists for, arriving through the standby door
+ * rather than the fresh-create one.
+ *
+ * An unreported container is not a mismatch. A node that does not say what it
+ * served gives no grounds to reject a standby that is otherwise right, and
+ * refusing one costs a viewer a rescue that is already built and ready over a
+ * fact nobody stated.
+ *
+ * A rejected standby is not closed here. The coordinator stops every alternate
+ * that is not the session it activates, so adding a second teardown on this
+ * path would be the two-owners problem rather than a fix.
+ */
+function interchangeableGeneration(alternate: PlaybackSession, replaced: PlaybackSession): boolean {
+  if (alternate.mode !== replaced.mode) return false;
+  if (alternate.mode === 'direct') return true;
+  const alternateContainer = alternate.output?.container?.trim().toLowerCase();
+  const replacedContainer = replaced.output?.container?.trim().toLowerCase();
+  if (!alternateContainer || !replacedContainer) return true;
+  return alternateContainer === replacedContainer;
 }
 
 export class ClusterPlaybackResolver implements PlaybackResolver {
@@ -146,7 +179,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       const owned = this.sessions.get(preparedAlternate.sessionId);
       if (owned
         && owned.endpoint.id !== failedSession.endpoint?.id
-        && preparedAlternate.mediaId === failedSession.mediaId) {
+        && preparedAlternate.mediaId === failedSession.mediaId
+        && interchangeableGeneration(preparedAlternate, failedSession)) {
         this.registry.recordSuccess(owned.endpoint.id);
         return preparedAlternate;
       }
@@ -205,7 +239,10 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         media,
         capabilities,
         seekMs,
-        { ...preferences, mode: activeSession.mode === 'direct' ? 'direct' : preferences.mode },
+        withServedSegmentContainer(
+          { ...preferences, mode: activeSession.mode === 'direct' ? 'direct' : preferences.mode },
+          activeSession,
+        ),
         excluded,
         false,
         this.generationAttemptTimeoutMs,

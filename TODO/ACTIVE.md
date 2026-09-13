@@ -47,13 +47,6 @@ Resolve together with the role-gating item below. The tests here exercise only 2
 
 ## P1 — correctness
 
-### The carriage fix misses the standby path
-**Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:145-153`, `:193-221`.
-
-`withServedSegmentContainer` runs only on the fresh-`create` branch of `failover`. `prepareAlternate` builds from raw preferences, and `failover` accepts a prepared alternate on endpoint id and `mediaId` alone — no mode check, no served-container check.
-
-**Latent, not live:** `prepareAlternate` has exactly one caller, the coordinator, and the phone client (the consumer this would have bitten) never calls it. Fix it before something starts preparing alternates without a coordinator. Fix: apply the helper in `prepareAlternate`; in `failover`, reject a prepared alternate whose mode differs, or where both are transformed and report different containers.
-
 ### Failover double-charges the failed endpoint, and two teardown policies coexist
 **Waiting on:** Tom (which policy), then core. `src/playback/ClusterPlaybackResolver.ts:189-191`, `:294-304`; `src/playback/PlaybackCoordinator.ts:1447-1453`, `:1531-1553`, `:1601`.
 
@@ -189,7 +182,7 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 
 Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: `canSeek: false`; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**The specific gaps the review named**, each tied to an item above: `canSeek: false`; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
 
 ---
 

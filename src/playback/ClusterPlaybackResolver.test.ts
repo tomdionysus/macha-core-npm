@@ -323,6 +323,59 @@ describe('ClusterPlaybackResolver', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('asks a standby for the carriage the generation it stands by for is actually being served', async () => {
+    // The fix that put this on `failover` stopped at the fresh-create branch.
+    // A host that needs MPEG-TS because fMP4 black-screens on its device gets
+    // the right thing when a replacement is built after the fact and the
+    // wrong thing when one was prepared in advance — same defect, through
+    // whichever door nobody looked at.
+    const served = (id: string, container: string) => ({
+      ...wireSession(id),
+      mode: 'transcode',
+      preferences: { ...wireSession(id).preferences, mode: 'transcode' },
+      output: { container },
+      stream: { url: `/api/v1/playback/stream/${id}/index.m3u8`, mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-a', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-b', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'transcode' });
+
+    await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'transcode' });
+
+    expect(JSON.parse(String(admissionCalls(fetchMock)[1][1].body)).preferences.container).toBe('mpegts');
+  });
+
+  it('refuses a prepared standby that is being served a different carriage', async () => {
+    // A standby is only a rescue if the device can play it. Two transformed
+    // generations reporting different segment containers are not
+    // interchangeable, and promoting one because it is on another node and
+    // holds the same media is how the carriage check gets bypassed entirely.
+    const served = (id: string, container: string) => ({
+      ...wireSession(id),
+      mode: 'transcode',
+      preferences: { ...wireSession(id).preferences, mode: 'transcode' },
+      output: { container },
+      stream: { url: `/api/v1/playback/stream/${id}/index.m3u8`, mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-a', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-b', 'fmp4')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(served('session-c', 'mpegts')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'transcode' });
+    const standby = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'transcode' });
+    expect(standby?.output?.container).toBe('fmp4');
+
+    const promoted = await resolver.failover(primary, media, capabilities, 5_000, { mode: 'transcode' }, standby);
+
+    expect(promoted.sessionId).not.toBe(standby?.sessionId);
+    expect(JSON.parse(String(admissionCalls(fetchMock)[2][1].body)).preferences.container).toBe('mpegts');
+  });
+
   it('keeps identical node-local session IDs distinct across endpoints', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('same-id')), { status: 201, headers: { 'Content-Type': 'application/json' } }))
