@@ -213,6 +213,26 @@ describe('API endpoint health probes', () => {
     expect(registry.snapshot()[0]?.health.consecutiveFailures).toBe(0);
   });
 
+  it('asks the old route when the liveness one refuses a credential it will not accept', async () => {
+    // Measured on 10.44.1.50: /api/v1/health answers 401 to no token and 403
+    // to a role-less one, while the same build serves the old route. Without
+    // the fallback that node is permanently ungraded — no latency, no
+    // pre-emptive swap — for running a build that gates liveness.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://gated']));
+    const fetchSpy = vi.fn(async (url: string | URL | Request) => new Response('{}', {
+      status: String(url).includes('/api/v1/health') ? 403 : 200,
+    }));
+
+    await probeKnownEndpoints(registry, fixedBearerToken('secret', fetchSpy as unknown as typeof fetch), new AbortController().signal);
+
+    expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
+      'http://gated/api/v1/health',
+      'http://gated/api/v1/catalogue/status',
+    ]);
+    // Graded on the fallback's answer, not left blind.
+    expect(registry.snapshot()[0]?.latencyMs).toBeDefined();
+  });
+
   it('records nothing either way for a node that answered without saying it is serving', async () => {
     // A cluster that requires an account answers 401 to everything a
     // session-less client asks. Every node is perfectly healthy and every
@@ -221,6 +241,7 @@ describe('API endpoint health probes', () => {
     // is not a fault — but it is not evidence of health either, so nothing is
     // recorded in either direction rather than a success being invented.
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    // Both routes refuse: the liveness one and the fallback alike.
     const fetchSpy = vi.fn(async () => new Response('{}', { status: 401 }));
 
     const reachable = await probeKnownEndpoints(registry, fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch), new AbortController().signal);

@@ -170,9 +170,20 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
  * nothing about the token at all. A session's own record is the one thing it
  * can always ask about, because the answer is about the asker.
  *
- * If a node ever does gate this, the degradation is mild and already tested:
- * validation fails, the caller mints fresh, and the viewer pays one extra
- * round trip rather than losing access.
+ * Confirmed with the server session: it is the one route explicitly exempt
+ * from the role gate, on that same reasoning — needing a role to find out
+ * which roles you have is not a thing that can work.
+ *
+ * It also answers a stronger question than "is this token well formed". The
+ * authenticator re-checks the session's `credential_generation` against the
+ * user record on every request, so a password change, a role change or a
+ * deletion invalidates the token the moment that record reaches the node.
+ * This therefore catches revocation, not only expiry, at no extra cost.
+ *
+ * The corollary matters more than it looks: a 401 here does **not** only mean
+ * "expired". It can mean the account changed underneath the token. The
+ * response is the same either way — mint fresh — but a caller that reports
+ * the reason to a viewer must not claim the session timed out.
  */
 export async function validateAnonymousSession(baseUrl: string, token: string): Promise<boolean> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;

@@ -67,6 +67,56 @@ describe('SessionManager', () => {
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer token-a');
   });
 
+  it('says why there is no token, so a client is not left guessing from an empty one', async () => {
+    // An empty token and isReady true are the same two facts whether the
+    // cluster refused or nothing answered, and those need opposite handling.
+    // Three client sessions built something on the guess in one day and all
+    // three removed it — one a login wall that would have replaced a playing
+    // film with a sign-in screen on a network blip.
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.lastMintFailure).toEqual({
+      reason: 'refused',
+      status: 403,
+      code: 'anonymous_disabled',
+      message: 'Could not start a session: anonymous access is disabled',
+    });
+  });
+
+  it('distinguishes nothing answering from a node saying no', async () => {
+    vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.lastMintFailure).toMatchObject({ reason: 'unreachable' });
+    expect(manager.lastMintFailure?.status).toBeUndefined();
+  });
+
+  it('clears the reason the moment a session is adopted', async () => {
+    // Published through the same subscribe() as everything else, and cleared
+    // before the notification, so a subscriber reacting to it never acts on a
+    // reason that has already been resolved.
+    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockRejectedValueOnce(new SessionAuthError('refused', 403, 'anonymous_disabled'))
+      .mockResolvedValue({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS });
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.lastMintFailure?.reason).toBe('refused'));
+
+    await manager.signIn({ username: 'alice', password: 'hunter2000' }).catch(() => undefined);
+
+    expect(manager.lastMintFailure).toBeUndefined();
+    expect(mint).toHaveBeenCalledTimes(2);
+  });
+
   it('does not call the cluster unreachable when a node refused to mint', async () => {
     // A node that answered 403 in forty milliseconds has been reached and has
     // stated a policy. Publishing "All configured API endpoints are

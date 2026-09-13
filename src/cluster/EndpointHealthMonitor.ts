@@ -7,9 +7,13 @@ import type { MachaClientConfiguration } from '../runtime/configuration.js';
 import { LIVENESS_PATH } from '../api/serverConnection.js';
 
 /**
- * What liveness was asked on before `/api/v1/health` existed, kept only for
- * nodes that still answer 404 to the new route. It is role-gated on current
- * builds, which is why it stopped being the question to ask.
+ * What liveness was asked on before `/api/v1/health` existed.
+ *
+ * Kept for any node the liveness route cannot answer for: one too old to have
+ * it, and — measured, not assumed — builds that have it but gate it. This one
+ * needs `media_viewer`, so it is no better for a role-less session; it is a
+ * fallback because it is *different*, not because it is right, and a node
+ * that refuses both is simply ungraded rather than condemned.
  */
 const LEGACY_PROBE_PATH = '/api/v1/catalogue/status';
 import { machaHost } from '../runtime/host.js';
@@ -108,8 +112,11 @@ async function probePath(baseUrl: string, path: string, auth: AuthenticatedFetch
       DEFAULT_REQUEST_TIMEOUT_MS,
     );
     if (response.ok) return { status: 'healthy', latencyMs: machaHost().now() - startedAt };
-    if (response.status === 404) return { status: 'absent' };
     if (response.status >= 500) return { status: 'unhealthy' };
+    // 404 is a build without the route. 401 and 403 are a build that has it
+    // and insists on a credential for it. Both mean the same thing to a
+    // caller: this route did not give a liveness answer, ask the other way.
+    if (response.status === 404) return { status: 'absent' };
     return { status: 'answered' };
   } catch {
     return { status: 'unreachable' };
@@ -118,14 +125,28 @@ async function probePath(baseUrl: string, path: string, auth: AuthenticatedFetch
 
 async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch): Promise<ProbeResult> {
   const result = await probePath(endpoint.baseUrl, LIVENESS_PATH, auth);
-  if (result.status !== 'absent') return result;
-  // A build too old for the liveness route answers 404, and one of Tom's
-  // nodes is exactly that today. Ask it the way it understands rather than
-  // leaving it permanently ungraded — no latency samples, so no ranking on
-  // the one axis that can see a bad path, and no pre-emptive swap — which
-  // would make it a second-class node for having an old build. The extra
-  // request costs one round trip per cycle and stops of its own accord the
-  // moment the node is upgraded.
+  if (result.status !== 'absent' && result.status !== 'answered') return result;
+  // Anything that did not answer the liveness question gets asked the old
+  // way. Two builds in the field do that: one too old to have the route
+  // (404), and one that has it but refuses it without the right role (401 or
+  // 403 — measured on 10.44.1.50, which answers 401 to no token and 403 to a
+  // role-less one). Both would otherwise leave the node permanently ungraded:
+  // no latency samples, so no ranking on the one axis that can see a bad
+  // path, and no pre-emptive swap — a second-class node for running an old
+  // build.
+  //
+  // The fallback is no better for a role-less session, since the old route
+  // needs `media_viewer` too. It is a fallback because it is *different*, and
+  // a node that refuses both ends up ungraded rather than condemned.
+  //
+  // Probes keep carrying whatever credential the host supplies. Asking
+  // unauthenticated was considered and dropped: on the node that gates
+  // liveness it is refused either way, so it buys nothing there, and it would
+  // route around the transport a host injects through `auth`.
+  //
+  // Deliberately triggered by the answer rather than by a version check: the
+  // day no node needs the fallback is the day this path can go, and a version
+  // check would hide that day rather than show it.
   return probePath(endpoint.baseUrl, LEGACY_PROBE_PATH, auth);
 }
 
