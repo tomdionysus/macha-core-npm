@@ -45,6 +45,15 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 2. **No re-arm after `suspend()`.** `lastPositionMs` is kept and only `note()` re-arms, but `note()` returns early unless something advanced. Pause, node dies, resume: nothing advances, nothing arms, frozen forever. Only "paused is not stalled" is tested.
 3. **The +1 s margin comment overclaims.** It says the budget only has to outlast the hold, but the watchdog reads only `currentTime`/`buffered` and a `500` carries no bytes; hold + player retry delay + first byte exceeds 7 s. Either record the real relationship or say plainly that holds do trip it and that is accepted.
 
+### No way to ask for an off-cycle probe
+**Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts`. Small, and a client is working around it today.
+
+A mobile client watching the radio knows the network came back well before the next 10 s cycle, and there is no way to say so. `stop()` then `start()` works and is safe — `stop()` aborts the controller and clears it, `start()` returns early only when a controller exists, and the in-flight cycle discards its results at the abort check — but it throws away a probe already in flight and restarts the interval from zero. The phone client is doing exactly that.
+
+Wanted: a `probeNow()` that runs a cycle immediately without tearing the loop down, and re-bases the interval from that probe. A radio coming back is the one moment the cluster's state is most likely to have changed and the viewer is most likely to be waiting, so the ten seconds is a real cost rather than a tidy-up (Law 2).
+
+Worth pairing with a decision about whether the monitor should watch anything itself. It cannot see a radio — that is a host fact — so the seam is right; only the trigger is missing.
+
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
 
