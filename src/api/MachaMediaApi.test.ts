@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CatalogueApi, CatalogueArtwork, CatalogueItem, CatalogueKind, CatalogueStatus } from './CatalogueApi.js';
 import { MachaMediaApi } from './MachaMediaApi.js';
+import { ArtworkHostPreference } from '../state/artworkHost.js';
 
 function catalogueItem(id: string, kind: CatalogueKind, partial: Partial<CatalogueItem> = {}): CatalogueItem {
   return {
@@ -344,5 +345,123 @@ describe('where artwork can be fetched from', () => {
     expect(api.artworkUrls({ id: 'art-1', mimeType: 'image/jpeg' })).toEqual([
       { url: 'http://node/artwork/art-1', requiresAuthorization: true },
     ]);
+  });
+});
+
+describe('keeping an artwork URL byte-identical across an endpoint swap', () => {
+  // The URL is already a content address: the path is the SHA-256 of the bytes
+  // and the signature covers the id and expiry and never the host. Every
+  // component is stable except the host, and the host was varying by accident
+  // — candidates are ordered by the *streaming* preferred endpoint, and the
+  // capability in a catalogue payload is absolutised against whichever node
+  // answered that read. So a swap renamed every poster and the platform HTTP
+  // cache, which keys on the whole URL and which core neither owns nor can
+  // re-key, re-downloaded bytes it already held.
+  // A live capability. An expired one is deliberately not re-hosted onto other
+  // nodes — every node would refuse it — so a past expiry would test the
+  // fallback rather than the ordering.
+  const SIGNED_QUERY = `?exp=${Date.now() + 86_400_000}&sig=abc`;
+  const artworkPath = (host: string) => `${host}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`;
+
+  const catalogueWithNodes = (nodes: readonly string[]): CatalogueApi => ({
+    status: async () => ({ ready: true } as CatalogueStatus),
+    list: async () => [],
+    get: async () => catalogueItem('x', 'movie'),
+    update: async (item) => item,
+    clearMetadata: async () => undefined,
+    search: async () => [],
+    putArtwork: async () => ({} as CatalogueArtwork),
+    artwork: async () => ({ size: 1, type: 'image/jpeg' } as Blob),
+    artworkUrls: (id) => nodes.map((node) => ({
+      url: `${node}/api/v1/catalogue/artwork/${id}`,
+      requiresAuthorization: true,
+    })),
+    mediaProfile: async () => undefined,
+  });
+
+  const ref = (signingHost: string) => ({
+    id: 'sha-1',
+    mimeType: 'image/jpeg',
+    url: artworkPath(signingHost),
+  });
+
+  const storage = () => {
+    const values = new Map<string, string>();
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+  };
+
+  it('leads with the node that last served artwork, beating the one that signed the URL', () => {
+    // The property that survives a swap: the catalogue is served by one node
+    // and signs the capability with its own host, but the preference wins.
+    const api = new MachaMediaApi(
+      catalogueWithNodes(['http://a', 'http://b']),
+      new ArtworkHostPreference(storage()),
+    );
+    api.noteArtworkLoaded(artworkPath('http://b'));
+
+    expect(api.artworkUrls(ref('http://a'))[0].url).toBe(artworkPath('http://b'));
+  });
+
+  it('hands back the same URL before and after the preferred endpoint moves', () => {
+    // The regression itself. Node ordering is the cluster's streaming
+    // preference, and it reverses on a swap; the artwork URL must not.
+    const preference = new ArtworkHostPreference(storage());
+    const before = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), preference);
+    const first = before.artworkUrls(ref('http://a'))[0].url;
+    before.noteArtworkLoaded(first);
+
+    const after = new MachaMediaApi(catalogueWithNodes(['http://b', 'http://a']), preference);
+    expect(after.artworkUrls(ref('http://b'))[0].url).toBe(first);
+  });
+
+  it('survives a restart, because the preference is persisted', () => {
+    const shared = storage();
+    const first = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(shared));
+    first.noteArtworkLoaded(artworkPath('http://b'));
+
+    const restarted = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(shared));
+    expect(restarted.artworkUrls(ref('http://a'))[0].url).toBe(artworkPath('http://b'));
+  });
+
+  it('offers every candidate it offered before, only reordered', () => {
+    // It orders URLs the cluster already gave, rather than choosing a node.
+    // That is what makes it safe without any failure handling: nothing is
+    // added, nothing removed, so failover is untouched.
+    const api = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(storage()));
+    const unordered = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(undefined));
+    api.noteArtworkLoaded(artworkPath('http://b'));
+
+    const ordered = api.artworkUrls(ref('http://a')).map((source) => source.url);
+    const original = unordered.artworkUrls(ref('http://a')).map((source) => source.url);
+    expect([...ordered].sort()).toEqual([...original].sort());
+    expect(ordered).not.toEqual(original);
+  });
+
+  it('falls back to the cluster order when nothing has succeeded yet', () => {
+    const api = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(storage()));
+    expect(api.artworkUrls(ref('http://a'))[0].url).toBe(artworkPath('http://a'));
+  });
+
+  it('ignores a URL that is not an artwork URL', () => {
+    const api = new MachaMediaApi(catalogueWithNodes(['http://a', 'http://b']), new ArtworkHostPreference(storage()));
+    api.noteArtworkLoaded('http://b/api/v1/catalogue/items/x');
+
+    expect(api.artworkUrls(ref('http://a'))[0].url).toBe(artworkPath('http://a'));
+  });
+
+  it('keeps a node base that carries a path prefix intact', () => {
+    // A reverse proxy may mount a node under a path. Splitting on the artwork
+    // route recovers the whole base rather than just the origin.
+    const api = new MachaMediaApi(
+      catalogueWithNodes(['http://proxy/node-a', 'http://proxy/node-b']),
+      new ArtworkHostPreference(storage()),
+    );
+    api.noteArtworkLoaded(artworkPath('http://proxy/node-b'));
+
+    expect(api.artworkUrls(ref('http://proxy/node-a'))[0].url).toBe(artworkPath('http://proxy/node-b'));
   });
 });

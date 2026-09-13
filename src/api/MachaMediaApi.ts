@@ -14,6 +14,7 @@ import type {
   ShowDetails,
 } from '../types.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
 
 function abortReason(signal: AbortSignal): unknown {
@@ -74,8 +75,14 @@ export class MachaMediaApi implements MediaApi {
   private readonly artworkCache = new Map<string, Blob>();
   private readonly artworkRequests = new Map<string, Promise<Blob>>();
   private readonly log = createClientLogger('artwork.api');
+  private readonly artworkHost: ArtworkHostPreference;
 
-  constructor(private readonly catalogue: CatalogueApi) {}
+  constructor(
+    private readonly catalogue: CatalogueApi,
+    artworkHost: ArtworkHostPreference = new ArtworkHostPreference(),
+  ) {
+    this.artworkHost = artworkHost;
+  }
 
   status(signal?: AbortSignal) {
     return this.catalogue.status(signal);
@@ -207,7 +214,21 @@ export class MachaMediaApi implements MediaApi {
     for (const source of [...capability, ...nodes]) {
       if (!unique.has(source.url)) unique.set(source.url, source);
     }
-    return [...unique.values()];
+    // Then promote whichever node last served artwork, which is the whole of
+    // the cache fix. Everything above orders by the *streaming* preferred
+    // endpoint — `ClusterCatalogueApi.artworkUrls` returns candidates
+    // preferred-node-first, and `signed` was absolutised against whichever
+    // node answered the catalogue read — so without this a pre-emptive swap
+    // renames every poster and a platform HTTP cache re-downloads bytes it
+    // already holds.
+    //
+    // Nothing is added or removed, only reordered, so every failover candidate
+    // and its relative order behind the promoted host is untouched.
+    return this.artworkHost.order([...unique.values()]);
+  }
+
+  noteArtworkLoaded(url: string): void {
+    this.artworkHost.noteLoaded(url);
   }
 
   artwork(ref: ArtworkRef, signal?: AbortSignal): Promise<Blob> {
@@ -226,6 +247,11 @@ export class MachaMediaApi implements MediaApi {
         this.artworkCache.set(ref.id, blob);
         this.artworkRequests.delete(ref.id);
         this.log.debug('request-complete', { artworkId: ref.id, sizeBytes: blob.size });
+        // This path does not learn the host: `CatalogueApi.artwork` walks
+        // candidates internally and returns bytes, not the endpoint that
+        // produced them. Recorded as a known gap rather than plumbed out — the
+        // blob path is the fallback, the URL path is what renders a library
+        // screen, and a caller using it reports through `noteArtworkLoaded`.
         return blob;
       }, (error) => {
         this.artworkRequests.delete(ref.id);

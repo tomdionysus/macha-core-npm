@@ -97,6 +97,7 @@ export * from './playback/PlaybackStatus.js';
 export * from './playback/streamProtocol.js';
 
 // ------------------------------------------------------------------ state
+export * from './state/artworkHost.js';
 export * from './state/continueWatching.js';
 export * from './state/continueWatchingMigration.js';
 export * from './state/musicPlaylist.js';
