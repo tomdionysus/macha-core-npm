@@ -24,26 +24,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## P0 — open defects with a cluster-wide cost
 
-Four of the original five are fixed and unreleased — see [COMPLETED.md](COMPLETED.md). What remains is the one that is not core's to decide.
-
-### The connection gate cannot accept any endpoint against the live cluster
-**Waiting on:** server (which of two fixes), then core. `src/connection/connectionConfiguration.ts:63-98`, `src/api/SessionAuth.ts:129-150`. **Measured.**
-
-`checkEndpointConfiguration` requests `/api/v1/catalogue/status` unauthenticated and counts an endpoint available only on `response.ok`. **All three of Tom's nodes answer 401 unauthenticated** (measured by the web client), so `available` comes back empty and the result carries *"No configured endpoint accepted these connection details."* A caller that refuses to save on an empty list cannot accept any endpoint a viewer types: no endpoint saved, so no session ever minted, so the client cannot be configured at all. Same path is the post-outage reconnect.
-
-It has survived because it is invisible to anyone whose endpoints arrive from build configuration — the reference client is `.env`-configured and never reaches the gate. **It predates the users/roles work** rather than being caused by it.
-
-The doc comment at `:56-62` is the sharp part: it says the check "asks whether an address answers at all, which needs no credentials". That reasoning is right and the implementation contradicts it, because `response.ok` asks a stricter question. **A 401 is an answer.**
-
-Scope: reaches callers of this function. The phone client is **not** affected — its own `firstReachable` already accepts a 401, reaching outside core the conclusion core's own comment states. That the correct version of this rule currently lives in a client is itself the finding.
-
-Two candidate fixes, with the server session:
-1. **Accept any HTTP answer as proof of life** — one line, matches the stated intent, but also accepts a 401 from something that is not Macha, which matters exactly when a viewer mistypes an address.
-2. **Point the check at a genuinely unauthenticated liveness route** — unambiguous, and confirms it is really talking to Macha. Costs the server a route it does not expose.
-
-Resolve together with the role-gating item below. The tests here exercise only 200 and a `TypeError`; a 401 case would have caught it.
-
----
+All five are fixed and unreleased — see [COMPLETED.md](COMPLETED.md). The last of them, the connection-gate lockout, was waiting on the server to choose between two fixes; server 0.38.5 answered it with `GET /api/v1/health`.
 
 ## P1 — correctness
 
@@ -80,11 +61,6 @@ It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` say
 **And the one the accounts work adds:** a 401 no longer means only "expired". A password or role change bumps `credential_generation` and invalidates every earlier session cluster-wide, deliberately, so a mid-session 401 is now normal. `SessionManager` answers a 401 by re-minting, and a re-mint with no credentials is an *anonymous* mint — so an administrator whose roles change is **silently downgraded to anonymous**: sections vanish, writes fail, and nothing says they were signed out. It disguises an auth event as a UI bug. The session must remember whether it was authenticated: anonymous 401 keeps re-minting invisibly; an authenticated 401 must stop, surface that the session ended, and let the application choose. The cached-session path on reload needs the same distinction.
 
 The phone client has covered the *display* half — it re-reads `currentSession` on every notification so the marker self-corrects — and deliberately did not invent a "you were signed out" event, because the cause is core's.
-
-### The probe endpoint becomes role-gated
-**Waiting on:** server. Same question as the connection gate above, from the other side.
-
-`validateAnonymousSession` (`SessionAuth.ts:129`) and `EndpointHealthMonitor` both probe `/api/v1/catalogue/status`, which under the roles model needs `media_viewer`. A user without that role has **every cached token classified dead on reload**, and **every node left permanently ungraded by the health loop** — which silently takes latency sampling and the preemptive swap with it. The ask with the server is one authenticated endpoint needing no role (`whoami` suggested). If they agree, two call-site changes.
 
 ### Two clients disagree about what logout means, and core documents no answer
 **Waiting on:** Tom. `src/api/UsersApi.ts:128-135` (`logout`), `src/api/SessionManager.ts:148-166` (`signOut`).
@@ -168,7 +144,7 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 
 Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: `canSeek: false`; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**The specific gaps the review named**, each tied to an item above: `canSeek: false`; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
 
 ---
 

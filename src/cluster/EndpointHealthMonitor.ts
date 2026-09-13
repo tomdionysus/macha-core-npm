@@ -4,6 +4,14 @@ import type { ClusterStatusApi } from '../api/ClusterStatusApi.js';
 import { endpointId, type EndpointRegistry, type MachaEndpoint } from './EndpointRegistry.js';
 import { reportClusterReachable, reportClusterUnreachable } from '../api/serverConnection.js';
 import type { MachaClientConfiguration } from '../runtime/configuration.js';
+import { LIVENESS_PATH } from '../api/serverConnection.js';
+
+/**
+ * What liveness was asked on before `/api/v1/health` existed, kept only for
+ * nodes that still answer 404 to the new route. It is role-gated on current
+ * builds, which is why it stopped being the question to ask.
+ */
+const LEGACY_PROBE_PATH = '/api/v1/catalogue/status';
 import { machaHost } from '../runtime/host.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 
@@ -11,8 +19,22 @@ export const ENDPOINT_HEALTH_INTERVAL_MS = 10_000;
 
 const log = createClientLogger('cluster.health');
 
+/**
+ * What one probe learned, which is not the same as whether it succeeded.
+ *
+ * - `healthy` — 2xx. The node says it is serving, and this is the only case
+ *   that carries a latency measurement.
+ * - `unhealthy` — a 5xx. `/api/v1/health` answers `503` with `starting` or
+ *   `failed`, which is the node reporting that it is *not* serving. Negative
+ *   evidence it volunteered about itself.
+ * - `absent` — `404`. A node too old to have the liveness route, not a node
+ *   in trouble.
+ * - `answered` — anything else. Reached, and nothing learned: a proxy, a
+ *   gateway, an address that is not Macha at all.
+ * - `unreachable` — no HTTP answer of any kind.
+ */
 interface ProbeResult {
-  status: 'healthy' | 'reachable' | 'unreachable';
+  status: 'healthy' | 'unhealthy' | 'absent' | 'answered' | 'unreachable';
   /** Round-trip time for a genuinely successful response only. */
   latencyMs?: number;
 }
@@ -65,18 +87,18 @@ interface ProbeResult {
  */
 let probeSequence = 0;
 
-function cacheBustedProbeUrl(baseUrl: string): string {
+function cacheBustedProbeUrl(baseUrl: string, path: string): string {
   // Deliberately NOT `startedAt`. That value is the other half of the latency
   // measurement and has to stay monotonic; this half needs an absolute value
   // that never repeats. They are different clocks for different jobs — see the
   // note on `MachaHost.now()` — and the second reading costs nothing here
   // because it is taken before the timed region rather than inside it.
   probeSequence += 1;
-  return `${baseUrl}/api/v1/catalogue/status?_=${Date.now()}-${probeSequence}`;
+  return `${baseUrl}${path}?_=${Date.now()}-${probeSequence}`;
 }
 
-async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch): Promise<ProbeResult> {
-  const url = cacheBustedProbeUrl(endpoint.baseUrl);
+async function probePath(baseUrl: string, path: string, auth: AuthenticatedFetch): Promise<ProbeResult> {
+  const url = cacheBustedProbeUrl(baseUrl, path);
   const startedAt = machaHost().now();
   try {
     const response = await fetchWithTimeout(
@@ -85,11 +107,26 @@ async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch):
       { method: 'GET', headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }), cache: 'no-store' },
       DEFAULT_REQUEST_TIMEOUT_MS,
     );
-    if (!response.ok) return { status: 'reachable' };
-    return { status: 'healthy', latencyMs: machaHost().now() - startedAt };
+    if (response.ok) return { status: 'healthy', latencyMs: machaHost().now() - startedAt };
+    if (response.status === 404) return { status: 'absent' };
+    if (response.status >= 500) return { status: 'unhealthy' };
+    return { status: 'answered' };
   } catch {
     return { status: 'unreachable' };
   }
+}
+
+async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch): Promise<ProbeResult> {
+  const result = await probePath(endpoint.baseUrl, LIVENESS_PATH, auth);
+  if (result.status !== 'absent') return result;
+  // A build too old for the liveness route answers 404, and one of Tom's
+  // nodes is exactly that today. Ask it the way it understands rather than
+  // leaving it permanently ungraded — no latency samples, so no ranking on
+  // the one axis that can see a bad path, and no pre-emptive swap — which
+  // would make it a second-class node for having an old build. The extra
+  // request costs one round trip per cycle and stops of its own accord the
+  // moment the node is upgraded.
+  return probePath(endpoint.baseUrl, LEGACY_PROBE_PATH, auth);
 }
 
 /**
@@ -184,9 +221,14 @@ export async function probeKnownEndpoints(
     if (result.status === 'healthy') {
       registry.recordProbeSuccess(endpoint.id);
       if (result.latencyMs !== undefined) registry.recordLatency(endpoint.id, result.latencyMs);
-    } else {
+    } else if (result.status === 'unhealthy' || result.status === 'unreachable') {
       registry.recordProbeFailure(endpoint.id);
     }
+    // `answered` and `absent` record nothing, in either direction. Something
+    // replied, so calling the endpoint failed would demote it on the word of
+    // a proxy or for serving a route it has never heard of; but a reply that
+    // is not a success is no evidence of health either, and recording a
+    // success would claim a measurement nobody took.
   }));
   if (!signal.aborted) {
     const swap = registry.evaluatePreferredSwap();

@@ -26,6 +26,16 @@ It is milliseconds. Settled from the server source — `unix_ms()` is a `duratio
 
 ## Unreleased
 
+**Liveness moved off the routes that became privileged.** Server 0.38.5 gates `/api/v1/status` behind a new `view_status` role, and the catalogue routes already needed `media_viewer`, so every probe core made for *liveness* was about to be answered `403` for a session the cluster had granted nothing — and `probeKnownEndpoints` recorded any non-ok answer as a probe failure, which would have left every node permanently ungraded, taking latency sampling and the pre-emptive swap with it. `GET /api/v1/health` needs no session and no role; `LIVENESS_PATH` is the single copy of it in the package.
+
+Three call sites moved, and the P0 connection-gate lockout is fixed as a consequence: `checkEndpointConfiguration` now asks the liveness route and reports **any** HTTP answer as reached, with `unconfirmed` naming the ones that answered without a 2xx. A 401 is an answer, and requiring `response.ok` against nodes that all answer 401 unauthenticated is why a fresh install could not be configured at all.
+
+The probe now distinguishes what each answer actually says, rather than success from everything else: 2xx is health with a latency sample, a 5xx is the node stating it is *not* serving (`503 starting`, `503 failed`) and is recorded as a probe failure, no answer at all is a probe failure, and a 404 or any other status records **nothing in either direction** — reached, nothing learned. A 404 also falls back to the old route once, because one node is stranded on 0.38.1 and would otherwise be a second-class node for having an old build.
+
+`validateAnonymousSession` asks `GET /api/v1/session` instead of the catalogue: a session's own record is the one thing it can always ask about, because the answer is about the asker. A role-gated probe would have classified every cached token dead on every reload for a role-less viewer, having been told nothing about the token at all.
+
+Checked and **not** changed: an auth refusal already never demotes an endpoint. `endpointRouting.ts:160` throws before `recordFailure` for anything `retryableEndpointFailure` rejects, and `endpointFailure.ts:73` admits only 429 and 5xx. The React Native client had measured this on a device — `probe-cycle` holding at `reachable: 3, known: 3` while every call was refused — and the code agrees with the measurement.
+
 **A refusal stops being reported as an unreachable cluster.** Three client sessions reported the same gap on the same day, each with different evidence, and two had built and removed a dangerous workaround for it. Three fixes, all in the mint path:
 
 *The server's error envelope is parsed.* `mintAnonymousSession` read `record.message` off the top level, but Macha answers `{ error: { code, message } }`, so every refusal degraded to status plus `statusText` — and `statusText` is empty on React Native's fetch, so a wrong password reached a viewer on a device as *"Could not start a session: 401"* while the server's own sentence sat unread in the body. It now goes through `parseErrorEnvelope`, which `MachaUsersApi` already used for exactly this, and `SessionAuthError` carries the `code`. That code is load-bearing, not diagnostic: `anonymous_disabled` is how a deployment says "this cluster requires an account".

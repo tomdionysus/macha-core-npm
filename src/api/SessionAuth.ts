@@ -154,16 +154,28 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
 }
 
 /**
- * Cheaply proves whether an already-held token is still accepted, reusing the
- * same lightweight status endpoint the health monitor already probes.
+ * Cheaply proves whether an already-held token is still accepted.
+ *
  * Minting a brand new session does real server-side work (creating a session
- * record); checking one an existing token still authenticates is far cheaper
+ * record); checking that an existing token still authenticates is far cheaper
  * and, as a side effect, proves the node actually answers — so a warm reload
  * with a live cached token never pays for a full mint (Law 2: Thou Shalt Not
  * Make The Viewer Wait, `docs/principles-and-laws.md`).
+ *
+ * It asks the session about itself, and deliberately not a catalogue or
+ * status route. Under the roles model those need a role — `media_viewer` for
+ * the catalogue, `view_status` for cluster status from server 0.38.5 — so a
+ * session the cluster granted nothing would have every cached token
+ * classified dead on every reload and re-mint forever, having been told
+ * nothing about the token at all. A session's own record is the one thing it
+ * can always ask about, because the answer is about the asker.
+ *
+ * If a node ever does gate this, the degradation is mild and already tested:
+ * validation fails, the caller mints fresh, and the viewer pays one extra
+ * round trip rather than losing access.
  */
 export async function validateAnonymousSession(baseUrl: string, token: string): Promise<boolean> {
-  const url = `${normalizeBaseUrl(baseUrl)}/api/v1/catalogue/status`;
+  const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   const response = await fetchWithTimeout(
     (target, init) => fetch(target, init),
     url,
