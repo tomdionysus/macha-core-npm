@@ -24,7 +24,11 @@ It is milliseconds. Settled from the server source — `unix_ms()` is a `duratio
 
 ---
 
-## Unreleased
+## 0.9.0 — liveness without a role, and a failover that stops trusting what it replaced
+
+Every P0 from the 2026-09-12 review is closed in this release, along with the whole of the session-state work four client sessions asked for on 2026-09-13.
+
+**Breaking, for consumers:** `validateAnonymousSession` and `validateAnonymousSessionAnyNode` return the session record (`CurrentSession | undefined`) rather than a boolean; `UserRole` gained `view_status`, which breaks any exhaustive `Record<UserRole, …>` until the client adds the member; `EndpointCandidate` gained a required `ready`; and `ConnectionCheckResult` gained a required `unconfirmed`. Behaviourally: liveness moved to `/api/v1/health`, teardown after a failover belongs to the resolver alone, and the endpoint ranking cascade is an order rather than a comparator, so candidate order can differ from 0.8.1 given the same evidence.
 
 **The session lifecycle owns roles, and there is nothing to retry.** Re-reading what a session may do was the one part of the lifecycle living outside `SessionManager`, and the web client's failure showed why that matters: it fetched roles once per API identity, and failover changes the preferred endpoint *inside* the registry without changing that identity, so nothing ever re-asked. One transient failure left roles unknown for a whole run — and unknown means "show everything", so the viewer got a full navigation where every section failed on touch.
 

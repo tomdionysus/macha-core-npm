@@ -1,6 +1,6 @@
 {
   "name": "@machafoundation/core",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Generic, platform-independent client core for Macha: server API families, cluster endpoint routing and health, playback resolution and coordination, and persisted client state.",
   "license": "GPL-3.0-or-later",
   "type": "module",

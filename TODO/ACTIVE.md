@@ -8,25 +8,35 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** Released `0.8.1`, tagged on `main`. Work happens on `develop`; a release is an annotated bare-semver tag (`0.8.1`, never `v0.8.1`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`, one per release.
+**Where things stand.** `0.9.0` is the current version, bumped on `develop` and **not yet merged to `main` or tagged** — that is the first thing to do if you are picking this up. Work happens on `develop`; a release is an annotated bare-semver tag (`0.9.0`, never `v0.9.0`) on `main`, and the version bump goes *inside* the release commit so the tag points at exactly what ships. Sixteen tags exist, `0.2.0` through `0.8.1`.
 
-**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **618 tests in 57 files, all passing** as of 2026-09-13.
+**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **656 tests in 59 files, all passing** as of 2026-09-13. Run all five; `dist:check` is the one that catches a source change nobody built.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. Some resolve it through a `file:` link and pick up whatever `dist` holds; **the web client does not** — it has a real installed `0.8.1` in `node_modules` and sees nothing on `develop` until someone rebuilds and reinstalls. Assuming the link is universal cost a round trip of wrong advice on 2026-09-13. Build after changing source or you silently block their test suites. Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
+**Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
+
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. Some resolve it through a `file:` link and pick up whatever `dist` holds; **the web client does not** — it has a real installed copy in `node_modules` and sees nothing on `develop` until someone rebuilds and reinstalls. Assuming the link was universal cost a round trip of wrong advice. Build after changing source or you silently block their test suites. Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
 
 **Two clients do not use `PlaybackCoordinator` at all.** The phone client calls `ClusterPlaybackResolver.failover` directly and never prepares an alternate. So a fix landed in the coordinator reaches three clients of four, and a defect on the coordinator path does not reach the phone. **Check which layer a client actually uses before telling it a fix matters to it.**
 
-**Where these findings came from.** A full review on 2026-09-12 (five reviewers, one subsystem each, over the CodeGraph index) produced 5 high, 18 medium and 28 low findings. Four were fixed in `0.8.0`; the rest are below, folded into this file. The standalone review document was folded in here on 2026-09-13 and deleted — it is in git history if you want the original form.
+**How to be wrong here, in the three ways this project keeps finding.** Each has cost real time:
 
-**Two findings in that review were wrong**, both because a difference was inferred rather than checked, and both caught by client sessions. Before writing "these two disagree", read or run both. `codegraph_explore` returns both bodies in one call, so there is no excuse.
+1. *Inferring a difference instead of reading both bodies.* Two findings in the 2026-09-12 review were wrong this way. `codegraph_explore` returns both bodies in one call.
+2. *Attributing a measurement to the wrong node.* Two separate findings on 2026-09-13 were measurements of `inverbeg` (gbni-2, still on 0.38.1) reported as another host, and the same mistake cost the DTS/TrueHD investigation a day in September. The host is in the URL — record which one served the number.
+3. *Reading a transient as a steady state.* A `503 starting` read as a permanent gate, a `403` mid-deployment read as a configuration. Both on 2026-09-13, both retracted.
+
+**The rule that settles most boundary questions** (Tom's): *would nearly every conceivable client be required to do this? If yes, core. If not, theirs.* And the one that settles most design questions: no component may assume another is live or healthy, and a dying component's evidence is not evidence.
 
 ---
 
-## P0 — open defects with a cluster-wide cost
+## P0 — nothing open
 
-All five are fixed and unreleased — see [COMPLETED.md](COMPLETED.md). The last of them, the connection-gate lockout, was waiting on the server to choose between two fixes; server 0.38.5 answered it with `GET /api/v1/health`.
+All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, the connection-gate lockout, was waiting on the server to choose between two fixes; server 0.38.5 answered it with `GET /api/v1/health`.
+
+---
 
 ## P1 — correctness
+
+**Start here.** The watchdog item below is the one with a client waiting on it, and its first sub-item is a live defect on the Android TV client rather than a latent one.
 
 ### Watchdog blind spots on the platform it was written for
 **Waiting on:** core. `src/playback/MediaWatchdog.ts:324-352`, `:326-332`, `:226-233`.
@@ -51,16 +61,19 @@ All five are fixed and unreleased — see [COMPLETED.md](COMPLETED.md). The last
 It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` says 503 is a broken generation and terminal, and `:54` maps 503 with 404 to `stream`. **Not merely inconsistent — inverted.** An author following the public seam makes both mistakes at once and in opposite directions: retrying the terminal status, and condemning the node on the benign one. Both shipped adapters are already right (`PlayerEngine.kt:450` retries 500), so this is a trap for the next author rather than a live defect. Fix the comment, not the docs: `docs/writing-a-player.md` is already correct and is what people actually read.
 
 ### Session manager state gaps, and the roles work landing on them
-**Waiting on:** core. `src/api/SessionManager.ts`. **Take these four together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
+**Waiting on:** core. `src/api/SessionManager.ts`. **Take these three together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
 
-1. `:165-168` — `authorization()` hands out the dead token during a reactive re-mint, because `mint()` never clears the rejected token. The doc at `:31-34` claims the opposite.
-2. `:123-130`, `:241-243` — `start()` during an in-flight bootstrap adopts the *old* registry's result and never contacts the new one; `mintNow` then reports the corrected config as unreachable. The doc "safe to call again if the registry changes" is false in that window.
-3. `SessionAuth.ts:55-57`, `SessionManager.ts:270-277` — mint refusals (403/404/429/malformed) charged as endpoint failures and reported as "unreachable", real error discarded. Contradicts *a node refusal is a loud, recoverable error*. **Partly addressed in 0.8.1** for the credential path, which now proves a refused password does not mark the node unhealthy; the anonymous path still does.
-4. `:226`, `:276`, `:296` — refresh timers overwritten without clearing; `stop()` clears only the last.
+1. `authorization()` hands out the dead token during a reactive re-mint, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
+2. `start()` during an in-flight bootstrap adopts the *old* registry's result and never contacts the new one; `mintNow` then reports the corrected config as unreachable. The doc "safe to call again if the registry changes" is false in that window.
+3. Refresh timers overwritten without clearing; `stop()` clears only the last.
+
+**Item 3 of the original four shipped in `0.9.0`** — refusals are no longer charged as endpoint failures or reported as unreachable, and `lastMintFailure` carries the real error. Only the three above remain.
 
 **And the one the accounts work adds:** a 401 no longer means only "expired". A password or role change bumps `credential_generation` and invalidates every earlier session cluster-wide, deliberately, so a mid-session 401 is now normal. `SessionManager` answers a 401 by re-minting, and a re-mint with no credentials is an *anonymous* mint — so an administrator whose roles change is **silently downgraded to anonymous**: sections vanish, writes fail, and nothing says they were signed out. It disguises an auth event as a UI bug. The session must remember whether it was authenticated: anonymous 401 keeps re-minting invisibly; an authenticated 401 must stop, surface that the session ended, and let the application choose. The cached-session path on reload needs the same distinction.
 
 The phone client has covered the *display* half — it re-reads `currentSession` on every notification so the marker self-corrects — and deliberately did not invent a "you were signed out" event, because the cause is core's.
+
+**`0.9.0` supplies the parts this needs but does not do it.** `SessionManager.roles` now tracks what the session may do and clears when the token goes, and `lastMintFailure` distinguishes a refusal from an outage — so the remaining work is the *decision* the session has to make: remember whether it was authenticated, keep re-minting invisibly for an anonymous 401, and stop and surface the end of the session for an authenticated one. The server session confirmed a 401 from `GET /api/v1/session` can mean the account changed underneath the token rather than expiry, so a client must not tell a viewer their session timed out.
 
 ### Two clients disagree about what logout means, and core documents no answer
 **Waiting on:** Tom. `src/api/UsersApi.ts:128-135` (`logout`), `src/api/SessionManager.ts:148-166` (`signOut`).
@@ -89,14 +102,20 @@ Changing identity does not close playback sessions — nothing connects them —
 
 ## Waiting on Tom — asked for by clients, not core's to decide
 
-Four client sessions reported into core on 2026-09-13. The defects among their findings are fixed and in [COMPLETED.md](COMPLETED.md); what is left is where the boundary falls, and a boundary decided unilaterally is how four clients end up adapting to the wrong thing.
+Four client sessions reported into core on 2026-09-13. The defects among their findings shipped in `0.9.0`; what is left is where the boundary falls, and a boundary decided unilaterally is how four clients end up adapting to the wrong thing.
 
-Two of the four questions are settled. `view_status` is in `UserRole` and `USER_ROLES`. And **a role-less session learning no cluster membership is correct, not a defect**: such a session sees only the endpoint it was configured with. Nothing to build; recorded so it is not raised a third time.
+**Settled, recorded so they are not raised again.** `view_status` is in `UserRole`. A role-less session learning no cluster membership is *correct* — it sees only the endpoint it was configured with. `sessionPermits`/`sessionLockedOut` and the session's roles are in core, so both clients delete their copies. And `MODE_TRANSFORMS` **does not move**: the server session confirmed core's recorded 0.34.0 behaviour is current in 0.39.1 — `parse_preferences` resets `video`, `audio`, `max_height` and `max_bitrate` the moment `mode` is named, so the contradiction that rule guards against cannot be assembled. The client deletes its copy instead. If it still reproduces there, the evidence to ask for is the exact body, status and `code`.
 
-### What the Android TV client says belongs in core
-**Waiting on:** Tom, on the boundary. `MODE_TRANSFORMS` is **settled and does not move**: the server session confirmed core's recorded 0.34.0 behaviour is current in 0.39.1 — `parse_preferences` resets `video`, `audio`, `max_height` and `max_bitrate` the moment `mode` is named, so the contradiction the client's rule guards against cannot be assembled. The client deletes its copy. What remains of the audit: the HLS preflight walk (duplicated in two clients, and the RN divergences — `URL` cannot resolve relative references, `fetch` ignores `cache` — are exactly what one implementation taking an injected fetch would absorb once), and `sessionLockedOut` (one line, identical in two clients, decides whether a viewer sees the application at all). Then the artwork source plan and volume/mute semantics as policy over data core already owns. It explicitly does **not** ask for the focus scorer or the alphabet strip.
+### The Android TV audit, what remains
+**Waiting on:** Tom, on the boundary. In the order I would take them:
 
-The first three are the ones where divergence would be a defect rather than an inconsistency.
+1. **The HLS preflight walk.** Duplicated in two clients — `preflightWebHlsSource` in the web client, `src/player/preflight.ts` on Android TV. Manifest one variant deep, `Range: bytes=0-65535` each media target, require bytes. The parse and the probe are protocol; only `fetch` differs, and the two React Native divergences (`URL` cannot resolve relative references, `fetch` ignores `cache`) are exactly what one implementation taking an injected fetch absorbs once instead of twice. Core keeps the `Player.preflightSource` seam and additionally ships the walk, which a host calls.
+2. **Volume and mute semantics.** `state/volume.ts` persists a bare clamped number and has no concept of mute, so each client decides what to write when a viewer mutes — and writing `0` is indistinguishable from turning the sound down, so the next launch comes up silent with nothing explaining why. A correctness rule about core's own store, decided per client today. Verified.
+3. **The artwork source plan.** Core ships `artworkUrls()` and `ArtworkSource`; both clients then independently implement the same policy on top — drop anything needing an `Authorization` header, walk nodes on failure, and remember the URL that last loaded so a re-signed capability does not churn the image cache. That last part is a countermeasure to a server behaviour core itself documents, so it belongs beside the observation. Policy over data rather than a rule that breaks when it diverges.
+
+**Declined:** `REASON_TEXT`. The strings are presentation. The real risk is an unmapped `PlaybackDecisionReason` rendering as a raw identifier, and the cheap answer is a non-localised fallback sentence as `errorMessage` already does — not a string table in core. The client did not push for it either.
+
+**Not asked for, listed so the boundary stays visible:** the spatial focus scorer (geometry deciding what a viewer looks at next is presentation) and the alphabet strip (pure rendering over `titleIndex`).
 
 ---
 
@@ -155,9 +174,11 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 ### Coverage, and where the remainder is
 **Waiting on:** Tom, on whether to spend it.
 
-Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
+Was 93.4% statements and 84.4% branches at 600 tests; now 656 and not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: `canSeek: false`; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**What the review named and is still uncovered**, each tied to an item above: `canSeek: false`; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+
+`0.9.0` closed the rest of that list: two failure signals from one dead source, a late admission after the deadline, three-endpoint ranking, the no-facts fallback's container, retry preserving container and chooser-ness, a standby with a mismatched served container, refusal versus unreachable, and a 401 on the pre-save check. Every one of them was written red first, and two were red in the shape that matters — they did not fail, they hung until the harness killed them.
 
 ---
 
@@ -246,4 +267,6 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - **The platform probe has never run on a device.** `checkPlatformSurface()` ships having produced no runtime truth; its tests run on Node, which supplies everything. `0.8.0` added the three Hermes probes (`Intl.Collator` options, `normalize`, `\p{M}`) so the Android TV hardware run answers both questions at once. Its first real output is due with that 5.1 measurement.
 - **No pairing or QR concept exists in core.** The phone client is building a scanner and its payload parse stays local until Tom decides the format. If a format is going to be shared it belongs here, because otherwise four clients invent their own and drift on normalisation edges — but it is a decision, not a defect.
 - **Two clients still hold a duration formatter.** `formatPlaybackTime` is in core and the web client has dropped its copy. The phone and Android TV clients can drop theirs whenever convenient; nothing breaks until they do, and nothing improves either.
-- **One transient test failure seen on 2026-09-13**, not reproduced in three subsequent runs and coinciding with another session writing to the tree. If a `PlaybackCoordinator` timing test fails intermittently, that suite has several 300 ms+ waits and is the place to look. No evidence of a real flake yet.
+- **One transient test failure seen on 2026-09-13**, not reproduced in three subsequent runs and coinciding with another session writing to the tree. If a `PlaybackCoordinator` timing test fails intermittently, that suite has several 300 ms+ waits and is the place to look. No evidence of a real flake yet; not seen again across roughly twenty full runs on 2026-09-13.
+- **`0.39.1` moves `diagnostics` out of `/api/v1/status`** to `GET /api/v1/status/diagnostics`, same `view_status` role, with `diagnostics_endpoint` naming it in the lightweight response. **Core is unaffected** — `ClusterStatusSnapshot` has never carried that block — so this is here only so the next session does not rediscover it. Committed server-side, not yet deployed.
+- **`gbni-2` (`inverbeg`) is stranded on `0.38.1`** with no console access, so it has no `/api/v1/health` and answers `401` to it, and its `/api/v1/status` is ungated. Every odd measurement on 2026-09-13 turned out to be that node. The liveness probe falls back to the old route for exactly this, and that fallback retires itself when the node is upgraded.
