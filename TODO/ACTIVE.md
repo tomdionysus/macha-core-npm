@@ -114,6 +114,34 @@ What *does* need doing is the doc comment above it, which currently states as fa
 
 It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` says 503 is a broken generation and terminal, and `:54` maps 503 with 404 to `stream`. **Not merely inconsistent — inverted.** An author following the public seam makes both mistakes at once and in opposite directions: retrying the terminal status, and condemning the node on the benign one. Both shipped adapters are already right (`PlayerEngine.kt:450` retries 500), so this is a trap for the next author rather than a live defect. Fix the comment, not the docs: `docs/writing-a-player.md` is already correct and is what people actually read.
 
+### Persisting a sign-in — the cache is lossy in the field that decides everything
+**Waiting on:** Tom, on the scheme. Raised by the phone client 2026-09-13, relaying a requirement from Tom that **signing in be permanent until logout across all four clients**. *That requirement reached core second-hand; confirm it before changing how a bearer is stored.*
+
+**The finding, and it is core's:** `cacheSession` serialises the whole `AnonymousSession`, but `loadCachedSession` (`SessionManager.ts:313-323`) reconstructs only `{ token, expiresAtMs }` — `username` and `roles` are parsed and discarded. **A restored session is structurally indistinguishable from an anonymous one**, so after a reload core cannot tell it was ever signed in.
+
+That one gap explains three items this file has been treating separately:
+1. **Sign-in does not survive a restart.** `signIn` (`:219-222`) caches into `this.storage`, which is `machaHost().ephemeralStorage` — `sessionStorage` on web. A credentialed session dies with the tab *by construction*.
+2. **The silent anonymous downgrade** in the item below. Core answers a 401 by re-minting, and a re-mint without credentials is an anonymous mint; it cannot do better while it does not know the session was credentialed.
+3. **The storage-tier question.** "Anonymous is disposable, credentialed is worth keeping" is unanswerable while core cannot tell them apart at the point of persistence.
+
+**Core's position, given to the phone client:**
+- **First, and needing no new seam: the session must know what kind it is.** Record the kind in the cached record, route persistence by kind, restore it on load. Entirely internal, and **every candidate scheme needs it**, so it lands first regardless of what Tom picks — and it unblocks the 401 fix at the same time.
+- **Then `secureStorage?: StorageLike`**, optional, credentialed-only, falling back to `storage`. The host names its own safe place (Keychain/Keystore via `expo-secure-store`) rather than core guessing; a host supplying nothing keeps today's behaviour. *The phone client stores the bearer in AsyncStorage plaintext today — readable on a rooted device or in a backup.*
+- **Not the callback alternative**, for now: it still hands the host a token, so it does not solve the web case that partly motivates it, and it makes the common case harder — three clients wanting a safer slot would each write a store.
+- **The web httpOnly-cookie answer is a different axis and must not be forced through `StorageLike`.** A cookie means core holds no bearer at all, which is transport and auth (`AuthenticatedFetch`, the `Authorization` header, `send()`), not storage. A storage seam contorted to express "no storage" cannot say what it means. If web goes cookie-based the shape is a mode where core holds no token plus `credentials: 'include'`; **separate work, must not block this.** Put to the server session by the phone client.
+- **Tizen has no hardware backing** — app-private storage only. Document that core cannot make a platform safer than it is, only use what the host offers, rather than implying parity.
+
+### Core ships two storage-key conventions and documents neither
+**Waiting on:** core for the doc/export; Tom for any rename.
+
+Audited 2026-09-13, every literal in the package:
+- **`macha-` hyphenated:** `macha-session`, `macha-client-id`, `macha-server-url`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-server-endpoints-v1`, `macha-probe`, `macha-storage-probe`
+- **`macha.` dotted:** `macha.continueWatching.v1.*`, `macha.playbackQueue.v1.*`, `macha.playlists.v1.*`, `macha.musicPlaylist.v1.*`, `macha.volume.v1.*`
+
+**This cost the phone client a real defect.** It namespaces its own keys `macha.` and hydrated AsyncStorage with a `startsWith('macha.')` filter — which matches one of core's two conventions exactly and misses the other, **including the session**. The token was written faithfully on every launch and never read back. Nothing errored and nothing logged, because an anonymous session re-mints in milliseconds; the only symptom was *a person* being signed out on every cold start, which nobody notices until an account matters. **Not a careless filter — a foreseeable consequence of core shipping two conventions and naming neither.**
+
+Fix now: **make core's owned keys discoverable** — documented and exported — so a host filtering its own namespace can be correct without grepping a dependency. **Do not rename yet:** `macha-session` is the key whose rename signs out every user on every client simultaneously, so it belongs with the storage scheme above and its migration, not ahead of it.
+
 ### Session manager state gaps, and the roles work landing on them
 **Waiting on:** core. `src/api/SessionManager.ts`. **Take these three together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
 
