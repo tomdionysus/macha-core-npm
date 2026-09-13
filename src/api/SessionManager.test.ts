@@ -340,7 +340,8 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
 
   it('adopts a validated cached session without minting a new one', async () => {
     const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode');
-    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(true);
+    const validate = vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+      .mockResolvedValue({ roles: ['media_viewer'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
     storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
@@ -356,11 +357,49 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer cached-token');
   });
 
+  it('takes the roles from whichever request already had them', async () => {
+    // Roles arrive with the token on every path: the mint response states
+    // them, and so does the record returned by validating a cached token. So
+    // there is no separate fetch to fail and nothing to retry — which is what
+    // made this worth moving here. A client fetching them once per API
+    // identity never re-asked, because failover changes the preferred
+    // endpoint inside the registry without changing that identity, and one
+    // transient failure left roles unknown for a whole run.
+    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode')
+      .mockResolvedValue({ roles: ['media_viewer', 'view_status'], expires_unix_ms: Date.now() + DAY_MS });
+    const storage = new MemoryStorage();
+    storage.setItem('macha-session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    const manager = new SessionManager(storage);
+    expect(manager.roles).toBeUndefined();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.roles).toEqual(['media_viewer', 'view_status']);
+  });
+
+  it('takes the roles a mint states, and forgets them when the token goes', async () => {
+    const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode')
+      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS, roles: [] })
+      .mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager();
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.roles).toEqual([]));
+
+    // An empty array is a session the cluster granted nothing, which is a
+    // real state and not an absence. Losing the token makes it unknown again
+    // rather than leaving a stale answer that says the viewer may do nothing.
+    await manager.signOut();
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(2));
+    expect(manager.roles).toBeUndefined();
+  });
+
   it('mints fresh when the cached session fails validation, and re-caches the result', async () => {
     const mint = vi.spyOn(SessionAuth, 'mintAnonymousSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
-    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(false);
+    vi.spyOn(SessionAuth, 'validateAnonymousSessionAnyNode').mockResolvedValue(undefined);
     const storage = new MemoryStorage();
     storage.setItem('macha-session', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);

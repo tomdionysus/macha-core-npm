@@ -1,5 +1,6 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
+import type { CurrentSession, UserRole } from './UsersApi.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
@@ -14,6 +15,20 @@ export interface AnonymousSession {
    * server did not say" from "the server said anonymous".
    */
   username?: string;
+  /**
+   * What this session may do, as the minting node resolved it.
+   *
+   * Absent means the node did not say, which is not the same as an empty
+   * array — that is a session the cluster deliberately granted nothing, and
+   * the two need opposite handling. See `sessionPermits` and
+   * `sessionLockedOut`.
+   *
+   * Unknown strings are passed through rather than filtered to `UserRole`.
+   * Dropping a role the server granted because this build has not heard of it
+   * yet would understate what the viewer may do, and understating is the
+   * direction that hides working features behind a lock.
+   */
+  roles?: UserRole[];
 }
 
 export interface SessionCredentials {
@@ -106,7 +121,24 @@ export async function mintAnonymousSession(baseUrl: string, credentials?: Sessio
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
   if (!token || expiresAtMs === undefined) throw new SessionAuthError('Server returned a malformed session response.');
   const username = typeof record?.username === 'string' ? record.username : undefined;
-  return username === undefined ? { token, expiresAtMs } : { token, expiresAtMs, username };
+  return {
+    token,
+    expiresAtMs,
+    ...(username !== undefined ? { username } : {}),
+    ...(sessionRoles(record) !== undefined ? { roles: sessionRoles(record)! } : {}),
+  };
+}
+
+/**
+ * The roles a session record states, or `undefined` where it states none.
+ *
+ * Absent and empty are kept apart all the way down: a node that did not
+ * answer the question and a cluster that granted nothing look identical in a
+ * boolean and need opposite handling.
+ */
+function sessionRoles(record: Record<string, unknown> | undefined): UserRole[] | undefined {
+  if (!Array.isArray(record?.roles)) return undefined;
+  return (record.roles as unknown[]).filter((value): value is UserRole => typeof value === 'string');
 }
 
 /**
@@ -185,7 +217,7 @@ export async function mintAnonymousSessionAnyNode(registry: EndpointRegistry, cr
  * response is the same either way — mint fresh — but a caller that reports
  * the reason to a viewer must not claim the session timed out.
  */
-export async function validateAnonymousSession(baseUrl: string, token: string): Promise<boolean> {
+export async function validateAnonymousSession(baseUrl: string, token: string): Promise<CurrentSession | undefined> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   const response = await fetchWithTimeout(
     (target, init) => fetch(target, init),
@@ -203,9 +235,25 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
   // would mark all four nodes unhealthy on the way to re-minting, wrecking
   // endpoint ranking at exactly the moment the cluster is already in flux.
   // The token is simply no longer acceptable anywhere; say so and re-mint.
-  if (response.status === 401 || response.status === 403) return false;
-  if (!response.ok) throw new SessionAuthError(`${response.status} ${response.statusText}`, response.status);
-  return true;
+  const { body, wasJson } = await readResponseBody(response);
+  if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
+  if (response.status === 401 || response.status === 403) return undefined;
+  if (!response.ok) {
+    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(message, response.status, code);
+  }
+  // The record is returned rather than a boolean because this request already
+  // carries the answer to a second question nothing else was asking: what the
+  // session may do. Re-reading roles was the one part of the session
+  // lifecycle living outside this module, and a client that fetched them once
+  // per API identity never re-asked — failover changes the preferred endpoint
+  // inside the registry without changing that identity, so one transient
+  // failure left roles unknown for a whole run.
+  const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;
+  if (!record || !Array.isArray(record.roles)) {
+    throw new SessionAuthError('Server returned a malformed session record.', response.status);
+  }
+  return record as unknown as CurrentSession;
 }
 
 /**
@@ -216,15 +264,18 @@ export async function validateAnonymousSession(baseUrl: string, token: string): 
  * can be reached the caller falls back to minting fresh (which will hit the
  * same unreachable nodes and fail the same way — no worse than today).
  */
-export async function validateAnonymousSessionAnyNode(registry: EndpointRegistry, token: string): Promise<boolean> {
+export async function validateAnonymousSessionAnyNode(
+  registry: EndpointRegistry,
+  token: string,
+): Promise<CurrentSession | undefined> {
   for (const { endpoint } of registry.candidates()) {
     try {
-      const valid = await validateAnonymousSession(endpoint.baseUrl, token);
+      const session = await validateAnonymousSession(endpoint.baseUrl, token);
       registry.recordSuccess(endpoint.id);
-      return valid;
+      return session;
     } catch {
       registry.recordFailure(endpoint.id);
     }
   }
-  return false;
+  return undefined;
 }

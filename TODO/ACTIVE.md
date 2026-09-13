@@ -93,17 +93,8 @@ Four client sessions reported into core on 2026-09-13. The defects among their f
 
 Two of the four questions are settled. `view_status` is in `UserRole` and `USER_ROLES`. And **a role-less session learning no cluster membership is correct, not a defect**: such a session sees only the endpoint it was configured with. Nothing to build; recorded so it is not raised a third time.
 
-### Session role policy, offered by the web client
-**Waiting on:** Tom, on the boundary. Three rules it has built and would delete in favour of core's:
-
-1. **An empty role list means the session may do nothing.** Server 0.38.4 makes `roles: []` a real mintable state — removing `media_viewer` from the anonymous account is how a registered-users-only deployment is configured — and every client must put a login in front of it.
-2. **"Unknown" is not "none".** A whoami that has not answered must not read as a session with no privileges, or navigation empties for everyone the moment a node is slow.
-3. **The whoami must retry.** It was fetched once per API identity, and failover changes the preferred endpoint *inside* the registry without changing that identity, so nothing ever re-asked. One transient failure left roles unknown for a whole run. `SessionManager` already owns mint, refresh and re-mint; the whoami is the only part of the session lifecycle outside it.
-
-The first two are decisions about what a role list means, not presentation — two clients disagreeing about them means the same account behaves differently on a TV and a phone. The third is squarely a lifecycle concern and the strongest candidate of the three.
-
 ### What the Android TV client says belongs in core
-**Waiting on:** Tom, on the boundary. Its audit, worst first: `MODE_TRANSFORMS` (naming a mode without its per-stream transforms makes the server reject the update, so it is wire protocol living in two view layers), the HLS preflight walk (duplicated in two clients, and the RN divergences — `URL` cannot resolve relative references, `fetch` ignores `cache` — are exactly what one implementation taking an injected fetch would absorb once), and `sessionLockedOut` (one line, identical in two clients, decides whether a viewer sees the application at all). Then the artwork source plan and volume/mute semantics as policy over data core already owns. It explicitly does **not** ask for the focus scorer or the alphabet strip.
+**Waiting on:** Tom, on the boundary. `MODE_TRANSFORMS` is **settled and does not move**: the server session confirmed core's recorded 0.34.0 behaviour is current in 0.39.1 — `parse_preferences` resets `video`, `audio`, `max_height` and `max_bitrate` the moment `mode` is named, so the contradiction the client's rule guards against cannot be assembled. The client deletes its copy. What remains of the audit: the HLS preflight walk (duplicated in two clients, and the RN divergences — `URL` cannot resolve relative references, `fetch` ignores `cache` — are exactly what one implementation taking an injected fetch would absorb once), and `sessionLockedOut` (one line, identical in two clients, decides whether a viewer sees the application at all). Then the artwork source plan and volume/mute semantics as policy over data core already owns. It explicitly does **not** ask for the focus scorer or the alphabet strip.
 
 The first three are the ones where divergence would be a defect rather than an inconsistency.
 

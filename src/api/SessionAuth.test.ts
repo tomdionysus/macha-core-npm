@@ -44,7 +44,9 @@ describe('mintAnonymousSession', () => {
     expect(init.method).toBe('POST');
     expect(init.body).toBe('{}');
     expect(new Headers(init.headers).has('Authorization')).toBe(false);
-    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000 });
+    // The mint response states the roles, so the token never arrives without
+    // them and nothing has to go back and ask.
+    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, roles: ['anonymous'] });
   });
 
   it('rejects with a SessionAuthError carrying the status on a non-ok response', async () => {
@@ -88,7 +90,7 @@ describe('validating a session the cluster no longer accepts', () => {
     )));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
-    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBe(false);
+    await expect(validateAnonymousSessionAnyNode(registry, 'stale')).resolves.toBeUndefined();
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
   });
 });
@@ -208,7 +210,7 @@ describe('a node that accepts the connection and never answers', () => {
     const request = validateAnonymousSessionAnyNode(registry, 'cached');
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
 
-    await expect(request).resolves.toBe(false);
+    await expect(request).resolves.toBeUndefined();
   });
 });
 
@@ -226,7 +228,7 @@ describe('signing in with credentials', () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({ credentials: { username: 'alice', password: 'hunter2000' } });
-    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, username: 'alice' });
+    expect(session).toEqual({ token: 'token-secret', expiresAtMs: 2_000, username: 'alice', roles: ['media_viewer'] });
   });
 
   it('does not mark a node unhealthy for refusing a password, and does not ask the next one', async () => {
