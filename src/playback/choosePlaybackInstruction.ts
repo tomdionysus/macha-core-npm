@@ -243,10 +243,15 @@ export function audioStreamObjection(
  * copy into MPEG-TS would trade a transcode the viewer can watch for a copy
  * they cannot. The node's answer decides copy versus transcode *within* the
  * chosen container; it does not decide the container.
+ *
+ * Exported because carriage is decided by the host and the device alone, so
+ * every path that asks a node to transform — including the no-facts fallback,
+ * which has no instruction to take it from — has to answer the same way. A
+ * second implementation of this is how a host policy goes quietly missing.
  */
-function segmentContainer(
+export function segmentContainer(
   capabilities: PlaybackCapabilities,
-  overrides: PlaybackPolicyOverrides,
+  overrides: PlaybackPolicyOverrides = {},
 ): { container: SegmentContainer | undefined; preferred: boolean } {
   const fmp4 = capabilities.hlsFmp4;
   const mpegts = capabilities.hlsTs ?? false;

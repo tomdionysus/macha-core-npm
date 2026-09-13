@@ -267,6 +267,53 @@ describe('PlaybackRuntime ownership state machine', () => {
     await runtime.stop();
   });
 
+  it('retries a decision the chooser made as a fresh choice, not as a viewer instruction', async () => {
+    // The retry used to be seeded from the session the server echoed back.
+    // That echo has no `container`, so the retry asked for no carriage and
+    // the node fell back to its own default — the starvation 0.6.3 paid for.
+    // And its concrete `mode`, arriving as initialPreferences.mode, reads as
+    // a mode the viewer picked: the host is told `chosenByViewer` about a
+    // decision no viewer made, the chooser is skipped, and the one-shot 400
+    // downgrade is switched off with it.
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+    expect(runtime.getPlaybackSnapshot()?.instruction).toMatchObject({ chosenByViewer: false });
+
+    player.fail(new Error('node failed'));
+    await vi.waitFor(() => expect(runtime.getSnapshot().phase).toBe('failed'));
+    await runtime.retry();
+
+    await vi.waitFor(() => expect(api.resolve).toHaveBeenCalledTimes(2));
+    // Chosen again rather than restated: the chooser ran on the retry, so the
+    // carriage is present and the decision is still the chooser's own.
+    expect(api.resolve.mock.calls[1]?.[3]).toMatchObject({ mode: 'transcode', container: 'fmp4' });
+    expect(runtime.getPlaybackSnapshot()?.instruction).toMatchObject({ chosenByViewer: false });
+    await runtime.stop();
+  });
+
+  it('restates a mode the viewer did pick, with the carriage that went with it', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+
+    await runtime.play(
+      { media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' },
+      { mode: 'transcode', container: 'mpegts' },
+    );
+    player.fail(new Error('node failed'));
+    await vi.waitFor(() => expect(runtime.getSnapshot().phase).toBe('failed'));
+    await runtime.retry();
+
+    await vi.waitFor(() => expect(api.resolve).toHaveBeenCalledTimes(2));
+    expect(api.resolve.mock.calls[1]?.[3]).toMatchObject({ mode: 'transcode', container: 'mpegts' });
+    await runtime.stop();
+  });
+
   it('treats Play after terminal failure as an explicit retry of the failed intent', async () => {
     const player = new FakePlayer();
     const api = resolver();

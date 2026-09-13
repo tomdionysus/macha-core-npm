@@ -1475,6 +1475,30 @@ describe('the instruction has a symptom when it is a fallback', () => {
     expect(report?.reasons).toContain('no-technical-facts');
   });
 
+  it('still asks for the host\'s container when it has no facts to reason from', async () => {
+    // A Samsung host asks for MPEG-TS because fragmented MP4 black-screens on
+    // the device, and a failed facts lookup says nothing about that: carriage
+    // is decided by the host and the device, and `segmentContainer` needs
+    // neither the profile nor the node's operations to decide it. Asked for
+    // no container at all, the node defaults to fMP4 — and failover then
+    // restates that wrong answer into every replacement, which is the silent
+    // starvation 0.6.3 already paid for once.
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'transcode' }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => ({ ...capabilities(), hlsTs: true }),
+      initialPositionMs: 0,
+      policyOverrides: { preferSegmentContainer: 'mpegts' },
+      facts: async () => undefined,
+    });
+
+    await coordinator.start();
+
+    expect(api.resolve.mock.calls[0][3]).toMatchObject({ mode: 'transcode', container: 'mpegts' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ withoutFacts: true, container: 'mpegts' });
+  });
+
   it('shows the container it asked for beside the one it got', async () => {
     // A node that ignores a segment-container preference produces a real
     // container on screen that is not the requested one, and nothing points

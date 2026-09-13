@@ -10,7 +10,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { choosePlaybackInstruction, degradeInstruction, segmentContainer, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -542,15 +542,26 @@ export class PlaybackCoordinator {
       } else if (this.options.facts === undefined) {
         this.log.warn('instruction-without-facts-supplier', { mediaId: this.options.media.id });
       }
-      this.patchSnapshot({ instruction: {
-        mode: 'transcode', video: 'transcode', audio: 'transcode',
-        reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
-      } });
       // No facts to reason from. Transcode is the only instruction that is
       // always performable, so it is the safe answer — never a corrupt
       // picture, at the cost of quality nobody can verify was needed.
-      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id });
-      return { ...preferences, mode: 'transcode' };
+      //
+      // The carriage is not part of that concession, and asking for none was
+      // not a neutral omission. A host states a segment container because the
+      // other one is broken on its device, which is true whether or not a
+      // facts lookup answered: `segmentContainer` needs neither the profile
+      // nor the node's operations to decide it. Left out, a Samsung host that
+      // asked for MPEG-TS got whatever the node defaults to — fMP4 — and
+      // failover then faithfully restated that wrong answer into every
+      // replacement. Silent starvation, which is the class 0.6.3 already paid
+      // for once.
+      const { container } = segmentContainer(capabilities, this.options.policyOverrides);
+      this.patchSnapshot({ instruction: {
+        mode: 'transcode', video: 'transcode', audio: 'transcode', container,
+        reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
+      } });
+      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container });
+      return { ...preferences, mode: 'transcode', container };
     }
 
     const instruction = choosePlaybackInstruction(facts.profile, capabilities, {

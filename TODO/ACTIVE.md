@@ -47,16 +47,6 @@ Resolve together with the role-gating item below. The tests here exercise only 2
 
 ## P1 — correctness
 
-### The no-facts fallback drops the host's container policy
-**Waiting on:** core. `src/playback/PlaybackCoordinator.ts:553`.
-
-`return { ...preferences, mode: 'transcode' }` sets no `container`, yet `segmentContainer(capabilities, overrides)` needs neither profile nor operations. A Samsung host with `preferSegmentContainer: 'mpegts'` whose facts lookup fails gets transcode with no container, so the node defaults to fMP4 — the silent starvation HISTORY describes. Failover's `withServedSegmentContainer` then faithfully restates `fmp4` into every replacement. **This is the same class 0.6.3 already paid for.** Fix: call `segmentContainer` in the fallback and report the container.
-
-### `PlaybackRuntime.retry()` rebuilds from the server echo
-**Waiting on:** core. `src/playback/PlaybackRuntime.ts:301-325`.
-
-`session.preferences` has no `container` (the 0.6.3 lesson again), so a retry after a fatal asks for no carriage. And `mode` echoed back as `initialPreferences.mode` is treated as viewer-chosen: `chosenByViewer: true` is reported to the host though the chooser decided, the chooser is skipped, and the 400 downgrade path in `resolveInstructed` is disabled. Fix: seed retry from the snapshot's `instruction`, with `mode: 'choose'` when the chooser decided.
-
 ### The carriage fix misses the standby path
 **Waiting on:** core. `src/playback/ClusterPlaybackResolver.ts:145-153`, `:193-221`.
 
@@ -199,7 +189,7 @@ Shape: report whether the walk ended on unanimous absence or on absence-plus-fai
 
 Was 93.4% statements and 84.4% branches at 600 tests; now 615 tests, not re-measured. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are the failure paths that only fire in specific combinations — failover racing a seek, a promotion during a pending mutation. Each needs a scenario built rather than an assertion added, which is why it is the slow part and also why it is the part worth having.
 
-**The specific gaps the review named**, each tied to an item above: `canSeek: false`; the no-facts fallback honouring container policy; retry preserving container and chooser-ness; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+**The specific gaps the review named**, each tied to an item above: `canSeek: false`; a standby with a mismatched served container; watchdog resume after suspend and after a backward seek; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; reactive re-mint; refusal versus unreachable; a 401 on the pre-save check; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
 
 ---
 

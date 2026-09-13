@@ -6,13 +6,64 @@ import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '
 import {
   PlaybackCoordinator,
   type PlaybackCoordinatorSnapshot,
+  type PlaybackInstructionReport,
 } from './PlaybackCoordinator.js';
 import type {
+  PlaybackPreferences,
   PlaybackPreferencesUpdate,
   PlaybackResolver,
   PlaybackStopOptions,
   PlaybackUpdate,
 } from './PlaybackResolver.js';
+
+/**
+ * The parts of a failed generation's preferences that are the viewer's own
+ * choices about *content* — which audio track, which subtitles, what quality
+ * ceiling. A retry echoes them unchanged: nothing about a node failing makes
+ * any of them wrong.
+ */
+function viewerStreamChoices(preferences: PlaybackPreferences): PlaybackPreferencesUpdate {
+  return {
+    maxHeight: preferences.maxHeight,
+    maxBitrate: preferences.maxBitrate,
+    audioStream: preferences.audioStream,
+    subtitleStream: preferences.subtitleStream,
+    audioLanguage: preferences.audioLanguage,
+    subtitleLanguage: preferences.subtitleLanguage,
+  };
+}
+
+/**
+ * How a retry should ask for the media to be carried.
+ *
+ * Taken from the instruction the coordinator reported, not from the session
+ * the server echoed back, because the echo is wrong in two directions at
+ * once. It carries no `container`, so a retry asked for no carriage at all
+ * and the node fell back to its own default — the silent starvation 0.6.3
+ * already paid for. And its `mode` is a concrete mode, which arriving as
+ * `initialPreferences.mode` reads as a mode the *viewer* picked:
+ * `chosenByViewer: true` is reported to the host though the chooser decided
+ * it, the chooser is skipped on the retry, and the one-shot 400 downgrade in
+ * `resolveInstructed` is switched off for a decision no viewer ever made.
+ *
+ * So a chooser-made decision retries as `choose`. It should be made again
+ * anyway: a retry usually lands on a different node, and the instruction that
+ * was right for the last one is exactly the thing in question. Only a mode
+ * the viewer actually picked is restated, with the carriage that went with it.
+ */
+function retriedCarriage(
+  instruction: PlaybackInstructionReport | undefined,
+  failedPreferences: PlaybackPreferences | undefined,
+): PlaybackPreferencesUpdate {
+  if (!instruction) return failedPreferences ? { mode: failedPreferences.mode } : {};
+  if (!instruction.chosenByViewer) return { mode: 'choose' };
+  return {
+    mode: instruction.mode,
+    video: instruction.video,
+    audio: instruction.audio,
+    container: instruction.container,
+  };
+}
 
 export type PlaybackRuntimePhase = 'idle' | 'starting' | 'playing' | 'paused' | 'stopping' | 'failed';
 
@@ -306,15 +357,8 @@ export class PlaybackRuntime {
     const failedPreferences = this.playback?.session?.preferences;
     const initialPreferences: PlaybackPreferencesUpdate | undefined = failedPreferences || preferences
       ? {
-          ...(failedPreferences ? {
-            mode: failedPreferences.mode,
-            maxHeight: failedPreferences.maxHeight,
-            maxBitrate: failedPreferences.maxBitrate,
-            audioStream: failedPreferences.audioStream,
-            subtitleStream: failedPreferences.subtitleStream,
-            audioLanguage: failedPreferences.audioLanguage,
-            subtitleLanguage: failedPreferences.subtitleLanguage,
-          } : {}),
+          ...(failedPreferences ? viewerStreamChoices(failedPreferences) : {}),
+          ...retriedCarriage(this.playback?.instruction, failedPreferences),
           ...preferences,
         }
       : undefined;
