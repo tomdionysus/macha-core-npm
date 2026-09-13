@@ -146,3 +146,55 @@ describe('PlaybackQueueStore', () => {
     });
   });
 });
+
+describe('safety for a reactive caller', () => {
+  // The failure this prevents is not untidiness. A hook that subscribes and
+  // then reads memoises on the store, whose identity never changes, so the
+  // queue freezes at whatever it first computed while the store goes on
+  // changing underneath. Code that looks correct, producing a list that
+  // silently stops updating.
+  const storeWith = () => new PlaybackQueueStore('reactive', new MemoryStorage());
+
+  it('hands back the same reference until something changes', () => {
+    const store = storeWith();
+    store.replace([track('a'), track('b')]);
+    expect(store.getSnapshot()).toBe(store.getSnapshot());
+  });
+
+  it('hands back a new reference after a mutation, so a memo re-runs', () => {
+    const store = storeWith();
+    store.replace([track('a')]);
+    const before = store.getSnapshot();
+    store.append([track('b')]);
+    expect(store.getSnapshot()).not.toBe(before);
+    expect(store.getSnapshot()?.items.map((item) => item.id)).toEqual(['a', 'b']);
+  });
+
+  it('notifies a subscriber on every mutation, including a clear', () => {
+    const store = storeWith();
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => { notifications += 1; });
+    store.replace([track('a')]);
+    store.append([track('b')]);
+    store.select(1);
+    store.updatePosition(5_000);
+    store.insertNext([track('c')]);
+    store.setItems([track('a'), track('c')], 0);
+    store.clear();
+    expect(notifications).toBe(7);
+    unsubscribe();
+    store.replace([track('d')]);
+    expect(notifications).toBe(7);
+  });
+
+  it('treats an absent queue as a real snapshot rather than an uncomputed one', () => {
+    // `undefined` is a legitimate value here, so emptiness cannot be inferred
+    // from the cache being unset without re-reading storage on every call.
+    const store = storeWith();
+    expect(store.getSnapshot()).toBeUndefined();
+    store.replace([track('a')]);
+    expect(store.getSnapshot()?.items).toHaveLength(1);
+    store.clear();
+    expect(store.getSnapshot()).toBeUndefined();
+  });
+});

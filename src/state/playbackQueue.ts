@@ -37,13 +37,59 @@ function validState(value: unknown): value is PlaybackQueueState {
 
 export class PlaybackQueueStore {
   private readonly key: string;
+  private readonly listeners = new Set<() => void>();
+  /**
+   * The snapshot handed to reactive callers, held so its identity is stable
+   * between mutations.
+   *
+   * Without this, `load()` returns a freshly parsed object every call. A hook
+   * that subscribes and then reads memoises on the store — whose identity never
+   * changes — so the queue freezes at whatever it first computed while the
+   * store underneath goes on changing. Code that looks correct, producing a
+   * list that silently stops updating, and the kind of bug that surfaces as a
+   * user saying the app "sometimes doesn't refresh".
+   *
+   * `undefined` is a legitimate snapshot here — an absent queue — so emptiness
+   * is tracked separately rather than inferred from the cache being unset.
+   */
+  private cached?: PlaybackQueueState;
+  private cacheLoaded = false;
 
   constructor(clientId: string, private readonly storage: StorageLike = machaHost().storage) {
     this.key = `macha.playbackQueue.v1.${clientId}`;
   }
 
+  /** Stable between mutations, as `useSyncExternalStore` requires. */
+  getSnapshot = (): PlaybackQueueState | undefined => {
+    if (!this.cacheLoaded) {
+      this.cached = this.load();
+      this.cacheLoaded = true;
+    }
+    return this.cached;
+  };
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  private changed(): void {
+    this.cacheLoaded = false;
+    this.cached = undefined;
+    for (const listener of this.listeners) listener();
+  }
+
   load(): PlaybackQueueState | undefined {
     return readValidatedJson(this.storage, this.key, validState);
+  }
+
+  /** Persist and notify. Every mutation goes through here or `clear()`. */
+  private commit(next: PlaybackQueueState): PlaybackQueueState {
+    const written = writeJson(this.storage, this.key, next);
+    this.changed();
+    return written;
   }
 
   replace(items: readonly MediaSummary[], currentIndex = 0): PlaybackQueueState {
@@ -56,7 +102,7 @@ export class PlaybackQueueStore {
       positionMs: 0,
       updatedAt: Date.now(),
     };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   /**
@@ -95,21 +141,21 @@ export class PlaybackQueueStore {
       positionMs: wasPlaying !== undefined && wasPlaying === nowPlaying ? current.positionMs : 0,
       updatedAt: Date.now(),
     };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   select(currentIndex: number): PlaybackQueueState | undefined {
     const current = this.load();
     if (!current || currentIndex < 0 || currentIndex >= current.items.length) return current;
     const next = { ...current, currentIndex, positionMs: 0, updatedAt: Date.now() };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   updatePosition(positionMs: number): PlaybackQueueState | undefined {
     const current = this.load();
     if (!current) return undefined;
     const next = { ...current, positionMs: Number.isFinite(positionMs) ? Math.max(0, positionMs) : 0, updatedAt: Date.now() };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   insertNext(items: readonly MediaSummary[]): PlaybackQueueState | undefined {
@@ -123,7 +169,7 @@ export class PlaybackQueueStore {
       items: [...current.items.slice(0, insertAt), ...additions, ...current.items.slice(insertAt)],
       updatedAt: Date.now(),
     };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   append(items: readonly MediaSummary[]): PlaybackQueueState | undefined {
@@ -136,10 +182,11 @@ export class PlaybackQueueStore {
       items: [...current.items, ...additions],
       updatedAt: Date.now(),
     };
-    return writeJson(this.storage, this.key, next);
+    return this.commit(next);
   }
 
   clear(): void {
     this.storage.removeItem(this.key);
+    this.changed();
   }
 }

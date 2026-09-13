@@ -166,3 +166,47 @@ describe('ContinueWatchingStore', () => {
     });
   });
 });
+
+describe('safety for a reactive caller', () => {
+  // A hook that subscribes and then reads memoises on the store, whose
+  // identity never changes, so the Continue Watching row freezes at whatever
+  // it first computed while the store goes on changing underneath.
+  const storeWith = () => new ContinueWatchingStore('reactive', new MemoryStorage());
+
+  it('hands back the same reference until something changes', () => {
+    const store = storeWith();
+    store.update(progress('a', 30_000));
+    expect(store.getSnapshot()).toBe(store.getSnapshot());
+  });
+
+  it('hands back a new reference after an update, so a memo re-runs', () => {
+    const store = storeWith();
+    store.update(progress('a', 30_000));
+    const before = store.getSnapshot();
+    store.update(progress('b', 40_000));
+    const after = store.getSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.map((entry) => entry.mediaId)).toEqual(['b', 'a']);
+  });
+
+  it('notifies on update, clear and clearAll', () => {
+    const store = storeWith();
+    let notifications = 0;
+    const unsubscribe = store.subscribe(() => { notifications += 1; });
+    store.update(progress('a', 30_000));
+    store.clear('a');
+    store.clearAll();
+    expect(notifications).toBe(3);
+    unsubscribe();
+    store.update(progress('b', 30_000));
+    expect(notifications).toBe(3);
+  });
+
+  it('reflects a clear in the next snapshot', () => {
+    const store = storeWith();
+    store.update(progress('a', 30_000));
+    expect(store.getSnapshot()).toHaveLength(1);
+    store.clearAll();
+    expect(store.getSnapshot()).toHaveLength(0);
+  });
+});
