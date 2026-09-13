@@ -45,8 +45,23 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
  * expiry into the URL, so this is answerable without asking a node — and has
  * to be, since the alternative is learning it from four refusals in a row.
  *
- * **`exp` is unix milliseconds, not seconds.** The server builds it as
- * `unix_ms() + ttl` and verifies it as `unix_ms() >= expires`, where
+ * **When this actually fires, as of server `0.40.0`.** The server quantises
+ * the expiry — `(now / ttl + 2) * ttl`, floor to the current bucket then add
+ * two — so remaining validity is always in **(24 h, 48 h]** with a 24 h TTL,
+ * and the floor is *strictly* greater than the `max-age=86400` the artwork
+ * response carries. A cached copy therefore can never outlive the signature
+ * that names it, at any point in the cycle. (The "plus two" is the whole
+ * point: a naive next-boundary bucket would hand a URL minted at 23:58 a
+ * two-minute signature behind a 24-hour cache directive, invisibly to the
+ * client holding it.)
+ *
+ * So a capability from a *freshly read* catalogue payload is never expired
+ * here, and this guard exists for one case: **a payload held across a bucket
+ * boundary** — persisted state, a long-lived cache, a client resuming after a
+ * long idle. Worth knowing before treating a hit as a server fault.
+ *
+ * **`exp` is unix milliseconds, not seconds.** Earlier builds computed it as
+ * `unix_ms() + ttl` per call and verified it as `unix_ms() >= expires`, where
  * `unix_ms()` is a `duration_cast<milliseconds>` of the system clock
  * (`src/types.cpp`); a capability observed on the wire carries a
  * thirteen-digit value. That is unusual — JWT's `exp` is seconds, and most
