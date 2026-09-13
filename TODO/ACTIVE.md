@@ -36,7 +36,11 @@ All five P0s from the 2026-09-12 review shipped in `0.9.0`. The last of them, th
 
 ## P1 — correctness
 
-**Start here.** The watchdog item below is the one with a client waiting on it, and its first sub-item is a live defect on the Android TV client rather than a latent one.
+**The order Tom set on 2026-09-13**, and the only thing in this file that is a sequencing instruction rather than a judgement: work the *Android TV audit* items under **Waiting on Tom** first — the HLS preflight walk, then volume and mute, then the artwork source plan — and **then** the watchdog item below.
+
+**One question was put to Tom and never answered**, so it stands open: whether `probeNow()` (below) jumps that queue. It is the only item with a client working around it today, and it is perhaps twenty lines. If nobody answers it, do it first anyway — it is cheaper than asking twice.
+
+The watchdog's first sub-item is a live defect on the Android TV client rather than a latent one, which is why it comes before the rest of P1 once the audit is done.
 
 ### Watchdog blind spots on the platform it was written for
 **Waiting on:** core. `src/playback/MediaWatchdog.ts:324-352`, `:326-332`, `:226-233`.
@@ -114,6 +118,15 @@ Changing identity does not close playback sessions — nothing connects them —
 Four client sessions reported into core on 2026-09-13. The defects among their findings shipped in `0.9.0`; what is left is where the boundary falls, and a boundary decided unilaterally is how four clients end up adapting to the wrong thing.
 
 **Settled, recorded so they are not raised again.** `view_status` is in `UserRole`. A role-less session learning no cluster membership is *correct* — it sees only the endpoint it was configured with. `sessionPermits`/`sessionLockedOut` and the session's roles are in core, so both clients delete their copies. And `MODE_TRANSFORMS` **does not move**: the server session confirmed core's recorded 0.34.0 behaviour is current in 0.39.1 — `parse_preferences` resets `video`, `audio`, `max_height` and `max_bitrate` the moment `mode` is named, so the contradiction that rule guards against cannot be assembled. The client **has deleted its copy** (2026-09-13), without being able to run the PATCH test — driving a live PATCH needs a `media_viewer` credential and the anonymous account has none, which is the same wall the server session hit. It deleted rather than holding it pending a test because it had never observed the refusal itself: the rule was inherited from the web client and written up as established. If a refusal ever does appear, the evidence to capture is the exact body, status and `code`.
+
+### Whether the web client moves to `0.9.0`
+**Waiting on:** Tom. Not a code question — a dependency one.
+
+The two React Native clients resolve core through a `file:` link and were moved onto `0.9.0` silently when one of them rebuilt `dist` on 2026-09-13; both have since built against it cleanly and reported the specifics. The web client has a **real installed copy** in `node_modules`, so it sees none of this until someone rebuilds and reinstalls, which is a dependency change it will not make unilaterally.
+
+What it costs when it happens: `view_status` fails the build of its `Record<UserRole, string>` label maps until it adds a label and a description. That is the whole of the breakage — both RN clients passed precisely *because* they hold no such map. Everything else it reads (`candidate.health` in StatusScreen) is unchanged.
+
+What it gains: `sessionPermits`/`sessionLockedOut` and `SessionManager.roles` to delete its own copies against, `lastMintFailure` so its connection gate stops being raised by a refusal, and `EndpointCandidate.ready` for the Cooling down / Retry eligible split.
 
 ### The Android TV audit, what remains
 **Waiting on:** Tom, on the boundary. In the order I would take them:
@@ -276,6 +289,8 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - **The platform probe has never run on a device.** `checkPlatformSurface()` ships having produced no runtime truth; its tests run on Node, which supplies everything. `0.8.0` added the three Hermes probes (`Intl.Collator` options, `normalize`, `\p{M}`) so the Android TV hardware run answers both questions at once. Its first real output is due with that 5.1 measurement.
 - **No pairing or QR concept exists in core.** The phone client is building a scanner and its payload parse stays local until Tom decides the format. If a format is going to be shared it belongs here, because otherwise four clients invent their own and drift on normalisation edges — but it is a decision, not a defect.
 - **Two clients still hold a duration formatter.** `formatPlaybackTime` is in core and the web client has dropped its copy. The phone and Android TV clients can drop theirs whenever convenient; nothing breaks until they do, and nothing improves either.
+- **Two measurements that looked like server defects were neither.** `/api/v1/status` answering `200` with what looked like an empty roster was `gbni-2` on `0.38.1`, which is ungated and returns three nodes; a role-less session on a current build gets `403`, and there is no reduced-payload path in the server at all. And `/api/v1/health` answering `401` was the same node, because authentication runs before routing so a build without the route never reaches the part that would `404`. Both were reported as findings, both were misattribution. Recorded so they are not raised a third time.
+
 - **A broken function in core grows a copy in every client, and fixing it does not remove them.** `checkEndpointConfiguration` could not accept any endpoint against a live cluster until `0.9.0`, so at least two clients wrote their own pre-save gate. The phone client's hand-rolled one tolerated `401` and not `403`, so it would have rejected every candidate the moment a node answered `403` or the gate ran with a session attached — the same lockout as core's, by a different road. Both are fixed, but nobody would have gone back to core's version without being told it worked now. **When a defect in a shared function is fixed, say so to the clients that routed around it** — otherwise the duplicate survives and drifts, which is how the rule ends up living in four places with four opinions.
 
 - **One transient test failure seen on 2026-09-13**, not reproduced in three subsequent runs and coinciding with another session writing to the tree. If a `PlaybackCoordinator` timing test fails intermittently, that suite has several 300 ms+ waits and is the place to look. No evidence of a real flake yet; not seen again across roughly twenty full runs on 2026-09-13.
