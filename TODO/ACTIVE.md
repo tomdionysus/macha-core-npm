@@ -12,7 +12,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **618 tests in 57 files, all passing** as of 2026-09-13.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app — and they resolve it through a `file:` link, so they pick up whatever `dist` holds. Build after changing source or you silently block their test suites. Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. Some resolve it through a `file:` link and pick up whatever `dist` holds; **the web client does not** — it has a real installed `0.8.1` in `node_modules` and sees nothing on `develop` until someone rebuilds and reinstalls. Assuming the link is universal cost a round trip of wrong advice on 2026-09-13. Build after changing source or you silently block their test suites. Most of the defects below were found *from outside*, by those clients; that is the normal way this package learns it is wrong.
 
 **Two clients do not use `PlaybackCoordinator` at all.** The phone client calls `ClusterPlaybackResolver.failover` directly and never prepares an alternate. So a fix landed in the coordinator reaches three clients of four, and a defect on the coordinator path does not reach the phone. **Check which layer a client actually uses before telling it a fix matters to it.**
 
@@ -84,6 +84,38 @@ Changing identity does not close playback sessions — nothing connects them —
 - **`TorrentJob.catalogue` is declared required but version-gated.** `api/AcquisitionApi.ts:72`, "since 0.28.1", and the package supports mixed-version endpoint sets with no runtime check. Make it optional; absent stays absent.
 - **Success bodies are assumed to be the envelope.** `MachaCatalogueApi.ts:61-62,127-128,191-203`, `MachaAcquisitionApi.ts:41-52,99-109`, `MachaManageApi.ts:32-33`. A 200 with HTML throws a raw `SyntaxError` the router treats as non-retryable, so "Unexpected token <" reaches the viewer with no failover; a JSON 200 missing `items`/`jobs` throws `TypeError` at `.map`, which the router treats as a *transport* failure and cools down the node for a schema mismatch. Fix: validate shape and throw a typed `invalid_response`, as `mediaProfile` already does at `:88`.
 - **`ClusterPlaybackFactsApi` records per-title faults as endpoint evidence.** `:63-67` lacks the `!isPerTitleFailure(error)` guard `ClusterPlaybackResolver.create:268` has, so one unreadable extent demotes the node for every title.
+
+---
+
+## Waiting on Tom — asked for by clients, not core's to decide
+
+Four client sessions reported into core on 2026-09-13. The defects among their findings are fixed and in [COMPLETED.md](COMPLETED.md); what is left is shape, and shape decided unilaterally is how four clients end up adapting to the wrong thing.
+
+### `view_status` in `UserRole`
+**Waiting on:** Tom, then server. The web client cannot offer the role in Manage → Users until it exists in `UserRole`/`USER_ROLES`, and is rightly refusing to invent the string locally.
+
+Declined for now, on three grounds. The server session has **not** built it and has argued against it: `/api/v1/status` is deliberately ungated today, and an importer-only account watching an ingest is exactly who needs cluster health most — gating the diagnostic screen takes it away at the moment it earns its place. The name is unsettled. And the web client measured `/api/v1/status` answering **200 with zero nodes** to a role-less session on es-1, which is a *reduced payload* rather than a refusal — if that is what ships, a role in the type is the wrong shape for it, and an empty node list reads to a viewer as "the cluster has no nodes", a sentence no node said.
+
+Adding a role to this type makes it real for four clients at once. That is the whole reason to wait.
+
+### Membership discovery is unavailable to a session granted nothing
+**Waiting on:** Tom. `discoverClusterEndpoints` reads `/api/v1/status`, which needs `view_status` on updated builds, so a role-less session learns no membership and no self-reported capacity. The failover pool stays at the bootstrap list and never tracks the real cluster — permanently, not only during a rollout.
+
+Academic for most clients, since such a session has nothing to play. Not academic for the login state: the viewer must reach *some* node in order to sign in, and that is the moment the pool is frozen. Liveness still grades the bootstrap endpoints, so a dead node is still avoided. Raised by the Android TV client, who asked that it be a decision rather than a side effect, which is the right ask.
+
+### Session role policy, offered by the web client
+**Waiting on:** Tom, on the boundary. Three rules it has built and would delete in favour of core's:
+
+1. **An empty role list means the session may do nothing.** Server 0.38.4 makes `roles: []` a real mintable state — removing `media_viewer` from the anonymous account is how a registered-users-only deployment is configured — and every client must put a login in front of it.
+2. **"Unknown" is not "none".** A whoami that has not answered must not read as a session with no privileges, or navigation empties for everyone the moment a node is slow.
+3. **The whoami must retry.** It was fetched once per API identity, and failover changes the preferred endpoint *inside* the registry without changing that identity, so nothing ever re-asked. One transient failure left roles unknown for a whole run. `SessionManager` already owns mint, refresh and re-mint; the whoami is the only part of the session lifecycle outside it.
+
+The first two are decisions about what a role list means, not presentation — two clients disagreeing about them means the same account behaves differently on a TV and a phone. The third is squarely a lifecycle concern and the strongest candidate of the three.
+
+### What the Android TV client says belongs in core
+**Waiting on:** Tom, on the boundary. Its audit, worst first: `MODE_TRANSFORMS` (naming a mode without its per-stream transforms makes the server reject the update, so it is wire protocol living in two view layers), the HLS preflight walk (duplicated in two clients, and the RN divergences — `URL` cannot resolve relative references, `fetch` ignores `cache` — are exactly what one implementation taking an injected fetch would absorb once), and `sessionLockedOut` (one line, identical in two clients, decides whether a viewer sees the application at all). Then the artwork source plan and volume/mute semantics as policy over data core already owns. It explicitly does **not** ask for the focus scorer or the alphabet strip.
+
+The first three are the ones where divergence would be a defect rather than an inconsistency.
 
 ---
 
