@@ -451,8 +451,19 @@ export class SessionManager implements AuthenticatedFetch {
   }
 
   private adopt(session: Session): void {
-    this.settle();
-    if (this.cancelled) return;
+    // Ready is published *with* the session, never ahead of it.
+    //
+    // `settle()` used to run here, at the top, so the first notification a
+    // subscriber received carried `isReady === true` with no token and no
+    // roles — momentarily indistinguishable from a session the cluster
+    // granted nothing. A three-state gate reading unknown / granted / denied
+    // sees that window as a refusal, which is how a privileged viewer lands on
+    // a login screen. The window always existed; a restored signed-in session
+    // is what makes it matter rather than merely exist.
+    if (this.cancelled) {
+      this.settle();
+      return;
+    }
     this.token = session.token;
     this.mintFailure = undefined;
     // Compared only when the node actually named an account. A node too old to
@@ -471,6 +482,8 @@ export class SessionManager implements AuthenticatedFetch {
     // answer with `undefined` would turn a session granted nothing back into
     // a session permitted everything.
     if (session.roles !== undefined) this.sessionRoles = session.roles;
+    this.settled = true;
+    this.ready = true;
     this.notify();
     reportClusterReachable();
     this.scheduleRefresh(session.expiresAtMs);

@@ -708,3 +708,51 @@ describe('signing out', () => {
     expect(manager.roles).toBeUndefined();
   });
 });
+
+describe('what a subscriber sees at the moment the session becomes ready', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('never publishes ready with the session not yet applied', async () => {
+    // A three-state gate — unknown / granted / denied — must never read
+    // `unknown` as a refusal. `settle()` used to run at the *top* of `adopt`,
+    // so the first notification a subscriber saw carried `isReady === true`
+    // with no token and no roles: momentarily indistinguishable from a session
+    // the cluster granted nothing. That window is how a privileged viewer
+    // lands on a login screen, and a restored signed-in session makes it
+    // matter rather than merely exist.
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
+      token: 'ready-token', expiresAtMs: Date.now() + DAY_MS, username: 'tom', roles: ['manager'],
+    });
+    const manager = new SessionManager(new MemoryStorage());
+    const readySnapshots: Array<{ roles: unknown; authorized: boolean }> = [];
+    manager.subscribe(() => {
+      if (!manager.isReady) return;
+      readySnapshots.push({ roles: manager.roles, authorized: manager['token'] !== undefined });
+    });
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(readySnapshots.length).toBeGreaterThan(0);
+    for (const snapshot of readySnapshots) {
+      expect(snapshot.authorized).toBe(true);
+      expect(snapshot.roles).toEqual(['manager']);
+    }
+    manager.stop();
+  });
+
+  it('still becomes ready when a mint fails, so a gate is never left waiting', async () => {
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockRejectedValue(new Error('unreachable'));
+    const manager = new SessionManager(new MemoryStorage());
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(manager.roles).toBeUndefined();
+    expect(manager.lastMintFailure).toBeDefined();
+    manager.stop();
+  });
+});
