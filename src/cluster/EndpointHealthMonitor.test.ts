@@ -213,21 +213,22 @@ describe('API endpoint health probes', () => {
     expect(registry.snapshot()[0]?.health.consecutiveFailures).toBe(0);
   });
 
-  it('asks the old route when the liveness one refuses a credential it will not accept', async () => {
-    // Measured on 10.44.1.50: /api/v1/health answers 401 to no token and 403
-    // to a role-less one, while the same build serves the old route. Without
-    // the fallback that node is permanently ungraded — no latency, no
-    // pre-emptive swap — for running a build that gates liveness.
-    const registry = new EndpointRegistry(bootstrapEndpoints(['http://gated']));
+  it('asks the old route when the liveness one does not answer the liveness question', async () => {
+    // A node too old to have /api/v1/health answers 401, not 404, because
+    // authentication runs before routing — so it never reaches the part that
+    // would report the route missing. A 404-only fallback fires on every node
+    // except the single one that needs it. Without this that node is
+    // permanently ungraded: no latency, no pre-emptive swap.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://old-build']));
     const fetchSpy = vi.fn(async (url: string | URL | Request) => new Response('{}', {
-      status: String(url).includes('/api/v1/health') ? 403 : 200,
+      status: String(url).includes('/api/v1/health') ? 401 : 200,
     }));
 
     await probeKnownEndpoints(registry, fixedBearerToken('secret', fetchSpy as unknown as typeof fetch), new AbortController().signal);
 
     expect(fetchSpy.mock.calls.map(([url]) => String(url).replace(/\?_=\d+-\d+$/, ''))).toEqual([
-      'http://gated/api/v1/health',
-      'http://gated/api/v1/catalogue/status',
+      'http://old-build/api/v1/health',
+      'http://old-build/api/v1/catalogue/status',
     ]);
     // Graded on the fallback's answer, not left blind.
     expect(registry.snapshot()[0]?.latencyMs).toBeDefined();

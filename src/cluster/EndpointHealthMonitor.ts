@@ -127,17 +127,21 @@ async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch):
   const result = await probePath(endpoint.baseUrl, LIVENESS_PATH, auth);
   if (result.status !== 'absent' && result.status !== 'answered') return result;
   // Anything that did not answer the liveness question gets asked the old
-  // way. Two builds in the field do that: one too old to have the route
-  // (404), and one that has it but refuses it without the right role (401 or
-  // 403 — measured on 10.44.1.50, which answers 401 to no token and 403 to a
-  // role-less one). Both would otherwise leave the node permanently ungraded:
-  // no latency samples, so no ranking on the one axis that can see a bad
-  // path, and no pre-emptive swap — a second-class node for running an old
-  // build.
+  // way, and the reason it cannot be keyed on 404 alone is the whole point:
+  // **authentication happens before routing**, so a node too old to have the
+  // liveness route never reaches the part that would 404 and answers **401**
+  // instead. Confirmed against the server source and measured on the one
+  // node in the field still running 0.38.1. A 404-only fallback would have
+  // fired on every node except the single one that needs it.
+  //
+  // Without it that node is permanently ungraded — no latency samples, so no
+  // ranking on the one axis that can see a bad network path, and no
+  // pre-emptive swap — which makes it second-class for running an old build.
   //
   // The fallback is no better for a role-less session, since the old route
-  // needs `media_viewer` too. It is a fallback because it is *different*, and
-  // a node that refuses both ends up ungraded rather than condemned.
+  // needs `media_viewer` on any build new enough to gate it. It is a fallback
+  // because it is *different*, and a node that refuses both ends up ungraded
+  // rather than condemned.
   //
   // Probes keep carrying whatever credential the host supplies. Asking
   // unauthenticated was considered and dropped: on the node that gates
