@@ -47,12 +47,22 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
  *
  * **When this actually fires, as of server `0.40.0`.** The server quantises
  * the expiry — `(now / ttl + 2) * ttl`, floor to the current bucket then add
- * two — so remaining validity is always in **(24 h, 48 h]** with a 24 h TTL,
- * and the floor is *strictly* greater than the `max-age=86400` the artwork
- * response carries. A cached copy therefore can never outlive the signature
- * that names it, at any point in the cycle. (The "plus two" is the whole
- * point: a naive next-boundary bucket would hand a URL minted at 23:58 a
- * two-minute signature behind a 24-hour cache directive, invisibly to the
+ * two — and **the bucket is the TTL**, so the invariant is a relationship
+ * rather than a duration: remaining validity is always **more than one TTL and
+ * at most two**, whatever the TTL is configured to be. The artwork response's
+ * own `max-age` is that same TTL, so the floor is *strictly* greater than it
+ * and **a cached copy can never outlive the signature that names it**, at any
+ * point in the cycle, on any cluster.
+ *
+ * Stated as a relationship deliberately. With the default 24 h TTL it works
+ * out as (24 h, 48 h] behind `max-age=86400`, and writing *that* down would
+ * quietly become false the first time a cluster reconfigured the TTL — which
+ * is the same trap as a stall budget written as a number instead of against
+ * `SERVER_SEGMENT_HOLD_MS`.
+ *
+ * (The "plus two" rather than "next boundary" is the whole point: a naive
+ * bucket would hand a URL minted a millisecond before the boundary a lifetime
+ * of almost nothing, behind a full-TTL cache directive, invisibly to the
  * client holding it.)
  *
  * So a capability from a *freshly read* catalogue payload is never expired
