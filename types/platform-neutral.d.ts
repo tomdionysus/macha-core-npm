@@ -1,5 +1,5 @@
 /**
- * The platform surface `@macha/core` is allowed to assume.
+ * The platform surface `@machafoundation/core` is allowed to assume.
  *
  * Not a convenience — a boundary. `tsconfig.nodom.json` compiles core against
  * *only* this and `ES2022`, so anything the package reaches for that is not

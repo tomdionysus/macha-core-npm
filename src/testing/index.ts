@@ -1,7 +1,7 @@
 /**
- * Test doubles for hosts building on `@macha/core`.
+ * Test doubles for hosts building on `@machafoundation/core`.
  *
- * Published as the `@macha/core/testing` subpath so that a host writing its
+ * Published as the `@machafoundation/core/testing` subpath so that a host writing its
  * own `Player` can check itself against the same fixture the core's own
  * playback suites run on, rather than inferring the interface's contracts
  * from its type signature alone.
