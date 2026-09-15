@@ -3,7 +3,7 @@ import type { StorageLike } from '../state/storage.js';
 import { isSessionRefusal, mintSessionAnyNode, revokeSessionAnyNode, SessionAuthError, validateSessionAnyNode, type Session, type SessionCredentials } from './SessionAuth.js';
 import type { CurrentSession, UserRole } from './UsersApi.js';
 import { mergeRequestHeaders } from './httpCompat.js';
-import { reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
+import { MachaConnectionError, reportClusterReachable, reportClusterUnreachable } from './serverConnection.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
 /**
@@ -192,6 +192,42 @@ export interface SessionIdentityChange {
   at: number;
 }
 
+/**
+ * `fetch()` was called on a manager that has no registry to mint against.
+ *
+ * **Deliberately a `MachaConnectionError`.** "We could not ask" is what a
+ * connection state means in this package — the distinction `mintNow` already
+ * draws between a node refusing and a node being unreachable — and a caller
+ * that already falls back for one should fall back for the other. The phone
+ * client's `MediaApi.serve` serves its downloaded library on exactly that
+ * classification, and a fresh error type would have escaped it and put a
+ * bearer-token message on a library screen, which is the thing that fallback
+ * exists to prevent. So this needs no client change to be handled sanely, and
+ * `reason` is there for a client that wants to tell the two cases apart.
+ *
+ * `reason` distinguishes them because they are different faults:
+ *
+ * - `not-started` — `start()` has never been called. **Routine rather than a
+ *   programming error on React Native**: React runs child effects before
+ *   parent effects, so a screen's first request fires before the provider's
+ *   effect starts the manager. Both RN clients reach it that way on every cold
+ *   start.
+ * - `stopped` — `start()` ran and `stop()` has since torn it down, typically a
+ *   reconfiguration whose cleanup stopped the manager while a request was in
+ *   flight. A restart usually follows within milliseconds.
+ *
+ * Neither is worth sending a request for: with no registry there is nothing to
+ * mint against, so the request could only ever 401.
+ */
+export class SessionNotStartedError extends MachaConnectionError {
+  constructor(public readonly reason: 'not-started' | 'stopped') {
+    super(reason === 'not-started'
+      ? 'The Macha session manager has not been started, so this request has nothing to authenticate against.'
+      : 'The Macha session manager was stopped, so this request has nothing to authenticate against.');
+    this.name = 'SessionNotStartedError';
+  }
+}
+
 export class SessionManager implements AuthenticatedFetch {
   private token: string | undefined;
   private ready = false;
@@ -200,6 +236,8 @@ export class SessionManager implements AuthenticatedFetch {
   private inFlight: Promise<void> | undefined;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private registry: EndpointRegistry | undefined;
+  /** Whether `start()` has ever run, so a teardown is distinguishable from a cold start. */
+  private started = false;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly storageOverride?: StorageLike) {}
@@ -311,6 +349,7 @@ export class SessionManager implements AuthenticatedFetch {
     this.settled = false;
     this.ready = false;
     this.registry = registry;
+    this.started = true;
     void this.bootstrap();
   }
 
@@ -406,12 +445,37 @@ export class SessionManager implements AuthenticatedFetch {
   }
 
   /**
-   * An authenticated request, end to end. Callers never need to know
-   * whether a session exists yet or is still valid:
+   * The current `Authorization` header for a request made outside this class.
    *
-   * - Fired before the first token exists (cold start, bootstrap in flight),
-   *   the request waits for that bootstrap rather than going out tokenless —
-   *   a request that can only 401 is not worth sending.
+   * Waits for a bootstrap already in flight, exactly as `fetch` does — a cold
+   * start would otherwise hand a native player `undefined` and produce a 401
+   * inside a component that has no way to retry. Beyond that it cannot
+   * promise much: the token is a snapshot, and a caller holding it across a
+   * re-mint holds a dead one. Ask again per request rather than caching it.
+   *
+   * **Unlike `fetch`, this answers `undefined` rather than throwing when the
+   * manager is not started.** It is a question about current state, and "there
+   * is no token" is a true answer to it. A caller that turns that `undefined`
+   * into a request is building the very thing `fetch` now refuses to send.
+   */
+  async authorization(): Promise<string | undefined> {
+    if (this.token === undefined && this.inFlight) await this.inFlight;
+    return this.token ? `Bearer ${this.token}` : undefined;
+  }
+
+  /**
+   * An authenticated request, end to end. A caller never needs to know whether
+   * a session exists yet or is still valid:
+   *
+   * - Fired before the first token exists while a bootstrap is in flight, the
+   *   request waits for that bootstrap rather than going out tokenless — a
+   *   request that can only 401 is not worth sending.
+   * - Fired with **no registry at all** — never started, or stopped since — it
+   *   throws {@link SessionNotStartedError} rather than sending. There is
+   *   nothing to mint against, so the request could only 401, and returning
+   *   that 401 to a caller told it would never see one is worse than refusing:
+   *   the web client met exactly that on a reload into a player URL, 18 ms
+   *   after load, and a viewer got a broken video out of it.
    * - A 401 on the token that was actually sent means that session is dead:
    *   re-mint (coalesced with any mint already in flight) and retry once with
    *   the new token. A 401 for a token that has *already* been replaced by
@@ -420,22 +484,13 @@ export class SessionManager implements AuthenticatedFetch {
    *   just retries with the current one.
    * - If re-minting fails there is nothing better to retry with: the
    *   original 401 is returned, and the failure-retry timer owns recovery.
-   */
-  /**
-   * The current `Authorization` header for a request made outside this class.
    *
-   * Waits for a bootstrap already in flight, exactly as `fetch` does — a cold
-   * start would otherwise hand a native player `undefined` and produce a 401
-   * inside a component that has no way to retry. Beyond that it cannot
-   * promise much: the token is a snapshot, and a caller holding it across a
-   * re-mint holds a dead one. Ask again per request rather than caching it.
+   * **This doc used to be attached to `authorization()`**, one method up,
+   * promising a wait that the code did not perform. A client read the promise,
+   * built on it, and found the 401 in production.
    */
-  async authorization(): Promise<string | undefined> {
-    if (this.token === undefined && this.inFlight) await this.inFlight;
-    return this.token ? `Bearer ${this.token}` : undefined;
-  }
-
   async fetch(url: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.registry) throw new SessionNotStartedError(this.started ? 'stopped' : 'not-started');
     if (this.token === undefined && this.inFlight) await this.inFlight;
     const sent = this.token;
     const response = await this.send(url, init, sent);

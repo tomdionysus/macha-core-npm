@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { EndpointBandwidth } from './EndpointBandwidth.js';
+import { memoryStorage } from '../runtime/host.js';
+import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
+import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 
 describe('EndpointRegistry', () => {
   it('normalizes and deduplicates bootstrap endpoints without losing order', () => {
@@ -507,5 +509,79 @@ describe('EndpointRegistry', () => {
       expect(ids(registry)).toEqual(['http://a', 'http://b', 'http://dead']);
       expect(registry.selectionAxis()).toBe('configured-order');
     });
+  });
+});
+
+describe('throughput: attaching, recording and abstaining', () => {
+  /**
+   * Two `EndpointBandwidth` instances for one client serialise the same record
+   * map to `macha-client-bandwidth:<clientId>` and clobber each other. Core
+   * attaches one so a host need not wire anything; a host that already
+   * supplies its own must keep it. Both clients that wire theirs by hand did
+   * so against published `0.11.1`, so this is live, not hypothetical.
+   */
+  it('never replaces a bandwidth store the host already supplied', () => {
+    const hostStore = new EndpointBandwidth('client-42', memoryStorage());
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']), Date.now, hostStore);
+
+    expect(registry.attachBandwidth(new EndpointBandwidth('client-42', memoryStorage()))).toBe(false);
+
+    registry.recordTransferByUrl('http://a.test/api/v1/users', 4_000_000, 1_000);
+    expect(hostStore.samples(bootstrapEndpoints(['http://a.test'])[0]!.id)).toBe(1);
+  });
+
+  it('attaches one when the host supplied none', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+
+    expect(registry.throughputRecordable).toBe(false);
+    expect(registry.attachBandwidth(new EndpointBandwidth('client-42', memoryStorage()))).toBe(true);
+    expect(registry.throughputRecordable).toBe(true);
+  });
+
+  it('resolves the endpoint from the URL, so no host has to write that match', () => {
+    const store = new EndpointBandwidth('client-42', memoryStorage());
+    const endpoints = bootstrapEndpoints(['http://a.test', 'http://b.test']);
+    const registry = new EndpointRegistry(endpoints, Date.now, store);
+
+    registry.recordTransferByUrl('http://b.test/api/v1/catalogue/items', 4_000_000, 1_000);
+
+    expect(store.samples(endpoints[1]!.id)).toBe(1);
+    expect(store.samples(endpoints[0]!.id)).toBe(0);
+  });
+
+  it('ignores a transfer from a URL that is not one of its endpoints', () => {
+    const store = new EndpointBandwidth('client-42', memoryStorage());
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']), Date.now, store);
+
+    registry.recordTransferByUrl('http://elsewhere.test/thing', 4_000_000, 1_000);
+
+    expect(store.samples(bootstrapEndpoints(['http://a.test'])[0]!.id)).toBe(0);
+  });
+
+  /**
+   * `configured-order` used to cover two different situations: every axis was
+   * consulted and none separated the endpoints, or the primary axis had no
+   * data to consult at all. Throughput is the one that goes missing silently.
+   */
+  it('says so when configuration order decided and throughput could not be consulted', () => {
+    clearClientDiagnostics();
+    configureClientDiagnostics({ level: 'debug', console: false, maxEntries: 100 });
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    registry.candidates();
+
+    const warned = clientDiagnosticsSnapshot().filter((entry) => entry.event === 'throughput-unavailable');
+    expect(warned).toHaveLength(1);
+    expect(warned[0]?.data).toMatchObject({ reason: 'no-bandwidth-store' });
+  });
+
+  it('reports the abstention once, not on every probe cycle', () => {
+    clearClientDiagnostics();
+    configureClientDiagnostics({ level: 'debug', console: false, maxEntries: 100 });
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    for (let cycle = 0; cycle < 20; cycle += 1) registry.candidates();
+
+    expect(clientDiagnosticsSnapshot().filter((entry) => entry.event === 'throughput-unavailable')).toHaveLength(1);
   });
 });

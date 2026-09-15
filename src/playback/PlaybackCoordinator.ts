@@ -81,7 +81,34 @@ export interface PlaybackInstructionReport {
    * facts were unavailable, so nothing could be reasoned from.
    */
   withoutFacts: boolean;
+  /**
+   * Why the facts were unavailable, when they were unavailable because asking
+   * failed rather than because nothing answers.
+   *
+   * **Present so a client can say what actually went wrong.** With only
+   * `withoutFacts` a screen could report that something was degraded but not
+   * that the lookup itself failed, and the fallback's own symptoms reach the
+   * viewer looking like a property of the file — the web client's viewer met
+   * `MEDIA_ELEMENT_ERROR: Format error` and had no way to know the client had
+   * simply been unable to ask what the file was. A warning in a ring buffer is
+   * not a degraded mode a viewer can act on.
+   *
+   * Absent when there is no facts supplier at all, which is a configuration
+   * rather than a fault.
+   */
+  factsError?: unknown;
 }
+
+/**
+ * How many times a *failed* facts lookup may be retried for one generation.
+ *
+ * Bounded rather than unlimited: each retry is a request on the viewer's
+ * critical path, and an unbounded one would fire on every touch of the mode
+ * control while a node was down. Three is enough to ride out a node restarting
+ * or a session arriving late, and few enough that a genuinely absent answer
+ * settles quickly.
+ */
+const FACTS_ATTEMPT_BUDGET = 3;
 
 export interface PlaybackCoordinatorOptions {
   media: MediaSummary;
@@ -491,6 +518,7 @@ export class PlaybackCoordinator {
    */
   private cachedFacts?: Promise<PlaybackDecisionFacts | undefined>;
   private factsError?: unknown;
+  private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
 
   private facts(): Promise<PlaybackDecisionFacts | undefined> {
@@ -506,14 +534,35 @@ export class PlaybackCoordinator {
     // failover — a refusal is loud and recoverable, whereas re-probing on
     // each attempt would put a request on the viewer's critical path during
     // the exact moment playback is already struggling.
-    this.cachedFacts ??= Promise.resolve(this.options.facts?.(this.options.media))
+    //
+    // **A failure is not cached.** Caching the *answer* is right; caching a
+    // thrown lookup meant one transient fault — a node 500ing, a blip, a
+    // request issued microseconds before the session existed — permanently
+    // condemned this generation to the factless fallback, with no retry
+    // possible for as long as playback lasted. That is what a viewer met: a
+    // facts call that failed 18 ms after load, and a picture that never
+    // recovered even once the cluster was answering perfectly.
+    if (this.cachedFacts) return this.cachedFacts;
+    const attempt = Promise.resolve(this.options.facts?.(this.options.media))
       .catch((error: unknown) => {
         // Kept, not swallowed: a thrown lookup and an absent supplier both
         // yield undefined, and they are not the same thing at all.
         this.factsError = error;
         return undefined;
       });
-    return this.cachedFacts;
+    this.cachedFacts = attempt;
+    void attempt.then((facts) => {
+      // Bounded: a failed attempt is forgotten so the next caller may try
+      // again, up to a budget. Unbounded retry would put a request on the
+      // viewer's critical path every time they touched the mode control while
+      // a node was down, which is the cost the caching was there to avoid.
+      if (facts !== undefined) return;
+      if (this.factsError === undefined) return;
+      if (this.factsAttempts >= FACTS_ATTEMPT_BUDGET) return;
+      this.factsAttempts += 1;
+      if (this.cachedFacts === attempt) this.cachedFacts = undefined;
+    });
+    return attempt;
   }
 
   private async instructedPreferences(
@@ -558,6 +607,7 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ instruction: {
         mode: 'transcode', video: 'transcode', audio: 'transcode', container,
         reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
+        ...(this.factsError !== undefined ? { factsError: this.factsError } : {}),
       } });
       this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container });
       return { ...preferences, mode: 'transcode', container };
