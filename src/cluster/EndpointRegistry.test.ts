@@ -246,7 +246,9 @@ describe('EndpointRegistry', () => {
         bandwidth.record(id, bytes, ms);
         bandwidth.record(id, bytes, ms);
       }
-      return new EndpointRegistry(bootstrapEndpoints(urls), () => 0, bandwidth);
+      const registry = new EndpointRegistry(bootstrapEndpoints(urls), () => 0);
+      registry.attachBandwidth(bandwidth);
+      return registry;
     }
 
     it('orders a materially faster link ahead of the order it was configured in', () => {
@@ -267,7 +269,8 @@ describe('EndpointRegistry', () => {
 
       const bandwidth = new EndpointBandwidth('client-1', undefined, () => 0);
       bandwidth.record('http://b', 1_000_000, 100);
-      const oneSample = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => 0, bandwidth);
+      const oneSample = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => 0);
+      oneSample.attachBandwidth(bandwidth);
       expect(oneSample.candidates().map(({ endpoint }) => endpoint.id)).toEqual(['http://a', 'http://b']);
     });
 
@@ -520,9 +523,10 @@ describe('throughput: attaching, recording and abstaining', () => {
    * supplies its own must keep it. Both clients that wire theirs by hand did
    * so against published `0.11.1`, so this is live, not hypothetical.
    */
-  it('never replaces a bandwidth store the host already supplied', () => {
+  it('keeps the first store when attached again, as a services rebuild will', () => {
     const hostStore = new EndpointBandwidth('client-42', memoryStorage());
-    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']), Date.now, hostStore);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+    expect(registry.attachBandwidth(hostStore)).toBe(true);
 
     expect(registry.attachBandwidth(new EndpointBandwidth('client-42', memoryStorage()))).toBe(false);
 
@@ -530,7 +534,7 @@ describe('throughput: attaching, recording and abstaining', () => {
     expect(hostStore.samples(bootstrapEndpoints(['http://a.test'])[0]!.id)).toBe(1);
   });
 
-  it('attaches one when the host supplied none', () => {
+  it('reports whether a store is attached, so the composition root can tell', () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
 
     expect(registry.throughputRecordable).toBe(false);
@@ -541,7 +545,8 @@ describe('throughput: attaching, recording and abstaining', () => {
   it('resolves the endpoint from the URL, so no host has to write that match', () => {
     const store = new EndpointBandwidth('client-42', memoryStorage());
     const endpoints = bootstrapEndpoints(['http://a.test', 'http://b.test']);
-    const registry = new EndpointRegistry(endpoints, Date.now, store);
+    const registry = new EndpointRegistry(endpoints);
+    registry.attachBandwidth(store);
 
     registry.recordTransferByUrl('http://b.test/api/v1/catalogue/items', 4_000_000, 1_000);
 
@@ -551,7 +556,8 @@ describe('throughput: attaching, recording and abstaining', () => {
 
   it('ignores a transfer from a URL that is not one of its endpoints', () => {
     const store = new EndpointBandwidth('client-42', memoryStorage());
-    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']), Date.now, store);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+    registry.attachBandwidth(store);
 
     registry.recordTransferByUrl('http://elsewhere.test/thing', 4_000_000, 1_000);
 

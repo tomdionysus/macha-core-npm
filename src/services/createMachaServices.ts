@@ -18,7 +18,8 @@ import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js'
 import type { PlaybackResolver } from '../playback/PlaybackResolver.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
-import { hasTransferRecorder, setTransferRecorder } from '../api/httpCompat.js';
+import { setTransferRecorder } from '../api/transferRecorder.js';
+import { MachaClientConfiguration } from '../runtime/configuration.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 
@@ -46,26 +47,6 @@ export interface MachaServicesOptions {
   auth?: AuthenticatedFetch;
   apiOverride?: MediaApi;
   playbackOverride?: PlaybackResolver;
-  /**
-   * The stable client id throughput records are stored under, enabling core to
-   * record throughput for you.
-   *
-   * **Required rather than derived, deliberately.** Core could read one from
-   * `MachaClientConfiguration`, and an earlier draft did — but `clientId()`
-   * *mints and persists a fresh id when the key is absent*, and on a host
-   * whose storage is a prefix-hydrated cache an unhydrated key is
-   * indistinguishable from an absent one. Building services would then mint a
-   * new identity and overwrite the real one, orphaning every per-client store
-   * at once: precisely the fault the Android TV client hit and that
-   * `MachaHost.storage` now warns about. Core will not cause the bug it
-   * documents, so it asks for the id instead of inventing one.
-   *
-   * Omit it and throughput is simply not recorded — and says so, once, rather
-   * than going quiet.
-   */
-  clientId?: string;
-  /** Opt out even when the rest is in place. */
-  recordThroughput?: boolean;
 }
 
 /**
@@ -81,7 +62,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
   const { endpointRegistry, apiOverride, playbackOverride } = options;
   const auth = options.auth ?? NO_AUTH;
   const endpointRouter = new ClusterEndpointRouter(endpointRegistry);
-  if (options.recordThroughput !== false) wireThroughput(endpointRegistry, options.clientId);
+  wireThroughput(endpointRegistry);
   const catalogueApi = new ClusterCatalogueApi(endpointRouter, auth);
 
   return {
@@ -99,38 +80,37 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
 }
 
 /**
- * Record throughput without the host wiring it up itself.
+ * Wire the throughput axis. Every time, for every host.
  *
- * **Core already had every piece and asked a host to connect them.** It times
- * every transfer in `readJsonBody`, it owns `EndpointBandwidth`, and the
- * registry knows which endpoint a URL belongs to — but the axis only ranked if
- * a host built the store, passed it as an optional third constructor argument,
- * installed a recorder, and matched URLs to endpoints itself. Four steps, three
- * invisible from the call site, for the axis the cascade documents as
- * outranking latency. Two of three clients did none of it and neither noticed,
- * because a missing axis degrades silently to latency.
+ * **Core already had every piece and used to ask a host to connect them.** It
+ * times every JSON read, it owns `EndpointBandwidth`, and the registry knows
+ * which endpoint a URL belongs to — yet the axis only ranked if a host built
+ * the store, passed it to the registry, installed a recorder, and matched URLs
+ * to endpoints itself. Four steps, three invisible from the call site, for the
+ * axis the cascade documents as outranking latency. Two of three clients did
+ * none of it and neither noticed, because a missing axis degrades silently.
  *
- * **Two things it will not do, both because silence is the failure mode here.**
+ * So it is not optional and it is not conditional. The store is attached
+ * unless this registry already has one (services are rebuilt when routing
+ * changes, and `attachBandwidth` refuses a second store rather than letting
+ * two write the same storage key). The recorder is installed pointed at this
+ * registry — the newest services own it, which is right, because a rebuild
+ * means the previous registry is being retired.
  *
- * It will not replace a store the host already supplied — two instances
- * serialise the same record map to `macha-client-bandwidth:<clientId>` and
- * clobber each other.
+ * The store is keyed by `MachaClientConfiguration.clientId()`, the same id
+ * every client already derives at the same moment for its own stores. That
+ * call mints an id when the key is absent, and on a caching host an
+ * unhydrated key reads as absent — which is why `MachaHost.storage` requires
+ * every registered key to be loaded before core reads anything. Core relies
+ * on that contract here rather than refusing to work in case a host breaks it.
  *
- * And it will not replace a transfer recorder the host already installed.
- * There is one slot, and the web client's recorder carries Direct Play media
- * bytes as well as API bytes — the feed it added after an afternoon streaming
- * from its slowest node, because the record until then described only JSON.
- * Overwriting that would restore that fault silently, in the name of fixing
- * this one.
- *
- * Where core cannot wire it, nothing is patched over: the registry reports the
- * abstention the first time ranking falls through to configuration order.
+ * What core cannot do is see media bytes; it never fetches media. A host that
+ * has them feeds `EndpointRegistry.recordTransferByUrl`. That is the whole of
+ * a host's involvement.
  */
-function wireThroughput(registry: EndpointRegistry, clientId?: string): void {
+function wireThroughput(registry: EndpointRegistry): void {
   if (!registry.throughputRecordable) {
-    if (clientId === undefined) return;
-    registry.attachBandwidth(new EndpointBandwidth(clientId));
+    registry.attachBandwidth(new EndpointBandwidth(new MachaClientConfiguration().clientId()));
   }
-  if (hasTransferRecorder()) return;
   setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs));
 }

@@ -363,7 +363,11 @@ export class SessionManager implements AuthenticatedFetch {
    * user, so revoking it here would sign out whoever else was holding it.
    */
   async signIn(credentials: SessionCredentials): Promise<void> {
-    if (!this.registry) throw new Error('Cannot sign in before the session lifecycle has started.');
+    // The same fault fetch() refuses for, and typed the same way: a login
+    // screen that sorts 401/403 from everything else must be able to tell
+    // "the manager was never started" from "no node could be reached", or an
+    // app bug sends a viewer to check a server that is up.
+    if (!this.registry) throw new SessionNotStartedError(this.started ? 'stopped' : 'not-started');
     const session = await mintSessionAnyNode(this.registry, credentials);
     this.cacheSession(session);
     this.adopt(session);
