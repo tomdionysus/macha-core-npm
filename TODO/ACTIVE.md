@@ -90,8 +90,10 @@ The one genuine counter-example survives the move intact: the Android TV client'
 
 ### Order — one at a time, not four at once
 
-1. **Web client.** Already keys `@machafoundation/core`, so it is a one-line swap from `file:` to `^0.11.1` plus a regenerated lockfile. It goes first because it proves the published tarball actually works before anything harder is attempted.
-2. **Phone and Android TV.** Dependency key, every import, and a regenerated lockfile in each.
+1. ~~**Web client.**~~ **Done** — released as `macha-client` 0.17.0, verified from a fresh clone with no `macha-ts` on disk.
+
+**Both remaining moves are waiting on Tom, not on core.** The Android TV client has asked him directly whether to take the rename or stay on its Settings focus defect, and is holding until he answers. It is right to: a 62-reference rename plus a lockfile regeneration in its own repo is its operator's call, and **core telling a client "you are clear to proceed" does not clear it** — core can report that a package is published and verified, and nothing more. Its facts were checked independently on its side before it reported, which is the correct handling of a relayed claim.
+2. **Phone and Android TV**, on Tom's word. Dependency key, every import, and a regenerated lockfile in each. Android TV additionally runs an `expo export` — see the Metro note above.
 3. **Tizen last**, since it shares the web build.
 
 **Keep the dependency move separate from the outstanding ports** (`secureStorage`, `lastIdentityChange`, `signOut`, `probeNow`). Doing both at once means two variables when something breaks.
@@ -106,6 +108,10 @@ What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @ma
 
 **Verify by shape, never by version string:** `test -L node_modules/@machafoundation/core`. A symlink means it did not take. This is the same class as the stale `dist` — a check reporting success for a reason unrelated to the question.
 
+**Better still, verify against a tree that cannot contain a local core.** The web client's acceptance test was a fresh clone with no `macha-ts` anywhere on disk, `npm ci`, tarball resolved by integrity hash, then typecheck and suite. That catches cases `test -L` does not, and for the renaming clients it settles the two-copies risk in one move, since a fresh clone cannot hold a stale `node_modules/@macha`.
+
+**And the cached version string can lie in both directions.** The Android TV client reports its lockfile records the linked core at `0.7.0` while the tree on disk is `0.11.1`. So a lockfile version is not evidence of what is installed either — only the `resolved` URL and an integrity hash are.
+
 **Worse for the two renaming clients**, and they have been told: the stale link can persist under the old `@macha/core` key while the new key resolves from the registry, leaving two copies of core in one tree with binding decided by whether the rename is complete. They clear `node_modules/@macha` outright and test both keys.
 
 ### `dist:check` stops meaning anything to a client on the registry
@@ -116,12 +122,20 @@ What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @ma
 
 **Delete it.** With no local link anywhere, there is no case left in which it answers a question the client has. Core keeps `dist:check` for its own release process, where it still guards the thing that gets packed.
 
-### Source maps: one answer in, one outstanding
+### Source maps: closed, do not ship them
 
-`0.11.1` stopped publishing them — 142 files, 404KB, all pointing at `../src/*.ts` while `src` is not in `files`, so none of them ever resolved. `inlineSources` would make them work at +599KB.
+`0.11.1` stopped publishing them — 142 files, 404KB, all pointing at `../src/*.ts` while `src` is not in `files`, so none of them ever resolved. `inlineSources` would make them work at +599KB. **Both clients that were asked said no loss and both asked that they not be shipped on their account.** Decided; do not reopen without someone actually asking for them.
 
-- **Web client: no loss, and asked that they not be shipped on its account.** It never steps into core in a debugger; its playback diagnostics come out of core's own ring buffer through `machaDiagnostics`, which is source-independent.
-- **Android TV: asked, awaiting reply.** Its answer is the one that decides this, since most of its diagnosis happens on a device rather than in a debugger.
+- **Web client:** never steps into core in a debugger; its playback diagnostics come out of core's ring buffer through `machaDiagnostics`, which is source-independent.
+- **Android TV**, which was the deciding answer and gave evidence from its tree rather than recollection: `playbackFailureTrail()` defaults its input to `clientDiagnosticsConsole().snapshot()` and renders the last 12 warn/error entries onto the television, sized to be read across a room; its console bridge is set to `__DEV__`, so it is **off in release builds** because the write is real cost on a set with no cable attached; and its own docstring settles it — *"a television has no console."*
+
+**The stronger form of its answer is worth keeping**, because it generalises past this decision: there is no mechanism on that platform that *could* consume a map. Release builds run Hermes bytecode and Metro generates its own map from whatever JS it bundles, so a `.map` in core's tarball has no consumer there even in principle. That is a different claim from "we don't happen to use them", and it is the one that closes the question.
+
+### Metro and the `exports` map — a risk core has not tested
+
+The Android TV client's acceptance test includes an `expo export`, which the web client does not need, because **Metro resolving core's ESM through package `exports` is its own failure mode**. Core ships `"type": "module"` with an `exports` map carrying `.` and `./testing`, and has never been resolved by Metro from a registry tarball — only through a `file:` link, which Metro treats differently.
+
+**If that breaks, it is core's packaging problem, not the client's.** Nothing here can be verified from this repo; it needs the first RN client to run the export. Watch for it rather than assume it works.
 
 
 ---
