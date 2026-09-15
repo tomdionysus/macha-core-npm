@@ -17,6 +17,9 @@ import { ClusterServerApi } from '../api/ClusterServerApi.js';
 import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js';
 import type { PlaybackResolver } from '../playback/PlaybackResolver.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
+import { setTransferRecorder } from '../api/httpCompat.js';
+import { MachaClientConfiguration } from '../runtime/configuration.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 
@@ -44,6 +47,14 @@ export interface MachaServicesOptions {
   auth?: AuthenticatedFetch;
   apiOverride?: MediaApi;
   playbackOverride?: PlaybackResolver;
+  /**
+   * Opt out of core recording throughput for you.
+   *
+   * Only for a host that deliberately wants the axis dark — supplying your own
+   * `EndpointBandwidth` to the registry is already respected without this,
+   * since `attachBandwidth` will not replace one.
+   */
+  recordThroughput?: boolean;
 }
 
 /**
@@ -59,6 +70,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
   const { endpointRegistry, apiOverride, playbackOverride } = options;
   const auth = options.auth ?? NO_AUTH;
   const endpointRouter = new ClusterEndpointRouter(endpointRegistry);
+  if (options.recordThroughput !== false) wireThroughput(endpointRegistry);
   const catalogueApi = new ClusterCatalogueApi(endpointRouter, auth);
 
   return {
@@ -73,4 +85,28 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
     playbackFactsApi: new ClusterPlaybackFactsApi(endpointRouter, auth),
     managementAvailable: !apiOverride,
   };
+}
+
+/**
+ * Record throughput without the host wiring anything.
+ *
+ * **Core already had every piece and asked a host to connect them.** It times
+ * every transfer in `readJsonBody`, it owns `EndpointBandwidth`, and the
+ * registry knows which endpoint a URL belongs to — but the axis only ranked if
+ * a host built the store, passed it as an optional third constructor argument,
+ * installed a recorder, and matched URLs to endpoints itself. Four steps, three
+ * invisible from the call site, for the axis the cascade documents as
+ * outranking latency. Two of three clients did none of it and neither noticed,
+ * because a missing axis degrades silently to latency.
+ *
+ * `attachBandwidth` will not replace a store the host already supplied, so the
+ * two clients that wired their own keep them — **two instances would serialise
+ * the same record map to `macha-client-bandwidth:<clientId>` and clobber each
+ * other**, which is the collision the phone client raised before this landed.
+ */
+function wireThroughput(registry: EndpointRegistry): void {
+  if (!registry.throughputRecordable) {
+    registry.attachBandwidth(new EndpointBandwidth(new MachaClientConfiguration().clientId()));
+  }
+  setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs));
 }

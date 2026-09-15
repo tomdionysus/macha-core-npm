@@ -1,4 +1,5 @@
 import { normalizeBaseUrl } from '../api/httpCompat.js';
+import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { EndpointBandwidth } from './EndpointBandwidth.js';
 
 export type EndpointSource = 'bootstrap' | 'environment' | 'discovered';
@@ -251,6 +252,9 @@ export class EndpointRegistry {
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
   private lastSelectionAxis?: EndpointSelectionAxis;
+  private readonly log = createClientLogger('endpoint-registry');
+  /** So the abstention is reported once rather than on every probe cycle. */
+  private throughputAbstentionReported = false;
   private latencyAdvantageId?: string;
   private latencyAdvantageStreak = 0;
   private lastLatencySwapAt?: number;
@@ -290,7 +294,7 @@ export class EndpointRegistry {
   constructor(
     endpoints: readonly MachaEndpoint[],
     private readonly now: () => number = Date.now,
-    private readonly bandwidth?: EndpointBandwidth,
+    private bandwidth?: EndpointBandwidth,
   ) {
     this.endpoints = this.deduplicate(endpoints);
   }
@@ -379,6 +383,7 @@ export class EndpointRegistry {
     // so it cannot disagree with the list it describes. Recorded rather than
     // returned so the ordinary call site stays a list of candidates.
     this.lastSelectionAxis = entries.length === 0 ? undefined : axis;
+    if (entries.length > 1 && axis === 'configured-order') this.reportThroughputAbstention();
 
     return ordered.map(({ endpoint, health }) => this.describe(endpoint, health, now));
   }
@@ -526,6 +531,36 @@ export class EndpointRegistry {
   }
 
   /**
+   * Say so, once, when configuration order decided a ranking that the primary
+   * measured axis was never able to weigh in on.
+   *
+   * **`configured-order` used to be indistinguishable from two different
+   * situations**: every axis was consulted and none separated the endpoints,
+   * or the axis the cascade documents as primary had no data to consult.
+   * Throughput is the one that goes missing silently — it needs a store the
+   * host may never have supplied, and transfers recorded into it — so the
+   * ranking falls through and nothing says why. Two of three clients ran that
+   * way without noticing. `capacity` already abstains visibly without a core
+   * count; this is the same courtesy for the axis above it.
+   */
+  private reportThroughputAbstention(): void {
+    if (this.throughputAbstentionReported) return;
+    this.throughputAbstentionReported = true;
+    if (!this.bandwidth) {
+      this.log.warn('throughput-unavailable', {
+        reason: 'no-bandwidth-store',
+        detail: 'Ranking fell through to configuration order and throughput could not be consulted: no EndpointBandwidth is attached to this registry.',
+      });
+      return;
+    }
+    this.log.warn('throughput-unavailable', {
+      reason: 'insufficient-samples',
+      minimumSamples: THROUGHPUT_MIN_SAMPLES,
+      detail: 'Ranking fell through to configuration order and no endpoint has enough recorded transfers for throughput to rank.',
+    });
+  }
+
+  /**
    * Which axis decided the current head of `candidates()`, as of the last call.
    *
    * Undefined before any call, and when only one endpoint is known there is
@@ -534,6 +569,43 @@ export class EndpointRegistry {
    */
   selectionAxis(): EndpointSelectionAxis | undefined {
     return this.lastSelectionAxis;
+  }
+
+  /**
+   * Supply the throughput store this registry ranks on, when one was not
+   * passed to the constructor.
+   *
+   * **Refuses to replace an existing one, and that is the point.** Two
+   * `EndpointBandwidth` instances for the same client serialise the same
+   * record map to `macha-client-bandwidth:<clientId>` and clobber each other.
+   * Core attaches one in `createMachaServices` so a host need not wire
+   * anything; a host that already supplies its own keeps it, and the two
+   * clients that wire theirs by hand are unaffected. Returns whether this call
+   * attached.
+   */
+  attachBandwidth(bandwidth: EndpointBandwidth): boolean {
+    if (this.bandwidth) return false;
+    this.bandwidth = bandwidth;
+    return true;
+  }
+
+  /** Whether throughput is even recordable — false when no store was ever supplied. */
+  get throughputRecordable(): boolean {
+    return this.bandwidth !== undefined;
+  }
+
+  /**
+   * Feed a completed transfer to the throughput axis, resolving the endpoint
+   * from the URL it was fetched from.
+   *
+   * The resolution lives here rather than in the caller because the registry
+   * is what knows the endpoints; every host that wired throughput by hand had
+   * to write this same prefix match itself.
+   */
+  recordTransferByUrl(url: string, bytes: number, durationMs: number): void {
+    if (!this.bandwidth) return;
+    const endpoint = this.endpoints.find((candidate) => url.startsWith(`${candidate.baseUrl}/`) || url === candidate.baseUrl);
+    if (endpoint) this.bandwidth.record(endpoint.id, bytes, durationMs);
   }
 
   /** Record a node's self-reported load, from the status call the health cycle already makes. */
