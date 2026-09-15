@@ -18,8 +18,7 @@ import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js'
 import type { PlaybackResolver } from '../playback/PlaybackResolver.js';
 import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
-import { setTransferRecorder } from '../api/httpCompat.js';
-import { MachaClientConfiguration } from '../runtime/configuration.js';
+import { hasTransferRecorder, setTransferRecorder } from '../api/httpCompat.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 
@@ -48,12 +47,24 @@ export interface MachaServicesOptions {
   apiOverride?: MediaApi;
   playbackOverride?: PlaybackResolver;
   /**
-   * Opt out of core recording throughput for you.
+   * The stable client id throughput records are stored under, enabling core to
+   * record throughput for you.
    *
-   * Only for a host that deliberately wants the axis dark — supplying your own
-   * `EndpointBandwidth` to the registry is already respected without this,
-   * since `attachBandwidth` will not replace one.
+   * **Required rather than derived, deliberately.** Core could read one from
+   * `MachaClientConfiguration`, and an earlier draft did — but `clientId()`
+   * *mints and persists a fresh id when the key is absent*, and on a host
+   * whose storage is a prefix-hydrated cache an unhydrated key is
+   * indistinguishable from an absent one. Building services would then mint a
+   * new identity and overwrite the real one, orphaning every per-client store
+   * at once: precisely the fault the Android TV client hit and that
+   * `MachaHost.storage` now warns about. Core will not cause the bug it
+   * documents, so it asks for the id instead of inventing one.
+   *
+   * Omit it and throughput is simply not recorded — and says so, once, rather
+   * than going quiet.
    */
+  clientId?: string;
+  /** Opt out even when the rest is in place. */
   recordThroughput?: boolean;
 }
 
@@ -70,7 +81,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
   const { endpointRegistry, apiOverride, playbackOverride } = options;
   const auth = options.auth ?? NO_AUTH;
   const endpointRouter = new ClusterEndpointRouter(endpointRegistry);
-  if (options.recordThroughput !== false) wireThroughput(endpointRegistry);
+  if (options.recordThroughput !== false) wireThroughput(endpointRegistry, options.clientId);
   const catalogueApi = new ClusterCatalogueApi(endpointRouter, auth);
 
   return {
@@ -88,7 +99,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
 }
 
 /**
- * Record throughput without the host wiring anything.
+ * Record throughput without the host wiring it up itself.
  *
  * **Core already had every piece and asked a host to connect them.** It times
  * every transfer in `readJsonBody`, it owns `EndpointBandwidth`, and the
@@ -99,14 +110,27 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  * outranking latency. Two of three clients did none of it and neither noticed,
  * because a missing axis degrades silently to latency.
  *
- * `attachBandwidth` will not replace a store the host already supplied, so the
- * two clients that wired their own keep them — **two instances would serialise
- * the same record map to `macha-client-bandwidth:<clientId>` and clobber each
- * other**, which is the collision the phone client raised before this landed.
+ * **Two things it will not do, both because silence is the failure mode here.**
+ *
+ * It will not replace a store the host already supplied — two instances
+ * serialise the same record map to `macha-client-bandwidth:<clientId>` and
+ * clobber each other.
+ *
+ * And it will not replace a transfer recorder the host already installed.
+ * There is one slot, and the web client's recorder carries Direct Play media
+ * bytes as well as API bytes — the feed it added after an afternoon streaming
+ * from its slowest node, because the record until then described only JSON.
+ * Overwriting that would restore that fault silently, in the name of fixing
+ * this one.
+ *
+ * Where core cannot wire it, nothing is patched over: the registry reports the
+ * abstention the first time ranking falls through to configuration order.
  */
-function wireThroughput(registry: EndpointRegistry): void {
+function wireThroughput(registry: EndpointRegistry, clientId?: string): void {
   if (!registry.throughputRecordable) {
-    registry.attachBandwidth(new EndpointBandwidth(new MachaClientConfiguration().clientId()));
+    if (clientId === undefined) return;
+    registry.attachBandwidth(new EndpointBandwidth(clientId));
   }
+  if (hasTransferRecorder()) return;
   setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs));
 }
