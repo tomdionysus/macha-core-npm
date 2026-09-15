@@ -175,7 +175,7 @@ Its filter was `startsWith('macha.')`, so **every hyphenated key was invisible**
 
 - **`macha-client-id` was written every launch and never read back.** `clientId()` cannot distinguish unhydrated from absent, so it minted a **fresh identity on every cold start**. Every per-client store then hydrated correctly and was read under an identity that had just changed — so the dotted keys being right bought nothing at all. Continue Watching, volume, playlists and the playback queue were orphaned every launch, **on development devices; there are no users, so no one's data was lost**.
 - **`macha-bootstrap-endpoints-v1` and `macha-discovered-endpoints-v1`** lost each launch, so discovered endpoint history never survived a restart.
-- **`macha-client-bandwidth:`** lost each launch. That is the throughput evidence the ranking cascade needs, and throughput outranks latency. **Candidate explanation, not a verified cause:** it would account for a cluster appearing to re-decide routing from configuration order alone on that platform. Nobody has confirmed the link; it is recorded so the next person looking at routing on Android TV starts here.
+- ~~**`macha-client-bandwidth:`** lost each launch~~ — **STRUCK 2026-09-15, and struck rather than demoted.** The Android TV client retracted this itself on tracing writers and readers: `EndpointBandwidth` is the only writer of that key, **nothing in that tree constructs one**, so the key was never written there and the hydration filter was irrelevant to it. There was nothing to lose. It had been recorded here as a "candidate explanation" for routing falling through to configuration order; **a wrong lead in a routing investigation is worse than no lead, because it reads as evidence the axis was once working.** The client's own framing, and it is right.
 
 **This is the `storageKeys.ts` header incident again, on a second client, independently, and worse.** Core shipped two key conventions and named neither until `0.10.0`; both React Native clients then wrote the same filter and lost different things by it.
 
@@ -255,6 +255,8 @@ For throughput to rank anything, a host must do four things and **core does none
 
 **None of that is visible from the call site**, and throughput is the axis the cascade reads as primary: it outranks latency. Degrading to latency when an axis has no evidence is correct behaviour, which is exactly why nobody noticed.
 
+**Two of three clients wire nothing at all.** The Android TV client verified all four claims independently against the `0.11.1` tarball rather than taking them from core's message — `EndpointRegistry.d.ts:113`, `EndpointRegistry.js:447` and `:449`, `EndpointBandwidth.js:116` — then found it constructs `EndpointRegistry` with one argument and has no `EndpointBandwidth` and no `.record(` anywhere. The phone client is the same. So on both React Native clients the throughput axis has never ranked anything, and that is now checked rather than inferred.
+
 **That inference was wrong and is retracted.** I wrote that if no client completed all four steps, throughput had never decided anything anywhere. **The web client completes all four** — verified in its tree at `App.tsx:299-319` and `:328-339`, with *two* feeds into one recorder: API/JSON bytes through core's `readJsonBody`, and media bytes from the Direct Play read-ahead worker. It added the second after an afternoon spent streaming from the slowest node it had, because the record until then described only JSON. So the wiring gap is real on the phone client and **not universal**. Android TV has been asked and has not answered.
 
 **What replaced it is better, and it came from measuring rather than reading.** The web client instrumented the deployed client against the real cluster for 26 minutes of real use including playback:
@@ -271,6 +273,19 @@ For throughput to rank anything, a host must do four things and **core does none
 **The cross-client consequence is confirmed rather than hypothetical, and it bears on how this project has been reasoning all day.** The web client wires the full cascade; the phone client wires none of it and ranks on latency. **They have been ranking on different axes against the same cluster.** So any comparison of which node each selected measures their wiring rather than the cluster's behaviour — and several conclusions here have come from exactly that kind of cross-client comparison. Ask what a client wires before comparing what it chose.
 
 A note at the constructor now states what is lost by omission and the four steps. That replaces the three scattered low-register entries, which were each true and individually unalarming.
+
+**The design question, and core's own boundary rule answers it.** The Android TV client put it best: *if nothing in core ever calls `record()`, the parameter is not an integration point, it is a hook with no documented caller.*
+
+And core is not short of the ingredients. **`httpCompat.ts:117-146` already measures every transfer** — `readJsonBody` times the body, counts the bytes, and hands both to a `TransferRecorder` a host installs globally. Core therefore already owns the measurement, the registry, and `EndpointBandwidth`. What it asks the host to supply is the *wiring between three things core already has*, including a url→endpoint lookup the web client had to hand-write as `snapshot().find(url.startsWith(baseUrl))` — where `ClusterEndpointRouter` already knows precisely which endpoint it routed to, and would not have to match on a prefix at all.
+
+Tom's rule: *would nearly every conceivable client be required to do this? If yes, core.* Every client that wants throughput must write the same three-way wiring and the same url match. Two of three wrote none of it and neither noticed, because the axis vanishes silently.
+
+**Two shapes, and Tom picks:**
+
+1. **Core records throughput itself**, where it already sees the transfer and already knows the endpoint. The host supplies nothing; the media-bytes feed stays a host concern, since core never sees those (that is the feed the web client added after an afternoon on its slowest node).
+2. **The axis abstains loudly** rather than silently — the way `capacity` already abstains without a core count. Today `selectionAxis()` reports that configuration order decided, and nothing says the primary axis was never available to consult.
+
+These are not exclusive, and the second is worth having regardless. **This is the same failure class as the package alias and the hydration filter**: something invisible from the place it would be noticed.
 
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
