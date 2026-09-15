@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MachaClientConfiguration, parseEndpointList } from './configuration.js';
-import { memoryStorage } from './host.js';
+import { configureMachaHost, memoryStorage } from './host.js';
 import type { StorageLike } from '../state/storage.js';
 
 function configured(storage: StorageLike, options: { environmentEndpoints?: string[]; pinnedEndpoints?: boolean } = {}) {
@@ -189,3 +189,50 @@ describe('parseEndpointList', () => {
   });
 });
 
+
+describe('the host is resolved on use, never captured', () => {
+  /**
+   * A host that constructs this at module scope — which the Android TV client
+   * does — pinned it to whatever `detectHost()` guessed before
+   * `configureMachaHost()` ran. Under ESM every import resolves before the
+   * importing module's body, so on React Native that is `memoryStorage()`: a
+   * Map held for the life of the process while the real store sat unused.
+   * `macha-client-id` was never once written to AsyncStorage there, and
+   * endpoints a viewer set in Settings did not survive a restart.
+   *
+   * `SessionManager` had documented this hazard and solved it with a getter.
+   * This class had the same hazard and did not.
+   */
+  it('uses the storage configured after construction, not the one guessed before it', () => {
+    const configuration = new MachaClientConfiguration();
+    const configured = memoryStorage();
+    configureMachaHost({ storage: configured, secureStorage: undefined, now: Date.now, uuid: () => 'minted-id' });
+
+    configuration.setBootstrapEndpoints(['https://node.example']);
+
+    expect(configured.getItem('macha-bootstrap-endpoints-v1')).toContain('https://node.example');
+  });
+});
+
+describe('reading an identity without creating one', () => {
+  /**
+   * On a host whose storage is a prefix-hydrated cache, an unhydrated key is
+   * indistinguishable from an absent one — so minting there invents a fresh
+   * identity and destroys the previous one. A read that finds nothing is
+   * harmless; a write that invents an identity is not. Core uses this, never
+   * `clientId()`, for anything it wires on a host's behalf.
+   */
+  it('answers undefined rather than minting when nothing is stored', () => {
+    const storage = memoryStorage();
+    const configuration = new MachaClientConfiguration({ storage });
+
+    expect(configuration.existingClientId()).toBeUndefined();
+    expect(storage.getItem('macha-client-id')).toBeNull();
+  });
+
+  it('answers the stored identity when there is one', () => {
+    const configuration = new MachaClientConfiguration({ storage: memoryStorage({ 'macha-client-id': 'client-42' }) });
+
+    expect(configuration.existingClientId()).toBe('client-42');
+  });
+});
