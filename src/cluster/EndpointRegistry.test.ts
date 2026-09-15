@@ -3,7 +3,6 @@ import { EndpointBandwidth } from './EndpointBandwidth.js';
 import { memoryStorage } from '../runtime/host.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
-import { EndpointBandwidth } from './EndpointBandwidth.js';
 
 describe('EndpointRegistry', () => {
   it('normalizes and deduplicates bootstrap endpoints without losing order', () => {

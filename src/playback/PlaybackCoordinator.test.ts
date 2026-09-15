@@ -1663,3 +1663,86 @@ describe('preferences a mode change clears', () => {
     await coordinator.close();
   });
 });
+
+describe('a facts lookup that failed is retried, within a budget', () => {
+  /**
+   * Caching the answer is right; caching a thrown lookup was not. One
+   * transient fault — a node 500ing, a request issued microseconds before the
+   * session existed — permanently condemned the generation to the factless
+   * fallback, with no retry possible for as long as playback lasted. A viewer
+   * met exactly that: a facts call failing 18 ms after load, and a picture
+   * that never recovered once the cluster was answering perfectly again.
+   */
+  it('asks again after a failure rather than condemning the generation', async () => {
+    const player = new FakePlayer();
+    const facts = vi.fn()
+      .mockRejectedValueOnce(new Error('node 500'))
+      .mockRejectedValueOnce(new Error('node 500'));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts,
+    });
+    await coordinator.start();
+    const first = facts.mock.calls.length;
+
+    coordinator.update({ preferences: { mode: 'choose' } });
+    await vi.waitFor(() => expect(facts.mock.calls.length).toBeGreaterThan(first));
+    await coordinator.close();
+  });
+
+  it('stops asking once the budget is spent', async () => {
+    // Each retry is a request on the viewer's critical path. Unbounded, a
+    // viewer touching the mode control while a node was down would fire one
+    // every time.
+    const player = new FakePlayer();
+    const facts = vi.fn().mockRejectedValue(new Error('node down'));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts,
+    });
+    await coordinator.start();
+
+    for (let attempt = 0; attempt < 12; attempt += 1) { coordinator.update({ preferences: { mode: 'choose' } }); await vi.waitFor(() => undefined); }
+
+    expect(facts.mock.calls.length).toBeLessThanOrEqual(4);
+    await coordinator.close();
+  });
+
+  /**
+   * With only `withoutFacts` a screen could report that something was degraded
+   * but not that the lookup itself failed — so the fallback's symptoms reach
+   * the viewer looking like a property of the file. A warning in a ring buffer
+   * is not a degraded mode a viewer can act on.
+   */
+  it('carries why the lookup failed, so a client can say what went wrong', async () => {
+    const boom = new Error('Macha playback facts failed: a valid session bearer token is required');
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => { throw boom; },
+    });
+    await coordinator.start();
+
+    const instruction = coordinator.getSnapshot().instruction;
+    expect(instruction?.withoutFacts).toBe(true);
+    expect(instruction?.factsError).toBe(boom);
+    await coordinator.close();
+  });
+
+  it('reports no factsError when there is simply no supplier', async () => {
+    // A configuration, not a fault, and the two must stay distinguishable.
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+
+    expect(coordinator.getSnapshot().instruction?.withoutFacts).toBe(true);
+    expect(coordinator.getSnapshot().instruction?.factsError).toBeUndefined();
+    await coordinator.close();
+  });
+});
