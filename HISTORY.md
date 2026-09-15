@@ -131,6 +131,7 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.10.0` | One account model, no special anonymous — one `Session`, one mint, one storage policy. |
 | `0.11.0` | Artwork stops renaming itself, and volume leaves core. |
 | `0.11.1` | The storage registry admits to a key it owns; the cheap half of the coverage gap. |
+| `0.12.0` | What a host's storage owes core, said where it is read rather than only where it is listed. |
 
 ## A gap in what npm holds
 
