@@ -828,3 +828,22 @@ describe('fetch on a manager with nothing to mint against', () => {
     vi.restoreAllMocks();
   });
 });
+
+describe('signIn on a manager with nothing to mint against', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /**
+   * Raised by the web client: its login screen sorts 401/403 ("check your
+   * username and password") from everything else ("the node could not be
+   * reached"). A plain Error landed in the second bucket and told a viewer a
+   * healthy node was down. The typed error lands there too — it is a
+   * connection state — but the screen can now tell the manager was never
+   * started, which is an app fault, not a network one.
+   */
+  it('throws the same typed refusal as fetch, so a login screen can tell it apart', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+
+    await expect(new SessionManager(memoryStorage()).signIn({ username: 'u', password: 'p' }))
+      .rejects.toMatchObject({ name: 'SessionNotStartedError', reason: 'not-started' });
+  });
+});

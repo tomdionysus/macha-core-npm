@@ -260,41 +260,17 @@ export class EndpointRegistry {
   private lastLatencySwapAt?: number;
 
   /**
-   * **Omitting `bandwidth` silently disables the throughput axis**, and
-   * throughput is the axis documented as outranking latency. `bytesPerSecond`
-   * then returns `undefined` for every endpoint, the first measured axis
-   * eliminates nobody, and ranking falls through to latency. Nothing errors
-   * and nothing logs — the phone client has run this way throughout and
-   * reports it was invisible from the call site, which is why this note is
-   * here rather than only in the README.
-   *
-   * **Supplying it is not sufficient either.** For throughput to rank anything
-   * a host must do four things, and core does none of them for you:
-   *
-   * 1. construct an `EndpointBandwidth`,
-   * 2. pass it here,
-   * 3. call `record()` on it — **nothing in this package ever does**, and
-   * 4. do so at least `THROUGHPUT_MIN_SAMPLES` (2) times *in the current
-   *    session*, because `EndpointBandwidth.restore()` re-enters a persisted
-   *    record at `samples: 1`, one short of the threshold, so throughput
-   *    restored from storage never ranks on its own.
-   *
-   * Step 4 deserves its own warning: **a host that records once per session
-   * looks fully wired and ranks nothing, for ever.** Neither the threshold nor
-   * `restore()`'s re-entry at one sample is discoverable from the call site.
-   *
-   * Steps 3 and 4 were already recorded separately as small defects. Together
-   * with this parameter being optional they are one thing, and the web client
-   * has been bitten by a partial version of it — its bandwidth record
-   * described only JSON bytes until a media feed was added, and it spent an
-   * afternoon streaming from the slowest node it had. Degrading to latency
-   * when an axis has no evidence is correct behaviour, and is why none of this
-   * announced itself.
+   * Throughput is not a constructor concern. `createMachaServices` attaches
+   * the store and installs the recorder, so the axis the cascade documents as
+   * outranking latency is on by default rather than on if a host completed
+   * four steps it could not see from here. That parameter used to exist;
+   * two of three clients never passed it and never knew the axis was dark.
    */
+  private bandwidth?: EndpointBandwidth;
+
   constructor(
     endpoints: readonly MachaEndpoint[],
     private readonly now: () => number = Date.now,
-    private bandwidth?: EndpointBandwidth,
   ) {
     this.endpoints = this.deduplicate(endpoints);
   }
@@ -572,16 +548,14 @@ export class EndpointRegistry {
   }
 
   /**
-   * Supply the throughput store this registry ranks on, when one was not
-   * passed to the constructor.
+   * Attach the throughput store this registry ranks on. Called by
+   * `createMachaServices`; a host does not need to.
    *
-   * **Refuses to replace an existing one, and that is the point.** Two
-   * `EndpointBandwidth` instances for the same client serialise the same
-   * record map to `macha-client-bandwidth:<clientId>` and clobber each other.
-   * Core attaches one in `createMachaServices` so a host need not wire
-   * anything; a host that already supplies its own keeps it, and the two
-   * clients that wire theirs by hand are unaffected. Returns whether this call
-   * attached.
+   * **Refuses a second store, and that is the point.** Two `EndpointBandwidth`
+   * instances for one client serialise the same record map to
+   * `macha-client-bandwidth:<clientId>` and clobber each other. Services are
+   * rebuilt when routing changes, so this can be reached again for the same
+   * registry; the first store stays and the call reports `false`.
    */
   attachBandwidth(bandwidth: EndpointBandwidth): boolean {
     if (this.bandwidth) return false;
@@ -598,9 +572,14 @@ export class EndpointRegistry {
    * Feed a completed transfer to the throughput axis, resolving the endpoint
    * from the URL it was fetched from.
    *
-   * The resolution lives here rather than in the caller because the registry
-   * is what knows the endpoints; every host that wired throughput by hand had
-   * to write this same prefix match itself.
+   * **This is the seam for bytes core cannot see.** Core records its own JSON
+   * reads automatically; it never fetches media. The web client's Direct Play
+   * read-ahead worker does, and until it fed those bytes in, its throughput
+   * record described only JSON — a node serving nothing but media had no
+   * evidence against it and the client spent an afternoon streaming from its
+   * slowest node. A host with media-byte evidence calls this. It is the only
+   * throughput wiring a host does, and it is additive: nothing else to build,
+   * pass, install or match.
    */
   recordTransferByUrl(url: string, bytes: number, durationMs: number): void {
     if (!this.bandwidth) return;

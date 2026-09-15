@@ -1,4 +1,5 @@
 import { MachaConnectionError, serverUnreachable } from './serverConnection.js';
+import { currentTransferRecorder } from './transferRecorder.js';
 
 export type HeaderValues = Record<string, string | undefined>;
 
@@ -114,32 +115,6 @@ export async function readResponseBody(response: Response): Promise<ParsedRespon
 }
 
 /**
- * Observes a completed transfer: how many bytes arrived, and how long the body
- * actually took to read. Installed by application wiring rather than imported
- * here, so the HTTP layer keeps no dependency on cluster bookkeeping.
- */
-export type TransferRecorder = (url: string, bytes: number, durationMs: number) => void;
-
-let transferRecorder: TransferRecorder | undefined;
-
-export function setTransferRecorder(recorder: TransferRecorder | undefined): void {
-  transferRecorder = recorder;
-}
-
-/**
- * Whether anything is already observing transfers.
- *
- * There is one slot, so installing is destructive. The web client's recorder
- * feeds Direct Play *media* bytes as well as API bytes — added after an
- * afternoon spent streaming from the slowest node it had, because the record
- * until then described only JSON — and core silently replacing it would put
- * that fault straight back. Core checks this before installing its own.
- */
-export function hasTransferRecorder(): boolean {
-  return transferRecorder !== undefined;
-}
-
-/**
  * Parse a JSON response body, timing the read.
  *
  * The single place every API family reads a success body, so that throughput
@@ -149,6 +124,7 @@ export function hasTransferRecorder(): boolean {
  * measuring around it yields round-trip time wearing a throughput costume.
  */
 export async function readJsonBody<T>(response: Response): Promise<T> {
+  const transferRecorder = currentTransferRecorder();
   if (!transferRecorder) return await response.json() as T;
   const startedAt = Date.now();
   const body = await response.json() as T;
