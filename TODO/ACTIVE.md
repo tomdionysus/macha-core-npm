@@ -197,6 +197,22 @@ So `"type": "module"`, the `.` and `./testing` exports, and the `.js` extensions
 
 ---
 
+## Decided 2026-09-15 — the next release
+
+Five decisions from Tom, in one sitting. **All five ship together**, and two of them require every client to change.
+
+1. **`SessionManager.fetch` refuses rather than sending a doomed request.** Before `start()` and after `stop()` it throws a clear "not started" error instead of sending unauthenticated, collecting a 401 and returning it. **Tom: "make sure all clients know about this change."** It is a behaviour change — a caller that used to receive a `Response` with status 401 now catches an error — so it is breaking for anyone who inspected the 401. The doc comment is corrected to match, and `fetch()`'s misplaced JSDoc moves onto `fetch()` while there.
+
+2. **No instruction without facts: wait, bounded, then fail honestly.** Core holds playback while the facts lookup is retried, with a bound rather than forever, and if the bound is reached it fails with a message saying the client could not read the file's details. It does not guess and it does not present a lookup failure as a corrupt file. Open sub-question for implementation: what the bound is, and whether `assumed` stops covering the absence of facts entirely (it should — it means "the device did not tell us one thing about itself", which is a different claim).
+
+3. **Core wires throughput itself, and the axis abstains loudly.** Both halves. Core already times every transfer in `httpCompat.ts:117-146` and `ClusterEndpointRouter` already knows which endpoint it routed to, so core records throughput without a host doing anything. And `selectionAxis()` stops reporting "configured-order decided" when the truth is "the primary axis had no data" — it says so, the way `capacity` abstains without a core count. **Tom: "make sure that all clients refactor for this change."** The web client wires all four obligations by hand today and **must remove its wiring or it will double-record**; the other two wire nothing and simply gain the axis.
+
+4. **One storage key convention, in this same release.** Converge everything on dotted `macha.<name>.v<n>`. Both React Native clients have already widened their hydration filters, so the sequencing precondition is met — see *Proposed: one storage key convention* for the constraint that makes order matter, and note the standing warning that **a green web client is not evidence** here, since it reads through `localStorage` synchronously.
+
+5. **`macha.volume.v1.` dropped from the registry.** Done. `0.11.0` removed `VolumeStore`, so core neither writes nor reads it, and the list means the keys core owns today. **Tom: "There's no client we care about this for — everyone's a tester."** The orphaned value on an older install costs nothing. `macha-client-progress:` stays by contrast, because core still *reads* it.
+
+---
+
 ## P0 — nothing open
 
 ---

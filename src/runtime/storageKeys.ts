@@ -24,6 +24,15 @@
  * rename rode along for nothing.
  */
 
+/**
+ * Retired and deliberately absent: `macha.volume.v1.`. `0.11.0` removed
+ * `VolumeStore`, so core neither writes nor reads it, and this list means the
+ * keys core owns *today*. An older build's value is orphaned on devices that
+ * ran one — which costs nothing, because every install is a tester's.
+ * Contrast `macha-client-progress:` below, which stays because core still
+ * **reads** it.
+ */
+
 /** Keys that are complete in themselves. */
 export const MACHA_STORAGE_KEYS = [
   'macha.session.v1',
@@ -43,7 +52,6 @@ export const MACHA_STORAGE_KEY_PREFIXES = [
   'macha.playbackQueue.v1.',
   'macha.playlists.v1.',
   'macha.musicPlaylist.v1.',
-  'macha.volume.v1.',
   'macha-client-bandwidth:',
   /**
    * Continue Watching's pre-`0.10.0` key. Still read when the current key holds
