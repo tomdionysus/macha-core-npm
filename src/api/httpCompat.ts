@@ -127,6 +127,19 @@ export function setTransferRecorder(recorder: TransferRecorder | undefined): voi
 }
 
 /**
+ * Whether anything is already observing transfers.
+ *
+ * There is one slot, so installing is destructive. The web client's recorder
+ * feeds Direct Play *media* bytes as well as API bytes — added after an
+ * afternoon spent streaming from the slowest node it had, because the record
+ * until then described only JSON — and core silently replacing it would put
+ * that fault straight back. Core checks this before installing its own.
+ */
+export function hasTransferRecorder(): boolean {
+  return transferRecorder !== undefined;
+}
+
+/**
  * Parse a JSON response body, timing the read.
  *
  * The single place every API family reads a success body, so that throughput
