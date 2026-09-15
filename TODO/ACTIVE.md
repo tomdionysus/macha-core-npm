@@ -255,9 +255,20 @@ For throughput to rank anything, a host must do four things and **core does none
 
 **None of that is visible from the call site**, and throughput is the axis the cascade reads as primary: it outranks latency. Degrading to latency when an axis has no evidence is correct behaviour, which is exactly why nobody noticed.
 
-**The inference, flagged as an inference:** if no client completes all four steps, the throughput axis has never decided a single endpoint selection in production. The phone client has confirmed it does not. **The web and Android TV clients have been asked** — until they answer, "never ranked anywhere" is unproven and must not be repeated as fact.
+**That inference was wrong and is retracted.** I wrote that if no client completed all four steps, throughput had never decided anything anywhere. **The web client completes all four** — verified in its tree at `App.tsx:299-319` and `:328-339`, with *two* feeds into one recorder: API/JSON bytes through core's `readJsonBody`, and media bytes from the Direct Play read-ahead worker. It added the second after an afternoon spent streaming from the slowest node it had, because the record until then described only JSON. So the wiring gap is real on the phone client and **not universal**. Android TV has been asked and has not answered.
 
-**The cross-client consequence is the sharp one, and it bears on how this project has been reasoning all day.** If one client wires bandwidth and another does not, the two are ranking on *different axes* against the same cluster — so any comparison of which node each selected is measuring their wiring rather than the cluster. Several conclusions here have been drawn from exactly that kind of cross-client comparison.
+**What replaced it is better, and it came from measuring rather than reading.** The web client instrumented the deployed client against the real cluster for 26 minutes of real use including playback:
+
+    uptime        1,576,787 ms
+    probe cycles  155
+    decidedBy     { sticky: 155 }
+    swaps         []
+
+**Fully wired, fully fed, and throughput still ranked nothing** — because the preferred endpoint never came up for reconsideration. The sticky check short-circuits the cascade before any measured axis is reached (`EndpointRegistry.ts:397-407`, already in the low register for a different reason), and the only path that can dislodge a sticky preference is `evaluatePreferredSwap`, **whose gates are latency-only**: 200 ms absolute *and* 40% relative improvement, sustained 3 consecutive cycles, with a 60 s cooldown (`:102-108`).
+
+**So the open question is sharper than a wiring audit.** If that reading is right, throughput cannot dislodge a sticky endpoint *by any amount*, and its documented precedence over latency applies only to a first pick or to a cluster with no healthy preference. **Not yet verified** — I have read the constants, not `evaluatePreferredSwap`'s body, and the web client's `swaps: []` is consistent with both "never reached" and "reached and correctly declined". Three nodes where one is plainly right is exactly when stickiness *should* hold, so this is not evidence of a defect. A measurement has been requested that would separate the two.
+
+**The cross-client consequence is confirmed rather than hypothetical, and it bears on how this project has been reasoning all day.** The web client wires the full cascade; the phone client wires none of it and ranks on latency. **They have been ranking on different axes against the same cluster.** So any comparison of which node each selected measures their wiring rather than the cluster's behaviour — and several conclusions here have come from exactly that kind of cross-client comparison. Ask what a client wires before comparing what it chose.
 
 A note at the constructor now states what is lost by omission and the four steps. That replaces the three scattered low-register entries, which were each true and individually unalarming.
 

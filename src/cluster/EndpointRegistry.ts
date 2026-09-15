@@ -275,11 +275,17 @@ export class EndpointRegistry {
    *    record at `samples: 1`, one short of the threshold, so throughput
    *    restored from storage never ranks on its own.
    *
+   * Step 4 deserves its own warning: **a host that records once per session
+   * looks fully wired and ranks nothing, for ever.** Neither the threshold nor
+   * `restore()`'s re-entry at one sample is discoverable from the call site.
+   *
    * Steps 3 and 4 were already recorded separately as small defects. Together
-   * with this parameter being optional they are one thing: **the axis the
-   * cascade reads as primary may never have ranked anything on any client.**
-   * Degrading to latency when an axis has no evidence is correct behaviour and
-   * is why nobody noticed.
+   * with this parameter being optional they are one thing, and the web client
+   * has been bitten by a partial version of it — its bandwidth record
+   * described only JSON bytes until a media feed was added, and it spent an
+   * afternoon streaming from the slowest node it had. Degrading to latency
+   * when an axis has no evidence is correct behaviour, and is why none of this
+   * announced itself.
    */
   constructor(
     endpoints: readonly MachaEndpoint[],
