@@ -391,6 +391,26 @@ Tom's rule: *would nearly every conceivable client be required to do this? If ye
 
 These are not exclusive, and the second is worth having regardless. **This is the same failure class as the package alias and the hydration filter**: something invisible from the place it would be noticed.
 
+### `fetch` still returns a bare 401 when the mint failed — decision 1 closed only half the window
+**Waiting on:** core, and it needs its own go/no-go. `src/api/SessionManager.ts`, the `fetch` guard. **Found by the phone client on 2026-09-15 by declining an instruction of mine and checking the installed build.**
+
+`0.12.0` refuses when there is **no registry** — never started, or stopped. It does not refuse when the manager *is* started and simply has no token because **the mint failed**. Verified in the published `dist`:
+
+    if (!this.registry) throw new SessionNotStartedError(...)
+    ...
+    if (response.status !== 401 || sent === undefined) return response;
+
+With a registry present, a failed mint leaves `token` undefined and `inFlight` cleared, so nothing waits and nothing refuses: the request goes out tokenless, is answered `401`, and `sent === undefined` short-circuits the re-mint and hands that `401` straight back. **That is the same symptom the web client originally reported, reached by a different route** — a caller that read the contract still gets a 401 it was promised it would never see.
+
+**I told the phone client its comment describing this was stale. It was not**, and it had checked rather than complied — the third time today that habit caught something, and the second time it caught me. It widened its own provider's comment instead, since "early" now fails in two distinct ways, and left the accurate one alone.
+
+**The fix is not obvious and that is why it is its own item.** A pending `refreshTimer` means recovery is already scheduled, so `fetch` could wait for it rather than refuse — but `lastMintFailure` may be a *refusal* (`anonymous_disabled`) rather than unreachability, where waiting achieves nothing and refusing is right. The two need distinguishing, which is the same distinction `mintNow` already draws for connectivity.
+
+### `recordTransferByUrl` attributes by URL, and drops what it cannot place — silently
+**Waiting on:** core, if a cluster ever turns up where it matters. Raised by the phone client, no action requested.
+
+Attribution was `session.endpoint.id`, which was authoritative. It is now `url.startsWith(baseUrl + '/')` against the registry's endpoints, which is equivalent **only while media is served from a node's own base URL**. A signed capability URL on another origin would have its sample dropped rather than misattributed — correct, since a misattributed sample is worse than none, but silent. Worth checking the next time this is exercised on hardware.
+
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
 
