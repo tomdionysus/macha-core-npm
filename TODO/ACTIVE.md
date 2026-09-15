@@ -10,7 +10,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Where things stand.** `0.11.0` is released — merged to `main`, tagged, pushed, and `dist` built. `develop` and `main` are level. Eighteen tags, `0.2.0` through `0.11.0`. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
-**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **720 tests in 59 files, all passing** as of 2026-09-13. Run all five.
+**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **786 tests in 61 files, all passing** as of 2026-09-15. Run all five.
 
 **Build LAST, after the final `git checkout`.** `dist:check` compares mtimes, and a branch switch rewrites every source file's. So "build, merge to `main`, tag, checkout `develop`" leaves `dist` stale **even though no source changed**, and every client's `pretest` then refuses. This happened on the `0.10.0` release and blocked a client until it was caught. Core reported "dist is current" in good faith and was wrong within the minute.
 
@@ -20,7 +20,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **All four resolve it through a `file:` link**, and the link resolves through `"main": "./dist/index.js"`, so every client compiles against your **last build**, not your working tree. A change on `develop` is invisible to all four until `npm run build` runs here.
 
-**Two of them install it as `@macha/core`** — a real `package.json` key with a `file:` target, so their imports resolve and are correct as written. Only the web client uses `@machafoundation/core`. That split is **Tom's to settle** (a dependency key, a reinstall and a regenerated lockfile in each repo) and is recorded under *Waiting on Tom*.
+**Two of them install it as `@macha/core`** — a real `package.json` key with a `file:` target, so their imports resolve and are correct as written. Only the web client uses `@machafoundation/core`. **That split is now settled: `@machafoundation/core` is the name**, because `@macha` is an unclaimed npm scope and would break the moment a client resolved from the registry. Both clients need renaming — see *Moving the clients onto public npm* below, which also carries the dependency-confusion note that makes it time-sensitive.
 
 **Two clients do not use `PlaybackCoordinator` at all.** The phone client calls `ClusterPlaybackResolver.failover` directly and never prepares an alternate. So a fix landed in the coordinator reaches three clients of four. **Check which layer a client actually uses before telling it a fix matters to it.**
 
@@ -58,14 +58,46 @@ All three active clients were on `0.10.0` and green when `0.11.0` was cut; the o
 
 ---
 
+## Moving the clients onto public npm
+
+**Decided 2026-09-15, on evidence rather than preference.** The package alias split is closed: **`@machafoundation/core` is the name.**
+
+| Name | Registry status |
+|---|---|
+| `@machafoundation/core` | Published since 2026-09-12, owned by `tomdionysus`. `latest` was `0.8.1` |
+| `@macha/core` | **Does not exist.** The whole `@macha` scope is unclaimed — 0 packages, org endpoint 404 |
+
+So the two clients keying `@macha/core` are not using an alias, they are using a name nobody owns. They break the moment they resolve from the registry instead of `file:`. That is now a prerequisite rather than a chore.
+
+**One security item, and it is the reason not to let this drift.** `@macha/core` sits in two clients' `package.json` today. It resolves through `file:`, and if that override were lost it would 404 — a loud, safe failure. But anyone may claim the `@macha` scope and publish `core` into it, after which a regenerated lockfile, a CI install, or a teammate installing without the local checkout resolves to a stranger's package and runs their install scripts. Nothing suggests this has happened. The rename is the fix; claiming `@macha` defensively is cheap belt-and-braces.
+
+**npm's `latest` was three releases stale.** `0.8.1` was the only published version, so anything installed from the registry between 2026-09-12 and `0.11.1` predates `0.9.0` — including the `checkEndpointConfiguration` lockout that two clients wrote their own pre-save gates to route around. **`0.9.0`, `0.10.0` and `0.11.0` will never exist on npm**; a client pinning `^0.9.0` will not resolve. Recorded in HISTORY.md, because from outside a version gap and an unpublish look identical.
+
+### Do not lose the local-link loop
+
+The `file:` link is why a core change is invisible to a client until `npm run build` runs here. The registry inverts that: invisible until *published and bumped*. **That loop is what has been catching real defects** — the Android TV client's `hlsWalk` swap produced three of its four findings, and a client verifying core's output rather than taking core's word found a stale `dist`, an orphaned build artefact and a mid-rebuild collapse.
+
+So each client keeps a way to link locally (`npm link`, or a `file:` override) for development, and uses the registry for CI and releases. **Write that into the client's README** or the habit decays into "wait for a publish" and the fuzzing stops.
+
+### Order — one at a time, not four at once
+
+1. **Web client.** Already keys `@machafoundation/core`, so it is a one-line swap from `file:` to `^0.11.1` plus a regenerated lockfile. It goes first because it proves the published tarball actually works before anything harder is attempted.
+2. **Phone and Android TV.** Dependency key, every import, and a regenerated lockfile in each.
+3. **Tizen last**, since it shares the web build.
+
+**Keep the dependency move separate from the outstanding ports** (`secureStorage`, `lastIdentityChange`, `signOut`, `probeNow`). Doing both at once means two variables when something breaks.
+
+---
+
 ## P0 — nothing open
 
 ---
 
 ## Waiting on Tom
 
-- **The package alias split.** Two clients key the dependency `@macha/core`, one keys it `@machafoundation/core`. All resolve; all imports are correct as written. One package installed under two names reads as a typo to whoever meets it third. A `package.json` change plus a reinstall and a regenerated lockfile in each repo — recorded as a chore by both clients, neither acting on it.
-- **Coverage.** Deferred 2026-09-13: *"not at this time, we'll update later."* Was 93.4% statements / 84.4% branches at 600 tests; not re-measured since. The gap is concentrated in `PlaybackCoordinator` and `PlaybackRuntime`, whose uncovered branches are failure paths that only fire in combination — failover racing a seek, a promotion during a pending mutation. Each needs a *scenario* built rather than an assertion added, which is why it is slow and why it is worth having. Still uncovered and named by the review: `canSeek: false`; degrade during failover; discovery failure demoting the sticky endpoint; persist throwing; restart mid-bootstrap; malformed success bodies; an empty bootstrap list; malformed continue-watching entries. `ClientLog` has one test.
+- ~~**The package alias split.**~~ Decided 2026-09-15: `@machafoundation/core`, because `@macha` is an unclaimed scope and `@machafoundation/core` is already published and owned. See *Moving the clients onto public npm* above.
+- **Coverage.** Deferred 2026-09-13: *"not at this time, we'll update later."* Re-measured 2026-09-15 and the cheap half taken; see *Coverage: what is done and what is left* below for where it now stands and what the rest costs.
+- **Does `macha.volume.v1.` stay in the storage registry?** `0.11.0` deleted `VolumeStore`, so **nothing in core writes that key any more**, but it is still listed in `MACHA_STORAGE_KEY_PREFIXES` — surfaced by the new registry test, which drives what core writes and cannot speak to what it no longer writes. Both answers are defensible and they are not the same: *keep it* and hosts clearing Macha data through `isMachaStorageKey` still collect the value core left on every device that ran `0.10.0` or earlier — but then the file's opening line, "every storage key this package **owns**", is no longer quite what the list means and should say so. *Drop it* and the registry stays honest, but a value core wrote is orphaned on every existing install and a host enumerating keys reads it as someone else's. **Leaning keep**, with the doc amended to say the list includes keys core has retired but still owns — the same reasoning that keeps `macha-client-progress:` listed. Cheap either way; it just needs deciding before someone deletes it as dead.
 
 ---
 
@@ -163,10 +195,58 @@ Specified, not built. `GET /api/v1/playback/sessions/{id}` returns `engine_runni
 
 `ClusterEndpointRouter.find` returns `undefined` both when every node says "not available" and when some said that while another failed with a 5xx. Deliberate — it stops optional metadata blocking playback on an unrelated node failure — but for playback facts the two are different answers, because absent means *transcode everything*, silently. Shape: report whether the walk ended on unanimous absence or on absence-plus-failure, without changing the return for callers that do not care.
 
-### `ClusterUsersApi` has no tests at all
-**Waiting on:** core.
+### ~~`ClusterUsersApi` has no tests at all~~ — done on `develop`, unreleased
+**Waiting on:** nothing. Moves to COMPLETED.md with the version that ships it.
 
-`UsersApi`, `MachaUsersApi` and `ClusterUsersApi` shipped in `0.8.0` with no test file and no review. `0.8.1` added credential-path coverage and `MachaUsersApi.test.ts` followed. **`ClusterUsersApi` still has none** — it is the routing wrapper, so the untested part is exactly the failover-and-record-evidence behaviour the other cluster wrappers keep being bitten by (see the per-title-fault item in P1, which is that same bug in a sibling).
+`ClusterUsersApi.test.ts` now covers the read/write split the class is arranged around: a read fails over on a 5xx, a 403 does not walk the cluster, and **each of the five mutations is attempted on exactly one node even when the failure is retryable**. That last one is the assertion that separates `mutation()` from `request()` — it was checked red by routing `create` through `read`, and it is the only test in the file that fails when that happens.
+
+---
+
+## Coverage: what is done and what is left
+
+**Measured 2026-09-15, not estimated.** `npm run test:coverage` prints the table; `coverage/coverage-summary.json` has the per-file numbers.
+
+| | 2026-09-13 (600 tests) | before this pass (720) | now (786) |
+|---|---|---|---|
+| Statements | 93.4% | 92.1% | **93.94%** |
+| Branches | 84.4% | 84.39% | **85.39%** |
+| Functions | — | 88.16% | **91.56%** |
+
+Note the middle column: between 600 and 720 tests statements fell 1.3 points. Tests were added and coverage went *down*, because what landed in `0.10.0` and `0.11.0` was covered below the existing average. Worth re-measuring after a release rather than assuming a rising number.
+
+### Done — the cheap half
+
+Each of these guards a rule that had already failed once somewhere, and none needed new harness:
+
+- **`storageKeys.ts` 0% → 100%.** The test drives every persisting component against a recording `StorageLike` and asserts every key touched satisfies `isMachaStorageKey`, rather than comparing the registry against a copy of itself. It went red on its first run: **`macha-client-progress:` — the legacy Continue Watching key, read on every cold start and deliberately never deleted — was not in the registry**, so a host clearing Macha's data through `isMachaStorageKey` left it behind. Now listed. **Add a component to `driveEveryPersistingComponent` when you add one that persists**; the assertion cannot know about a store nobody drove.
+- **`ClusterUsersApi` 65.5% → 100%** (functions 14.28% → 92.85%). See the P2 entry above.
+- **`MachaUsersApi` 65.1% → 100%.** Only `list` was covered; the eight other methods, the 401-vs-403 split, and the "send only the fields the caller set" rule on `update` now are.
+- **`SessionAuth` 74.8% → 93.9%.** The revoke path had no tests at all: 401/403 as already-revoked, a refusal being terminal rather than walked, transport failover, and the empty-registry message that must not read as "cluster unreachable".
+- **`ClientLog` 87.4% → 100%.** Level filtering, the ring buffer and its 100-entry floor, `Error` unpacking, nested and in-array redaction, the depth limit, and `clientDiagnosticsConsole()`. The Android TV failure trail runs through this.
+- **`errors.ts` 55.6% → 100%.** `abortError()`'s fallback branch — the one that *only* runs on React Native and therefore never ran in a Node suite — is now exercised by stubbing `DOMException` away.
+- **`PlaybackRuntime` 86.4% → 90.2%.** The parts that did not need a scenario: capability re-probe after a failed probe, `dispose()` closing the session, the host wait, and a throwing transition not poisoning the queue.
+
+### Left — and it is mostly one place
+
+`PlaybackCoordinator` (89.6% statements, 78.6% branches) and `PlaybackRuntime` are now **most of what remains uncovered**. ACTIVE.md has always said these need scenarios rather than assertions, and that is still true of what is left.
+
+**The leverage: several of those scenarios are the P1 fixes.** Build the scenario and the fix together so the test is seen red — a test written against today's behaviour would pin the bug.
+
+| Scenario to build | Item it closes |
+|---|---|
+| Storage write throws during the health cycle | P1 — the loop dies silently; `probeNow()` shares it |
+| `setBootstrapEndpoints([])` then restart | P1 — permanently unconfigured after a "clear" |
+| 200 with an HTML body / JSON missing `items` | P1 — `SyntaxError` to the viewer, node cooled for a schema mismatch |
+| A per-title fault on a facts read | P1 — `ClusterPlaybackFactsApi` demotes a node for one bad extent |
+| Degrade during failover; `close()` with a failover in flight | Low register — coordinator `1134-1140`, `698-718` |
+
+**What is blocking that work, and is worth doing first: there are three `FakePlayer` implementations.** The shared one (`src/testing/FakePlayer.ts`, which ships publicly on the `./testing` export) and a local one in each of `PlaybackRuntime.test.ts` and `PlaybackCoordinator.test.ts`. The shared one's own header records what the split already cost — a round of "prove the test fails against the broken code" that ran green every time because the code it was meant to break was never the code under test, **and a good test was deleted on the strength of it.** Building failover-racing-a-seek scenarios against that split pays the tax a third time.
+
+### Not worth chasing
+
+- **`checkPlatformSurface`, 51.9% branches.** Those branches are "what this platform lacks", and on Node everything is present. Faking absence per branch tests the mock, not the truth. The honest answer is the Android TV hardware run already tracked under *Watching, not doing*.
+- **The coverage-excluded barrels and type files.** `vitest.config.ts` excludes them deliberately and the reasoning there holds.
+- **The number itself.** The point of the pass above is that seven specific silent failures became loud, not that a percentage moved.
 
 ---
 
