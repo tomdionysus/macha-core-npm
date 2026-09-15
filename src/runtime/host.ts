@@ -20,13 +20,19 @@ export interface MachaHost {
    * for a key it never loaded, and core cannot tell that apart from the key
    * being absent.
    *
-   * The live case, found on the phone client 2026-09-15: `ContinueWatchingStore`
-   * adopts `macha-client-progress:<clientId>` on first read when the current
-   * key is empty. A host that did not hydrate that prefix reports nothing,
-   * adoption silently does not happen, and **every viewer upgrading from a
-   * pre-`0.10.0` build loses all their resume positions** — no error, no log,
-   * no way to attribute it. It works there only because `macha-` happened to
-   * be in that client's filter.
+   * The worked case, found on the phone client 2026-09-15:
+   * `ContinueWatchingStore` adopts `macha-client-progress:<clientId>` on first
+   * read when the current key is empty. A host that did not hydrate that
+   * prefix reports nothing, so adoption silently does not happen and the data
+   * the migration exists to carry is dropped — no error, no log, nothing to
+   * attribute it to. It works there only because `macha-` happened to be in
+   * that client's filter.
+   *
+   * **Nobody has lost anything and nobody is going to**: this package has no
+   * users, and no device in the world holds a pre-`0.10.0` key. This is
+   * recorded as a coupling rather than an incident. It is worth stating and
+   * testing anyway, because it holds for every read-time migration not yet
+   * written, and by then the premise may not be true.
    *
    * So the registry is two lists wearing one name: what a host should *clear*
    * when clearing Macha's data, and what a caching host must *load* before

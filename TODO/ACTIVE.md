@@ -157,7 +157,7 @@ The comment is now explicit that the function answers "is this one of core's", n
 
 `ContinueWatchingStore.read()` adopts `macha-client-progress:<clientId>` when the current key is empty (`state/continueWatching.ts:143`). The comment above it says adopt-on-read was chosen so *"the caller cannot forget to run it"* — and that is true, but **the guarantee is only as strong as the storage core was handed.**
 
-A host that backs `MachaHost.storage` with a cache hydrated by prefix, rather than reading straight through, answers `null` for any key it never loaded. Core cannot tell that apart from the key being absent. So `read()` finds nothing, adopts nothing, and **every viewer upgrading from a pre-`0.10.0` build loses their entire Continue Watching list** — no error, no log, nothing to attribute it to.
+A host that backs `MachaHost.storage` with a cache hydrated by prefix, rather than reading straight through, answers `null` for any key it never loaded. Core cannot tell that apart from the key being absent. So `read()` finds nothing, adopts nothing, and the migration silently carries nothing across — no error, no log, nothing to attribute it to. **Severity, corrected 2026-09-15 after this file first overstated it: nobody has lost anything.** This package has no users and no device holds a pre-`0.10.0` key, so this is a coupling rather than an incident. Worth stating and testing regardless, because it holds for every read-time migration not yet written — by which time the premise may not hold.
 
 **It works on the phone client only by accident**: `macha-` happens to be in that client's `OWNED_KEY_PREFIXES`. Nothing anywhere recorded that core's migration depended on the host's hydration filter. That client has now pinned it with its hydrate test.
 
@@ -173,7 +173,7 @@ Stated now in three places, because one was not enough to stop it happening: `Ma
 
 Its filter was `startsWith('macha.')`, so **every hyphenated key was invisible**, and the damage was not limited to a lost list:
 
-- **`macha-client-id` was written every launch and never read back.** `clientId()` cannot distinguish unhydrated from absent, so it minted a **fresh identity on every cold start**. Every per-client store then hydrated correctly and was read under an identity that had just changed — so the dotted keys being right bought nothing at all. Continue Watching, volume, playlists and the playback queue were orphaned every launch.
+- **`macha-client-id` was written every launch and never read back.** `clientId()` cannot distinguish unhydrated from absent, so it minted a **fresh identity on every cold start**. Every per-client store then hydrated correctly and was read under an identity that had just changed — so the dotted keys being right bought nothing at all. Continue Watching, volume, playlists and the playback queue were orphaned every launch, **on development devices; there are no users, so no one's data was lost**.
 - **`macha-bootstrap-endpoints-v1` and `macha-discovered-endpoints-v1`** lost each launch, so discovered endpoint history never survived a restart.
 - **`macha-client-bandwidth:`** lost each launch. That is the throughput evidence the ranking cascade needs, and throughput outranks latency. **Candidate explanation, not a verified cause:** it would account for a cluster appearing to re-decide routing from configuration order alone on that platform. Nobody has confirmed the link; it is recorded so the next person looking at routing on Android TV starts here.
 
@@ -219,6 +219,27 @@ So `"type": "module"`, the `.` and `./testing` exports, and the `.js` extensions
 1. **`authorization()` hands out the dead token during a reactive re-mint**, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
 2. **`start()` during an in-flight bootstrap adopts the old registry's result** and never contacts the new one; `mintNow` then reports the corrected config as unreachable. The doc "safe to call again if the registry changes" is false in that window.
 3. **Refresh timers overwritten without clearing**; `stop()` clears only the last.
+4. **`fetch()` promises to wait for the mint and only waits when one is already in flight.** *Added 2026-09-15, measured on the deployed web client.* `fetch():439` reads `if (this.token === undefined && this.inFlight) await this.inFlight;` — but **before `start()`, and after `stop()`, there is no `inFlight`**. So the request goes out with no `Authorization` header, the node answers 401, and `sent === undefined` at `:442` returns it unretried. A caller that read the contract and did not remember to wait gets exactly the 401 it was promised it would never see. `authorization():434` has the identical shape.
+
+   Measured: `instruction-facts-failed — "Macha playback facts failed: a valid session bearer token is required"` **18 ms after load**, on a reload straight into a player URL. The viewer got a broken video.
+
+   **The fix depends on what a stopped manager should mean, so it is Tom's:** mint on demand when a registry is present, which would make the documented contract true; or refuse outright, which is at least honest. Either beats sending a request guaranteed to 401. **At minimum the doc must stop promising what the code does not do** — a client read that promise and built on it. Note this compounds with the known low-register item that `fetch()`'s JSDoc is attached to `authorization()`, so the promise is not even adjacent to the method that makes it.
+
+### The chooser decides with no facts, and the guess reaches the viewer as a corrupt file
+**Waiting on Tom** — a decision, not a patch. `src/playback/choosePlaybackInstruction.ts:324-329`, `:373`. *Measured on the deployed web client 2026-09-15.*
+
+With the facts call failed, core logged `instruction-facts-failed`, then `instruction-without-facts`, then chose anyway:
+
+    instruction-chosen  mode: direct, video: copy, audio: copy,
+                        reasons: ["source-plays-as-is"], assumed: ["hlsVideoCodecs"]
+
+The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken file rather than as "the client could not ask what this file is"**. The same title plays correctly when facts are available.
+
+**The design question, which is the web client's and is the right one:** `assumed` is built at `:324-329` from missing *capability* fields — `operations`, `hlsVideoCodecs`, `hlsAudioCodecs`, `hlsTs`, `videoBitDepth`. That is "the device did not tell us one thing about itself". It is **not** "we have no idea what this file is", and the two are being expressed by the same mechanism. Should `assumed` ever cover the absence of *facts* rather than the absence of a single capability?
+
+**This is squarely core's.** The chooser lives here precisely so every client decides the same way from the same facts — and here it decided from none. A warning in a ring buffer is not a degraded mode a viewer can act on. Holding for the facts, or failing with a message that says what actually went wrong, both look better than guessing; which one is Tom's call.
+
+**Reachable by any client**, not just the one that found it: a node 500ing or a network blip on the facts call gets here, and neither is a client bug. The web client separately fixed the trigger it owned — a `0.16.0` regression where route reconstruction started playback ~700 ms before an endpoint existed — but that gate only closes the path it opened.
 
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.

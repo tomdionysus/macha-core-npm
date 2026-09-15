@@ -96,8 +96,10 @@ export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
  * `MachaHost.storage` with a cache hydrated by prefix — rather than reading
  * straight through — must load every key here *before* core reads anything,
  * retired keys included. Core cannot distinguish "your cache never loaded
- * this" from "this key is absent", and the difference is a viewer's entire
- * Continue Watching list. See the note on `MachaHost.storage`.
+ * this" from "this key is absent", so a read-time migration against such a
+ * host silently carries nothing across. A coupling rather than a live risk —
+ * this package has no users — but it holds for migrations not yet written.
+ * See the note on `MachaHost.storage`.
  */
 export function isMachaStorageKey(key: string): boolean {
   if (key === MACHA_STORAGE_PROBE_KEY) return true;
