@@ -18,7 +18,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **All four resolve it through a `file:` link**, and the link resolves through `"main": "./dist/index.js"`, so every client compiles against your **last build**, not your working tree. A change on `develop` is invisible to all four until `npm run build` runs here.
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **They are moving off `file:` links onto the published npm package**, decided 2026-09-15; see *Moving the clients onto public npm* below for the order and the traps. Until a client has moved, it resolves through `file:` and `"main": "./dist/index.js"`, so it compiles against your **last build** and a change on `develop` is invisible to it until `npm run build` runs here. Once moved, a change is invisible until it is **published** — use a `--tag next` prerelease to get it in front of a client, never a local link.
 
 **Two of them install it as `@macha/core`** — a real `package.json` key with a `file:` target, so their imports resolve and are correct as written. Only the web client uses `@machafoundation/core`. **That split is now settled: `@machafoundation/core` is the name**, because `@macha` is an unclaimed npm scope and would break the moment a client resolved from the registry. Both clients need renaming — see *Moving the clients onto public npm* below, which also carries the dependency-confusion note that makes it time-sensitive.
 
@@ -73,11 +73,17 @@ So the two clients keying `@macha/core` are not using an alias, they are using a
 
 **npm's `latest` was three releases stale.** `0.8.1` was the only published version, so anything installed from the registry between 2026-09-12 and `0.11.1` predates `0.9.0` — including the `checkEndpointConfiguration` lockout that two clients wrote their own pre-save gates to route around. **`0.9.0`, `0.10.0` and `0.11.0` will never exist on npm**; a client pinning `^0.9.0` will not resolve. Recorded in HISTORY.md, because from outside a version gap and an unpublish look identical.
 
-### Do not lose the local-link loop
+### The registry is the only path, including in development
 
-The `file:` link is why a core change is invisible to a client until `npm run build` runs here. The registry inverts that: invisible until *published and bumped*. **That loop is what has been catching real defects** — the Android TV client's `hlsWalk` swap produced three of its four findings, and a client verifying core's output rather than taking core's word found a stale `dist`, an orphaned build artefact and a mid-rebuild collapse.
+**Tom, 2026-09-15: the development cycle must conform to what a user actually sees on install.** No `npm link`, no `file:` override kept aside for convenience. A loop that resolves differently from the thing being shipped is how something reaches a release working only locally.
 
-So each client keeps a way to link locally (`npm link`, or a `file:` override) for development, and uses the registry for CI and releases. **Write that into the client's README** or the habit decays into "wait for a publish" and the fuzzing stops.
+This overrides the earlier advice in this file, which was to keep a local link for development and use the registry for CI. That advice was weaker than it looked, and worth saying why rather than just deleting:
+
+**Of the four findings the `file:` loop is credited with, three were caused by the loop.** The stale `dist`, the orphaned build artefact and the mid-rebuild collapse are all failures of the link mechanism itself — a client reading a directory core was mid-write on. **None of them can happen against a registry tarball**, which is immutable and carries an integrity hash. So the loop's headline achievement was largely catching bugs it had created.
+
+The one genuine counter-example survives the move intact: the Android TV client's `hlsWalk` swap produced three of its four findings *from porting onto shared code*, not from the link. A client is still a cheap fuzzer for core's assumptions. It just does its fuzzing against a published version now.
+
+**The cost is real and is paid deliberately:** a core change reaches a client only after a publish. **Use a prerelease under a dist-tag rather than reaching for a link** — publish `0.12.0-rc.1` with `npm publish --tag next`, have the client install `@machafoundation/core@next`, and iterate. The install path, the tarball and the resolution are then identical in shape to what a user gets, which is the whole requirement, and `latest` never moves until it is meant to.
 
 ### Order — one at a time, not four at once
 
@@ -103,9 +109,9 @@ What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @ma
 
 **The web client's `pretest` is `cd ../macha-ts && npm run dist:check`,** and it reports the other clients carry the same shape. That check exists because the `file:` link meant a client compiled against core's last *build*, so a stale `dist` was invisible to typecheck and surfaced only at test time.
 
-**Against a registry tarball it asserts something irrelevant** — it validates a sibling working tree the client no longer compiles against, and would pass or fail for reasons unrelated to what is installed. It has to be removed, or made conditional on a local link actually being present. A green check that means nothing is how a real one stops being read.
+**Against a registry tarball it asserts something irrelevant** — it validates a sibling working tree the client no longer compiles against, and would pass or fail for reasons unrelated to what is installed. A green check that means nothing is how a real one stops being read.
 
-Core keeps `dist:check` regardless: it still guards the local-link workflow, which is the whole point of keeping that workflow available.
+**Delete it.** With no local link anywhere, there is no case left in which it answers a question the client has. Core keeps `dist:check` for its own release process, where it still guards the thing that gets packed.
 
 ### Source maps: one answer in, one outstanding
 
