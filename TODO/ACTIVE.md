@@ -92,7 +92,7 @@ The one genuine counter-example survives the move intact: the Android TV client'
 
 1. ~~**Web client.**~~ **Done** — released as `macha-client` 0.17.0, verified from a fresh clone with no `macha-ts` on disk.
 
-**Both remaining moves are waiting on Tom, not on core.** The Android TV client has asked him directly whether to take the rename or stay on its Settings focus defect, and is holding until he answers. It is right to: a 62-reference rename plus a lockfile regeneration in its own repo is its operator's call, and **core telling a client "you are clear to proceed" does not clear it** — core can report that a package is published and verified, and nothing more. Its facts were checked independently on its side before it reported, which is the correct handling of a relayed claim.
+**Tom, 2026-09-15, asked directly by the Android TV client whether to take the rename or stay on its Settings focus defect: _"Rename now, this is more important."_** That reverses the order that client had chosen, which had put the Settings focus work first. It was right to hold for his answer rather than take core's word: a 62-reference rename plus a lockfile regeneration in its own repo is its operator's call, and **core telling a client "you are clear to proceed" does not clear it** — core can report that a package is published and verified, and nothing more. Its facts were checked independently on its side before it reported, which is the correct handling of a relayed claim.
 2. **Phone and Android TV**, on Tom's word. Dependency key, every import, and a regenerated lockfile in each. Android TV additionally runs an `expo export` — see the Metro note above.
 3. **Tizen last**, since it shares the web build.
 
