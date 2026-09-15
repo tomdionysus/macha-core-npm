@@ -66,11 +66,31 @@ export const MACHA_STORAGE_KEY_PREFIXES = [
 export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
 
 /**
- * Whether a key belongs to this package.
+ * Whether a key belongs to **this package**.
  *
- * Use this rather than a prefix test of your own. Both conventions are
- * covered, the probe key is included, and a key added here in a later release
- * starts being recognised without the host changing anything.
+ * Use this rather than a prefix test of your own *for core's keys*: both
+ * conventions are covered, the probe key is included, and a key added here in
+ * a later release starts being recognised without the host changing anything.
+ *
+ * **It does not answer "is this key Macha's".** It cannot — it knows only what
+ * core owns, and a host owns more. **Never substitute it for the filter that
+ * decides which keys your own application restores at startup.** The phone
+ * client checked what that would cost by making the change rather than
+ * reasoning about it: its `owned()` set is strictly larger, and this function
+ * returns false for every one of `macha.clientId.v1`, `macha.endpoints.v1`,
+ * `macha.discoveredEndpoints.v1`, `macha.downloads.v1.`, `macha.musicLibrary.v1.`
+ * and `macha.progress.v1:` — none of which are core's.
+ *
+ * The worst of those is `macha.clientId.v1`, because it is the namespace the
+ * per-client stores are keyed under: drop it and the client id is fresh on
+ * every cold start, orphaning Continue Watching, the queue, the playlists and
+ * the music library at once. Silent, and the same shape as the sign-out
+ * incident described at the top of this file — which is the point. This
+ * function exists because of that incident and could, read as a blanket
+ * instruction, cause a larger version of it.
+ *
+ * What it is for: a host clearing or auditing **core's** data, where the
+ * question really is "is this one of yours".
  */
 export function isMachaStorageKey(key: string): boolean {
   if (key === MACHA_STORAGE_PROBE_KEY) return true;
