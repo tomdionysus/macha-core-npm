@@ -241,6 +241,26 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Reachable by any client**, not just the one that found it: a node 500ing or a network blip on the facts call gets here, and neither is a client bug. The web client separately fixed the trigger it owned — a `0.16.0` regression where route reconstruction started playback ~700 ms before an endpoint existed — but that gate only closes the path it opened.
 
+### The throughput axis may never have ranked anything, anywhere
+**Waiting on:** core to decide the shape, and on two clients for evidence. `src/cluster/EndpointRegistry.ts:258-264`, `:576-579`, `:113`; `src/cluster/EndpointBandwidth.ts:126`.
+
+**Three things already known separately, which are one thing together.** The phone client supplied the missing third by reporting that it wires no `EndpointBandwidth` at all — `new EndpointRegistry([])`, third parameter omitted — and core's own low register already held the other two. Verified here rather than taken:
+
+For throughput to rank anything, a host must do four things and **core does none of them for it**:
+
+1. construct an `EndpointBandwidth`;
+2. pass it as the optional third constructor parameter — **omit it and the axis silently disappears** (`:261`, `bytesPerSecond():576-579` returns `undefined`);
+3. call `record()` on it — **nothing in this package ever does**; and
+4. do so at least twice *in the current session*, because `THROUGHPUT_MIN_SAMPLES` is 2 (`:113`) while `EndpointBandwidth.restore()` re-enters a persisted record at `samples: 1` (`EndpointBandwidth.ts:126`) — one short, so **throughput restored from storage never ranks on its own**.
+
+**None of that is visible from the call site**, and throughput is the axis the cascade reads as primary: it outranks latency. Degrading to latency when an axis has no evidence is correct behaviour, which is exactly why nobody noticed.
+
+**The inference, flagged as an inference:** if no client completes all four steps, the throughput axis has never decided a single endpoint selection in production. The phone client has confirmed it does not. **The web and Android TV clients have been asked** — until they answer, "never ranked anywhere" is unproven and must not be repeated as fact.
+
+**The cross-client consequence is the sharp one, and it bears on how this project has been reasoning all day.** If one client wires bandwidth and another does not, the two are ranking on *different axes* against the same cluster — so any comparison of which node each selected is measuring their wiring rather than the cluster. Several conclusions here have been drawn from exactly that kind of cross-client comparison.
+
+A note at the constructor now states what is lost by omission and the four steps. That replaces the three scattered low-register entries, which were each true and individually unalarming.
+
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
 
@@ -461,7 +481,7 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `EndpointHealthMonitor.ts:136` + `EndpointRegistry.ts:495` — capacity keyed by `api_endpoint` string, so a typed IP versus an advertised hostname yields the same node twice and the in-use bootstrap entry never gets capacity.
 - `EndpointRegistry.ts:713-715` — `notify()` does not isolate listeners; a throwing host listener turns a succeeded `route()` into a rejection and can kill the monitor loop. `publishConnectionState` already guards.
 - `EndpointHealthMonitor.ts:106-148` — no abort check after `stop()`; an in-flight discovery still applies advertisement and fires listeners.
-- `EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample and the threshold is two, so persisted throughput never ranks. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
+- ~~`EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample, threshold is two~~ — **folded into *The throughput axis may never have ranked anything* in P1**, which is where it stops looking harmless. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
 - `EndpointHealthMonitor.ts:69,164,235` vs `serverConnection.ts:41-44` — a proxy's bodiless 502/503/504 counts as reachable and clears the outage state forever.
 - `EndpointRegistry.ts:85` vs `EndpointHealthMonitor.ts:10` — the cooldown ladder (500 ms, 2 s) is uncalibrated against the 10 s probe interval; a probe-failed sticky node is "ready" 0.5 s later. Neither constant records the relation. *This is the same class `hlsWalk` and the stall budget were fixed for: assert the inequality, not the number.*
 
@@ -478,7 +498,7 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `runtime/configuration.ts:140-144` — the self-healing `setItem` sits inside the read's `try`, so a write that throws removes the bootstrap key on a read.
 - `runtime/configuration.ts:187` and `api/httpCompat.ts:96` — `normalizeUrl` and `normalizeBaseUrl` are the same four lines under two names. **Duplication to delete before it drifts, not a correctness bug** — verified across nine input shapes.
 - `docs/examples/headless.mjs:64-68` passes `serverApi` to `EndpointHealthMonitor`, which has no such option.
-- `README.md:100-103` — "EndpointHealthMonitor feeds routing its evidence" omits that throughput, which outranks latency, is fed only by a host-built `EndpointBandwidth` that nothing in this package calls `record()` on.
+- ~~`README.md:100-103` — omits that throughput is fed only by a host-built `EndpointBandwidth` nothing in this package calls `record()` on~~ — **folded into the same P1 item.** The README line still needs fixing when that is settled.
 - **The hyphenated storage keys**, now that `macha.session.v1` has moved: `macha-client-id`, `macha-server-url`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-server-endpoints-v1`, `macha-client-bandwidth:`. Two conventions is a defect, not a design. Each costs a forced re-read or a lost value to rename, so they move **when something else already forces that cost** — never on their own. `MACHA_STORAGE_KEYS` documents both meanwhile.
 
 **Simplification, where the payoff is real**

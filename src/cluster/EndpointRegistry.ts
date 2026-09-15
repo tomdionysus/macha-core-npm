@@ -255,6 +255,32 @@ export class EndpointRegistry {
   private latencyAdvantageStreak = 0;
   private lastLatencySwapAt?: number;
 
+  /**
+   * **Omitting `bandwidth` silently disables the throughput axis**, and
+   * throughput is the axis documented as outranking latency. `bytesPerSecond`
+   * then returns `undefined` for every endpoint, the first measured axis
+   * eliminates nobody, and ranking falls through to latency. Nothing errors
+   * and nothing logs — the phone client has run this way throughout and
+   * reports it was invisible from the call site, which is why this note is
+   * here rather than only in the README.
+   *
+   * **Supplying it is not sufficient either.** For throughput to rank anything
+   * a host must do four things, and core does none of them for you:
+   *
+   * 1. construct an `EndpointBandwidth`,
+   * 2. pass it here,
+   * 3. call `record()` on it — **nothing in this package ever does**, and
+   * 4. do so at least `THROUGHPUT_MIN_SAMPLES` (2) times *in the current
+   *    session*, because `EndpointBandwidth.restore()` re-enters a persisted
+   *    record at `samples: 1`, one short of the threshold, so throughput
+   *    restored from storage never ranks on its own.
+   *
+   * Steps 3 and 4 were already recorded separately as small defects. Together
+   * with this parameter being optional they are one thing: **the axis the
+   * cascade reads as primary may never have ranked anything on any client.**
+   * Degrading to latency when an axis has no evidence is correct behaviour and
+   * is why nobody noticed.
+   */
   constructor(
     endpoints: readonly MachaEndpoint[],
     private readonly now: () => number = Date.now,
