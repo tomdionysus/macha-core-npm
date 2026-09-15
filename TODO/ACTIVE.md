@@ -267,6 +267,19 @@ Three consequences, and none of them is a defect to fix. `MIN_SAMPLE_BYTES` is r
 
 **Do not conflate the two reasons an axis decides nothing.** The same client measured 155 probe cycles all `decidedBy: sticky` with no swaps: there, throughput had evidence and was never consulted, because the preference never came up for reconsideration. Evidence-absent and never-consulted are different states and this backlog has treated them as one.
 
+### "Two samples" is not a low bar, and that is why `sticky` won 155 times
+
+**Demonstrated against the published `0.12.0` build, not reasoned about.** A record persisted with `samples: 9` restores as `samples: 1` (`EndpointBandwidth.js:133`) against a `THROUGHPUT_MIN_SAMPLES` of 2, so `bytesPerSecond` answers `undefined` and the endpoint **cannot rank**. One live sample later it ranks. Persistence therefore buys exactly one sample's head start and nothing else — it never ranks alone, however much history it holds.
+
+**Put that beside the `content-length` measurement and the consequence is sharper than either fact.** The only things that produce a live sample are a catalogue read over 32 KB or a host media feed; the ten-second health cycle is far below the floor and produces none. So:
+
+- **A browse-first client ranks after one catalogue read** — persistence supplying the other sample.
+- **A player-first client with no media feed never ranks at all.** Not late: never.
+
+**This is the mechanism behind `decidedBy: { sticky: 155 }`.** The web client wired throughput completely, held persisted records for all three nodes, and ran 26 minutes including playback — and throughput was **never eligible to rank**, rather than having been consulted and lost. Those are different states and this backlog conflated them until today.
+
+**The web client is not proposing a fix and neither am I.** Restore-at-one presumably exists so a stale record cannot outvote a live one, which is sound. The defect is in what the numbers *look* like: "two samples" reads like a low bar and is not one. **The docs must say what actually produces a sample.** That is the third time today a small number in isolation has looked harmless — the others being the 32 KB floor and the 40% relative-difference gate.
+
 ### Forgetting `recordTransferByUrl` is invisible, and core could make it visible
 
 It is now the only throughput wiring a host can forget, and forgetting it means ranking on JSON alone — the fault that had the web client streaming from its slowest node for an afternoon. That is the same property that let the third constructor argument go unpassed in two clients for months.
