@@ -32,6 +32,15 @@ export interface MachaHost {
    * when clearing Macha's data, and what a caching host must *load* before
    * core reads anything. Same keys, different reason, and the second one is
    * the one nobody thinks of.
+   *
+   * **The load list is what core may *read*, not what core *writes*, and the
+   * difference is the whole danger.** They diverge exactly at core's read-time
+   * migrations — `macha-client-progress:` and `macha-server-url` are read and
+   * then never written again. A host deriving its filter by observing what
+   * core writes therefore misses precisely the keys whose absence loses data,
+   * and "load everything in the registry" and "load everything I have seen
+   * core write" look equivalent while differing only in the case that hurts.
+   * (Sharpening owed to the Android TV client, 2026-09-15.)
    */
   storage: StorageLike;
   /**
