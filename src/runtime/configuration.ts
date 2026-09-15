@@ -43,14 +43,51 @@ export interface MachaClientConfigurationOptions {
  * arrive as constructor options and every reader goes through this one object.
  */
 export class MachaClientConfiguration {
-  private readonly storage: StorageLike;
+  private readonly storageOverride?: StorageLike;
   private readonly environment: string[];
   private readonly pinned: boolean;
 
   constructor(options: MachaClientConfigurationOptions = {}) {
-    this.storage = options.storage ?? machaHost().storage;
+    this.storageOverride = options.storage;
     this.environment = normalizeUrls(options.environmentEndpoints ?? []);
     this.pinned = options.pinnedEndpoints ?? false;
+  }
+
+  /**
+   * Resolved on use, never captured at construction — the same rule, and for
+   * the same reason, as `SessionManager.storage`.
+   *
+   * Capturing it here meant a host that constructs this at **module scope**
+   * pinned it to whatever `detectHost()` guessed before `configureMachaHost()`
+   * ran. Under ESM every import resolves before the importing module's body,
+   * so on React Native that is `memoryStorage()` — a `Map` this object then
+   * held for the life of the process, while the later `configureMachaHost`
+   * call replaced the module host and could not reach inside.
+   *
+   * The Android TV client hit exactly that: `macha-client-id` was never once
+   * written to `AsyncStorage`, a fresh id was minted into memory on every
+   * launch, and endpoints a viewer set in Settings did not survive a restart.
+   * `SessionManager` had documented this hazard and solved it; this class had
+   * the same hazard and did not. Two copies of one rule, disagreeing.
+   */
+  private get storage(): StorageLike {
+    return this.storageOverride ?? machaHost().storage;
+  }
+
+  /**
+   * The installation identity **if one has already been stored**, without
+   * minting when it has not.
+   *
+   * For callers that need to key something by identity but must not create an
+   * identity to do it. `clientId()` mints on absence, and on a host whose
+   * storage is a prefix-hydrated cache an unhydrated key is indistinguishable
+   * from an absent one — so minting there invents a fresh identity and
+   * destroys the previous one. **A read that finds nothing is harmless; a
+   * write that invents an identity is not.** Core uses this, never `clientId`,
+   * for anything it wires on a host's behalf.
+   */
+  existingClientId(): string | undefined {
+    return this.storage.getItem(CLIENT_ID_KEY) ?? undefined;
   }
 
   /** Stable per-installation identity, minted on first use. */

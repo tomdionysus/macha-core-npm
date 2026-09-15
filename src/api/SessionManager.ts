@@ -218,6 +218,18 @@ export interface SessionIdentityChange {
  *
  * Neither is worth sending a request for: with no registry there is nothing to
  * mint against, so the request could only ever 401.
+ *
+ * **It is not evidence that any node is unreachable, and must not be reported
+ * as connectivity.** It is a `MachaConnectionError` because the *request*
+ * could not be made, but no node was asked and none has said anything — so a
+ * host that calls something like `reportUnreachable()` on every
+ * `MachaConnectionError` will flip a viewer to an offline state on a
+ * perfectly healthy cluster. The phone client traced that cost on its own
+ * tree: the cold-start route reaches its transport branch, the UI flips
+ * offline, and its probe suppression then withholds real requests for twenty
+ * seconds, so a viewer sees their downloads instead of their library on every
+ * launch. **Branch on `reason` before treating this as a network fault** —
+ * that is what `reason` is for.
  */
 export class SessionNotStartedError extends MachaConnectionError {
   constructor(public readonly reason: 'not-started' | 'stopped') {

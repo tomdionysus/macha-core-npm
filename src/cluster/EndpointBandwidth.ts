@@ -49,8 +49,20 @@ export class EndpointBandwidth {
   private lastPersistAt?: number;
   private restored = false;
 
+  /**
+   * `clientId` may be a function, and may answer `undefined`.
+   *
+   * Throughput has to be recordable before an installation identity
+   * necessarily exists — core attaches this while a host's storage may still
+   * be hydrating, and **minting an id to have something to key by would
+   * invent an identity and destroy the real one**. So an absent id means the
+   * estimate lives in memory for this session and persists nothing, which
+   * costs almost nothing: a restored record re-enters at one sample against a
+   * threshold of two, so persisted throughput never ranks on its own anyway.
+   * The moment an id exists, writes resume under it.
+   */
   constructor(
-    private readonly clientId: string,
+    private readonly clientId: string | (() => string | undefined),
     private readonly storage: StorageLike | undefined = machaHost().storage,
     private readonly now: () => number = Date.now,
   ) {}
@@ -115,6 +127,10 @@ export class EndpointBandwidth {
 
   private restore(): void {
     if (this.restored) return;
+    // Not latched until an id exists: a restore attempted before the host's
+    // storage carried one must be retryable, or an estimate that could have
+    // been seeded never is.
+    if (this.key() === undefined) return;
     this.restored = true;
     const raw = this.readStored();
     if (!raw) return;
@@ -129,7 +145,8 @@ export class EndpointBandwidth {
 
   private readStored(): Record<string, unknown> | undefined {
     try {
-      const value = this.storage?.getItem(this.key());
+      const key = this.key();
+      const value = key === undefined ? null : this.storage?.getItem(key);
       if (!value) return undefined;
       const parsed = JSON.parse(value) as unknown;
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -142,15 +159,18 @@ export class EndpointBandwidth {
 
   private write(): void {
     try {
-      this.storage?.setItem(this.key(), JSON.stringify(Object.fromEntries(this.records)));
+      const key = this.key();
+      if (key === undefined) return;
+      this.storage?.setItem(key, JSON.stringify(Object.fromEntries(this.records)));
     } catch {
       // A full or unavailable store must never break a request path. The
       // in-memory estimate stays authoritative for this session either way.
     }
   }
 
-  private key(): string {
-    return `${PREFIX}${this.clientId}`;
+  private key(): string | undefined {
+    const id = typeof this.clientId === 'function' ? this.clientId() : this.clientId;
+    return id ? `${PREFIX}${id}` : undefined;
   }
 }
 

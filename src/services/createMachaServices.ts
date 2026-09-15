@@ -97,12 +97,18 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  * registry — the newest services own it, which is right, because a rebuild
  * means the previous registry is being retired.
  *
- * The store is keyed by `MachaClientConfiguration.clientId()`, the same id
- * every client already derives at the same moment for its own stores. That
- * call mints an id when the key is absent, and on a caching host an
- * unhydrated key reads as absent — which is why `MachaHost.storage` requires
- * every registered key to be loaded before core reads anything. Core relies
- * on that contract here rather than refusing to work in case a host breaks it.
+ * **The store is keyed lazily, and core never mints the id.** It reads
+ * `existingClientId()` at the moment it writes, not at construction. The
+ * phone client builds its services during its first render, before its
+ * storage has hydrated — so an eager `clientId()` here would read an
+ * unhydrated key, fail to tell it from absent, mint a fresh identity and
+ * persist it, on every cold start. The previous bandwidth record would be
+ * orphaned each time, two samples would never accumulate, and the axis would
+ * silently never rank: indistinguishable from the feature not existing. A
+ * read that finds nothing is harmless; a write that invents an identity is
+ * not. Until an id exists the estimate lives in memory, which costs almost
+ * nothing — a restored record re-enters at one sample against a threshold of
+ * two, so persisted throughput never ranks on its own regardless.
  *
  * What core cannot do is see media bytes; it never fetches media. A host that
  * has them feeds `EndpointRegistry.recordTransferByUrl`. That is the whole of
@@ -110,7 +116,8 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  */
 function wireThroughput(registry: EndpointRegistry): void {
   if (!registry.throughputRecordable) {
-    registry.attachBandwidth(new EndpointBandwidth(new MachaClientConfiguration().clientId()));
+    const configuration = new MachaClientConfiguration();
+    registry.attachBandwidth(new EndpointBandwidth(() => configuration.existingClientId()));
   }
   setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs));
 }
