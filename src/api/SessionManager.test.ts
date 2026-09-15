@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fixedBearerToken, NO_AUTH, SessionManager } from './SessionManager.js';
+import { fixedBearerToken, NO_AUTH, SessionManager, SessionNotStartedError } from './SessionManager.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { configureMachaHost, memoryStorage } from '../runtime/host.js';
 import * as SessionAuth from './SessionAuth.js';
 import { SessionAuthError } from './SessionAuth.js';
-import { reportClusterReachable } from './serverConnection.js';
+import { MachaConnectionError, reportClusterReachable } from './serverConnection.js';
 import { subscribeConnectionState } from '../runtime/events.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -754,5 +754,77 @@ describe('what a subscriber sees at the moment the session becomes ready', () =>
     expect(manager.roles).toBeUndefined();
     expect(manager.lastMintFailure).toBeDefined();
     manager.stop();
+  });
+});
+
+describe('fetch on a manager with nothing to mint against', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /**
+   * The contract this class documents is that a caller never has to know
+   * whether a session exists yet. Before `start()` there is no registry and no
+   * bootstrap in flight, so the old code sent the request tokenless, took the
+   * 401, and returned it — handing the caller exactly the answer it had been
+   * promised it would never see. The web client met this on a reload into a
+   * player URL, 18 ms after load, and a viewer got a broken video.
+   */
+  it('refuses rather than sending a request that can only 401', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new SessionManager(memoryStorage()).fetch('http://node.test/api/v1/users'))
+      .rejects.toBeInstanceOf(SessionNotStartedError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Deliberately a `MachaConnectionError`. The phone client's `MediaApi.serve`
+   * falls back to its downloaded library on that classification, and a fresh
+   * error type would have escaped the fallback and put a bearer-token message
+   * on a library screen — which is the thing that fallback exists to prevent.
+   * So this needs no client change to be handled sanely.
+   */
+  it('is a connection error, so an existing offline fallback still catches it', async () => {
+    vi.stubGlobal('fetch', vi.fn());
+
+    await expect(new SessionManager(memoryStorage()).fetch('http://node.test/api/v1/users'))
+      .rejects.toBeInstanceOf(MachaConnectionError);
+  });
+
+  it('says it was never started, which is routine rather than a caller mistake', async () => {
+    // React runs child effects before parent effects, so on both React Native
+    // clients a screen's first request fires before the provider starts the
+    // manager, on every cold start.
+    vi.stubGlobal('fetch', vi.fn());
+
+    await expect(new SessionManager(memoryStorage()).fetch('http://node.test/api/v1/users'))
+      .rejects.toMatchObject({ reason: 'not-started' });
+  });
+
+  it('distinguishes a teardown from a cold start', async () => {
+    // A reconfiguration whose cleanup stopped the manager while a request was
+    // in flight. A restart usually follows within milliseconds, and a client
+    // may want to treat that differently from never having started at all.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+    const manager = new SessionManager(memoryStorage());
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a.test'])));
+    manager.stop();
+
+    await expect(manager.fetch('http://node.test/api/v1/users'))
+      .rejects.toMatchObject({ reason: 'stopped' });
+  });
+
+  it('still sends once a registry is present', async () => {
+    // The refusal must not swallow the normal path: with somewhere to mint
+    // against, fetch behaves exactly as before.
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({ token: 'live', expiresAtMs: Date.now() + DAY_MS });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new SessionManager(memoryStorage());
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a.test'])));
+
+    await expect(manager.fetch('http://node.test/api/v1/users')).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
 });
