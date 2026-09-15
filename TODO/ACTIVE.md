@@ -8,7 +8,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** `0.11.0` is released — merged to `main`, tagged, pushed, and `dist` built. `develop` and `main` are level. Eighteen tags, `0.2.0` through `0.11.0`. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
+**Where things stand.** `0.11.1` is released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **786 tests in 61 files, all passing** as of 2026-09-15. Run all five.
 
@@ -18,7 +18,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **All four resolve it through a `file:` link**, and the link resolves through `"main": "./dist/index.js"`, so every client compiles against your **last build**, not your working tree. A change on `develop` is invisible to all four until `npm run build` runs here.
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **They are moving off `file:` links onto the published npm package**, decided 2026-09-15; see *Moving the clients onto public npm* below for the order and the traps. Until a client has moved, it resolves through `file:` and `"main": "./dist/index.js"`, so it compiles against your **last build** and a change on `develop` is invisible to it until `npm run build` runs here. Once moved, a change is invisible until it is **published** — use a `--tag next` prerelease to get it in front of a client, never a local link.
 
 **Two of them install it as `@macha/core`** — a real `package.json` key with a `file:` target, so their imports resolve and are correct as written. Only the web client uses `@machafoundation/core`. **That split is now settled: `@machafoundation/core` is the name**, because `@macha` is an unclaimed npm scope and would break the moment a client resolved from the registry. Both clients need renaming — see *Moving the clients onto public npm* below, which also carries the dependency-confusion note that makes it time-sensitive.
 
@@ -26,29 +26,39 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ### How this project keeps being wrong, and the cheapest way to find out
 
-Each of these has cost real time. The last one is the only reliable defence.
+Each of these has cost real time. The `codegraph_explore` habit in the first is the only reliable defence against most of them.
 
 1. **Inferring a difference instead of reading both bodies.** Two findings in the 2026-09-12 review were wrong this way; two of four "broken" state stores in `0.10.0` were the same. `codegraph_explore` returns both bodies in one call.
 2. **Attributing a measurement to the wrong node — or the wrong build.** On 2026-09-13 a client's `exp` measurement and the server's source reading flatly contradicted each other for an hour. Neither was wrong: the bucketing had deployed between them. **Establish which version answered before reconciling anything** — `/api/v1/status` carries it. This cuts both ways: the server read source and reported it as live behaviour; a client measured live and reported it as source.
 3. **Reading a transient as a steady state.** A `503 starting` read as a permanent gate, a `403` mid-deployment read as a configuration. Both retracted.
 4. **Grepping a tree when the consumer is a separate repo.** "The only consumer in the world" was wrong within hours — a second client wired it the same day, *after* the grep that found none. **Ask the session, do not grep the tree.** No amount of care with the search would have helped.
-5. **Ship a seam to a client before releasing it.** On 2026-09-13 the Android TV client swapped onto `hlsWalk` and **three of its four findings came from the swap rather than from reading the code** — including one that would have destroyed every warm standby on that platform, silently. A client porting onto shared code is a cheap fuzzer for the assumptions in it. Land the seam, name it to a client, let it swap, fix what the swap finds, *then* tag.
+5. **Reading core's git log to know what a client has.** *New as of 2026-09-15, and it replaces an older version of itself.* "Built is not released" used to mean a client compiles against core's last **build**, so a change on `develop` was invisible until `npm run build` ran here. For a client on the registry it now means the client compiles against core's last **publish** — a change on `develop`, **and even an annotated git tag**, is invisible there until it reaches npm *and* that client's range moves. `0.9.0`, `0.10.0` and `0.11.0` are the worked example: three tagged releases that never existed as far as any client could tell. **`npm view @machafoundation/core versions` is the answer, not `git tag`.** Raised by the web client on completing its move.
+6. **Prescribing a change to a client's repo from here.** *The clearest lesson of 2026-09-15, and it went wrong three times in one afternoon.* Core knew one true thing — the package moved to npm — and turned it into blanket instructions about trees it cannot see. Every one was wrong in a way only the client could know:
+   - *"Replace your prefix test with `isMachaStorageKey`"* — would have dropped `macha.clientId.v1` at hydration on both RN clients, giving a fresh client id on every cold start and orphaning Continue Watching, the queue, the playlists and the music library. Silent cold-start data loss, and a **larger version of the incident that function exists to prevent**.
+   - *"Delete your `pretest`"* — the Android TV `pretest` ran two things, and only one was core's. The other, `version:check`, exists because five builds shipped as `versionCode 1` and the television could not tell them apart. Deleting it wholesale would have reopened that.
+   - *"`rm package-lock.json` and regenerate"* — right for one client, wrong as a default: a regen drifts every transitive dependency and puts a second variable in the commit under review.
 
-**Two further habits that paid on 2026-09-13.** Writing a refactor brief surfaced a live core defect before anyone ported — a client compared it against the shape of its own state machine and found the ready-flicker. And a client verifying core's *output* rather than taking core's word found four things nothing else would have: a stale `dist`, an orphaned build artefact, a mid-rebuild collapse, and a shipped comment contradicting the commit that acknowledged it.
+   Two of the three were caught only because a client checked rather than complied — one by making the change and watching its test fail. **Core may report what it knows about its own package and nothing further: what is published, what is verified, what changed.** What that means inside a client's tree is the client's to determine. The same rule as not clearing another operator's work, one level down.
+7. **Taking a green client as evidence when it is structurally incapable of the failure.** *Named by the Android TV client, 2026-09-15, after it happened twice in one afternoon.* The web client reads `localStorage` through synchronously, so it **cannot** show a read-time migration failing against a caching host. A browser tab does not background as a television app does, so it **cannot** show a session lifecycle transition. Both times the green client was green because the fault was unreachable there, not because it was absent. **This is an argument about what evidence a release needs, not about who is careful** — and it decides who gets a prerelease first. Ask which platform can actually exercise the fault before counting a pass.
+8. **Ship a seam to a client before releasing it.** On 2026-09-13 the Android TV client swapped onto `hlsWalk` and **three of its four findings came from the swap rather than from reading the code** — including one that would have destroyed every warm standby on that platform, silently. A client porting onto shared code is a cheap fuzzer for the assumptions in it. Land the seam, name it to a client, let it swap, fix what the swap finds, *then* tag.
+
+**Two further habits that paid on 2026-09-13.** Writing a refactor brief surfaced a live core defect before anyone ported — a client compared it against the shape of its own state machine and found the ready-flicker. And a client verifying core's *output* rather than taking core's word found four things nothing else would have: a stale `dist`, an orphaned build artefact, a mid-rebuild collapse, and a shipped comment contradicting the commit that acknowledged it. **Amended 2026-09-15:** the habit is right and the example has largely expired — three of those four were failures of the `file:` link itself and cannot occur against an immutable tarball. Verifying output rather than taking core's word is still the point; the stale-link finding on the day of the npm move is the current example, and it is a better one.
 
 **The rule that settles most boundary questions** (Tom's): *would nearly every conceivable client be required to do this? If yes, core. If not, theirs.* And the one that settles most design questions: no component may assume another is live or healthy, and a dying component's evidence is not evidence.
 
 ---
 
-## Client adoption of `0.11.0`
+## Client adoption of `0.11.1`
 
-All three active clients were on `0.10.0` and green when `0.11.0` was cut; the one breaking change in `0.11.0` (`VolumeStore` leaving) was absorbed before it landed, so none should have broken. **Adopted and tested is not ported** — that distinction is the web client's and it is worth keeping.
+**Adopted and tested is not ported** — that distinction is the web client's and it is worth keeping. A third column is now needed: *how* a client resolves core, because "on core" stopped meaning one thing on 2026-09-15.
 
-| Client | On core | Suite | Ported |
+| Client | Resolves core by | Suite | Ported |
 |---|---|---|---|
-| Web | yes | 45 files / 317 | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed |
-| Android TV | yes | 11 files / 159 | **no** — `secureStorage` **not supplied**; token in app-private storage |
-| Phone | yes | 12 files / 90 | **no** — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow` |
+| Web | **npm `^0.11.1`** — released as `macha-client` 0.17.0, no link | 46 files / 335 | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed |
+| Android TV | **npm `^0.11.1`** — renamed, no link, `expo export` green | 11 files / 159 | **no** — `secureStorage` **not supplied**; token in app-private storage |
+| Phone | **npm `^0.11.1`** — renamed, 38 imports, no link | 12 files / 90 | **no** — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow` |
+
+**The web client verified the way the package will actually be met**, not in place: a fresh clone with no `macha-ts` anywhere on disk, `npm ci`, tarball resolved by integrity hash, typecheck clean, 335 tests green. That is the bar for the other two — an install proved against a tree that still contains a local core proves nothing, as its stale-link finding showed.
 
 **Nobody is blocked on core.** Each port is waiting on its own operator's sequencing.
 
@@ -73,19 +83,144 @@ So the two clients keying `@macha/core` are not using an alias, they are using a
 
 **npm's `latest` was three releases stale.** `0.8.1` was the only published version, so anything installed from the registry between 2026-09-12 and `0.11.1` predates `0.9.0` — including the `checkEndpointConfiguration` lockout that two clients wrote their own pre-save gates to route around. **`0.9.0`, `0.10.0` and `0.11.0` will never exist on npm**; a client pinning `^0.9.0` will not resolve. Recorded in HISTORY.md, because from outside a version gap and an unpublish look identical.
 
-### Do not lose the local-link loop
+### The registry is the only path, including in development
 
-The `file:` link is why a core change is invisible to a client until `npm run build` runs here. The registry inverts that: invisible until *published and bumped*. **That loop is what has been catching real defects** — the Android TV client's `hlsWalk` swap produced three of its four findings, and a client verifying core's output rather than taking core's word found a stale `dist`, an orphaned build artefact and a mid-rebuild collapse.
+**Tom, 2026-09-15: the development cycle must conform to what a user actually sees on install.** No `npm link`, no `file:` override kept aside for convenience. A loop that resolves differently from the thing being shipped is how something reaches a release working only locally.
 
-So each client keeps a way to link locally (`npm link`, or a `file:` override) for development, and uses the registry for CI and releases. **Write that into the client's README** or the habit decays into "wait for a publish" and the fuzzing stops.
+This overrides the earlier advice in this file, which was to keep a local link for development and use the registry for CI. That advice was weaker than it looked, and worth saying why rather than just deleting:
+
+**Of the four findings the `file:` loop is credited with, three were caused by the loop.** The stale `dist`, the orphaned build artefact and the mid-rebuild collapse are all failures of the link mechanism itself — a client reading a directory core was mid-write on. **None of them can happen against a registry tarball**, which is immutable and carries an integrity hash. So the loop's headline achievement was largely catching bugs it had created.
+
+The one genuine counter-example survives the move intact: the Android TV client's `hlsWalk` swap produced three of its four findings *from porting onto shared code*, not from the link. A client is still a cheap fuzzer for core's assumptions. It just does its fuzzing against a published version now.
+
+**The cost is real and is paid deliberately:** a core change reaches a client only after a publish. **Use a prerelease under a dist-tag rather than reaching for a link** — publish `0.12.0-rc.1` with `npm publish --tag next`, have the client install `@machafoundation/core@next`, and iterate. The install path, the tarball and the resolution are then identical in shape to what a user gets, which is the whole requirement, and `latest` never moves until it is meant to.
 
 ### Order — one at a time, not four at once
 
-1. **Web client.** Already keys `@machafoundation/core`, so it is a one-line swap from `file:` to `^0.11.1` plus a regenerated lockfile. It goes first because it proves the published tarball actually works before anything harder is attempted.
-2. **Phone and Android TV.** Dependency key, every import, and a regenerated lockfile in each.
+1. ~~**Web client.**~~ **Done** — released as `macha-client` 0.17.0, verified from a fresh clone with no `macha-ts` on disk.
+
+**Tom, 2026-09-15, asked directly by the Android TV client whether to take the rename or stay on its Settings focus defect: _"Rename now, this is more important."_** That reverses the order that client had chosen, which had put the Settings focus work first. It was right to hold for his answer rather than take core's word: a 62-reference rename plus a lockfile regeneration in its own repo is its operator's call, and **core telling a client "you are clear to proceed" does not clear it** — core can report that a package is published and verified, and nothing more. Its facts were checked independently on its side before it reported, which is the correct handling of a relayed claim.
+2. **Phone and Android TV**, on Tom's word. Dependency key, every import, and a regenerated lockfile in each. Android TV additionally runs an `expo export` — see the Metro note above.
 3. **Tizen last**, since it shares the web build.
 
 **Keep the dependency move separate from the outstanding ports** (`secureStorage`, `lastIdentityChange`, `signOut`, `probeNow`). Doing both at once means two variables when something breaks.
+
+### The swap does not take, and the obvious check says it did
+
+**Reported by the web client on 2026-09-15, having done the swap.** Editing `package.json` to `^0.11.1` and running `npm install` **silently keeps the existing link** — the lockfile still read `"resolved": "../macha-ts", "link": true`.
+
+The dangerous half is the confirmation. `require('@machafoundation/core/package.json').version` answers `0.11.1`, because the local tree is *also* at `0.11.1`. So the version check passes and the suite goes green while the client is still compiling against the sibling working directory. **A client can complete this swap, verify it, and report success without ever having installed the published package.**
+
+What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @machafoundation/core@^0.11.1 --save`, after which the lockfile carries the registry URL and an integrity hash.
+
+**Verify by shape, never by version string:** `test -L node_modules/@machafoundation/core`. A symlink means it did not take. This is the same class as the stale `dist` — a check reporting success for a reason unrelated to the question.
+
+**Better still, verify against a tree that cannot contain a local core.** The web client's acceptance test was a fresh clone with no `macha-ts` anywhere on disk, `npm ci`, tarball resolved by integrity hash, then typecheck and suite. That catches cases `test -L` does not, and for the renaming clients it settles the two-copies risk in one move, since a fresh clone cannot hold a stale `node_modules/@macha`.
+
+**And the cached version string can lie in both directions.** The Android TV client reports its lockfile records the linked core at `0.7.0` while the tree on disk is `0.11.1`. So a lockfile version is not evidence of what is installed either — only the `resolved` URL and an integrity hash are.
+
+**Worse for the two renaming clients**, and they have been told: the stale link can persist under the old `@macha/core` key while the new key resolves from the registry, leaving two copies of core in one tree with binding decided by whether the rename is complete. They clear `node_modules/@macha` outright and test both keys.
+
+### `dist:check` stops meaning anything to a client on the registry
+
+**The web client's `pretest` is `cd ../macha-ts && npm run dist:check`,** and it reports the other clients carry the same shape. That check exists because the `file:` link meant a client compiled against core's last *build*, so a stale `dist` was invisible to typecheck and surfaced only at test time.
+
+**Against a registry tarball it asserts something irrelevant** — it validates a sibling working tree the client no longer compiles against, and would pass or fail for reasons unrelated to what is installed. A green check that means nothing is how a real one stops being read.
+
+**Delete it.** With no local link anywhere, there is no case left in which it answers a question the client has. Core keeps `dist:check` for its own release process, where it still guards the thing that gets packed.
+
+### Source maps: closed, do not ship them
+
+`0.11.1` stopped publishing them — 142 files, 404KB, all pointing at `../src/*.ts` while `src` is not in `files`, so none of them ever resolved. `inlineSources` would make them work at +599KB. **Both clients that were asked said no loss and both asked that they not be shipped on their account.** Decided; do not reopen without someone actually asking for them.
+
+- **Web client:** never steps into core in a debugger; its playback diagnostics come out of core's ring buffer through `machaDiagnostics`, which is source-independent.
+- **Android TV**, which was the deciding answer and gave evidence from its tree rather than recollection: `playbackFailureTrail()` defaults its input to `clientDiagnosticsConsole().snapshot()` and renders the last 12 warn/error entries onto the television, sized to be read across a room; its console bridge is set to `__DEV__`, so it is **off in release builds** because the write is real cost on a set with no cable attached; and its own docstring settles it — *"a television has no console."*
+
+**The stronger form of its answer is worth keeping**, because it generalises past this decision: there is no mechanism on that platform that *could* consume a map. Release builds run Hermes bytecode and Metro generates its own map from whatever JS it bundles, so a `.map` in core's tarball has no consumer there even in principle. That is a different claim from "we don't happen to use them", and it is the one that closes the question.
+
+### `isMachaStorageKey`'s doc comment told hosts to do the wrong thing
+
+**Found by the phone client on 2026-09-15, by making the change rather than reasoning about it.** Fixed in the working tree; ships next release.
+
+The comment said *"Use this rather than a prefix test of your own."* Read as intended that means "do not hand-roll a test for core's keys". Read as written it means "replace your own key filter with this", and **that is catastrophic**: the registry lists what *core* owns, and a host owns more. The phone client's `owned()` set is strictly larger, and `isMachaStorageKey` returns false for all of `macha.clientId.v1`, `macha.endpoints.v1`, `macha.discoveredEndpoints.v1`, `macha.downloads.v1.`, `macha.musicLibrary.v1.` and `macha.progress.v1:`.
+
+**`macha.clientId.v1` is the one that matters**: it is the namespace the per-client stores are keyed under, so dropping it means a fresh client id on every cold start, orphaning Continue Watching, the queue, the playlists and the music library at once. Silent — and a *larger* version of the sign-out incident this file's own header cites as its reason for existing.
+
+I made this worse before it was caught: I told both RN clients "if you use your own prefix test rather than `isMachaStorageKey`, this is the moment to switch." The phone client checked instead of complying, and its hydrate test failed at the first assertion. **A client that had taken core's word would have shipped it.**
+
+The comment is now explicit that the function answers "is this one of core's", never "is this Macha's", and the boundary is pinned by tests asserting false for each of those six host-owned keys — so the next person to "helpfully" broaden the registry has to delete a test that explains why.
+
+**Two related corrections of fact.** `macha-client-progress:` — the key `0.11.1` added — is core's own legacy Continue Watching key, read by `state/continueWatching.ts`. I described it to the phone client as "directly yours"; it is not. That client's legacy key is `macha.progress.v1:`, which is its own, already matched by its own filter, and needed nothing. And `macha-session` is deliberately absent from the registry, having been retired in `0.10.0`.
+
+### Adopt-on-read silently assumes the host's storage can see a key core never named
+
+**Found by the phone client on 2026-09-15 while verifying a correction.** Fixed in the working tree; ships next release. **The Android TV client has been asked whether it is exposed** — its answer is outstanding.
+
+`ContinueWatchingStore.read()` adopts `macha-client-progress:<clientId>` when the current key is empty (`state/continueWatching.ts:143`). The comment above it says adopt-on-read was chosen so *"the caller cannot forget to run it"* — and that is true, but **the guarantee is only as strong as the storage core was handed.**
+
+A host that backs `MachaHost.storage` with a cache hydrated by prefix, rather than reading straight through, answers `null` for any key it never loaded. Core cannot tell that apart from the key being absent. So `read()` finds nothing, adopts nothing, and the migration silently carries nothing across — no error, no log, nothing to attribute it to. **Severity, corrected 2026-09-15 after this file first overstated it: nobody has lost anything.** This package has no users and no device holds a pre-`0.10.0` key, so this is a coupling rather than an incident. Worth stating and testing regardless, because it holds for every read-time migration not yet written — by which time the premise may not hold.
+
+**It works on the phone client only by accident**: `macha-` happens to be in that client's `OWNED_KEY_PREFIXES`. Nothing anywhere recorded that core's migration depended on the host's hydration filter. That client has now pinned it with its hydrate test.
+
+**The general shape, which is the part worth keeping:** the registry is two lists wearing one name — what a host should **clear** when clearing Macha's data, and what a caching host must **load** before core reads anything. Same keys, different reason, and the second is the one nobody thinks of. Any host reading core's storage through a cache has this exposure, for every retired key core still reads.
+
+Stated now in three places, because one was not enough to stop it happening: `MachaHost.storage` carries the obligation, `isMachaStorageKey` notes the load-list use, and `continueWatching.ts` names it at the adoption site. Pinned by a test asserting `read()` queries the legacy key and that every key it queries is registered.
+
+### What the unhydrated keys actually cost the Android TV client
+
+**Answered 2026-09-15: its storage is cached, and the exposure was far wider than the Continue Watching key.** Fixed on its side, 166 tests green, filter now driven by core's exported constants rather than a copied list — so a key core adds in a later release fails that client's suite instead of failing on a television.
+
+**On React Native every host is a caching host, and core made that inevitable.** `StorageLike` is synchronous; `AsyncStorage` is not. There is no read-through option, so the host hydrates once from `getAllKeys()` and answers from a `Map`. That is not a client shortcut — it is the only shape core's interface permits on that platform.
+
+Its filter was `startsWith('macha.')`, so **every hyphenated key was invisible**, and the damage was not limited to a lost list:
+
+- **`macha-client-id` was written every launch and never read back.** `clientId()` cannot distinguish unhydrated from absent, so it minted a **fresh identity on every cold start**. Every per-client store then hydrated correctly and was read under an identity that had just changed — so the dotted keys being right bought nothing at all. Continue Watching, volume, playlists and the playback queue were orphaned every launch, **on development devices; there are no users, so no one's data was lost**.
+- **`macha-bootstrap-endpoints-v1` and `macha-discovered-endpoints-v1`** lost each launch, so discovered endpoint history never survived a restart.
+- ~~**`macha-client-bandwidth:`** lost each launch~~ — **STRUCK 2026-09-15, and struck rather than demoted.** The Android TV client retracted this itself on tracing writers and readers: `EndpointBandwidth` is the only writer of that key, **nothing in that tree constructs one**, so the key was never written there and the hydration filter was irrelevant to it. There was nothing to lose. It had been recorded here as a "candidate explanation" for routing falling through to configuration order; **a wrong lead in a routing investigation is worse than no lead, because it reads as evidence the axis was once working.** The client's own framing, and it is right.
+
+**This is the `storageKeys.ts` header incident again, on a second client, independently, and worse.** Core shipped two key conventions and named neither until `0.10.0`; both React Native clients then wrote the same filter and lost different things by it.
+
+### npm does not check that a `file:` key matches the package it points at
+
+**Confirmed by the phone client in a scratch install**, and it is the mechanism that let the alias split hide for as long as it did: `@macha/core` symlinks happily to a tree whose `package.json` says `@machafoundation/core`. npm validates nothing about the name. So the wrong key kept resolving, silently, and would have gone on doing so until something resolved from the registry.
+
+Two practical consequences, both from that client's run:
+
+- **`npm install` is not enough to clear stale entries**, but the two clients handled it differently and the Android TV reasoning is the better default. The phone client used `rm package-lock.json` and regenerated, clearing two extraneous entries (one `../macha-ts`, one another session's scratchpad). The Android TV client **deliberately did not**: it deleted the single extraneous `../macha-ts` node instead, because a full regen drifts every transitive dependency and puts a second variable in the same commit. `npm ci` in a clean clone is what proves either approach. Prefer the surgical edit; a regenerated lockfile carries a diff unrelated to the change being reviewed.
+- **`metro.config.js` `watchFolders: ['../macha-ts']` must go with the link.** It existed only because npm materialises a `file:` dep as a symlink outside the project and Metro watches only the project directory. Left in, it aims the bundler at a sibling tree the client no longer compiles against — the two-copies risk by a third mechanism, living outside `package.json` and `node_modules`, so neither `test -L` nor a lockfile inspection finds it. **Nothing in vitest catches it** (`react-native` is stubbed, Metro never runs); a real `expo export` in the fresh clone does. The Android TV client had both that and a `nodeModulesPaths` entry pointing at the sibling's `node_modules`, and corrected the characterisation: **it fails louder than "silent"** — a `watchFolders` path that does not exist fails Metro at startup rather than at import, so a clone without the sibling breaks immediately instead of quietly binding the wrong copy. The fresh-clone export proves it either way.
+
+### Metro and the `exports` map — tested, and core's packaging is fine
+
+**Closed 2026-09-15 by the Android TV client, with evidence.** `expo export --platform android` in a fresh clone with no sibling `macha-ts`, installed by `npm ci` from the tarball: **841 modules → 2.2MB Hermes bytecode**, and the bundle hash byte-identical to the one built in its working tree.
+
+So `"type": "module"`, the `.` and `./testing` exports, and the `.js` extensions on relative imports all resolve correctly under Metro **from `node_modules`**, not merely through a link. This was a real open risk — Metro treats a linked tree differently from an installed one — and it is now a tested fact rather than an assumption. Nothing to fix.
+
+
+---
+
+## Decided 2026-09-15 — the next release
+
+Five decisions from Tom, in one sitting. **All five ship together**, and two of them require every client to change.
+
+**None of this exists for any client until it is published.** `0.11.1` is what npm holds and what all four clients run; these decisions live only on `develop`. **A commit is not a release and a git tag is not a release** — `0.9.0`, `0.10.0` and `0.11.0` are the worked example, tagged here and never on the registry. No client should code against any of the five, and `npm view @machafoundation/core versions` is the only honest answer to "what can I have". All three have been told.
+
+1. **`SessionManager.fetch` refuses rather than sending a doomed request.** Before `start()` and after `stop()` it throws a clear "not started" error instead of sending unauthenticated, collecting a 401 and returning it. **Tom: "make sure all clients know about this change."** It is a behaviour change — a caller that used to receive a `Response` with status 401 now catches an error — so it is breaking for anyone who inspected the 401. The doc comment is corrected to match, and `fetch()`'s misplaced JSDoc moves onto `fetch()` while there.
+
+**Blast radius, surveyed before implementation rather than after:** the Android TV client reports **zero exposure** — no literal `401` anywhere in its tree, and no `.fetch(` call sites at all, since every call goes through `createMachaServices` with `auth: sessionManager`. Asked of the phone client.
+
+**Implementation note.** The Android TV client flags a window in which an in-flight request can be issued after `stop()`, so that today it yields a 401 and under the new behaviour it would throw "not started".
+
+**Corrected on a re-read, and the correction is of this file rather than of the client.** I was told there was a *narrow* window and wrote it up as *routine, every background/foreground cycle*. That was a generalisation I added. On re-reading its provider: `stop()` runs on **unmount or a `registry` change only** (`MachaProvider.tsx:112-115`), and the `AppState` listener calls `start()` on `active` with **no `stop()` branch at all** (`:135-140`). **A background/foreground cycle does not pass through `stop()`.** So it is rare, not routine.
+
+**The requirement survives, narrowed.** Still distinguish the two cases in the thrown error — "called before `start()` was ever reached" is a caller mistake, "called after teardown" is a different fault — but they are further apart than this file claimed, and the frequency argument for it is gone.
+
+2. **No instruction without facts: wait, bounded, then fail honestly.** Core holds playback while the facts lookup is retried, with a bound rather than forever, and if the bound is reached it fails with a message saying the client could not read the file's details. It does not guess and it does not present a lookup failure as a corrupt file. Open sub-question for implementation: what the bound is, and whether `assumed` stops covering the absence of facts entirely (it should — it means "the device did not tell us one thing about itself", which is a different claim).
+
+3. **Core wires throughput itself, and the axis abstains loudly.** Both halves. Core already times every transfer in `httpCompat.ts:117-146` and `ClusterEndpointRouter` already knows which endpoint it routed to, so core records throughput without a host doing anything. And `selectionAxis()` stops reporting "configured-order decided" when the truth is "the primary axis had no data" — it says so, the way `capacity` abstains without a core count. **Tom: "make sure that all clients refactor for this change."** The web client wires all four obligations by hand today and **must remove its wiring or it will double-record**; the other two wire nothing and simply gain the axis.
+
+4. **One storage key convention, in this same release.** Converge everything on dotted `macha.<name>.v<n>`. Both React Native clients have already widened their hydration filters, so the sequencing precondition is met — see *Proposed: one storage key convention* for the constraint that makes order matter, and note the standing warning that **a green web client is not evidence** here, since it reads through `localStorage` synchronously.
+
+5. **`macha.volume.v1.` dropped from the registry.** Done. `0.11.0` removed `VolumeStore`, so core neither writes nor reads it, and the list means the keys core owns today. **Tom: "There's no client we care about this for — everyone's a tester."** The orphaned value on an older install costs nothing. `macha-client-progress:` stays by contrast, because core still *reads* it.
 
 ---
 
@@ -111,6 +246,73 @@ So each client keeps a way to link locally (`npm link`, or a `file:` override) f
 1. **`authorization()` hands out the dead token during a reactive re-mint**, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
 2. **`start()` during an in-flight bootstrap adopts the old registry's result** and never contacts the new one; `mintNow` then reports the corrected config as unreachable. The doc "safe to call again if the registry changes" is false in that window.
 3. **Refresh timers overwritten without clearing**; `stop()` clears only the last.
+4. **`fetch()` promises to wait for the mint and only waits when one is already in flight.** *Added 2026-09-15, measured on the deployed web client.* `fetch():439` reads `if (this.token === undefined && this.inFlight) await this.inFlight;` — but **before `start()`, and after `stop()`, there is no `inFlight`**. So the request goes out with no `Authorization` header, the node answers 401, and `sent === undefined` at `:442` returns it unretried. A caller that read the contract and did not remember to wait gets exactly the 401 it was promised it would never see. `authorization():434` has the identical shape.
+
+   Measured: `instruction-facts-failed — "Macha playback facts failed: a valid session bearer token is required"` **18 ms after load**, on a reload straight into a player URL. The viewer got a broken video.
+
+   **The fix depends on what a stopped manager should mean, so it is Tom's:** mint on demand when a registry is present, which would make the documented contract true; or refuse outright, which is at least honest. Either beats sending a request guaranteed to 401. **At minimum the doc must stop promising what the code does not do** — a client read that promise and built on it. Note this compounds with the known low-register item that `fetch()`'s JSDoc is attached to `authorization()`, so the promise is not even adjacent to the method that makes it.
+
+### The chooser decides with no facts, and the guess reaches the viewer as a corrupt file
+**Waiting on Tom** — a decision, not a patch. `src/playback/choosePlaybackInstruction.ts:324-329`, `:373`. *Measured on the deployed web client 2026-09-15.*
+
+With the facts call failed, core logged `instruction-facts-failed`, then `instruction-without-facts`, then chose anyway:
+
+    instruction-chosen  mode: direct, video: copy, audio: copy,
+                        reasons: ["source-plays-as-is"], assumed: ["hlsVideoCodecs"]
+
+The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken file rather than as "the client could not ask what this file is"**. The same title plays correctly when facts are available.
+
+**The design question, which is the web client's and is the right one:** `assumed` is built at `:324-329` from missing *capability* fields — `operations`, `hlsVideoCodecs`, `hlsAudioCodecs`, `hlsTs`, `videoBitDepth`. That is "the device did not tell us one thing about itself". It is **not** "we have no idea what this file is", and the two are being expressed by the same mechanism. Should `assumed` ever cover the absence of *facts* rather than the absence of a single capability?
+
+**This is squarely core's.** The chooser lives here precisely so every client decides the same way from the same facts — and here it decided from none. A warning in a ring buffer is not a degraded mode a viewer can act on. Holding for the facts, or failing with a message that says what actually went wrong, both look better than guessing; which one is Tom's call.
+
+**Reachable by any client**, not just the one that found it: a node 500ing or a network blip on the facts call gets here, and neither is a client bug. The web client separately fixed the trigger it owned — a `0.16.0` regression where route reconstruction started playback ~700 ms before an endpoint existed — but that gate only closes the path it opened.
+
+### The throughput axis may never have ranked anything, anywhere
+**Waiting on:** core to decide the shape, and on two clients for evidence. `src/cluster/EndpointRegistry.ts:258-264`, `:576-579`, `:113`; `src/cluster/EndpointBandwidth.ts:126`.
+
+**Three things already known separately, which are one thing together.** The phone client supplied the missing third by reporting that it wires no `EndpointBandwidth` at all — `new EndpointRegistry([])`, third parameter omitted — and core's own low register already held the other two. Verified here rather than taken:
+
+For throughput to rank anything, a host must do four things and **core does none of them for it**:
+
+1. construct an `EndpointBandwidth`;
+2. pass it as the optional third constructor parameter — **omit it and the axis silently disappears** (`:261`, `bytesPerSecond():576-579` returns `undefined`);
+3. call `record()` on it — **nothing in this package ever does**; and
+4. do so at least twice *in the current session*, because `THROUGHPUT_MIN_SAMPLES` is 2 (`:113`) while `EndpointBandwidth.restore()` re-enters a persisted record at `samples: 1` (`EndpointBandwidth.ts:126`) — one short, so **throughput restored from storage never ranks on its own**.
+
+**None of that is visible from the call site**, and throughput is the axis the cascade reads as primary: it outranks latency. Degrading to latency when an axis has no evidence is correct behaviour, which is exactly why nobody noticed.
+
+**Two of three clients wire nothing at all.** The Android TV client verified all four claims independently against the `0.11.1` tarball rather than taking them from core's message — `EndpointRegistry.d.ts:113`, `EndpointRegistry.js:447` and `:449`, `EndpointBandwidth.js:116` — then found it constructs `EndpointRegistry` with one argument and has no `EndpointBandwidth` and no `.record(` anywhere. The phone client is the same. So on both React Native clients the throughput axis has never ranked anything, and that is now checked rather than inferred.
+
+**That inference was wrong and is retracted.** I wrote that if no client completed all four steps, throughput had never decided anything anywhere. **The web client completes all four** — verified in its tree at `App.tsx:299-319` and `:328-339`, with *two* feeds into one recorder: API/JSON bytes through core's `readJsonBody`, and media bytes from the Direct Play read-ahead worker. It added the second after an afternoon spent streaming from the slowest node it had, because the record until then described only JSON. So the wiring gap is real on the phone client and **not universal**. Android TV has been asked and has not answered.
+
+**What replaced it is better, and it came from measuring rather than reading.** The web client instrumented the deployed client against the real cluster for 26 minutes of real use including playback:
+
+    uptime        1,576,787 ms
+    probe cycles  155
+    decidedBy     { sticky: 155 }
+    swaps         []
+
+**Fully wired, fully fed, and throughput still ranked nothing** — because the preferred endpoint never came up for reconsideration. The sticky check short-circuits the cascade before any measured axis is reached (`EndpointRegistry.ts:397-407`, already in the low register for a different reason), and the only path that can dislodge a sticky preference is `evaluatePreferredSwap`, **whose gates are latency-only**: 200 ms absolute *and* 40% relative improvement, sustained 3 consecutive cycles, with a 60 s cooldown (`:102-108`).
+
+**So the open question is sharper than a wiring audit.** If that reading is right, throughput cannot dislodge a sticky endpoint *by any amount*, and its documented precedence over latency applies only to a first pick or to a cluster with no healthy preference. **Not yet verified** — I have read the constants, not `evaluatePreferredSwap`'s body, and the web client's `swaps: []` is consistent with both "never reached" and "reached and correctly declined". Three nodes where one is plainly right is exactly when stickiness *should* hold, so this is not evidence of a defect. A measurement has been requested that would separate the two.
+
+**The cross-client consequence is confirmed rather than hypothetical, and it bears on how this project has been reasoning all day.** The web client wires the full cascade; the phone client wires none of it and ranks on latency. **They have been ranking on different axes against the same cluster.** So any comparison of which node each selected measures their wiring rather than the cluster's behaviour — and several conclusions here have come from exactly that kind of cross-client comparison. Ask what a client wires before comparing what it chose.
+
+A note at the constructor now states what is lost by omission and the four steps. That replaces the three scattered low-register entries, which were each true and individually unalarming.
+
+**The design question, and core's own boundary rule answers it.** The Android TV client put it best: *if nothing in core ever calls `record()`, the parameter is not an integration point, it is a hook with no documented caller.*
+
+And core is not short of the ingredients. **`httpCompat.ts:117-146` already measures every transfer** — `readJsonBody` times the body, counts the bytes, and hands both to a `TransferRecorder` a host installs globally. Core therefore already owns the measurement, the registry, and `EndpointBandwidth`. What it asks the host to supply is the *wiring between three things core already has*, including a url→endpoint lookup the web client had to hand-write as `snapshot().find(url.startsWith(baseUrl))` — where `ClusterEndpointRouter` already knows precisely which endpoint it routed to, and would not have to match on a prefix at all.
+
+Tom's rule: *would nearly every conceivable client be required to do this? If yes, core.* Every client that wants throughput must write the same three-way wiring and the same url match. Two of three wrote none of it and neither noticed, because the axis vanishes silently.
+
+**Two shapes, and Tom picks:**
+
+1. **Core records throughput itself**, where it already sees the transfer and already knows the endpoint. The host supplies nothing; the media-bytes feed stays a host concern, since core never sees those (that is the feed the web client added after an afternoon on its slowest node).
+2. **The axis abstains loudly** rather than silently — the way `capacity` already abstains without a core count. Today `selectionAxis()` reports that configuration order decided, and nothing says the primary axis was never available to consult.
+
+These are not exclusive, and the second is worth having regardless. **This is the same failure class as the package alias and the hydration filter**: something invisible from the place it would be noticed.
 
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
@@ -250,6 +452,45 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 
 ---
 
+---
+
+## Proposed: one storage key convention
+
+**Waiting on Tom**, who asked for keys that are standard across every implementation and platform. Designed with the Android TV client; **not started, and it must not start out of order — see the sequencing constraint, which is the whole of the risk.**
+
+**The target:** everything core owns takes the dotted `macha.<name>.v<n>` form. Core's own header already calls the two conventions *"a defect rather than a design"* and says new keys take the dotted shape; this finishes it.
+
+**The remaining set is six keys and two prefixes** — `macha-client-id`, `macha-server-url`, `macha-server-endpoints-v1`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-storage-probe`, plus `macha-client-bandwidth:` and `macha-client-progress:`.
+
+### Only two of the four `macha` spellings are storage
+
+Verified in core rather than assumed, because a rename sweeping the wrong ones would be a wire-format change wearing a tidy-up's clothes:
+
+- `macha:server-unreachable` / `macha:server-reachable` (`api/serverConnection.ts:4-5`) are **event names**.
+- `macha_version` (`api/MachaServerApi.ts:49`) is a **server JSON field**, read alongside `server_version` and `version`.
+
+Neither is a storage key. Neither goes anywhere near this. It is a two-convention problem, not a four-convention one.
+
+### Migrate on read, never on write, and keep the old key readable for at least one release
+
+There is precedent in core's own tree: `MachaClientConfiguration.bootstrapEndpoints()` already reads `macha-server-url` and the interim endpoints key, adopts them, and removes them — at read time, so no caller has to remember a migration step. Same shape as `ContinueWatchingStore.read()`.
+
+### The sequencing constraint — and getting this wrong destroys the data the work exists to preserve
+
+**Hosts widen their filter → core migrates → hosts may narrow again, if ever.**
+
+A read-time migration asks a caching host for a legacy key. A host that did not hydrate that key answers `null`, and core **cannot tell that from the key being absent** — so the migration concludes there is nothing to carry across and quietly drops it. **If core standardises before the React Native clients have widened, the standardisation silently discards exactly the data it was written to preserve.**
+
+The web client will not show this: `localStorage` is synchronous and reads through, so its migrations will appear to work perfectly while both React Native clients lose everything. **A green web client is not evidence here.**
+
+Both RN clients have now widened — the phone client by accident of `macha-`, the Android TV client as of today and deliberately, driven by core's exported constants. So the precondition is met for those two. The Tizen build shares the web client. **Confirm all four before starting, not three.**
+
+The Android TV client notes it would not narrow its filter again afterwards: the cost is a few unused map entries, and the failure it prevents is silent.
+
+### Why this is worth doing rather than living with
+
+Two conventions have now produced the same incident on three clients — the phone client's session written-and-never-read, and the Android TV client's client id re-minted on every cold start, which orphaned four stores that were themselves keyed correctly. Core named the conventions in `0.10.0` but did not converge them, and naming alone did not stop the second occurrence.
+
 ## P3
 
 ### Music library state moves into core — approved, not started
@@ -293,7 +534,7 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `EndpointHealthMonitor.ts:136` + `EndpointRegistry.ts:495` — capacity keyed by `api_endpoint` string, so a typed IP versus an advertised hostname yields the same node twice and the in-use bootstrap entry never gets capacity.
 - `EndpointRegistry.ts:713-715` — `notify()` does not isolate listeners; a throwing host listener turns a succeeded `route()` into a rejection and can kill the monitor loop. `publishConnectionState` already guards.
 - `EndpointHealthMonitor.ts:106-148` — no abort check after `stop()`; an in-flight discovery still applies advertisement and fires listeners.
-- `EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample and the threshold is two, so persisted throughput never ranks. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
+- ~~`EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample, threshold is two~~ — **folded into *The throughput axis may never have ranked anything* in P1**, which is where it stops looking harmless. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
 - `EndpointHealthMonitor.ts:69,164,235` vs `serverConnection.ts:41-44` — a proxy's bodiless 502/503/504 counts as reachable and clears the outage state forever.
 - `EndpointRegistry.ts:85` vs `EndpointHealthMonitor.ts:10` — the cooldown ladder (500 ms, 2 s) is uncalibrated against the 10 s probe interval; a probe-failed sticky node is "ready" 0.5 s later. Neither constant records the relation. *This is the same class `hlsWalk` and the stall budget were fixed for: assert the inequality, not the number.*
 
@@ -310,7 +551,7 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `runtime/configuration.ts:140-144` — the self-healing `setItem` sits inside the read's `try`, so a write that throws removes the bootstrap key on a read.
 - `runtime/configuration.ts:187` and `api/httpCompat.ts:96` — `normalizeUrl` and `normalizeBaseUrl` are the same four lines under two names. **Duplication to delete before it drifts, not a correctness bug** — verified across nine input shapes.
 - `docs/examples/headless.mjs:64-68` passes `serverApi` to `EndpointHealthMonitor`, which has no such option.
-- `README.md:100-103` — "EndpointHealthMonitor feeds routing its evidence" omits that throughput, which outranks latency, is fed only by a host-built `EndpointBandwidth` that nothing in this package calls `record()` on.
+- ~~`README.md:100-103` — omits that throughput is fed only by a host-built `EndpointBandwidth` nothing in this package calls `record()` on~~ — **folded into the same P1 item.** The README line still needs fixing when that is settled.
 - **The hyphenated storage keys**, now that `macha.session.v1` has moved: `macha-client-id`, `macha-server-url`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-server-endpoints-v1`, `macha-client-bandwidth:`. Two conventions is a defect, not a design. Each costs a forced re-read or a lost value to rename, so they move **when something else already forces that cost** — never on their own. `MACHA_STORAGE_KEYS` documents both meanwhile.
 
 **Simplification, where the payoff is real**
@@ -320,6 +561,8 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 ---
 
 ## Watching, not doing
+
+- **A backgrounded Android TV keeps polling the cluster, indefinitely — and it is not core's to fix, but it is core's to know about.** Reported by that client 2026-09-15 while checking something else. The comment above its provider effect says *"Stop discovery while the app is not foreground… continuing to poll the cluster from behind the launcher costs the nodes requests for nobody's benefit"* — and **nothing in the effect stops anything**. `EndpointHealthMonitor` is started in an effect and stopped only on cleanup, so a television left on the launcher goes on asking `clusterStatusApi` for status for ever. **Recorded here because it is cluster load with no client owning up to it**: a node seeing constant status traffic from an idle set would otherwise be misattributed, and core has spent time this week on exactly that class of error. The client has it ranked below the Settings focus defect and is not fixing it in this session.
 
 - **The platform probe has never run on a device.** `checkPlatformSurface()` ships having produced no runtime truth; its tests run on Node, which supplies everything. `0.8.0` added the three Hermes probes (`Intl.Collator` options, `normalize`, `\p{M}`). The Android TV hardware run is the first chance at real output.
 - **The Android TV failure trail is built but cannot be switched on** — its Settings screen has no focus-follows-scroll and the toggle sits below the fold where focus reaches it invisibly. Not core's, but **every on-device diagnosis discussed here depends on that surface being reachable**, so it gates the evidence core is waiting for. That client has put it ahead of its port.

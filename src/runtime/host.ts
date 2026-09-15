@@ -9,7 +9,45 @@ import type { StorageLike } from '../state/storage.js';
  * present, or mean the same thing, on every target.
  */
 export interface MachaHost {
-  /** Survives an application restart. Configuration, client identity, resumable position. */
+  /**
+   * Survives an application restart. Configuration, client identity, resumable
+   * position.
+   *
+   * **It must be able to answer for every key in `MACHA_STORAGE_KEYS` and
+   * `MACHA_STORAGE_KEY_PREFIXES`, including the retired ones** — not only the
+   * keys core currently writes. A host backing this with a prefix-hydrated
+   * cache rather than reading straight through will otherwise answer `null`
+   * for a key it never loaded, and core cannot tell that apart from the key
+   * being absent.
+   *
+   * The worked case, found on the phone client 2026-09-15:
+   * `ContinueWatchingStore` adopts `macha-client-progress:<clientId>` on first
+   * read when the current key is empty. A host that did not hydrate that
+   * prefix reports nothing, so adoption silently does not happen and the data
+   * the migration exists to carry is dropped — no error, no log, nothing to
+   * attribute it to. It works there only because `macha-` happened to be in
+   * that client's filter.
+   *
+   * **Nobody has lost anything and nobody is going to**: this package has no
+   * users, and no device in the world holds a pre-`0.10.0` key. This is
+   * recorded as a coupling rather than an incident. It is worth stating and
+   * testing anyway, because it holds for every read-time migration not yet
+   * written, and by then the premise may not be true.
+   *
+   * So the registry is two lists wearing one name: what a host should *clear*
+   * when clearing Macha's data, and what a caching host must *load* before
+   * core reads anything. Same keys, different reason, and the second one is
+   * the one nobody thinks of.
+   *
+   * **The load list is what core may *read*, not what core *writes*, and the
+   * difference is the whole danger.** They diverge exactly at core's read-time
+   * migrations — `macha-client-progress:` and `macha-server-url` are read and
+   * then never written again. A host deriving its filter by observing what
+   * core writes therefore misses precisely the keys whose absence loses data,
+   * and "load everything in the registry" and "load everything I have seen
+   * core write" look equivalent while differing only in the case that hurts.
+   * (Sharpening owed to the Android TV client, 2026-09-15.)
+   */
   storage: StorageLike;
   /**
    * Where a secret belongs on this platform, when the host has somewhere

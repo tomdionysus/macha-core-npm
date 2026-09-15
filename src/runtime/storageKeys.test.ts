@@ -156,3 +156,71 @@ describe('isMachaStorageKey', () => {
     expect(isMachaStorageKey('')).toBe(false);
   });
 });
+
+describe("the boundary between core's keys and a host's own", () => {
+  /**
+   * `isMachaStorageKey` answers "is this one of core's", not "is this
+   * Macha-related". The distinction is load-bearing and was nearly lost:
+   * core's doc comment said "use this rather than a prefix test of your own",
+   * which reads as an instruction to replace a host's own startup hydration
+   * filter. The phone client checked what that would cost by making the
+   * change rather than reasoning about it — its filter covers a strictly
+   * larger set, and substituting this function drops every key below.
+   *
+   * `macha.clientId.v1` is the one that matters most: it is the namespace the
+   * per-client stores are keyed under, so losing it gives a fresh client id on
+   * every cold start and orphans Continue Watching, the queue, the playlists
+   * and the music library at once. Silent, and a larger version of the very
+   * incident this file exists to prevent.
+   */
+  it.each([
+    'macha.clientId.v1',
+    'macha.endpoints.v1',
+    'macha.discoveredEndpoints.v1',
+    'macha.downloads.v1.client-42',
+    'macha.musicLibrary.v1.client-42',
+    'macha.progress.v1:client-42',
+  ])('does not claim %s, which a client owns and core does not', (key) => {
+    expect(isMachaStorageKey(key)).toBe(false);
+  });
+
+  it('does not claim macha-session, retired in 0.10.0', () => {
+    // Deliberately absent: it was migrated to macha.session.v1 and core no
+    // longer reads it. A host still holding one is holding its own value now.
+    expect(isMachaStorageKey('macha-session')).toBe(false);
+  });
+
+  it('still claims the legacy Continue Watching key, which core does read', () => {
+    // The counterpart to the cases above, and the reason this is a judgement
+    // rather than a prefix rule: macha-client-progress: looks like a host key
+    // and is not one. Core reads it on every cold start.
+    expect(isMachaStorageKey('macha-client-progress:client-42')).toBe(true);
+  });
+});
+
+describe('the registry as a load-list, not only a clear-list', () => {
+  /**
+   * A host backing `MachaHost.storage` with a prefix-hydrated cache must load
+   * every registered key before core reads anything. Core cannot tell "your
+   * cache never loaded this" from "this key is absent", and for the Continue
+   * Watching legacy key the difference is every resume position the viewer
+   * has.
+   *
+   * This pins the dependency rather than the doc comment: if a store starts
+   * reading a key on a migration path, the drive-through above will fail
+   * unless that key is registered, and a caching host is then told to load it.
+   */
+  it('reads the legacy Continue Watching key on a cold read, so a caching host must have loaded it', () => {
+    const reads: string[] = [];
+    const storage: StorageLike = {
+      getItem(key: string): string | null { reads.push(key); return null; },
+      setItem(): void {},
+      removeItem(): void {},
+    };
+
+    new ContinueWatchingStore('client-42', storage).list();
+
+    expect(reads).toContain('macha-client-progress:client-42');
+    for (const key of reads) expect(isMachaStorageKey(key)).toBe(true);
+  });
+});

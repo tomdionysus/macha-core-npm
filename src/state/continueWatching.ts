@@ -140,6 +140,15 @@ export class ContinueWatchingStore {
     // Adopt on first read rather than in a migration the caller has to
     // remember to run: nothing may read this store before it is migrated, and
     // the only place that can be guaranteed is inside the read itself.
+    //
+    // **That guarantee is only as strong as the storage it was handed.** A
+    // host caching by prefix answers null for a key it never hydrated, which
+    // is indistinguishable here from the key being absent — so adoption
+    // silently carries nothing across. No device holds a pre-0.10.0 key today,
+    // so this is a coupling rather than a live risk, and it is the shape that
+    // matters for the next read-time migration rather than this one.
+    // `MACHA_STORAGE_KEY_PREFIXES` lists this key so a host can know to load
+    // it; `MachaHost.storage` states the obligation.
     const legacy = this.parse(this.storage.getItem(`${LEGACY_PREFIX}${this.clientId}`));
     if (legacy === undefined) return [];
     this.write(legacy);
