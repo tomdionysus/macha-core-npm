@@ -248,7 +248,24 @@ What persistence actually buys is **one** live sample instead of two, because `r
 
 **The Android TV client argues the gap costs it nothing, and the shape is worth keeping:** a television session is a burst of catalogue traffic — Home, Library, a detail page — then one long title during which almost nothing is fetched. Two samples accumulate in the first seconds of browsing, well before any playback decision needs ranking, and the axis then stops gaining evidence. Not persisting across launches costs the first few seconds of each session, which is exactly when nothing is playing. **Both RN clients independently oppose reintroducing minting to buy the one sample.**
 
-**Blocked on Tom**, and it is a small ask: measuring a real `content-length` off `home()` or `tracks()` needs the cluster address and a minted session, and neither RN repo contains one — the endpoint is configured on-device. Either client can report the number once he clears it.
+**MEASURED 2026-09-15 by the web client, against a live node.** `Content-Length` was present and exact on every response — none chunked — which matters more than the sizes, because `readJsonBody` only records when the declared length is finite and positive. On this server every read is recordable.
+
+| Route | `Content-Length` | vs 32 KB floor |
+|---|---|---|
+| `/api/v1/catalogue/items?type=movie` | 416,241 | **clears** |
+| `/api/v1/catalogue/items?type=show` | 66,911 | **clears** |
+| `/api/v1/status` | 5,682 | below |
+| `/api/v1/catalogue/status` | 303 | below |
+
+**The finding is not the sizes, it is what clears the floor and what does not.** Catalogue reads do; **the background health cycle does not**. That ten-second probe is the one piece of traffic that runs whether anyone is watching or not, and it contributes no throughput evidence at all. So "two samples per endpoint" means **two catalogue reads per endpoint** — not two of anything.
+
+Three consequences, and none of them is a defect to fix. `MIN_SAMPLE_BYTES` is right: a 303-byte response measures latency wearing a throughput costume, which is the confusion `MachaHost.now()` already carries three warnings about.
+
+1. **Throughput is browse-driven.** The axis gains evidence when a viewer lists a library and at no other time.
+2. **A cold client ranks on latency until the viewer browses** — and endpoint ranking matters most exactly then, before anything is sticky. "Two transfers" sounds like it happens on its own; it does not.
+3. **A client that opens straight into a player and never lists a library gets no JSON evidence whatsoever**, and the host media feed becomes the only source. That is a stronger argument for `recordTransferByUrl` than the one made at GO, and it bears directly on the Android TV client having none — its model of browse-then-play is what saves it, and a deep link or a resume-on-launch would bypass exactly that.
+
+**Do not conflate the two reasons an axis decides nothing.** The same client measured 155 probe cycles all `decidedBy: sticky` with no swaps: there, throughput had evidence and was never consulted, because the preference never came up for reconsideration. Evidence-absent and never-consulted are different states and this backlog has treated them as one.
 
 ### Forgetting `recordTransferByUrl` is invisible, and core could make it visible
 
