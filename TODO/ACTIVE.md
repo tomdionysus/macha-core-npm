@@ -246,6 +246,8 @@ What persistence actually buys is **one** live sample instead of two, because `r
 
 **Whether that closes the gap is unmeasured, and the phone client was right to stop me repeating "nearly free" on a structural argument.** Its catalogue calls are unpaginated — `movies()`, `shows()`, `artists()`, `albums()`, `tracks()`, `search()` take only an `AbortSignal` and return whole collections — so on a populated library those responses are very likely well over 32 KB. *Very likely* is an inference, and this project has a bad record with those. **State it as: it depends on catalogue size, it is measured for nobody, and on a client whose only other evidence is downloads it engages late or never if the reads come in small.**
 
+**The Android TV client argues the gap costs it nothing, and the shape is worth keeping:** a television session is a burst of catalogue traffic — Home, Library, a detail page — then one long title during which almost nothing is fetched. Two samples accumulate in the first seconds of browsing, well before any playback decision needs ranking, and the axis then stops gaining evidence. Not persisting across launches costs the first few seconds of each session, which is exactly when nothing is playing. **Both RN clients independently oppose reintroducing minting to buy the one sample.**
+
 **Blocked on Tom**, and it is a small ask: measuring a real `content-length` off `home()` or `tracks()` needs the cluster address and a minted session, and neither RN repo contains one — the endpoint is configured on-device. Either client can report the number once he clears it.
 
 ### Forgetting `recordTransferByUrl` is invisible, and core could make it visible
@@ -253,6 +255,17 @@ What persistence actually buys is **one** live sample instead of two, because `r
 It is now the only throughput wiring a host can forget, and forgetting it means ranking on JSON alone — the fault that had the web client streaming from its slowest node for an afternoon. That is the same property that let the third constructor argument go unpassed in two clients for months.
 
 **The phone client's suggestion, which it explicitly did not ask for:** core could record whether *any* host-fed transfer has ever reached a registry, and say so in the abstention reason — so a client can assert it in a smoke test rather than trusting a docblock. Not in `0.12.0`; it is a core change and would have cost a fourth go/no-go round on a release that already had three GOs.
+
+**What that deferred doc must say, gathered from asking:**
+
+- **The obvious wiring is the wrong one.** The Android TV client's `PlayerEngine.kt` attaches a media3 `TransferListener` whose `onBytesTransferred` fires **per chunk**, not per transfer. Calling `recordTransferByUrl` from it would cross the JS bridge hundreds of times per segment on a device whose CPU is the scarcest thing in the building, and would feed chunk-rate noise rather than a transfer measurement. **Accumulate between `onTransferStart` and `onTransferEnd`, emit once.** `EndpointBandwidth.record` already discards anything under `MIN_SAMPLE_BYTES`, so chunk-sized samples would mostly be dropped — silently, after paying the bridge cost.
+- The `durationMs` must cover reading the body, not receiving headers — the same rule `readJsonBody` follows, and for the same reason.
+
+**Who will actually call it, asked rather than assumed:**
+
+- **Phone client: yes**, from `DownloadManager`, and structurally hard to lose there — a tested `throughputSample` module and a named `recordThroughput` method, so removing it orphans a test and leaves an unused import.
+- **Android TV: no, and not through inattention.** Its live player is `expo-video`, which builds its own `OkHttpDataSource.Factory` with **no injection point** — the same fact that blocked reinstating the `500 segment_not_ready` retry and forced `awaitFirstFragment` out-of-band. Its *other* adapter, `ExoPlayerAdapter`, already has the listener attached with `onBytesTransferred` and `onTransferEnd` stubbed to `Unit`: the evidence arrives at a callback and is discarded. A small addition if that adapter ever goes live.
+- **Web client: yes**, the Direct Play read-ahead worker, which is the only media-byte evidence any client has today.
 
 **The web client's point stands alongside it and is the cheaper half:** the doc is not what prevents this, asking each client directly is. Both RN clients were asked and both answered — the phone client committed to the call and named why it is structurally hard to lose there (a tested `throughputSample` module and a named `recordThroughput` method, so removal orphans a test and leaves an unused import).
 
