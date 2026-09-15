@@ -9,7 +9,30 @@ import type { StorageLike } from '../state/storage.js';
  * present, or mean the same thing, on every target.
  */
 export interface MachaHost {
-  /** Survives an application restart. Configuration, client identity, resumable position. */
+  /**
+   * Survives an application restart. Configuration, client identity, resumable
+   * position.
+   *
+   * **It must be able to answer for every key in `MACHA_STORAGE_KEYS` and
+   * `MACHA_STORAGE_KEY_PREFIXES`, including the retired ones** — not only the
+   * keys core currently writes. A host backing this with a prefix-hydrated
+   * cache rather than reading straight through will otherwise answer `null`
+   * for a key it never loaded, and core cannot tell that apart from the key
+   * being absent.
+   *
+   * The live case, found on the phone client 2026-09-15: `ContinueWatchingStore`
+   * adopts `macha-client-progress:<clientId>` on first read when the current
+   * key is empty. A host that did not hydrate that prefix reports nothing,
+   * adoption silently does not happen, and **every viewer upgrading from a
+   * pre-`0.10.0` build loses all their resume positions** — no error, no log,
+   * no way to attribute it. It works there only because `macha-` happened to
+   * be in that client's filter.
+   *
+   * So the registry is two lists wearing one name: what a host should *clear*
+   * when clearing Macha's data, and what a caching host must *load* before
+   * core reads anything. Same keys, different reason, and the second one is
+   * the one nobody thinks of.
+   */
   storage: StorageLike;
   /**
    * Where a secret belongs on this platform, when the host has somewhere

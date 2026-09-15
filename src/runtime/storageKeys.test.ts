@@ -197,3 +197,30 @@ describe("the boundary between core's keys and a host's own", () => {
     expect(isMachaStorageKey('macha-client-progress:client-42')).toBe(true);
   });
 });
+
+describe('the registry as a load-list, not only a clear-list', () => {
+  /**
+   * A host backing `MachaHost.storage` with a prefix-hydrated cache must load
+   * every registered key before core reads anything. Core cannot tell "your
+   * cache never loaded this" from "this key is absent", and for the Continue
+   * Watching legacy key the difference is every resume position the viewer
+   * has.
+   *
+   * This pins the dependency rather than the doc comment: if a store starts
+   * reading a key on a migration path, the drive-through above will fail
+   * unless that key is registered, and a caching host is then told to load it.
+   */
+  it('reads the legacy Continue Watching key on a cold read, so a caching host must have loaded it', () => {
+    const reads: string[] = [];
+    const storage: StorageLike = {
+      getItem(key: string): string | null { reads.push(key); return null; },
+      setItem(): void {},
+      removeItem(): void {},
+    };
+
+    new ContinueWatchingStore('client-42', storage).list();
+
+    expect(reads).toContain('macha-client-progress:client-42');
+    for (const key of reads) expect(isMachaStorageKey(key)).toBe(true);
+  });
+});

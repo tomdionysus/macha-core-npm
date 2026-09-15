@@ -91,6 +91,13 @@ export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
  *
  * What it is for: a host clearing or auditing **core's** data, where the
  * question really is "is this one of yours".
+ *
+ * **And one use that is not about clearing at all.** A host that backs
+ * `MachaHost.storage` with a cache hydrated by prefix — rather than reading
+ * straight through — must load every key here *before* core reads anything,
+ * retired keys included. Core cannot distinguish "your cache never loaded
+ * this" from "this key is absent", and the difference is a viewer's entire
+ * Continue Watching list. See the note on `MachaHost.storage`.
  */
 export function isMachaStorageKey(key: string): boolean {
   if (key === MACHA_STORAGE_PROBE_KEY) return true;
