@@ -87,6 +87,34 @@ So each client keeps a way to link locally (`npm link`, or a `file:` override) f
 
 **Keep the dependency move separate from the outstanding ports** (`secureStorage`, `lastIdentityChange`, `signOut`, `probeNow`). Doing both at once means two variables when something breaks.
 
+### The swap does not take, and the obvious check says it did
+
+**Reported by the web client on 2026-09-15, having done the swap.** Editing `package.json` to `^0.11.1` and running `npm install` **silently keeps the existing link** — the lockfile still read `"resolved": "../macha-ts", "link": true`.
+
+The dangerous half is the confirmation. `require('@machafoundation/core/package.json').version` answers `0.11.1`, because the local tree is *also* at `0.11.1`. So the version check passes and the suite goes green while the client is still compiling against the sibling working directory. **A client can complete this swap, verify it, and report success without ever having installed the published package.**
+
+What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @machafoundation/core@^0.11.1 --save`, after which the lockfile carries the registry URL and an integrity hash.
+
+**Verify by shape, never by version string:** `test -L node_modules/@machafoundation/core`. A symlink means it did not take. This is the same class as the stale `dist` — a check reporting success for a reason unrelated to the question.
+
+**Worse for the two renaming clients**, and they have been told: the stale link can persist under the old `@macha/core` key while the new key resolves from the registry, leaving two copies of core in one tree with binding decided by whether the rename is complete. They clear `node_modules/@macha` outright and test both keys.
+
+### `dist:check` stops meaning anything to a client on the registry
+
+**The web client's `pretest` is `cd ../macha-ts && npm run dist:check`,** and it reports the other clients carry the same shape. That check exists because the `file:` link meant a client compiled against core's last *build*, so a stale `dist` was invisible to typecheck and surfaced only at test time.
+
+**Against a registry tarball it asserts something irrelevant** — it validates a sibling working tree the client no longer compiles against, and would pass or fail for reasons unrelated to what is installed. It has to be removed, or made conditional on a local link actually being present. A green check that means nothing is how a real one stops being read.
+
+Core keeps `dist:check` regardless: it still guards the local-link workflow, which is the whole point of keeping that workflow available.
+
+### Source maps: one answer in, one outstanding
+
+`0.11.1` stopped publishing them — 142 files, 404KB, all pointing at `../src/*.ts` while `src` is not in `files`, so none of them ever resolved. `inlineSources` would make them work at +599KB.
+
+- **Web client: no loss, and asked that they not be shipped on its account.** It never steps into core in a debugger; its playback diagnostics come out of core's own ring buffer through `machaDiagnostics`, which is source-independent.
+- **Android TV: asked, awaiting reply.** Its answer is the one that decides this, since most of its diagnosis happens on a device rather than in a debugger.
+
+
 ---
 
 ## P0 — nothing open
