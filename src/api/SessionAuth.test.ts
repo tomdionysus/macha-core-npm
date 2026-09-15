@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mintSession, mintSessionAnyNode, SessionAuthError, validateSessionAnyNode } from './SessionAuth.js';
+import { mintSession, mintSessionAnyNode, revokeSessionAnyNode, SessionAuthError, validateSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
 import { MachaConnectionError } from './serverConnection.js';
@@ -292,5 +292,109 @@ describe('mintSessionAnyNode', () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
 
     await expect(mintSessionAnyNode(registry)).rejects.toThrow();
+  });
+});
+
+function twoNodes() {
+  return new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+}
+
+function jsonBody(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+describe('ending a session server-side', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('revokes on the first node that answers and asks no others', async () => {
+    // A revoke propagates from whichever node accepts it. Walking on would
+    // revoke nothing new while masking the first attempt having worked.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = twoNodes();
+
+    await expect(revokeSessionAnyNode(registry, 'token')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://a.test/api/v1/session');
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'DELETE' });
+  });
+
+  it('sends the token it is revoking, since the route authorises by bearer', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await revokeSessionAnyNode(twoNodes(), 'the-token');
+
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer the-token');
+  });
+
+  it.each([401, 403])('treats %i as already revoked rather than a failure to revoke', async (status) => {
+    // Already unacceptable is already gone, as far as the caller is concerned.
+    // Reporting it as a failure would leave a viewer looking at an error for a
+    // sign-out that has, in every sense that matters, happened.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonBody({ error: { code: 'x', message: 'no' } }, status)));
+
+    await expect(revokeSessionAnyNode(twoNodes(), 'token')).resolves.toBeUndefined();
+  });
+
+  it('reports a node that refused to revoke, and does not try another', async () => {
+    // The node was reached and answered. Asking its neighbours to revoke a
+    // session this one still holds would report success for a session that is
+    // still live.
+    const fetchMock = vi.fn().mockResolvedValue(jsonBody(
+      { error: { code: 'internal', message: 'revocation store is down' } }, 500,
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(revokeSessionAnyNode(twoNodes(), 'token')).rejects.toMatchObject({
+      message: 'Could not end the session: revocation store is down',
+      status: 500,
+      code: 'internal',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves to the next node when the first cannot be reached at all', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('connection refused'))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = twoNodes();
+
+    await expect(revokeSessionAnyNode(registry, 'token')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(registry.candidates().find((c) => c.endpoint.baseUrl === 'http://a.test')?.health.consecutiveFailures).toBe(1);
+  });
+
+  it('says so plainly when there is no node to ask', async () => {
+    const empty = new EndpointRegistry(bootstrapEndpoints([]));
+
+    await expect(revokeSessionAnyNode(empty, 'token')).rejects.toThrow('No Macha endpoint is configured.');
+  });
+});
+
+describe('minting with nothing configured', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reports an unconfigured client rather than an unreachable cluster', async () => {
+    // These are different problems with different fixes, and a client that
+    // reports "all endpoints are unreachable" for an empty list sends someone
+    // to check a server that is running perfectly well.
+    const empty = new EndpointRegistry(bootstrapEndpoints([]));
+
+    await expect(mintSessionAnyNode(empty)).rejects.toBeInstanceOf(SessionAuthError);
+    await expect(mintSessionAnyNode(empty)).rejects.toThrow('No Macha endpoint is configured.');
+  });
+
+  it('reads a proxy answering for a node that is not there as unreachable', async () => {
+    // A bodiless 502 is the proxy talking, not the node. Treating it as a
+    // refusal would report a server-stated reason that no server stated.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>bad gateway</html>', {
+      status: 502,
+      headers: { 'Content-Type': 'text/html' },
+    })));
+
+    await expect(mintSession('http://node.test')).rejects.toBeInstanceOf(MachaConnectionError);
   });
 });

@@ -127,3 +127,19 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.7.0` | Stall detection, and the DOM out of the package. |
 | `0.8.0` | Accounts and roles, and the defects a full review found. |
 | `0.8.1` | First tests on the credential path; a refusal stops counting as a node fault. |
+| `0.9.0` | Liveness without a role, and a failover that stops trusting what it replaced. |
+| `0.10.0` | One account model, no special anonymous — one `Session`, one mint, one storage policy. |
+| `0.11.0` | Artwork stops renaming itself, and volume leaves core. |
+| `0.11.1` | The storage registry admits to a key it owns; the cheap half of the coverage gap. |
+
+## A gap in what npm holds
+
+`0.8.1` was published to npm on 2026-09-12 and then three releases happened
+without one. **`0.9.0`, `0.10.0` and `0.11.0` exist only as tags here and will
+never exist on the registry**, so a client pinning `^0.9.0` cannot resolve it.
+`0.11.1` is the next version npm sees, and it jumps straight from `0.8.1`.
+
+Recorded because from outside a version gap and an unpublish look identical,
+and one of those is a reason to distrust a package. Nothing was unpublished.
+The four clients resolved by `file:` link throughout, so none of them was ever
+reading the registry and none was affected.

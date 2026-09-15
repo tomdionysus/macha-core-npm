@@ -45,6 +45,16 @@ export const MACHA_STORAGE_KEY_PREFIXES = [
   'macha.musicPlaylist.v1.',
   'macha.volume.v1.',
   'macha-client-bandwidth:',
+  /**
+   * Continue Watching's pre-`0.10.0` key. Still read when the current key holds
+   * nothing, and deliberately never deleted — see `state/continueWatching.ts`,
+   * which keeps it as the way back from a rollback.
+   *
+   * Listed because this package still owns it. A host clearing Macha's data on
+   * `isMachaStorageKey` would otherwise leave it behind, and a host auditing
+   * what is in its store would read it as some other application's.
+   */
+  'macha-client-progress:',
 ] as const;
 
 /**

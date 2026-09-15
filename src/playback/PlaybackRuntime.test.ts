@@ -449,3 +449,148 @@ describe('PlaybackRuntime ownership state machine', () => {
     expect(api.stop).not.toHaveBeenCalled();
   });
 });
+
+describe('PlaybackRuntime lifecycle edges', () => {
+  /**
+   * A capability probe that failed must not be remembered as the answer.
+   *
+   * The probe is cached because it is expensive and its result does not change
+   * — but a rejection is not a result. Caching it would mean one transient
+   * failure at startup leaves playback permanently broken for the life of the
+   * process, with nothing to point at.
+   */
+  it('re-probes capabilities after a failed probe rather than caching the failure', async () => {
+    const player = new FakePlayer();
+    const platform = new FakePlatform(player);
+    platform.capabilities.mockRejectedValueOnce(new Error('probe failed'));
+    const runtime = new PlaybackRuntime(platform, resolver());
+    runtime.attach(host());
+
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' }).catch(() => undefined);
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    expect(platform.capabilities.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(runtime.getSnapshot()).toMatchObject({ phase: 'playing' });
+    await runtime.stop();
+  });
+
+  it('holds a play until a surface exists, rather than playing into nothing', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+
+    const playing = runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+    await Promise.resolve();
+    expect(player.playCalls).toEqual([]);
+
+    runtime.attach(host());
+    await playing;
+
+    expect(player.playCalls).toHaveLength(1);
+    await runtime.stop();
+  });
+
+  it('releases a play waiting on a surface when the caller stops instead', async () => {
+    // Otherwise a viewer who navigates away before the surface mounts leaves a
+    // transition parked forever, and every later transition queues behind it.
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+
+    const playing = runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+    await runtime.stop();
+    await playing;
+
+    expect(runtime.getSnapshot()).toMatchObject({ phase: 'idle' });
+  });
+
+  it('keeps the transition queue usable after one transition throws', async () => {
+    // The tail is chained, so a rejection that is not absorbed poisons every
+    // transition queued behind it — the runtime would go quiet rather than
+    // fail, which is the harder thing to diagnose.
+    const player = new FakePlayer();
+    const api = resolver();
+    api.resolve.mockRejectedValueOnce(new Error('resolver exploded'));
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' }).catch(() => undefined);
+    await runtime.play({ media: movie('B'), startPositionMs: 0, returnTo: '/movies/B' });
+
+    expect(runtime.getSnapshot()).toMatchObject({ phase: 'playing', request: { media: { id: 'B' } } });
+    await runtime.stop();
+  });
+
+  it('detaches the player and drops its listeners when disposed', async () => {
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    await runtime.dispose();
+
+    expect(player.detachCalls).toBe(1);
+  });
+
+  it('closes the open session when disposed mid-playback', async () => {
+    // A dispose that drops the session without closing it leaves the node
+    // holding a transcode slot until session_idle — thirty minutes, and on a
+    // one-slot node the next viewer gets 429 with nothing to point at.
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    await runtime.dispose();
+
+    expect(api.stop).toHaveBeenCalledWith('session:A', {});
+  });
+
+  it('is safe to dispose twice', async () => {
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    await runtime.dispose();
+    await runtime.dispose();
+
+    expect(player.detachCalls).toBe(1);
+  });
+
+  it('ignores a stop after disposal, since there is nothing left to own', async () => {
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+    await runtime.dispose();
+    const stopsAfterDispose = player.stopCalls;
+
+    await runtime.stop();
+
+    expect(player.stopCalls).toBe(stopsAfterDispose);
+  });
+
+  it('does nothing on terminateForPageExit when nothing is playing', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+
+    runtime.terminateForPageExit();
+
+    expect(api.stop).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot()).toMatchObject({ phase: 'idle' });
+  });
+
+  it('closes the session with keepalive on page exit', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    runtime.terminateForPageExit();
+
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('session:A', { keepalive: true }));
+  });
+});
