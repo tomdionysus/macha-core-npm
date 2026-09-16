@@ -276,6 +276,25 @@ Three consequences, and none of them is a defect to fix. `MIN_SAMPLE_BYTES` is r
 
 **Do not conflate the two reasons an axis decides nothing.** The same client measured 155 probe cycles all `decidedBy: sticky` with no swaps: there, throughput had evidence and was never consulted, because the preference never came up for reconsideration. Evidence-absent and never-consulted are different states and this backlog has treated them as one.
 
+### RETRACTED: the cold-start offline flip was never observed
+
+**Retracted 2026-09-16 by the client that reported it, on hardware.** It built the A85 twice — once with the `SessionNotStartedError` branch, once with it deliberately removed — cold-started both against the live WAN cluster, and **both showed the full library**. No offline notice, no downloads-only view, no connectivity transition in the logs.
+
+So the harm this file carried — a healthy cluster marked offline on every launch, requests withheld for twenty seconds, a viewer served downloads instead of their library — **is not supported by hardware and nobody has seen it**. Its own reading of why: even if the window is entered, the next successful request calls `reportReachable()` and clears the flag before anything depends on it; the suppression needs the offline state to persist and it does not.
+
+**What survives is narrower and still worth having:** without the branch, `serve` classifies the error as a transport failure and calls `reportUnreachable()`, which its unit test proves. That is correctness. It is not a fix for a measured regression, and `SessionNotStartedError extending MachaConnectionError` should be weighed on its own merits — giving hosts a sane default — rather than on a harm that was never observed.
+
+**I had told Tom this was the only viewer-visible harm anyone traced in the release.** It was traced in code and never in the world. That is the fourth correction today to something recorded here as evidence, and the second where hardware contradicted a reading of the source.
+
+### On-device findings from the A85, `0.12.0`
+
+- **`throughput-unavailable` fires at 211 ms on every launch**, with `reason: 'insufficient-samples'`. Decision 3's abstention half verified from outside on real hardware — and the reason code also proves a bandwidth store *is* attached, since `no-bandwidth-store` is the other branch. That client hand-builds services and never calls `createMachaServices`, so it wired `attachBandwidth` directly, which was the choice it was offered.
+- **Catalogue sizes measured independently against the 32,768 B floor**, and one number matters more than the rest: movie 416,241 · track 849,912 · album 240,298 · show 66,911 · **artist 42,517** · `/api/v1/status` 5,395 · `catalogue/status` 300 · `health` 52. **Artist is 1.3× the floor.** A smaller library puts that listing *under* it, and it stops being throughput evidence entirely. "Browse-driven" therefore has a library-size dependency that neither measurement had exposed.
+- **Server note:** the query parameter is `type`, not `kind`. A wrong one is ignored and returns the entire 2.9 MB catalogue.
+- **Four seconds of cold start are spent on a dead node.** Seven route attempts to `macnessa` between 213 ms and 230 ms, then silence until 4,231 ms when the walk gives up and reaches `ramaroja`. That is the real startup cost on this cluster and it is nothing to do with this release — but it is the cooldown-ladder item in the low register, measured.
+- **Unexplained, claimed by nobody:** between two runs the device went from a named signed-in account to anonymous, Continue Watching and downloads intact. It has the shape of the 30-day expiry item; nothing confirms it.
+- **Observability correction, theirs:** `ReactNativeJS` logs reach `logcat` from a **release** build, so core's routing, health and registry logs are readable live without a debug build or a new UI surface. That client had told me otherwise and corrected it.
+
 ### "Two samples" is not a low bar, and that is why `sticky` won 155 times
 
 **Demonstrated against the published `0.12.0` build, not reasoned about.** A record persisted with `samples: 9` restores as `samples: 1` (`EndpointBandwidth.js:133`) against a `THROUGHPUT_MIN_SAMPLES` of 2, so `bytesPerSecond` answers `undefined` and the endpoint **cannot rank**. One live sample later it ranks. Persistence therefore buys exactly one sample's head start and nothing else — it never ranks alone, however much history it holds.
@@ -415,10 +434,9 @@ With a registry present, a failed mint leaves `token` undefined and `inFlight` c
 
 **The fix is not obvious and that is why it is its own item.** A pending `refreshTimer` means recovery is already scheduled, so `fetch` could wait for it rather than refuse — but `lastMintFailure` may be a *refusal* (`anonymous_disabled`) rather than unreachability, where waiting achieves nothing and refusing is right. The two need distinguishing, which is the same distinction `mintNow` already draws for connectivity.
 
-### `recordTransferByUrl` attributes by URL, and drops what it cannot place — silently
-**Waiting on:** core, if a cluster ever turns up where it matters. Raised by the phone client, no action requested.
+### ~~`recordTransferByUrl` attributes by URL~~ — CLOSED, by construction
 
-Attribution was `session.endpoint.id`, which was authoritative. It is now `url.startsWith(baseUrl + '/')` against the registry's endpoints, which is equivalent **only while media is served from a node's own base URL**. A signed capability URL on another origin would have its sample dropped rather than misattributed — correct, since a misattributed sample is worse than none, but silent. Worth checking the next time this is exercised on hardware.
+Raised by the phone client and **closed by it the same day**, on reading rather than waiting for hardware: `MachaPlaybackResolver` builds the stream URL as `${this.baseUrl}${path}`, and `recordTransferByUrl` matches `startsWith(baseUrl + '/')`. The two can only diverge if core changes how it absolutises, which would be a deliberate act. No silent-drop case exists today.
 
 ### Background discovery records real routing evidence
 **Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:230`; `src/services/createMachaServices.ts:67`; `src/cluster/endpointRouting.ts:144-166`.
