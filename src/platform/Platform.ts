@@ -7,16 +7,45 @@ export type PlaybackDegradationListener = (error: Error) => void;
 /**
  * What the player's evidence is about.
  *
+ * Each member names **what the node said**, never what to do about it. That is
+ * the whole discipline of this type: an adapter reports the observation, and
+ * core decides what it means. Two of the members exist because a kind that
+ * smuggled in a conclusion got the conclusion wrong.
+ *
  * `stream` and `unknown` may be endpoint evidence; `media` and `unsupported`
- * are facts about the bytes and never reflect on the node. `not-ready` is the
- * odd one: it is not a failure at all. A node holding a fragment back until it
- * has been produced answers `503 segment_not_ready` with a `Retry-After`, which
- * is the node working correctly near the production frontier and saying so. It
- * is separated from `stream` because they are indistinguishable by status — both
- * are 5xx on a fragment — and treating a hold as evidence would take a healthy
- * node out of rotation for doing exactly what it was asked.
+ * are facts about the bytes and never reflect on the node.
+ *
+ * `not-ready` is not a failure at all. A node holding a fragment back until it
+ * has been produced answers `500 segment_not_ready` with a `Retry-After`,
+ * which is the node working correctly near the production frontier and saying
+ * so. It is separated from `stream` because the two are indistinguishable
+ * without reading the status — both arrive as a failed fragment — and treating
+ * a hold as evidence would take a healthy node out of rotation for doing
+ * exactly what it was asked.
+ *
+ * *This paragraph said `503` until 2026-09-17, and `streamProtocol.ts` has
+ * always said `503` is a broken generation and terminal. Inverted, not merely
+ * inconsistent: an author following this seam would have retried the terminal
+ * status and condemned the node on the benign one. Both shipped adapters were
+ * already right, so it was a trap for the next author rather than a live
+ * defect. `docs/writing-a-player.md` is and was correct.*
+ *
+ * `not-found` is a `404` on a playback route: the node did not serve this
+ * media. **It is a statement about one session's existence, not about the
+ * node**, which is why it is not endpoint evidence. What it means is genuinely
+ * ambiguous and an adapter cannot resolve it — measured against one node in
+ * one run on 2026-09-17, a session the reaper had erased and a fragment past
+ * the end of a live plan both answered `404` with the identical machine code
+ * `not_found`, differing only in one word of English in a message the adapter
+ * never receives. Core resolves it by asking whether the session still exists;
+ * see `PlaybackResolver.sessionAlive`.
+ *
+ * Reporting it cost a node its place in the candidate list until this member
+ * existed: a reaped session surfaced as `stream`, `stream` is endpoint
+ * evidence, and the node that had answered honestly was excluded while the
+ * viewer was sent to one that had never held the session.
  */
-export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-ready' | 'unknown';
+export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-ready' | 'not-found' | 'unknown';
 
 /** Terminal player evidence, kept distinct from endpoint/API failures. */
 export class PlaybackSourceError extends Error {
@@ -40,6 +69,11 @@ export function isEndpointRetryablePlaybackFailure(error: unknown): boolean {
   // prepares a standby on another node and can escalate to failover. Only the
   // adapter can tell a hold from a loss — it is the thing holding the response
   // — so a player fetching fragments itself must classify them.
+  //
+  // `not-found` is excluded for the same reason as `not-ready`, one layer up:
+  // the node answered, correctly, about a session rather than about itself.
+  // Recovering from it is a separate decision and is not made here — see
+  // `PlaybackCoordinator`'s handling of the kind.
   return !(error instanceof PlaybackSourceError) || error.kind === 'stream' || error.kind === 'unknown';
 }
 
@@ -116,7 +150,32 @@ export interface Player {
   /** Release all source-side resources and cancel active acquisition. */
   stop(): void;
   subscribe(listener: PlaybackListener): () => void;
-  /** Subscribe to terminal source/player failures that require generation teardown. */
+  /**
+   * Subscribe to terminal source/player failures that require generation
+   * teardown.
+   *
+   * **An adapter that reports `not-found` must not tear the presentation down
+   * on it.** That kind means one thing only — the node did not serve this
+   * media — and the buffer the element already holds is unaffected and still
+   * playable. Core may have a replacement generation built and waiting, in
+   * which case the right outcome is for the viewer to watch out their buffer
+   * and be swapped onto the replacement with no visible interruption. An
+   * adapter that destroys its loader, pauses the element or suppresses the
+   * next play request on that kind throws away exactly the cover the recovery
+   * was going to spend. Measured: 82 seconds of it.
+   *
+   * **This obligation is opt-in and arrives with the kind.** An adapter that
+   * never reports `not-found` never reaches the path, and every other kind
+   * keeps the old contract — so a player that tears down on a terminal is
+   * still correct until the day it starts classifying `404`s.
+   *
+   * **What happens when there is no replacement is core's, not the
+   * adapter's.** If recovery is impossible core sets a fatal error on its
+   * snapshot and the owning runtime stops the player. The viewer gets a
+   * stated failure either way; the adapter does not have to manufacture one
+   * by tearing down, and should not, because doing so pre-empts a recovery
+   * that may still be seconds from ready.
+   */
   subscribeFailure?(listener: PlaybackFailureListener): () => void;
   /** Early network evidence while the current buffered source may still play. */
   subscribeDegradation?(listener: PlaybackDegradationListener): () => void;

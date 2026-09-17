@@ -194,6 +194,77 @@ const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
  */
 const ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS = 8_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;
+/**
+ * How far playback must actually advance before a regeneration counts as
+ * having worked, and the loop stop on `lastRegenerationPositionMs` is cleared.
+ *
+ * Comfortably more than the jitter of a position report and comfortably less
+ * than a fragment, so a replacement that genuinely resumed clears it on the
+ * first progress event while one that attached and immediately failed again
+ * does not.
+ */
+const REGENERATION_PROGRESS_MS = 1_000;
+
+/**
+ * How much playable media a viewer must still have in front of them before
+ * core starts building the replacement for a source that has died.
+ *
+ * **Short on purpose, and bounded by the server's look-ahead rather than by
+ * any client budget.**
+ *
+ * The first shape created the replacement immediately and held it. Measured
+ * against `es-1` that was *worse* than attaching at once — 12.7 s of frozen
+ * picture against a 5.16 s baseline, 9.0 s of it on a single fragment — and
+ * the cause is the production frontier. A node produces from
+ * `highest_requested` out to `max_ahead_segments` and parks. A generation held
+ * 28 s puts the viewer 28 s beyond anything ever requested from it, so the
+ * encoder has to run forward at roughly realtime to reach them, answering
+ * `500 segment_not_ready` meanwhile.
+ *
+ * **So the replacement is created at the position it will be used, and the
+ * whole mechanism is that the lead stays inside the look-ahead window.** The
+ * viewer then arrives at generation-local `L`, production has had `L` of wall
+ * clock to produce `L` of content, and permission already covers it. Nothing
+ * needs warming and nothing can be warmed past the frontier: raising
+ * `highest_requested` only moves *permission*, while fragments are still
+ * appended in order at encoder speed.
+ *
+ * **Two things this is not, both believed for several hours and both wrong.**
+ * A held session does not go cold — the pipeline starts synchronously inside
+ * the session `POST` and the node's journal reports startup complete in
+ * 1,924 ms before the `201`. And walking the frontier out in steps buys
+ * nothing over asking for the far index once, because the intervening
+ * fragments encode either way.
+ *
+ * **Why this figure.** A measured create was 1.9–2.9 s, so 10 s carries more
+ * than three times the observed cost. It is deliberately *not* derived from
+ * `GENERATION_ATTEMPT_BUDGET_MS` or `SERVER_STARTUP_TIMEOUT_MS`: both are
+ * ceilings on what is tolerable, and a ceiling is the wrong basis for a lead,
+ * which wants a typical cost plus margin. Using an entitlement here is how the
+ * previous version reached 30 s and landed 2 s from the frontier of the one
+ * node anyone had measured.
+ *
+ * **Undershooting is the safe error.** Too short and the negotiation finishes
+ * a little after the buffer ends, costing a brief wait the viewer would have
+ * had anyway. Too long and they arrive past the frontier, which is the
+ * nine-second fault this exists to remove. The look-ahead is server
+ * configuration a client cannot read today — `max_ahead_segments` times
+ * `segment_duration_ms`, 32 s on the measured node and possibly half that
+ * elsewhere — so this stays well under any plausible value rather than
+ * assuming one. A `look_ahead_ms` on the session's `stream` object would let
+ * it be derived instead of bounded by guesswork.
+ */
+export const REPLACEMENT_LEAD_TIME_MS = 10_000;
+
+/**
+ * How far inside a node's stated look-ahead the arrival point is kept.
+ *
+ * The frontier is where a fragment stops being held and starts being refused,
+ * so arriving *at* it is arriving at the edge of a cliff. The margin absorbs
+ * the drift between a runway figure, the moment a negotiation completes, and
+ * the segment boundary the node actually produced to.
+ */
+const LOOK_AHEAD_MARGIN_MS = 4_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
 interface PendingMutation {
@@ -296,6 +367,46 @@ export function isSubtitleOnlyPlaybackUpdate(update: PlaybackUpdate): boolean {
     .filter(([, value]) => value !== undefined)
     .map(([key]) => key);
   return keys.length > 0 && keys.every((key) => key === 'subtitleStream' || key === 'subtitleLanguage');
+}
+
+/**
+ * A node saying it did not serve this media, as distinct from saying it is
+ * unwell. See `PlaybackFailureKind` for why the two had to be separated and
+ * what it cost while they were not.
+ */
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+function isMissingSourceFailure(error: unknown): boolean {
+  return error instanceof PlaybackSourceError && error.kind === 'not-found';
+}
+
+/**
+ * What a viewer is shown when recovery ran out of options.
+ *
+ * It leads with the failure that **started** the recovery rather than the one
+ * that ended it, because those are routinely about different nodes. A source
+ * failure on the node holding the session sends the walk to every other
+ * candidate, and `create()` throws the last of those to refuse — so reporting
+ * that one names a node the session was never on.
+ *
+ * Observed live on 2026-09-17: the session was on es-1, the walk ended on
+ * fi-1, and the screen read `Macha endpoint http://10.35.1.50:7438 failed:
+ * Failed to fetch` — fi-1's address, for a session fi-1 had never held. The
+ * report went to the wrong node, and so did a day of diagnosis.
+ *
+ * The last attempt is kept as `cause` rather than dropped: "and nothing else
+ * could serve it either" is the other half of what happened, and a host
+ * building a diagnostic trail wants both. The originating error object itself
+ * is returned rather than a copy of its message, so a `PlaybackSourceError`
+ * reaches the host with its `kind` intact.
+ */
+function terminalRecoveryError(originating: Error, lastAttempt: unknown): Error {
+  if (lastAttempt instanceof Error && lastAttempt !== originating && originating.cause === undefined) {
+    originating.cause = lastAttempt;
+  }
+  return originating;
 }
 
 function sourceIdentity(session: PlaybackSession): string {
@@ -465,6 +576,35 @@ export class PlaybackCoordinator {
    * it targets a source key the worker never configured.
    */
   private activeDirectPlaySource?: PlaybackSource;
+
+  private regenerationPromise?: Promise<void>;
+  /**
+   * The viewer position the last regeneration was started from.
+   *
+   * The loop stop. A `404` means either a reaped session or a fragment past
+   * the end of the plan, and only the first is fixed by regenerating — so a
+   * player that keeps asking for something no plan will ever contain would
+   * otherwise regenerate, ask again, regenerate, for as long as the viewer sat
+   * there. Arriving here twice at the same position means the last
+   * regeneration changed nothing, and the next step has to be a different one.
+   */
+  private lastRegenerationPositionMs?: number;
+
+  /**
+   * A replacement generation that is built and waiting for the buffered
+   * runway to run down. See `HELD_REPLACEMENT_SWAP_FLOOR_MS`.
+   *
+   * **It holds the node's video transcode slot for as long as it is held**,
+   * and that is a deliberate decision rather than an oversight: the viewer
+   * whose session was reaped is the same viewer the slot would be held for, so
+   * nobody else is being kept out of something they were using. It does mean
+   * this must be released on every path that abandons it — closing, seeking,
+   * failing over — which is why it is torn down in `close()` alongside the
+   * standbys rather than left to `serverSession`, which still points at the
+   * source actually playing.
+   */
+  private pendingReplacement?: PlaybackSession;
+  private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
 
   private snapshot: PlaybackCoordinatorSnapshot;
 
@@ -753,6 +893,14 @@ export class PlaybackCoordinator {
     // leaves DOM-host ownership to PlaybackRuntime/PlayerHost.
     this.options.player.stop();
     const ownedAtClose = this.serverSession ?? this.snapshot.session;
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
+    // Only a decision, never a session — see `discardPendingReplacement`. The
+    // shape this replaced had a live generation here holding the node's only
+    // transcode slot, which had to be closed explicitly or leaked for thirty
+    // minutes. Deferring creation removed the obligation rather than meeting
+    // it better.
+    this.pendingReplacement = undefined;
 
     this.closePromise = (async () => {
       await this.startPromise?.catch(() => undefined);
@@ -807,11 +955,24 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ notice: 'This stream cannot seek.' });
       return false;
     }
+    // A pending replacement is built *now* rather than discarded, and both
+    // reasons are load-bearing: a seek throws away the buffered runway the
+    // deferral was protecting, so there is nothing left to wait for; and until
+    // it is built `serverSession` still names the session the node reaped, so
+    // the seek's own mutation would PATCH a session answering 404 and be read
+    // as the replacement failing. Built after the intent moves below, so the
+    // new generation is created at the position the viewer asked for.
+    const pendingAtSeek = this.pendingReplacement;
     const durationMs = session?.durationMs || this.snapshot.event.durationMs || this.options.media.durationMs;
     const bounded = clampPosition(positionMs, durationMs);
     this.lastSeekTransitionAt = Date.now();
     this.positionRevision += 1;
     this.seekIntentActive = true;
+    if (pendingAtSeek) {
+      this.patchSnapshot({ intent: { ...this.snapshot.intent, positionMs: bounded } });
+      void this.buildReplacement(pendingAtSeek, 'seek');
+      return true;
+    }
     const intent = { ...this.snapshot.intent, positionMs: bounded };
     this.patchSnapshot({
       intent,
@@ -1210,7 +1371,58 @@ export class PlaybackCoordinator {
   }
 
   private degrade(error: Error): void {
-    if (this.disposed || !isEndpointRetryablePlaybackFailure(error)) return;
+    if (this.disposed) return;
+    // Same superseded-source rule as `failNow`, with the opposite action.
+    // Dropped rather than swapped in: hls.js reports one of these every few
+    // seconds while it retries a dead source, and acting on the first would
+    // collapse the deferral straight back into the buffer-flush it exists to
+    // prevent. Nothing is lost by waiting — the replacement is already built,
+    // and the ordinary runway and buffering triggers decide when it goes in.
+    if (this.pendingReplacement || this.regenerationPromise) {
+      this.log.debug('source-degradation-superseded-by-replacement', {
+        sessionId: (this.snapshot.session ?? this.serverSession)?.sessionId,
+        error,
+      });
+      return;
+    }
+    // Before the endpoint-evidence guard, which would otherwise drop this on
+    // the floor now that `not-found` is not endpoint evidence — and before the
+    // standby machinery below, which is the wrong answer to it.
+    //
+    // **This is the best moment core ever gets at this fault**, and it is
+    // earlier than it looks. Measured 2026-09-17: hls.js topping up its buffer
+    // during a pause hit the reaped session and reported the first `404`
+    // **3.7 seconds before the viewer pressed play**, with 62.8 seconds of
+    // buffer still in front of them. Recovering inside that cover is the
+    // difference between a viewer seeing nothing at all and a viewer watching
+    // their cache run out and a failure screen arrive.
+    //
+    // What happened instead, until this branch existed, was
+    // `alternate-preparation-start`: the kind said `stream`, so a healthy node
+    // that had merely forgotten one session was scored as failing and a
+    // standby was built somewhere else.
+    //
+    // Deliberately not gated on paused state. A paused viewer is precisely who
+    // this happens to, and the early warning is the whole value.
+    if (isMissingSourceFailure(error)) {
+      this.beginMissingSessionRecovery(error, false);
+      return;
+    }
+    if (!isEndpointRetryablePlaybackFailure(error)) return;
+    this.degradeOnEndpointEvidence(error);
+  }
+
+  /**
+   * Ordinary handling for degradation evidence core cannot act on more
+   * specifically: promote a rescue that is already built, or build one.
+   *
+   * Named and separated so `recoverFromMissingSession` can fall back into it.
+   * A `not-found` whose meaning could not be established is exactly this case
+   * — evidence core cannot act on specifically — and the first version of that
+   * method simply returned instead, which made the degradation channel *worse*
+   * than before `not-found` existed.
+   */
+  private degradeOnEndpointEvidence(error: Error): void {
     const session = this.snapshot.session ?? this.serverSession;
     if (!session || this.alternatePreparations.size > 0) return;
     // A standby is already built and this node has failed again. There is
@@ -1493,6 +1705,13 @@ export class PlaybackCoordinator {
       ? Math.max(reportedPositionMs, this.lastObservedPositionMs)
       : reportedPositionMs;
     this.lastObservedPositionMs = absolutePositionMs;
+    // Real progress past the point a regeneration was started from is the only
+    // proof available that it worked. Once it has, the next outage is a new
+    // outage and is entitled to the same one attempt this one had.
+    if (this.lastRegenerationPositionMs !== undefined
+      && absolutePositionMs > this.lastRegenerationPositionMs + REGENERATION_PROGRESS_MS) {
+      this.lastRegenerationPositionMs = undefined;
+    }
     const absolute: PlaybackEvent = {
       ...next,
       positionMs: absolutePositionMs,
@@ -1524,6 +1743,13 @@ export class PlaybackCoordinator {
         durationMs: absolute.durationMs,
         remainingMs: absolute.durationMs - absolute.positionMs,
       });
+      // A source known to be reaped running out of buffer is not a failure —
+      // it is the moment the replacement was being deferred for, and on some
+      // hosts it arrives as a premature `ended` rather than as a stall.
+      if (this.pendingReplacement) {
+        void this.buildReplacement(this.pendingReplacement, 'source-ended');
+        return;
+      }
       this.fail(new PlaybackSourceError('Playback source ended before the media was complete', 'stream'));
       return;
     }
@@ -1541,6 +1767,19 @@ export class PlaybackCoordinator {
       ? this.snapshot.intent
       : { ...this.snapshot.intent, positionMs: absolutePositionMs };
     this.patchSnapshot({ event: absolute, intent });
+
+    // Read after the patch, so the decision is made on the runway the player
+    // has just reported rather than the previous one.
+    const pending = this.pendingReplacement;
+    if (pending && !this.seekIntentActive) {
+      if (absolute.buffering) {
+        // Gone sooner than the arithmetic said. Whatever the figures, the
+        // viewer is already waiting, so there is nothing left to defer for.
+        void this.buildReplacement(pending, 'buffer-exhausted');
+      } else if (this.runwayMs() <= this.leadTimeMs(pending)) {
+        void this.buildReplacement(pending, 'lead-time-reached');
+      }
+    }
   }
 
   private fail(error: unknown): void {
@@ -1574,6 +1813,68 @@ export class PlaybackCoordinator {
 
   private failNow(fatalError: Error): void {
     const failedSession = this.snapshot.session ?? this.serverSession;
+    // A replacement for this exact source is already built, or being built.
+    // Nothing the dying source says now is news — and, more sharply, **there
+    // is nobody left to ask about it**: `regenerate()` releases the old
+    // session from the resolver, so the endpoint binding `sessionAlive()`
+    // needs is gone the moment the replacement exists. A late fatal naming a
+    // superseded source is unprobeable by construction.
+    //
+    // Measured 2026-09-17, and it cost a viewer 82 seconds of playable video:
+    // hls.js went on retrying a reaped session for 29 s after the replacement
+    // was built and waiting, then went fatal. That fatal reached the probe,
+    // the probe threw `has no endpoint provenance`, "could not find out" sent
+    // it to failover, and failover released the replacement on its way past.
+    // Every step doing exactly what it was told. **Strictly worse than the
+    // stall the hold exists to prevent** — the element was emptied and
+    // playback moved to a node that had never served the title.
+    //
+    // This is not about the error's kind or the delivery path. Any player
+    // that retries a dead source for longer than a replacement takes to build
+    // arrives here, and hls.js always does.
+    if (this.pendingReplacement) {
+      // The player giving up is not the buffer running out. A fatal arrives
+      // when the *loader* concedes — hls.js after about thirty seconds of
+      // retries — while the element may still hold a minute of playable
+      // video, and that video is the whole reason the replacement is being
+      // held. Swapping here would discard it to fix a problem the viewer does
+      // not have yet. So the failure is absorbed and the ordinary triggers go
+      // on deciding, unless the runway is already spent, in which case there
+      // is nothing left to protect.
+      //
+      // **This depends on the adapter's side of the `not-found` contract**,
+      // documented on `Player.subscribeFailure`: a player reporting that kind
+      // must not tear the presentation down on it. An adapter that destroys
+      // its loader and pauses the element inside its terminal leaves nothing
+      // to play out, and absorbing the failure would park the viewer on a
+      // dead element. The web adapter did exactly that until this landed, and
+      // the two changes are not separable — which is why they ship together.
+      //
+      // Safe for every adapter that has not opted in, because an adapter that
+      // never reports `not-found` never builds a replacement and never
+      // reaches this branch at all.
+      this.log.warn('source-failure-superseded-by-replacement', {
+        sessionId: failedSession?.sessionId,
+        replacementSessionId: this.pendingReplacement.sessionId,
+        runwayMs: this.runwayMs(),
+        error: fatalError,
+      });
+      // Same rule as above: a failure from a source already given up on is not
+      // a reason to spend the viewer's remaining media. Build only if there is
+      // none left to spend.
+      const pendingSession = this.pendingReplacement;
+      const runwayMs = this.runwayMs();
+      if (runwayMs > this.leadTimeMs(pendingSession)) return;
+      void this.buildReplacement(pendingSession, 'source-failed');
+      return;
+    }
+    if (this.regenerationPromise) {
+      this.log.debug('source-failure-during-regeneration', {
+        sessionId: failedSession?.sessionId,
+        error: fatalError,
+      });
+      return;
+    }
     // A dead source does not fall silent when recovery starts. It is neither
     // stopped nor unsubscribed while the replacement is negotiated, so it goes
     // on emitting: the element plays out whatever it had buffered and reports
@@ -1594,14 +1895,262 @@ export class PlaybackCoordinator {
       });
       return;
     }
+    // A `404` that reached the fatal channel rather than the degradation one:
+    // either the adapter has no degradation channel, or the cover ran out
+    // before recovery finished. Same question, same answer, and still not a
+    // reason to condemn the node.
+    if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
-      this.failoverPromise = this.recoverFromSourceFailure(failedSession, fatalError).finally(() => {
-        this.failoverPromise = undefined;
-      });
+      this.beginSourceFailover(failedSession, fatalError);
       return;
     }
     this.failTerminal(fatalError);
   }
+
+  private beginSourceFailover(failedSession: PlaybackSession, error: Error): void {
+    if (this.failoverPromise) return;
+    // Whatever is about to be built will be on a different node, so a pending
+    // replacement for this one is a decision that no longer applies.
+    this.discardPendingReplacement('failover');
+    this.failoverPromise = this.recoverFromSourceFailure(failedSession, error).finally(() => {
+      this.failoverPromise = undefined;
+    });
+  }
+
+  /**
+   * Start recovery from a node reporting `404` for the media it was serving,
+   * if this coordinator is in a position to.
+   *
+   * Returns whether it took ownership of the error. A `false` on the terminal
+   * path means the caller must carry on to its ordinary handling — this is the
+   * one place a missing resolver capability or an in-flight recovery has to be
+   * distinguishable from "handled", because the alternative is a viewer left
+   * looking at a stalled player with nothing running.
+   */
+  private beginMissingSessionRecovery(error: Error, terminal: boolean): boolean {
+    const session = this.snapshot.session ?? this.serverSession;
+    const resolver = this.options.resolver;
+    if (!session || !resolver.sessionAlive || !resolver.regenerate) return false;
+    // Something is already replacing this generation. A second replacement for
+    // one outage is the two-owners problem, and every one of these paths ends
+    // in an activation. `pendingReplacement` counts: it is a replacement that has
+    // already been built and is waiting, and the session it replaces can no
+    // longer be probed at all.
+    if (this.failoverPromise || this.regenerationPromise || this.pendingReplacement) return true;
+    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal).finally(() => {
+      this.regenerationPromise = undefined;
+    });
+    return true;
+  }
+
+  /**
+   * Ask whether the session still exists, and act on the answer.
+   *
+   * The `404` itself cannot say which of two things happened — a reaped
+   * session and a fragment past the end of the plan are the same status and
+   * the same `not_found` code, measured on one node in one run — so this asks
+   * the only question that separates them and treats the three possible
+   * answers as three different situations rather than collapsing them:
+   *
+   * - **Gone.** Regenerate on the same node at the viewer's position. The node
+   *   is fine and is the right place to ask; see
+   *   `ClusterPlaybackResolver.regenerate`.
+   * - **Alive.** The `404` was a genuine miss against a live plan, so
+   *   replacing the session would fix nothing. Say so and leave the source
+   *   alone, unless this was already fatal, in which case ordinary failover is
+   *   the remaining option.
+   * - **Could not tell.** Not evidence of anything. A probe that failed must
+   *   never be read as a session that is gone, or a node that was briefly
+   *   unreachable gets its live sessions torn down and rebuilt.
+   */
+  private async recoverFromMissingSession(
+    session: PlaybackSession,
+    error: Error,
+    terminal: boolean,
+  ): Promise<void> {
+    const giveUpOnThisSource = (): void => {
+      if (this.disposed || this.snapshot.fatalError) return;
+      if (this.options.resolver.failover) this.beginSourceFailover(session, error);
+      else this.failTerminal(error);
+    };
+
+    /**
+     * The node's state could not be established: the probe did not complete,
+     * or a replacement has already been tried here and changed nothing.
+     *
+     * **Not an answer, and it must not be treated as one.** On the terminal
+     * channel there is nothing left to protect and failover is the remaining
+     * option. On the degradation channel the source may still be playing, so
+     * this is evidence core cannot act on specifically — which is what the
+     * standby machinery is for, and what this same evidence used to get before
+     * `not-found` existed, when it arrived as `stream`.
+     *
+     * The first version returned on the degradation path, which made the
+     * channel *worse* than before the fix: a node that had gone away between
+     * answering a `404` and being asked about it produced an early warning
+     * core then swallowed.
+     */
+    const unresolved = (): void => {
+      if (this.disposed || this.snapshot.fatalError) return;
+      if (terminal) {
+        giveUpOnThisSource();
+        return;
+      }
+      this.degradeOnEndpointEvidence(error);
+    };
+
+    let alive: boolean;
+    try {
+      alive = await this.options.resolver.sessionAlive!(session.sessionId);
+    } catch (probeError) {
+      if (this.disposed) return;
+      this.log.warn('session-liveness-unknown', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        error: probeError,
+      });
+      unresolved();
+      return;
+    }
+    if (this.disposed) return;
+
+    if (alive) {
+      // An answer, and it clears the node: the `404` was a fragment past the
+      // end of a live plan. Replacing the session would fix nothing and
+      // building a standby for it is the churn `not-found` exists to stop, so
+      // the degradation path deliberately stops here. A fatal one still needs
+      // somewhere to go.
+      this.log.warn('source-not-found-on-live-session', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        positionMs: this.snapshot.intent.positionMs,
+        error,
+      });
+      if (terminal) giveUpOnThisSource();
+      return;
+    }
+
+    // The session is gone and this source is finished. Nothing is built yet —
+    // see `REPLACEMENT_LEAD_TIME_MS` for why building now would be worse than
+    // useless — so the decision is recorded and the runway decides when.
+    const runwayMs = this.runwayMs();
+    const leadTimeMs = this.leadTimeMs(session);
+    this.log.warn('source-reaped', {
+      sessionId: session.sessionId,
+      endpoint: session.endpoint,
+      positionMs: this.snapshot.intent.positionMs,
+      paused: this.snapshot.intent.paused,
+      runwayMs,
+      leadTimeMs,
+      lookAheadMs: session.lookAheadMs ?? null,
+      terminal,
+      error,
+    });
+    // **The channel does not decide this; the runway does.** An earlier
+    // version deferred only on the degradation channel, because a fatal used
+    // to mean the presentation had already been torn down and there was
+    // nothing left to play out. Under the `not-found` contract on
+    // `Player.subscribeFailure` that is no longer true: an adapter reporting
+    // this kind leaves the element alone, so a fatal arrives with the viewer's
+    // buffer intact and is worth deferring for exactly like any other notice.
+    //
+    // Left as it was, a player that concedes before the lead is reached — hls
+    // gives up around 28 s, against a lead of 10 — would force an immediate
+    // build every time and the deferral would never happen at all.
+    if (runwayMs > leadTimeMs) {
+      this.startPendingReplacement(session, runwayMs, leadTimeMs);
+      return;
+    }
+    await this.buildReplacement(session, terminal ? 'no-cover' : 'lead-time-reached', error);
+  }
+
+  /**
+   * Build the replacement for a dead source and attach it.
+   *
+   * Created at the viewer's position **now**, not where the failure was
+   * noticed, so the node produces from its own frontier instead of catching up
+   * to a target that moved while it waited. Then warmed, so the pipeline is
+   * running before the viewer arrives rather than after.
+   *
+   * Bounded at every step, which the review gates in
+   * `docs/principles-and-laws.md` ask for directly: the negotiation carries
+   * the resolver's own attempt budget, the warm is raced against what is left
+   * of the runway, and a failure to negotiate falls through to failover rather
+   * than waiting.
+   */
+  private async buildReplacement(dead: PlaybackSession, reason: string, originating?: Error): Promise<void> {
+    this.pendingReplacement = undefined;
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
+    const requestedPositionMs = this.snapshot.intent.positionMs;
+    if (this.lastRegenerationPositionMs !== undefined
+      && Math.round(this.lastRegenerationPositionMs) === Math.round(requestedPositionMs)) {
+      this.log.error('session-regeneration-made-no-progress', {
+        sessionId: dead.sessionId,
+        endpoint: dead.endpoint,
+        positionMs: requestedPositionMs,
+      });
+      if (this.options.resolver.failover) this.beginSourceFailover(dead, new Error('Replacement made no progress'));
+      else this.failTerminal(new Error('Replacement made no progress'));
+      return;
+    }
+    this.lastRegenerationPositionMs = requestedPositionMs;
+    this.log.warn('session-reaped-regenerating', {
+      sessionId: dead.sessionId,
+      endpoint: dead.endpoint,
+      positionMs: requestedPositionMs,
+      runwayMs: this.runwayMs(),
+      reason,
+    });
+    this.patchSnapshot({ preparingSource: true, notice: undefined });
+    try {
+      const capabilities = await this.options.capabilities();
+      if (this.disposed) return;
+      const next = await this.options.resolver.regenerate!(
+        dead,
+        this.options.media,
+        capabilities,
+        requestedPositionMs,
+        this.currentPreferences(dead),
+      );
+      if (this.disposed) {
+        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        return;
+      }
+      this.log.info('session-regenerated', {
+        previousSessionId: dead.sessionId,
+        sessionId: next.sessionId,
+        endpoint: next.endpoint,
+        positionMs: requestedPositionMs,
+      });
+      if (this.disposed) {
+        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        return;
+      }
+      this.serverSession = next;
+      // Starts paused when the viewer is paused, so a source swapped in under
+      // a stopped player simply works when they press play.
+      this.activateSession(next, this.snapshot.intent.positionMs, requestedPositionMs);
+      this.patchSnapshot({ preparingSource: false, notice: undefined });
+    } catch (regenerationError) {
+      if (this.disposed) return;
+      // The node refused fresh work. That is a claim about the node, unlike
+      // the `404` that started this, and `regenerate` has already recorded it.
+      this.log.error('session-regeneration-failed', {
+        sessionId: dead.sessionId,
+        endpoint: dead.endpoint,
+        error: regenerationError,
+      });
+      this.patchSnapshot({ preparingSource: false });
+      if (this.options.resolver.failover) {
+        this.beginSourceFailover(dead, terminalRecoveryError(originating ?? asError(regenerationError), regenerationError));
+      } else {
+        this.failTerminal(terminalRecoveryError(originating ?? asError(regenerationError), regenerationError));
+      }
+    }
+  }
+
+
 
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
     const requestedPositionMs = this.snapshot.intent.positionMs;
@@ -1663,13 +2212,167 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ preparingSource: false, notice: undefined });
     } catch (failoverError) {
       if (this.disposed) return;
-      this.log.error('source-failover-exhausted', { failedSessionId: failedSession.sessionId, error: failoverError });
-      this.failTerminal(failoverError instanceof Error ? failoverError : error);
+      this.log.error('source-failover-exhausted', {
+        failedSessionId: failedSession.sessionId,
+        failedEndpoint: failedSession.endpoint,
+        originatingError: error,
+        error: failoverError,
+      });
+      this.failTerminal(terminalRecoveryError(error, failoverError));
     }
+  }
+
+  /**
+   * Buffered runway ahead of the viewer, or zero when the player does not say.
+   *
+   * **Silence reads as none, deliberately.** `forwardBufferMs` is optional on
+   * `PlaybackEvent` and an adapter that reports no buffer figure is not an
+   * adapter with an empty buffer — but a replacement held against a runway
+   * nobody is measuring is a replacement that is never swapped in, and the
+   * viewer's source is already dead. Treating the absence as "swap now" costs
+   * a buffer flush; treating it as "wait" costs the session.
+   */
+  /**
+   * Playable cover ahead of the viewer, in milliseconds.
+   *
+   * The element's own buffer plus, where the host has one, whatever its
+   * read-ahead is holding in front of the element. Those are two different
+   * caches and only the first is in `forwardBufferMs`; on Direct Play the
+   * second can be the larger, which had core swapping earlier than it needed
+   * to on the path most likely to be serving a big file.
+   */
+  /**
+   * How much media must remain before the replacement for `session` is built.
+   *
+   * `REPLACEMENT_LEAD_TIME_MS` is what the negotiation needs; the node's
+   * look-ahead is what the arrival point must stay inside. The smaller wins,
+   * because overshooting the frontier is the nine-second fault and arriving a
+   * little late is a short wait the viewer would have had anyway.
+   *
+   * **Taken from the session being replaced**, which is the only one that
+   * exists when this is decided. It is the same node and the same
+   * configuration as the replacement will be created on, so it is the right
+   * proxy — and if the node is reconfigured between the two, the replacement
+   * reports the new figure and the next decision uses it.
+   *
+   * Absent means the node is too old to say, and the default is already
+   * chosen to sit under any plausible configuration. `null` means direct play,
+   * which has no pipeline and no frontier to overshoot, so nothing bounds it.
+   */
+  private leadTimeMs(session: PlaybackSession): number {
+    const lookAheadMs = session.lookAheadMs;
+    if (typeof lookAheadMs !== 'number' || !Number.isFinite(lookAheadMs)) {
+      return REPLACEMENT_LEAD_TIME_MS;
+    }
+    return Math.min(REPLACEMENT_LEAD_TIME_MS, Math.max(0, lookAheadMs - LOOK_AHEAD_MARGIN_MS));
+  }
+
+  private runwayMs(): number {
+    return this.elementRunwayMs() + this.readAheadRunwayMs();
+  }
+
+  /**
+   * Host read-ahead expressed as time, through the bitrate of the source
+   * actually being served.
+   *
+   * Bytes are what a read-ahead honestly knows; a duration is what the swap
+   * decision needs. The conversion belongs here rather than in the adapter
+   * because the session carries the bitrate and the adapter does not
+   * necessarily. Zero whenever anything in the chain is unknown — an
+   * unconvertible figure must not become a confident one.
+   */
+  private readAheadRunwayMs(): number {
+    const bytes = this.snapshot.event.readAheadBytes;
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return 0;
+    const session = this.snapshot.session ?? this.serverSession;
+    const bitrate = session?.mode === 'direct'
+      ? session.sourceInfo?.bitrate
+      : session?.output?.bitrate ?? session?.sourceInfo?.bitrate;
+    if (typeof bitrate !== 'number' || !Number.isFinite(bitrate) || bitrate <= 0) return 0;
+    return bytes * 8 / bitrate * 1_000;
+  }
+
+  private elementRunwayMs(): number {
+    const { forwardBufferMs, bufferedRangesMs, positionMs } = this.snapshot.event;
+    if (typeof forwardBufferMs === 'number' && Number.isFinite(forwardBufferMs)) {
+      return Math.max(0, forwardBufferMs);
+    }
+    // `forwardBufferMs` is optional and an adapter may report only the ranges.
+    // The contiguous run ahead of the viewer is the same quantity, so derive
+    // it rather than treating a reported buffer as no buffer.
+    const containing = bufferedRangesMs?.find(
+      (range) => range.startMs <= positionMs && positionMs <= range.endMs,
+    );
+    if (containing) return Math.max(0, containing.endMs - positionMs);
+    return 0;
+  }
+
+  /**
+   * Give up a held replacement without using it, closing it on the node.
+   *
+   * Every path that abandons one has to come through here, because it is
+   * holding a transcode slot. Tom's call to hold the slot at all rests on the
+   * viewer who lost their session being the same viewer it is held for — which
+   * stops being true the moment they close the player or seek somewhere the
+   * generation cannot serve.
+   */
+  /**
+   * Give up on replacing a source, without having built anything.
+   *
+   * **Cheap by construction, and that is the point of deferring.** The earlier
+   * shape created the session immediately, so abandoning one meant closing it
+   * on the node or leaking its transcode slot until `session_idle`. Nothing is
+   * created until it is nearly needed now, so there is no session to close and
+   * no slot to leak — only a decision to forget.
+   */
+  /**
+   * Record that this source must be replaced, and guarantee it will be.
+   *
+   * **The timer is not the mechanism, it is the proof that there is one.**
+   * Player events normally decide: the runway falls to the lead, or the
+   * element reports it is buffering, or it ends short. All three are ordinary
+   * and all three arrive first. But the client that reports `not-found` no
+   * longer tears its presentation down, which means core is now the only thing
+   * that will ever end this playback — and a recovery that depends on an event
+   * arriving is a recovery that hangs when one does not.
+   *
+   * So the wait is bounded by what the viewer actually has. Worst case it
+   * fires early against a paused viewer and builds a generation sooner than
+   * needed, which costs a session; the alternative costs a viewer staring at a
+   * frozen picture with nothing coming.
+   */
+  private startPendingReplacement(session: PlaybackSession, runwayMs: number, leadTimeMs: number): void {
+    this.pendingReplacement = session;
+    this.patchSnapshot({ preparingSource: false, notice: undefined });
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = setTimeout(() => {
+      this.pendingReplacementTimer = undefined;
+      const pending = this.pendingReplacement;
+      if (!pending || this.disposed) return;
+      this.log.warn('pending-replacement-deadline', {
+        sessionId: pending.sessionId,
+        runwayMs: this.runwayMs(),
+      });
+      void this.buildReplacement(pending, 'deadline');
+    }, Math.max(0, runwayMs - leadTimeMs));
+  }
+
+  private discardPendingReplacement(reason: string): void {
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
+    const pending = this.pendingReplacement;
+    if (!pending) return;
+    this.pendingReplacement = undefined;
+    this.log.info('pending-replacement-discarded', {
+      sessionId: pending.sessionId,
+      endpoint: pending.endpoint,
+      reason,
+    });
   }
 
   private failTerminal(fatalError: Error): void {
     if (this.disposed || this.snapshot.fatalError) return;
+    this.discardPendingReplacement('terminal-failure');
     this.log.error('fatal', fatalError);
     this.patchSnapshot({ fatalError, notice: undefined, starting: false, preparingSource: false });
   }

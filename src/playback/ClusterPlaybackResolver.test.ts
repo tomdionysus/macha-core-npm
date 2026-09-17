@@ -621,3 +621,144 @@ describe('the session a failover walks away from', () => {
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe('regenerating on the node that reaped the session', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('asks the same node again, and does not charge it for having forgotten', async () => {
+    // The `404` was about one session's existence. The node is fine, holds the
+    // title's pipeline, and is the right place to ask — and until this existed
+    // the only exit was `failover`, whose first act is to condemn it.
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 404 });
+      const id = String(url).startsWith('http://a') ? 'session-a2' : 'session-b';
+      return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    const next = await resolver.regenerate(primary, media, capabilities, 45_000, { mode: 'direct' });
+
+    expect(next.endpoint?.id).toBe('http://a');
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+    // And node B was never asked, though it was sitting there healthy.
+    expect(admissionCalls(fetchMock).every(([url]) => String(url).startsWith('http://a'))).toBe(true);
+  });
+
+  it('releases the old session before asking for the new one', async () => {
+    // Load-bearing ordering, not tidiness. With `max_video_transcodes` at 1 the
+    // session being replaced is holding the only slot the replacement needs, so
+    // asking first is asking to be refused.
+    const order: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (String(url).startsWith('http://a')) order.push(method);
+      if (method === 'DELETE') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(wireSession('session-a2')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    order.length = 0;
+
+    await resolver.regenerate(primary, media, capabilities, 45_000, { mode: 'direct' });
+
+    expect(order).toEqual(['DELETE', 'POST']);
+  });
+
+  it('charges the node when it refuses fresh work, which is a claim about itself', async () => {
+    // The distinction the whole change rests on. Forgetting a session says
+    // nothing about the node; refusing to issue one says a great deal, and the
+    // registry is entitled to hear the second.
+    let admissions = 0;
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'DELETE') return new Response(null, { status: 404 });
+      admissions += 1;
+      if (admissions === 1) {
+        return new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { code: 'unavailable', message: 'no capacity' } }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await expect(resolver.regenerate(primary, media, capabilities, 45_000, { mode: 'direct' })).rejects.toThrow();
+
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+  });
+
+  it('refuses to guess at an endpoint it no longer has', async () => {
+    // Failing over instead is the caller's decision, and the caller already has
+    // to make it for a refused admission. Making it here too would put one
+    // decision in two places.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } })));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    registry.replace([]);
+
+    await expect(resolver.regenerate(primary, media, capabilities, 0, { mode: 'direct' })).rejects.toThrow(/no endpoint to regenerate on/);
+  });
+});
+
+describe('asking whether a session still exists', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function owned() {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    return { registry, resolver, session };
+  }
+
+  it('reads a 404 as the answer, and asks only the node that issued it', async () => {
+    // Every other node would answer 404 truthfully for a session it never had,
+    // so a walk here could only produce a confident wrong answer.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: { code: 'not_found', message: 'playback session not found' } }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { registry, resolver, session } = await owned();
+
+    await expect(resolver.sessionAlive(session.sessionId)).resolves.toBe(false);
+    const probes = (fetchMock.mock.calls as Array<[string, RequestInit]>)
+      .filter(([, init]) => (init?.method ?? 'GET').toUpperCase() === 'GET');
+    expect(probes).toHaveLength(1);
+    expect(probes[0]![0]).toBe('http://a/api/v1/playback/sessions/session-a');
+    // Answering correctly is not a fault, and a probe that moved the registry
+    // would make asking a question cost the node something.
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+  });
+
+  it('throws rather than answering when it could not find out', async () => {
+    // "I could not find out" is not "it is gone". Collapsing them tears down a
+    // live session because a node was briefly unreachable.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      }
+      throw new TypeError('Failed to fetch');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { resolver, session } = await owned();
+
+    await expect(resolver.sessionAlive(session.sessionId)).rejects.toThrow();
+  });
+
+  it('says a session the node still holds is alive', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(wireSession('session-a')), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { resolver, session } = await owned();
+
+    await expect(resolver.sessionAlive(session.sessionId)).resolves.toBe(true);
+  });
+});

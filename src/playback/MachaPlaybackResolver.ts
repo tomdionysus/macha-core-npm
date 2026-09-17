@@ -103,6 +103,16 @@ interface WireSession {
   stream: {
     url: string;
     mime_type: string;
+    /**
+     * How far past the last fragment requested the node will have produced —
+     * `max_ahead_segments` x `segment_duration_ms`. Server 0.45.0 and later.
+     *
+     * Three states, and collapsing any two of them is a defect. **Absent**:
+     * the node predates the field and cannot say. **`null`**: direct play,
+     * which has no transcode pipeline and therefore no production frontier —
+     * not the same claim as `0`. **A number**: the frontier, in milliseconds.
+     */
+    look_ahead_ms?: number | null;
     subtitle_url: string | null;
   };
   options: {
@@ -373,6 +383,41 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     }
   }
 
+  /**
+   * Whether this node still holds the session — the one question that tells a
+   * `404` on a fragment apart from a `404` on the plan.
+   *
+   * Both answer `404 not_found` and nothing in either body distinguishes them,
+   * so the fragment's own status is not enough and neither is its body, which
+   * in any case does not survive most fragment loaders. Asking the session
+   * route does distinguish them, decisively, in one request.
+   *
+   * **Not a keepalive.** It runs when something has already gone wrong, never
+   * on a timer. Polling a paused session would hold it open, and the transcode
+   * entitlement belongs to the session rather than the pipeline — a viewer who
+   * paused and walked away would pin the node's only video transcode slot for
+   * as long as the tab stayed open. See `SERVER_SESSION_IDLE_MS`.
+   *
+   * A `404` is the answer, not an error: it resolves `false` and the caller is
+   * expected to act on it. Anything else — unreachable, 5xx, a refused token —
+   * throws, because "I could not find out" must not be mistaken for "it is
+   * gone". Acting on the difference is what stops a node being condemned for
+   * answering honestly.
+   */
+  async sessionAlive(sessionId: string): Promise<boolean> {
+    try {
+      await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {});
+      this.log.debug('session-alive', { sessionId });
+      return true;
+    } catch (error) {
+      if (error instanceof MachaPlaybackError && error.status === 404) {
+        this.log.info('session-gone', { sessionId });
+        return false;
+      }
+      throw error;
+    }
+  }
+
   private mapSession(wire: WireSession): PlaybackSession {
     const options: PlaybackOptions = {
       // Direct is an explicit user override, not a capability-derived offer.
@@ -404,6 +449,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       mode: wire.mode,
       mimeType: wire.stream.mime_type,
       source,
+      lookAheadMs: wire.stream.look_ahead_ms,
       durationMs: wire.duration_ms,
       seekMs: wire.seek_ms,
       preferences: {

@@ -129,6 +129,35 @@ export interface PlaybackSession {
   mimeType: string;
   source: PlaybackSource;
   durationMs: number;
+  /**
+   * How far past the last fragment requested this node will have produced,
+   * from `stream.look_ahead_ms`.
+   *
+   * **The line between a fragment request that is held and one refused.** A
+   * node produces to `highest_requested + max_ahead_segments` and parks, and
+   * the hold window is deliberately the same distance — so a viewer arriving
+   * beyond this finds the encoder still working towards them, answering
+   * `500 segment_not_ready` until it arrives. That is not a fault and must not
+   * be read as one; production is sequential, so asking for a distant index
+   * does not skip the fragments before it.
+   *
+   * **Three states, and none may be collapsed.** `undefined` — the node
+   * predates server 0.45.0 and cannot say, so a client must bound itself
+   * conservatively rather than assume a default. `null` — direct play, which
+   * has no pipeline and therefore no frontier at all. A number — the answer,
+   * in milliseconds.
+   *
+   * **Per session, not per node.** It follows the node's `reconfigure()`, so
+   * it is read from the session that reports it and never cached against an
+   * endpoint.
+   *
+   * Nothing on the wire carried this before, so a client had only the defaults
+   * to reason from. One that assumed 8 segments of 4 s against a node
+   * configured for 4 believed it had 32 s of authorised production when it had
+   * 16, and sat refused at the frontier for the difference — measured as a
+   * 12.7 s viewer freeze on 2026-09-17.
+   */
+  lookAheadMs?: number | null;
   seekMs: number;
   preferences: PlaybackPreferences;
   sourceInfo: PlaybackSourceInfo;
@@ -184,6 +213,19 @@ export interface PlaybackStopOptions {
   keepalive?: boolean;
 }
 
+/**
+ * How long one attempt to negotiate a generation on one endpoint may take
+ * before the caller stops waiting for it.
+ *
+ * Lives on the contract rather than inside an implementation because two
+ * layers need it and neither owns it. `ClusterPlaybackResolver` enforces it
+ * per endpoint, abandoning a slow node and moving to the next; the coordinator
+ * budgets against it when deciding how far ahead of a viewer's remaining media
+ * it must start building a replacement. Declared once so those two cannot
+ * drift, which is the fault this package keeps recording.
+ */
+export const GENERATION_ATTEMPT_BUDGET_MS = 12_000;
+
 /** Server-side playback negotiation and session-control seam. */
 export interface PlaybackResolver {
   readonly available: boolean;
@@ -203,6 +245,42 @@ export interface PlaybackResolver {
     seekMs: number,
     preferences: PlaybackPreferencesUpdate,
     preparedAlternate?: PlaybackSession,
+  ): Promise<PlaybackSession>;
+  /**
+   * Whether the node that issued this generation still holds it.
+   *
+   * The question that resolves a `PlaybackFailureKind` of `not-found`, which a
+   * player cannot resolve for itself: a reaped session and a fragment past the
+   * end of the plan are the same status and the same error code on the wire.
+   *
+   * Resolves `false` only on a definitive `404` from the owning node. It
+   * throws when the answer could not be obtained, and callers must keep those
+   * apart — "I could not find out" is not "it is gone", and acting on the
+   * second when you have the first condemns a node for being briefly
+   * unreachable.
+   *
+   * Never call it on a timer. See `SERVER_SESSION_IDLE_MS` for why a keepalive
+   * is the wrong shape here.
+   */
+  sessionAlive?(sessionId: string): Promise<boolean>;
+  /**
+   * Replace a generation on the node already serving it, without holding that
+   * node responsible for it.
+   *
+   * Distinct from `failover`, which means "this node failed" and records it.
+   * A node answering `404 not_found` for a session it has reaped is making a
+   * statement about that session, not about itself, and is the right place to
+   * ask again. See `ClusterPlaybackResolver.regenerate` for the whole of why.
+   *
+   * Rejects when the endpoint is unknown or no longer configured; deciding to
+   * failover instead is the caller's.
+   */
+  regenerate?(
+    failedSession: PlaybackSession,
+    media: MediaSummary,
+    capabilities: PlaybackCapabilities,
+    seekMs: number,
+    preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession>;
   /** Prepare one bounded standby generation without delaying active playback. */
   prepareAlternate?(

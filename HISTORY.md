@@ -132,6 +132,66 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.11.0` | Artwork stops renaming itself, and volume leaves core. |
 | `0.11.1` | The storage registry admits to a key it owns; the cheap half of the coverage gap. |
 | `0.12.0` | What a host's storage owes core, said where it is read rather than only where it is listed. |
+| `0.13.0` | A 404 is about one session, not the node that answered it — and the replacement is built where the viewer will arrive. |
+
+## The pause that killed a healthy node
+
+`0.13.0` is one bug seen from four sides, and it is the clearest example this
+package has of a client, a core and a server each holding one third of an
+answer.
+
+A viewer pauses for half an hour. The node reaps the play session, correctly —
+a paused client stops asking for fragments, and `session_idle` exists for
+clients that have stopped asking. The viewer comes back, watches their buffer
+play out, and gets a failure screen naming a node their session was never on.
+
+**The first third was a status read as the wrong kind of evidence.** A `404`
+on a playback route says one session no longer exists. Core read it as
+`stream`, `stream` is endpoint evidence, and the only exit from endpoint
+evidence was `failover` — whose first act is to record a failure against the
+node. So the node that had answered honestly was charged for it, dropped from
+the candidate list, and the viewer was sent somewhere else. `not-found` exists
+to name what the node actually said, and `sessionAlive` exists because the
+status alone cannot tell a reaped session from a fragment past the end of a
+plan: both answer `404 not_found`, differing by one word of English in a body
+most fragment loaders never surface.
+
+**The second third was measured three times and wrong twice.** Replacing the
+generation worked, and the viewer still lost their picture for five seconds,
+because attaching a source hands the player a new `MediaSource` and empties an
+element holding a minute of playable video. Building the replacement early and
+holding it was *worse* — twelve seconds — and the reason offered for that was
+also wrong: a held session does not go cold. The pipeline starts inside the
+session `POST` and a node reported startup complete in 1,924 ms before
+answering. What actually costs the time is the production frontier. A node
+produces out to a look-ahead past the last fragment anyone asked for and
+parks; a generation held for half a minute leaves the viewer arriving beyond
+that, and the encoder walks to them at roughly realtime. So the replacement is
+built late, at the position it will be used, and the viewer arrives at the
+start of a window rather than past the end of one.
+
+**The third was a number nobody outside the server could know.** The lead has
+to stay inside the look-ahead, and the look-ahead was `max_ahead_segments`
+times `segment_duration_ms` — two knobs that appeared on no wire and in no
+document. A client could only assume the defaults. Server `0.45.0` added
+`stream.look_ahead_ms`, derived server-side so that nobody multiplies a count
+by a duration, and `null` rather than `0` for direct play so that "no
+pipeline" cannot be read as "no look-ahead". Without it the lead was a
+constant chosen to sit under a frontier nobody could read: correct on both
+live nodes and wrong on any node configured with half the default window.
+
+**What the release is really made of** is three sessions each refusing to take
+the others' word. A client that checked its own pin and found it worthless —
+it had been hashing the barrel, which is invariant under every implementation
+change. A client that came back twice to withdraw its own explanation after
+core had already built on it. A core that asserted an obligation and was asked
+to prove it was code rather than intention, and found on checking that it was
+not: a terminal failure still built immediately, which would have made the
+client's half measure nothing at all.
+
+`docs/principles-and-laws.md` arrives in this release for the first time. Six
+places in `src/` cited it, one of them a test name, and it had never existed
+here. Law 2 is why the shape is what it is.
 
 ## A gap in what npm holds
 

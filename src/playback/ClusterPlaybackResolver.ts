@@ -5,6 +5,9 @@ import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
+import {
+  GENERATION_ATTEMPT_BUDGET_MS,
+} from './PlaybackResolver.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -157,7 +160,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   constructor(
     routerOrRegistry: ClusterEndpointRouter | EndpointRegistry,
     private readonly auth: AuthenticatedFetch = NO_AUTH,
-    private readonly generationAttemptTimeoutMs = 12_000,
+    private readonly generationAttemptTimeoutMs = GENERATION_ATTEMPT_BUDGET_MS,
   ) {
     this.registry = routerOrRegistry instanceof ClusterEndpointRouter
       ? routerOrRegistry.registry
@@ -187,7 +190,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     // "an endpoint just failed" is recorded identically regardless of which
     // path noticed it, rather than two independent inline copies drifting.
     if (failedSession.endpoint) this.recordEndpointFailure(failedSession.endpoint.id);
-    this.releaseFailedSession(failedSession);
+    void this.releaseFailedSession(failedSession);
     if (preparedAlternate) {
       const owned = this.sessions.get(preparedAlternate.sessionId);
       if (owned
@@ -207,6 +210,91 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       true,
       this.generationAttemptTimeoutMs,
     );
+  }
+
+  /**
+   * Replace a generation on the node that was already serving it, without
+   * holding that node responsible for it.
+   *
+   * **The condition this exists for is a node reaping a paused session.**
+   * `streaming.session_idle_ms` erases any session whose client has stopped
+   * asking for media, and a paused client is exactly that — see
+   * `SERVER_SESSION_IDLE_MS`. Afterwards a reaped session is indistinguishable
+   * from one that never existed: the session route and the stream route both
+   * answer `404 not_found`. That `404` is a statement about **one session's
+   * existence**, not about the node, which is fine, holds the title's
+   * pipeline, and is the right place to ask again.
+   *
+   * Until this existed there was nowhere else to ask. Every terminal source
+   * error had one exit, `failover`, whose first act is `recordEndpointFailure`
+   * — so the node was charged for answering honestly, dropped from the
+   * candidate list, and the viewer was sent to whatever remained. Observed
+   * live on 2026-09-17: the session was created on es-1, es-1 was excluded for
+   * the `404`, and the failure screen named fi-1, a node that had never held
+   * the session at all. A recoverable condition became a terminal one, and the
+   * report went to the wrong node.
+   *
+   * So: no `recordEndpointFailure`, no entry in `failedGenerationEndpoints`,
+   * same endpoint, same viewer position. A failure of the **new** admission is
+   * ordinary endpoint evidence and is recorded as such — that is the node
+   * refusing fresh work, which is a different claim from it having forgotten
+   * an old session.
+   *
+   * **The old session is closed before the new one is asked for, and this
+   * waits for it.** `failover` does not wait, because it is going to a
+   * different node. Here the node's video transcode slot — its only one, where
+   * `max_video_transcodes` is 1 — is held by the session being replaced, so
+   * asking before releasing is asking to be refused. When the session was
+   * reaped there is nothing to release and the `404` returns at once.
+   *
+   * Rejects rather than falling back when the endpoint is unknown or gone from
+   * the registry. Failing over is the caller's decision and the caller already
+   * has to make it for a failed admission; making it here too would put the
+   * same decision in two places.
+   */
+  async regenerate(
+    failedSession: PlaybackSession,
+    media: MediaSummary,
+    capabilities: PlaybackCapabilities,
+    seekMs: number,
+    preferences: PlaybackPreferencesUpdate,
+  ): Promise<PlaybackSession> {
+    const endpointId = failedSession.endpoint?.id;
+    const endpoint = endpointId === undefined
+      ? undefined
+      : this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
+    if (!endpoint) {
+      throw new Error(`Playback generation ${failedSession.sessionId} has no endpoint to regenerate on.`);
+    }
+    this.log.info('generation-regenerate', {
+      endpointId: endpoint.id,
+      endpoint: endpoint.baseUrl,
+      mediaId: media.id,
+      previousSessionId: failedSession.sessionId,
+      seekMs,
+    });
+    await this.releaseFailedSession(failedSession);
+    try {
+      return await this.createOn(
+        endpoint,
+        media,
+        capabilities,
+        seekMs,
+        withServedSegmentContainer(preferences, failedSession),
+        true,
+        this.generationAttemptTimeoutMs,
+        newPlaybackIdempotencyKey(),
+      );
+    } catch (error) {
+      this.log.warn('generation-regenerate-failed', {
+        endpointId: endpoint.id,
+        endpoint: endpoint.baseUrl,
+        mediaId: media.id,
+        error,
+      });
+      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
+      throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
+    }
   }
 
   /**
@@ -294,19 +382,29 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *   there is teardown half the consumers do not get. This is the only
    *   layer all of them pass through, which is why the retry ladder is here.
    */
-  private releaseFailedSession(failedSession: PlaybackSession): void {
+  private releaseFailedSession(failedSession: PlaybackSession): Promise<void> {
     const owned = this.sessions.get(failedSession.sessionId);
-    if (!owned) return;
+    if (!owned) return Promise.resolve();
     this.sessions.delete(failedSession.sessionId);
+
+    // Resolves when the *first* close settles, either way; the retry ladder
+    // below goes on in the background regardless. Failing over does not wait
+    // — it is going to a different node, so the old node's slot is not in its
+    // way — but regenerating on the same node is blocked by exactly that slot,
+    // so it does wait. See `regenerate`.
+    let firstAttemptSettled!: () => void;
+    const firstAttempt = new Promise<void>((resolve) => { firstAttemptSettled = resolve; });
 
     const attempt = (attemptsMade: number): void => {
       void owned.resolver.stop(owned.nodeSessionId).then(() => {
+        firstAttemptSettled();
         this.log.info('failed-session-closed', {
           endpointId: owned.endpoint.id,
           sessionId: owned.nodeSessionId,
           attempts: attemptsMade + 1,
         });
       }).catch((error) => {
+        firstAttemptSettled();
         const attempts = attemptsMade + 1;
         if (attempts >= FAILED_SESSION_CLOSE_ATTEMPTS) {
           // Said plainly rather than swallowed: the node is now holding a
@@ -335,6 +433,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       });
     };
     attempt(0);
+    return firstAttempt;
   }
 
   async prepareAlternate(
@@ -382,7 +481,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     let lastError: unknown;
     const idempotencyKey = newPlaybackIdempotencyKey();
     for (const { endpoint } of this.registry.candidates(excluded)) {
-      const resolver = this.resolver(endpoint);
       this.log.info('generation-attempt', {
         endpointId: endpoint.id,
         endpoint: endpoint.baseUrl,
@@ -391,21 +489,16 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         standby: !preferOnSuccess,
       });
       try {
-        const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
-        const session = attemptTimeoutMs
-          ? await awaitWithEndpointDeadline(
-            request,
-            attemptTimeoutMs,
-            (late) => this.releaseGenerationAdmittedLate(endpoint, resolver, late),
-          )
-          : await request;
-        session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
-        const nodeSessionId = session.sessionId;
-        session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
-        this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
-        if (preferOnSuccess) this.registry.recordSuccess(endpoint.id);
-        else this.registry.recordProbeSuccess(endpoint.id);
-        return session;
+        return await this.createOn(
+          endpoint,
+          media,
+          capabilities,
+          seekMs,
+          preferences,
+          preferOnSuccess,
+          attemptTimeoutMs,
+          idempotencyKey,
+        );
       } catch (error) {
         if (!retryableEndpointFailure(error)) throw error;
         this.log.warn('generation-attempt-failed', {
@@ -420,6 +513,45 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       }
     }
     throw lastError ?? new Error('No untried Macha playback endpoint remains.');
+  }
+
+  /**
+   * One generation attempt against one endpoint, with the bookkeeping a
+   * successful admission owes: endpoint provenance on the session, the
+   * endpoint-namespaced session id every other method looks up by, ownership
+   * recorded so the session can be closed later, and the registry told.
+   *
+   * It deliberately does **not** classify a failure — it throws whatever the
+   * node threw, raw. Its two callers want opposite things from one: the walk
+   * in `create` records and moves to the next candidate, while `regenerate`
+   * has no next candidate and wraps it for the caller to failover on.
+   */
+  private async createOn(
+    endpoint: MachaEndpoint,
+    media: MediaSummary,
+    capabilities: PlaybackCapabilities,
+    seekMs: number | undefined,
+    preferences: PlaybackPreferencesUpdate | undefined,
+    preferOnSuccess: boolean,
+    attemptTimeoutMs: number | undefined,
+    idempotencyKey: string,
+  ): Promise<PlaybackSession> {
+    const resolver = this.resolver(endpoint);
+    const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
+    const session = attemptTimeoutMs
+      ? await awaitWithEndpointDeadline(
+        request,
+        attemptTimeoutMs,
+        (late) => this.releaseGenerationAdmittedLate(endpoint, resolver, late),
+      )
+      : await request;
+    session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
+    const nodeSessionId = session.sessionId;
+    session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
+    this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
+    if (preferOnSuccess) this.registry.recordSuccess(endpoint.id);
+    else this.registry.recordProbeSuccess(endpoint.id);
+    return session;
   }
 
   async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
@@ -439,6 +571,26 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
+  }
+
+  /**
+   * Ask the node that issued this generation whether it still holds it.
+   *
+   * Pinned to the owning node — there is no walk and no failover. Every other
+   * node would answer `404` truthfully for a session it never had, so asking a
+   * second one could only produce a confident wrong answer.
+   *
+   * **Records nothing against the endpoint, in either direction.** A `404` is
+   * the node answering correctly and is the whole point of asking; anything
+   * else throws, and whatever the caller does about that will charge the node
+   * on its own terms. A probe that moved the registry would make asking a
+   * question cost the node something, which is how a diagnostic turns into the
+   * fault it was meant to diagnose.
+   */
+  async sessionAlive(sessionId: string): Promise<boolean> {
+    const owned = this.sessions.get(sessionId);
+    if (!owned) throw new Error(`Playback generation ${sessionId} has no endpoint provenance.`);
+    return owned.resolver.sessionAlive(owned.nodeSessionId);
   }
 
   async stop(sessionId: string, options?: PlaybackStopOptions): Promise<void> {

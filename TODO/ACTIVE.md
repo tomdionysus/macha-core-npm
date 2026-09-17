@@ -8,7 +8,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** `0.11.1` is released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
+**Where things stand.** `0.13.0` is the release in hand — the reaped-session recovery, `not-found`, `lookAheadMs`, and the exported server constants two clients had been restating privately. `0.11.1` was released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **786 tests in 61 files, all passing** as of 2026-09-15. Run all five.
 
@@ -18,7 +18,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **They are moving off `file:` links onto the published npm package**, decided 2026-09-15; see *Moving the clients onto public npm* below for the order and the traps. Until a client has moved, it resolves through `file:` and `"main": "./dist/index.js"`, so it compiles against your **last build** and a change on `develop` is invisible to it until `npm run build` runs here. Once moved, a change is invisible until it is **published** — use a `--tag next` prerelease to get it in front of a client, never a local link.
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **They are moving off `file:` links onto the published npm package**, decided 2026-09-15; see *Moving the clients onto public npm* below for the order and the traps. Until a client has moved, it resolves through `file:` and `"main": "./dist/index.js"`, so it compiles against your **last build** and a change on `develop` is invisible to it until `npm run build` runs here. Once moved, a change is invisible until it is **published** — use a `--tag next` prerelease to get it in front of a client to adopt or ship on. A temporary `file:` link is for *verifying* something not yet releasable and is removed the same session; see the amendment under *Moving the clients onto public npm* for the line between them.
 
 **Two of them install it as `@macha/core`** — a real `package.json` key with a `file:` target, so their imports resolve and are correct as written. Only the web client uses `@machafoundation/core`. **That split is now settled: `@machafoundation/core` is the name**, because `@macha` is an unclaimed npm scope and would break the moment a client resolved from the registry. Both clients need renaming — see *Moving the clients onto public npm* below, which also carries the dependency-confusion note that makes it time-sensitive.
 
@@ -40,6 +40,7 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
    Two of the three were caught only because a client checked rather than complied — one by making the change and watching its test fail. **Core may report what it knows about its own package and nothing further: what is published, what is verified, what changed.** What that means inside a client's tree is the client's to determine. The same rule as not clearing another operator's work, one level down.
 7. **Grepping core's barrel to ask whether a symbol is exported.** `src/index.ts` is **62 `export * from` lines and nothing else**, so a grep for any symbol name returns zero while a runtime import resolves all 183. The Android TV client ran exactly that check on the installed `0.12.0`, got zero for `SessionNotStartedError`, and was one message away from reporting that the replacement error was not importable — a false defect, in a release where every client had been asked to check its 401 handling. It caught itself with `import()`. **Ask the module system, not the file.** `node -e "import('@machafoundation/core').then(m => console.log(typeof m.X))"` is the instrument.
+   **A second face of the same fault, 2026-09-17, and it is the one to watch for.** A client pinning a live test run hashed `dist/index.js` at both ends and reported "pin held, nothing moved". That file is **invariant under every implementation change** — it is the barrel — so the hash was identical across two builds whose `PlaybackCoordinator.js` differed completely, and would not have caught core rebuilding the tree mid-run. The evidence was close to worthless and was offered as decisive. It happened not to matter. **The instrument that works is a hash of every `dist/**/*.js` sorted and hashed again, plus the specific module under test.** Raised by the client itself, unprompted, after the run it had already reported — which is the half worth copying.
 8. **Taking a green client as evidence when it is structurally incapable of the failure.** *Named by the Android TV client, 2026-09-15, after it happened twice in one afternoon.* The web client reads `localStorage` through synchronously, so it **cannot** show a read-time migration failing against a caching host. A browser tab does not background as a television app does, so it **cannot** show a session lifecycle transition. Both times the green client was green because the fault was unreachable there, not because it was absent. **This is an argument about what evidence a release needs, not about who is careful** — and it decides who gets a prerelease first. Ask which platform can actually exercise the fault before counting a pass.
 9. **Ship a seam to a client before releasing it.** On 2026-09-13 the Android TV client swapped onto `hlsWalk` and **three of its four findings came from the swap rather than from reading the code** — including one that would have destroyed every warm standby on that platform, silently. A client porting onto shared code is a cheap fuzzer for the assumptions in it. Land the seam, name it to a client, let it swap, fix what the swap finds, *then* tag.
 
@@ -53,9 +54,11 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 **Adopted and tested is not ported** — that distinction is the web client's and it is worth keeping. A third column is now needed: *how* a client resolves core, because "on core" stopped meaning one thing on 2026-09-15.
 
+**The web row was wrong until 2026-09-17** and said `^0.11.1`: that client's `package.json` had moved to `^0.12.0` and this table had not. It was caught from the other side — the client read its own range while checking what core exported and found both its own TODO and this one stating the older figure. **The other two rows are unverified**, not confirmed; nobody has read their `package.json` since. Ask the client, do not infer it from here.
+
 | Client | Resolves core by | Suite | Ported |
 |---|---|---|---|
-| Web | **npm `^0.11.1`** — released as `macha-client` 0.17.0, no link | 46 files / 335 | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed |
+| Web | **npm `^0.12.0`** — released as `macha-client` 0.17.1, no link | 46 files / 335 | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed |
 | Android TV | **npm `^0.11.1`** — renamed, no link, `expo export` green | 11 files / 159 | **no** — `secureStorage` **not supplied**; token in app-private storage |
 | Phone | **npm `^0.11.1`** — renamed, 38 imports, no link | 12 files / 90 | **no** — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow` |
 
@@ -102,7 +105,11 @@ This overrides the earlier advice in this file, which was to keep a local link f
 
 The one genuine counter-example survives the move intact: the Android TV client's `hlsWalk` swap produced three of its four findings *from porting onto shared code*, not from the link. A client is still a cheap fuzzer for core's assumptions. It just does its fuzzing against a published version now.
 
-**The cost is real and is paid deliberately:** a core change reaches a client only after a publish. **Use a prerelease under a dist-tag rather than reaching for a link** — publish `0.12.0-rc.1` with `npm publish --tag next`, have the client install `@machafoundation/core@next`, and iterate. The install path, the tarball and the resolution are then identical in shape to what a user gets, which is the whole requirement, and `latest` never moves until it is meant to.
+**The cost is real and is paid deliberately:** a core change reaches a client only after a publish. **Use a prerelease under a dist-tag rather than reaching for a link** — publish with `npm publish --tag next`, have the client install `@machafoundation/core@next`, and iterate. The install path, the tarball and the resolution are then identical in shape to what a user gets, which is the whole requirement, and `latest` never moves until it is meant to.
+
+**Amended by Tom, 2026-09-17, and the amendment matters more than it looks.** This was read as "prerelease first, always", and a session bumped to `0.13.0-rc.1` and got as far as a packed tarball before he stopped it: *"I don't want to pollute the NPM registry with Forever RC candidate versions. That's amateur hour."* **A published version is permanent** — it cannot be reused, and unpublishing is worse than leaving it. So a version number is spent when there is something worth spending it on, not on each turn of a verify-fix-verify loop.
+
+**The dividing line is what the round trip is for.** *Verifying a fix that is not yet releasable* is a `file:` link to this tree, taken temporarily and removed afterwards; it is the cheapest loop and it is what the link mechanism is actually good at. *Handing a client something to adopt, port against or ship on* is a prerelease under `next`, because then the install path has to be the one a user gets. The four link-loop failures recorded above are all failures of the first case being used for the second — a client reading a directory core was mid-write on, over days. **Minutes of verification, not a development cycle**, and never a link for anything that will be committed on the client's side.
 
 ### Order — one at a time, not four at once
 
@@ -329,7 +336,129 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 
 ---
 
-## P0 — nothing open
+## P0 — a paused session is reaped and core does not notice — CORE DONE, in `0.13.0`
+
+**Core's half is complete and released.** What remains is the web client's `fail-not-found` teardown change and the three-arm comparison; neither is core's, and neither blocks anyone else. The account below is kept in full because the shape changed three times and each change was forced by a measurement rather than an argument.
+
+
+
+**Built and verified live on `develop` 2026-09-17, unreleased.** Found by the web client, reproduced live twice, fixed in core and in that client together.
+
+**What happens.** `streaming.session_idle_ms` is thirty minutes and erases any session whose client has stopped asking for media. A paused client is exactly that: hls.js fills its bounded forward buffer, hits `maxBufferLength` and stops requesting, so the session survives about a minute of pause and then the reaper's clock runs unopposed. **A pause longer than the budget is a certainty, not a risk.** The viewer comes back, their cache plays out, and they get a failure screen.
+
+**The three defects, and only the middle one was load-bearing.**
+
+1. Nothing revalidated the session across a pause. `0.17.1` was right that a pause must not be judged as a stall; it gave the resume nothing to check.
+2. **A `404` on a playback route was read as a bad node.** `playbackFailureKindForStatus(404)` returned `stream`, `stream` is endpoint evidence, so `failover()` ran — and its first act is `recordEndpointFailure`. A node that had merely forgotten one session was charged for answering honestly and dropped from the candidate list. This is what turned a recoverable condition into a terminal one.
+3. The walk then reported **the last endpoint it tried** rather than the one that failed. Measured: the session was on es-1, the screen read `Macha endpoint http://10.35.1.50:7438 failed: Failed to fetch`, which is fi-1 — a node that had never held the session. **A day of diagnosis went to the wrong machine on the strength of that line.**
+
+**What core does now.**
+
+- `PlaybackFailureKind` gains **`not-found`**, which is not endpoint evidence. Named for what the node said rather than what it means, because the adapter genuinely cannot know: measured on one node in one run, a reaped session and a fragment past the end of a live plan both answer `404` with the identical code `not_found`, differing only in one word of English in a message the fragment loader never sees. **Classification has to be on the status, and the status is ambiguous.**
+- `PlaybackResolver.sessionAlive()` resolves the ambiguity by asking the owning node whether the session exists — pinned, recording nothing either way. A `404` is the answer; anything else throws, because *"I could not find out"* is not *"it is gone"*.
+- `PlaybackResolver.regenerate()` replaces the generation **on the same node**, releasing the old session first and waiting for it, because on a one-slot node the session being replaced holds the slot the replacement needs. It lives on the resolver rather than only in the coordinator, so the phone client gets it.
+- The coordinator branches on `not-found` in **`degrade()` before the endpoint-evidence guard**, which is where the real prize turned out to be — see below — and in `failNow()` for adapters with no degradation channel. Bounded: a second `not-found` at the same position means the regeneration changed nothing and the next step must differ.
+- The terminal error leads with the failure that started the recovery and keeps the walk's last refusal as its `cause`.
+- `SERVER_SESSION_IDLE_MS`, `SEGMENT_NOT_READY_STATUS`, `BROKEN_GENERATION_STATUS` and `SOURCE_NOT_FOUND_STATUS` are exported, beside `SERVER_SEGMENT_HOLD_MS`.
+
+**The measurement that changed the design, and it is the good part.** The client expected ~32 s of buffered cover to recover inside. What it actually measured is better: hls.js topping up its buffer *during the pause* hit the reaped session and reported the first `404` **3.7 seconds before the viewer pressed play**, with 62.8 s of buffer still ahead of them — on the degradation channel, which core already had. Core was being told, on the right channel, at the right moment, and was doing the wrong thing with it: `alternate-preparation-start`, a standby on a different node, because the kind said `stream`. **Recovery inside that cover is invisible to the viewer**, and the resume-time probe that was originally proposed is now only a latency optimisation sitting behind it.
+
+**It must not be a keepalive, and this is the trap.** The transcode entitlement is held by the session rather than the pipeline, so polling to hold a paused session open pins the node's only video transcode slot for as long as the tab is open. The reaping is correct behaviour. What core owes is to notice on the way back.
+
+**Verified live, 2026-09-17, against `es-1` (10.34.1.50).** The web client ran it through a `file:` link to this tree and unlinked afterwards. Deliberately against the node directly rather than through `ramaroja`, so haproxy and the mixed-scheme item could not colour the result. Paused at content position 222 s with 62.1 s of cover; session deleted on the node; resumed.
+
+`session-reaped-regenerating` and `session-regenerated` both carry `endpoint.id: http://10.34.1.50:7438` — the same node, which is the whole claim. Across the capture: `alternate-preparation-start` 0, `source-failover-start` 0, `generation-exclusion-relaxed` 0, `session-liveness-unknown` 0, `source-not-found-on-live-session` 0, `session-regeneration-made-no-progress` 0. First 404 to new session created: **3.44 s**. Position preserved: regenerated at 222093 ms, on-screen clock ran 3:42 → 4:52 continuously.
+
+**Two notes from the run worth keeping.** The client nearly reported a position regression and checked first: raw `currentTime` read 13 after the swap against 51.9 before it, which is the MSE clock being generation-local, not a lost position. And the title direct-plays in Chrome on macOS — reaching this code at all needed transcode asked for explicitly, so **the original report's episode does not exercise this path by default on that host.**
+
+### The 5.2 second stall, and it is the one thing still wrong
+
+**Found by the client in the same run, and it is core's.** At `source-activate` the element still held cover from 51.9 to 114.1 with the viewer at ~52 — about a minute of playable video. Activation hands hls.js a new MediaSource, the element empties, and the viewer gets a spinner:
+
+```
+17:16:37.560  source-activate
+17:16:37.580  media-emptied
+17:16:37.581  media-waiting
+17:16:42.739  media-playing     <- 5.16 s
+```
+
+The 3.44 s spent probing and regenerating was free, paid for out of buffer. The 5.16 s after it was not. **The whole margin this design exists to exploit is discarded one step before it is used**, because `source-activate` fires the moment `session-created` returns rather than when the cover is nearly spent.
+
+Against the old behaviour — 62 s of blind retries, a spent network restart, then a terminal screen naming a node that never served the title — this is still unambiguously a fix. It is not the invisible recovery it was designed to be.
+
+**Decided by Tom, 2026-09-17: defer activation. Built.** *"The assumption is they're not watching anything else, so it's ok to hold the slot. Just make sure it gets cleaned up if they close the media before the buffer expires."*
+
+Core had recommended deferring the whole regeneration instead, to avoid holding the node's only video transcode slot for up to a minute — the concern that makes `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` 8 s rather than 30 s. **Tom's reasoning retires that objection rather than overruling it, and it is worth writing down because it generalises:** the slot would be held for the viewer whose session was reaped, and that is the same viewer who would otherwise be occupying it. Nobody is kept out of anything they were using. The 8 s standby window is about a *speculative* session on a *second* node, held on the chance it is needed — a different question with a different answer.
+
+The session is created at once, because failing early is worth knowing about, and then held. `HELD_REPLACEMENT_SWAP_FLOOR_MS` is **30 s** and is a budget rather than a preference: it must cover the new source's first fragment arriving, and a node near the production frontier may hold that request for `SERVER_SEGMENT_HOLD_MS` before answering at all — twice over if the retry is held too, before a byte of transfer. Asserted as an inequality against the hold rather than pinned, the way `MEDIA_STALL_TIMEOUT_MS` is.
+
+**Raised from 15 s by Tom, 2026-09-17, before it had failed anything**: the worst case is not the measured case, and the 5.16 s once measured against a healthy node is no guide to the ceiling. The two errors are not symmetric — too low and the viewer stalls, which is the whole fault; too high and some buffer that could have been played is discarded, which nobody can see. Against the 66.9 s and 110 s runways since measured in the field, 30 s still spends most of the cover.
+
+**Runway is derived from `bufferedRangesMs` when `forwardBufferMs` is absent**, rather than treating a reported buffer as no buffer. An adapter reporting ranges and not the scalar was getting no deferral at all, for no reason.
+
+**What swaps it in**, in the order the cases actually arrive: the runway falling to the floor; the element reporting `buffering`, because whatever the arithmetic said the viewer is already waiting; a premature `ended`, which is how the dead source running dry surfaces on some hosts; and a seek — which also has to happen *before* the seek is issued, because until the swap the coordinator still names the session the node reaped and the seek would PATCH a session answering 404.
+
+**What releases it unused**, which is the half Tom named: closing the player, failing over to another node, and a terminal failure. It is torn down in `close()` explicitly rather than through `serverSession`, which still points at the source actually playing — so nothing else in teardown knows it exists, and without that branch the node's transcode slot stays held until `session_idle` thirty minutes later.
+
+**Silence reads as no runway.** `forwardBufferMs` is optional on `PlaybackEvent`, and an adapter reporting none is not an adapter with an empty buffer — but a replacement held against a runway nobody measures is never swapped in, and the source it replaces is already dead. Costing a buffer flush is the safe direction; costing the session is not.
+
+**Not measured, and it only matters if this shows a problem:** whether a transcode generation created at position X and left unrequested for a minute has produced that far ahead, or whether the first request at X+60 s sits on `500 segment_not_ready` holds. The client can answer it against a node. If it holds, the floor is doing its job and the swap is merely slower than modelled; it does not make the deferral wrong.
+
+### Resolved by the run, no longer open
+
+`regenerate()` awaits the old session's teardown before creating the replacement, and there was a worry that this could stall against a node that had just gone. Measured: `session-stop` to `session-stop-already-gone` was **161 ms**, because a reaped session answers `404` at once and `MachaPlaybackResolver.stop` treats that as success. Not a problem in the case it was raised for. Left alone.
+
+**Still to do.**
+
+### Regenerating destroys the provenance the probe needs — found live, fixed, not re-verified
+
+**Run 1 of the deferral failed, and the failure was worse than the stall it replaced.** The hold itself worked — `replacement-held` with `runwayMs: 110592` against `floorMs: 15000` — and was then thrown away 28 s later. The viewer lost 82 s of playable video, the element was emptied, and playback failed over onto a node that had never served the title.
+
+**The mechanism, and it is structural rather than incidental.** `regenerate()` releases the old session from `ClusterPlaybackResolver`'s ownership map — correctly; it has been closed. But that map is what `sessionAlive()` resolves an endpoint through, so **a session that has been replaced can no longer be probed at all**. Meanwhile hls.js goes on retrying the dead source for ~30 s and eventually goes fatal. That fatal named the old session, reached the probe, threw `has no endpoint provenance`, was read by the new fall-through as "could not find out", and went to failover — which releases the held replacement on its way past. Every step doing exactly what it was told.
+
+**It is not about the error's kind, and not about Direct Play.** Core had reasoned its way to a narrower version of this — that the follow-up arrives as `media` on the Direct Play path — and that framing was wrong. **Any player that retries a dead source for longer than a replacement takes to build arrives here**, and hls.js always does. The web client found it on the managed-HLS path where the error is a clean `not-found`.
+
+Fixed by refusing to probe at all while a replacement is held or being built: on the fatal channel swap it in, on the degradation channel drop it. Dropping is the only sane answer on degradation — a retrying player emits one every few seconds, and acting on the first would collapse the deferral into the buffer flush it exists to prevent.
+
+**Why the fatal swaps in rather than holding on, which is a fact about the host and not a preference.** `WebPlayer.failSourceGeneration` tears the element down *inside* its terminal — `hls.destroy()`, `video.pause()`, and a flag suppressing the next play request — **synchronously, before core's listener is called**. So the runway is already gone by the time core decides, whatever the last event said. Core had inferred the opposite from the run 1 log, where `media-abort` lands 6 ms after `source-terminal-failure`; the log genuinely cannot separate them and the client read the code. **A timeline can order two events and still not tell you which caused which.**
+
+### Run 2 passes: no slot leak
+
+Player closed 18 s into a hold. `session-stop` -> `session-stopped`, and verified against the node afterwards: `GET /api/v1/playback/sessions/44a2fc74…` -> `404`. Run 1's replacement is also gone, released by the failover path. The half Tom asked for works.
+
+### The adapter stops tearing down — IN SCOPE, built on both sides, one publish
+
+**Tom, 2026-09-17:** *"There's no point in two NPM packages published when we already know there's an issue. Continue and work with Client until we have a clean NPM to publish that solves the problems."* So the sequencing below is reversed: this lands with the rest and there is one release, not two. **That also disposes of the coupling hazard entirely** — the danger was only ever in the two halves shipping apart, and now they cannot.
+
+Core's half is built: on a fatal with a replacement held, the failure is absorbed and the ordinary triggers go on deciding, unless the runway is already spent. The obligation is written onto `Player.subscribeFailure` rather than left to be inferred from a message: **an adapter reporting `not-found` must not tear the presentation down on it**; the obligation is opt-in and arrives with the kind, so a player that never classifies `404`s is unaffected and still correct; and **core owns telling the viewer when there is no replacement**, through `failTerminal` and the runtime's stop.
+
+`PlaybackEvent.readAheadBytes` is added, and `runwayMs` is now the element's buffer **plus** the host read-ahead converted through the session bitrate. Direct Play stops being blind to its own cover on the path most likely to be serving a large file.
+
+The original framing, kept because the reasoning is what makes the ordering safe:
+
+The client offered to **stop tearing down for `fail-not-found` specifically** — report it and leave hls.js, the element and the viewer's buffer alone, because on that one classification the source is known-dead but the buffer is known-good and the recovery is core's. Core would then drop the fatal and keep holding, and the deferral would keep its full value on managed HLS instead of losing the remainder of the buffer at the moment hls.js gives up (~30 s in, against buffers of 60–110 s).
+
+**It must not ship at the same time as the current fix.** If the adapter stops tearing down while core still swaps on the fatal, core discards a buffer that is by then genuinely intact — no worse than today, but no better. If core drops the fatal while the adapter still tears down, **the viewer is left on a dead element** with no buffer, no MediaSource and playback suppressed. So the safe order is: ship what is built now, then the adapter's change, then core's switch.
+
+It also needs an answer the client has explicitly asked for rather than guessed: **what the adapter should do when core has no replacement and regeneration fails.** Today the teardown is what turns that into a stated failure rather than a silent stall. Under the new contract core owns that, through `failTerminal` and the runtime's cleanup — which needs stating plainly before anyone relies on it.
+
+### Closed by the above: `forwardBufferMs` is element-only, and Direct Play has a second buffer
+
+Definitive from the client: `forwardBufferMs` derives from `video.buffered` and nothing else. **The Direct Play read-ahead worker's cache is not in it**, so on the path that matters most for the reported title core is blind to real cover and swaps earlier than it needs to.
+
+The client can supply it — `directPlayReadAheadMetrics` already carries `residentBytes` and `aheadBytes`, and `publish` already reads them. **A separate field on `PlaybackEvent`, not folded into `forwardBufferMs`**, which would make one number mean two things. Bytes rather than milliseconds, with core converting through the session bitrate it already holds. Core owes them the field name and shape.
+
+### Still to do
+
+- **Re-verify the stall is gone.** Neither run reached a swap, so the 5.16 s is still only known to be fixed in a fake.
+- The look-ahead question — whether a generation held for a minute is still being produced — remains unanswered for the same reason. Watch for `source-not-found-on-live-session` **after** `replacement-swapped-in`.
+- Nothing has met a node in the *node-unreachable* case. The client has a repro that collapses the thirty-minute wait — pause through the UI, `DELETE /api/v1/playback/sessions/<id>` on the owning node, resume — and verifies through a **temporary `file:` link to this tree**, then unlinks. Core's `dist` is built and current, so the link sees all of it today.
+- The web client's half is **written and proven live**, and its tree deliberately does not typecheck — four errors, all `SEGMENT_NOT_READY_STATUS` / `SOURCE_NOT_FOUND_STATUS` / `'not-found'` not existing in the registry copy of core. That is the honest state and it is waiting on a real version number, not on more work.
+- **A trap for whoever links next, which cost the client a cycle.** Vite pre-bundles dependencies into `node_modules/.vite/deps` and swapping the symlink underneath does **not** invalidate it: the browser threw `does not provide an export named 'SEGMENT_NOT_READY_STATUS'` against a cache built from the registry copy while `node -e` in the same directory resolved the linked tree correctly. `rm -rf node_modules/.vite` and `vite --force`. This is the "a swap can silently not happen" failure one layer below the one already on record.
+- The resume-time probe after a long pause. Optional, and correctness does not rest on it.
+- `HISTORY.md`'s release table gets a row when this actually ships. It has none yet, deliberately — nothing has been released.
+
+**Method note worth keeping.** Every test here was seen red against the unfixed code before being kept, including the ones that assert an *absence* — those failed at `HEAD` because the probe they wait for never happens, rather than passing vacuously. That check was worth running: it is the trap `FakePlayer`'s comment was written about.
 
 ---
 
@@ -342,6 +471,37 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 ---
 
 ## P1 — correctness
+
+### A failover from an `https` page dies on a plain-`http` node, and core cannot see the scheme
+
+**Waiting on:** Tom for the shape, then core. **Opened here 2026-09-17 on the web client's evidence.** It had been carried in *that* client's `TODO/ACTIVE.md` as "both items are core's" and never opened here, so core did not know it existed. Recorded because it is the second time a finding has lived in one tree while the repo that owns the fix had no entry for it — **saying "this is yours" in your own file is not telling anyone.**
+
+`EndpointRegistry.candidates()` ranks on health, stickiness and throughput. It has no concept of whether a candidate is *reachable from where the page is*. A client served over `https` cannot fetch `http://10.35.1.50:7438` at all — the browser refuses it as mixed content before any request goes out — so every failover from an `https` deployment onto a plain-`http` LAN endpoint dies, and dies as a transport error indistinguishable from a node being down.
+
+**Kept separate from the P0 above on purpose.** It is what made the reaped-session failure *look* like a node problem: the screen named the `http` node the failover had just tried, so the report went to a machine that was never involved. Conflating them is how a day was spent in the wrong place, and merging them here would repeat that.
+
+**The shape, and why it is not simply "filter by scheme".** Core is no-DOM by construction — `npm run lint:platform` is the gate — so it cannot read `location.protocol`, and it must not sniff. The fact has to arrive from the host, which makes this a contract question rather than a filter: something like a stated page scheme on `MachaHost`, or an eligibility predicate the registry consults. Both are public surface. **Do not implement before the shape is settled**, and note the constraint that makes it awkward: the same endpoint list is correct for a React Native client, which has no page scheme at all and can reach both.
+
+### A 5 s preflight budget has been throwing away healthy standbys, silently
+
+**Waiting on:** the web client for the budget, core for the window. `PlaybackCoordinator.prepareAlternate`; `WebPlatform.preflightWebHlsSource`. **Found 2026-09-17 while designing something else, and it is in shipping code.**
+
+`prepareAlternate` builds a standby generation on another node and then gates it on `Player.preflightSource`, closing and discarding the session when that returns `false`. The web adapter's preflight fetches real bytes from the first media segment — correct, and the only honest way to know a node will serve it — with **a 5 s budget covering the whole walk**: playlist, init segment and first segment share one `AbortController`.
+
+**A standby is a freshly created transcode generation, so its pipeline is cold**, and the client measured a cold first fragment at **9.0 s**. So the gate has been rejecting nodes that were working perfectly and merely had not finished starting. It reads as "that node could not serve it"; it means "that node had not finished starting yet". Nothing surfaces, because a failed standby is opportunistic by design and is swallowed on purpose.
+
+Two numbers chosen independently and never compared — the fault this file keeps recording. **It compounds with `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` at 8 s**: even a standby that passes the gate is closed again before a cold pipeline could have become useful, which is the same product-of-two-budgets shape that `degrade()`'s comment already documents for the 30 s window against a player's retry schedule.
+
+**Half done. The client's half landed as `58bb0b0`: 5 s -> 25 s, and it found a better argument than the measurement.** The node's own `streaming.startup_timeout_ms` is **15,000 ms**, read off a deployed `/etc/macha/macha.yaml`. That is what a node is *entitled* to take, so a 5 s client budget was calling a working node broken for doing what it is allowed to do; 9.0 s is then a measured point comfortably inside the entitlement rather than the basis for the number. Written as a sum, not a figure, and both tests seen red at the old value. `SERVER_STARTUP_TIMEOUT_MS` is now exported from core so that client copy can be deleted — the same one-declaration rule as the two status constants.
+
+**Core's half is open and is now the binding constraint.** `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` is 8 s, so a standby that *now correctly passes* a 12 s preflight is still closed before it can be used, and the client's fix does not reach a viewer without this. **Do not raise it to taste — derive it**, which needs facing something the 8 s was set without:
+
+- The window starts when the standby is *ready*, so preflight duration does not eat it. What it has to outlast is the gap between the degradation that **built** the rescue and the second one that **promotes** it, because `promoteReadyAlternate` needs two failures inside the standby's own lifetime.
+- Measured on hls.js: non-fatal errors about **every 8 s**, fatal at **~28 s**. So an 8 s window is level with the retry interval it must outlast, and may routinely miss the second failure by a hair.
+- Which means the reduction from 30 s to 8 s, made to protect the node's only transcode slot, **may have made the transcode standby path unable to fire at all** — a rescue built, validated, and guaranteed to expire before the evidence that would promote it arrives. That is the same product-of-two-budgets shape `degrade()`'s own comment documents for the 30 s window against a player's retry schedule, which is uncomfortable: the fix for that comment appears to have recreated it one size down.
+- **Not yet verified.** It is a reading of two measurements and a code path, not an observation. The cheap check is whether `alternate-promoted-on-degradation` has ever fired against a transcode session in any capture either side holds.
+
+**Do not fold this into the `not-found` work.** It predates it, it affects a path that ships today, and it deserves its own before-and-after.
 
 ### Session manager: three mint/re-mint gaps `0.10.0` did not touch
 **Waiting on:** core. `src/api/SessionManager.ts`. **Take them together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
@@ -448,8 +608,28 @@ Raised by the phone client and **closed by it the same day**, on reading rather 
 
 `persistConfirmedEndpoints` -> `setItem` is uncaught. A `QuotaExceededError` (TVs) rejects `cycle()`, the `void` swallows it as an unhandled rejection, no reschedule runs, and `running` stays `true`. `EndpointBandwidth.write()` catches for exactly this reason — two copies of one rule, disagreeing. Fix: try/catch the persist, reschedule in a `finally`. **`probeNow()` now shares this loop**, so a caller awaiting an off-cycle probe inherits the same silent death.
 
-### `Platform.ts:13` inverts the hold status for adapter authors
-**Waiting on:** core. One-line doc fix.
+### `docs/principles-and-laws.md` is cited six times and does not exist
+
+**Waiting on:** Tom. **Found 2026-09-17**, while answering a question about whether a design moved toward the project's principles — the honest answer required reading them and there was nothing to read.
+
+Six places in `src/` cite that path as authority:
+
+- `MediaWatchdog.ts:19` — an unbounded wait is "forbidden" by it.
+- `PlaybackCoordinator.ts:1660` — Law 2, on not producing the black screen failover exists to prevent.
+- `SessionAuth.ts:256-257` — "Law 2: Thou Shalt Not Make The Viewer Wait".
+- `SessionManager.ts:611-612` — Law 2 "forbids adding viewer-visible delay".
+- `SessionManager.test.ts:335` — **a test is named after it**: `(Law 2: never make the viewer wait)`.
+
+`git log --all --diff-filter=A` finds no commit that ever added it. **It has never existed in this repository**, so this is not a deletion to restore. Either it lives in a tree core cannot see, or the laws were written down in conversation and only ever cited.
+
+**Why it is worth fixing rather than tidying away.** The citations are load-bearing: Law 2 is the stated reason `SessionManager` does a cheap validity check instead of a full mint, and the reason `MediaWatchdog` bounds its wait. A design decision was taken this session by reconstructing Law 2 from the quoted fragments, which worked only because two of the citations happen to quote it. **Nobody can check that reconstruction**, and a rule cited by a test name should not live in four paraphrases.
+
+Cheapest fix: write the file from what the citations already assert, and ask Tom for the ones nothing quotes. It needs to be his words rather than core's reconstruction of them.
+
+### ~~`Platform.ts:13` inverts the hold status for adapter authors~~ — FIXED on `develop`, unreleased
+Corrected 2026-09-17 while rewriting that doc block for `not-found`; it now says `500`, and records that it said `503` and why that was the dangerous direction. Original entry kept below because the reasoning is still the argument for the rule.
+
+**Waiting on:** ~~core. One-line doc fix.~~
 
 It says a hold answers `503 segment_not_ready`, while `streamProtocol.ts:42` says 503 is a broken generation and terminal, and `:54` maps 503 with 404 to `stream`. **Not merely inconsistent — inverted.** An author following the public seam makes both mistakes at once and in opposite directions: retrying the terminal status, and condemning the node on the benign one. Both shipped adapters are already right (`PlayerEngine.kt:450` retries 500), so this is a trap for the next author rather than a live defect. Fix the comment, not the docs — `docs/writing-a-player.md` is already correct and is what people actually read.
 
