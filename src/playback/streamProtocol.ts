@@ -25,6 +25,60 @@ import type { PlaybackFailureKind } from '../platform/Platform.js';
 export const SERVER_SEGMENT_HOLD_MS = 6_000;
 
 /**
+ * How long a node keeps a playback session whose client has stopped asking for
+ * media, before the reaper erases it.
+ *
+ * This is the server's `streaming.session_idle_ms`, and it is here for the same
+ * reason the segment hold is: it is a server fact every client is calibrated
+ * against, and calibrating against it independently is how it goes wrong.
+ *
+ * **A pause is the case this exists for.** Both of the server's clocks run from
+ * `touched`, so a client still asking for fragments is never evicted — but a
+ * paused client is precisely one that has stopped. hls.js fills its bounded
+ * forward buffer, hits `maxBufferLength` and stops requesting; a Direct Play
+ * read-ahead worker is bounded the same way. The session therefore survives
+ * only while the buffer is still filling, about a minute, after which this
+ * clock runs unopposed. **A pause longer than this is a certainty, not a risk.**
+ *
+ * **Do not answer it with a keepalive.** The transcode entitlement is held by
+ * the session rather than the pipeline, so polling to hold a paused session
+ * open pins the node's video transcode slot — its only one, where
+ * `max_video_transcodes` is 1 — for as long as the tab is open. The reaping is
+ * correct behaviour. What a client owes is to notice on the way back.
+ *
+ * **It is the server's default, not a negotiated value**, and no status
+ * endpoint reports the real figure, so a client cannot read it at runtime. Same
+ * rule as the segment hold, in the other direction: treat it as a ceiling to
+ * stay well under rather than a number to match, and never let correctness
+ * depend on it. Anything derived from this is a latency optimisation; the
+ * handling of a `404` on a playback route is what has to be right when this
+ * number is wrong.
+ *
+ * Measured on fi-1, 2026-09-17: `/etc/macha/macha.yaml:176` runs the default.
+ */
+export const SERVER_SESSION_IDLE_MS = 1_800_000;
+
+/**
+ * The statuses the rules above are written in terms of.
+ *
+ * **Exported because an adapter needs them and will otherwise write its own.**
+ * A player that fetches its own fragments has to make decisions before it can
+ * call `playbackFailureKindForStatus` — whether to spend a retry, whether a
+ * park is appropriate — and those decisions are about these exact numbers. Two
+ * shipped adapters each restated `500` privately with its own comment
+ * explaining why it is not `503`, which is how the same server fact came to
+ * exist in four places, and it was named here as a client's private copy
+ * before anyone checked that there was anything to import. There was not.
+ *
+ * They are the server's, not a negotiation, and carry the same caveat as
+ * `SERVER_SEGMENT_HOLD_MS`: a node could in principle answer differently and
+ * no status endpoint reports what it will do.
+ */
+export const SEGMENT_NOT_READY_STATUS = 500;
+export const BROKEN_GENERATION_STATUS = 503;
+export const SOURCE_NOT_FOUND_STATUS = 404;
+
+/**
  * What an HTTP status on a fragment or manifest request means about the source.
  *
  * The mapping is protocol, not platform, and was previously specified in prose
@@ -40,17 +94,28 @@ export const SERVER_SEGMENT_HOLD_MS = 6_000;
  *   working correctly. Retry the same node; the next one is producing a
  *   different generation and does not have it either.
  * - **`503` — a broken generation.** Terminal for this source.
- * - **`404` — past the end of the plan.** A genuine miss, and the mistake a
- *   hold-aware caller makes in the other direction: having learned that a 5xx
- *   can mean "wait", it is easy to sit patiently on something that will never
- *   arrive.
+ * - **`404` — this node did not serve it.** Either the session is gone or the
+ *   fragment is past the end of the plan, and **the status cannot tell you
+ *   which**: measured against one node in one run on 2026-09-17, a reaped
+ *   session and a segment past the end of a live plan both answered `404` with
+ *   the identical code `not_found`. So this reports `not-found`, which claims
+ *   only what happened, and core asks the session route which case it is.
+ *   Note the mistake a hold-aware caller makes in the other direction: having
+ *   learned that a 5xx can mean "wait", it is easy to sit patiently on
+ *   something that will never arrive. Nine blind retries over 62 seconds is
+ *   what that looked like in the field.
  *
  * Anything else is reported as `unknown`, which the coordinator treats as
  * possible endpoint evidence — the safe default for a status this package has
  * no rule for.
+ *
+ * **Returning `stream` for `404` is what this function used to do**, and it is
+ * how a node that had merely forgotten a paused viewer's session came to be
+ * marked unhealthy and dropped from the candidate list.
  */
 export function playbackFailureKindForStatus(status: number): PlaybackFailureKind {
-  if (status === 500) return 'not-ready';
-  if (status === 503 || status === 404) return 'stream';
+  if (status === SEGMENT_NOT_READY_STATUS) return 'not-ready';
+  if (status === SOURCE_NOT_FOUND_STATUS) return 'not-found';
+  if (status === BROKEN_GENERATION_STATUS) return 'stream';
   return 'unknown';
 }

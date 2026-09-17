@@ -194,6 +194,16 @@ const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
  */
 const ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS = 8_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;
+/**
+ * How far playback must actually advance before a regeneration counts as
+ * having worked, and the loop stop on `lastRegenerationPositionMs` is cleared.
+ *
+ * Comfortably more than the jitter of a position report and comfortably less
+ * than a fragment, so a replacement that genuinely resumed clears it on the
+ * first progress event while one that attached and immediately failed again
+ * does not.
+ */
+const REGENERATION_PROGRESS_MS = 1_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
 interface PendingMutation {
@@ -296,6 +306,42 @@ export function isSubtitleOnlyPlaybackUpdate(update: PlaybackUpdate): boolean {
     .filter(([, value]) => value !== undefined)
     .map(([key]) => key);
   return keys.length > 0 && keys.every((key) => key === 'subtitleStream' || key === 'subtitleLanguage');
+}
+
+/**
+ * A node saying it did not serve this media, as distinct from saying it is
+ * unwell. See `PlaybackFailureKind` for why the two had to be separated and
+ * what it cost while they were not.
+ */
+function isMissingSourceFailure(error: unknown): boolean {
+  return error instanceof PlaybackSourceError && error.kind === 'not-found';
+}
+
+/**
+ * What a viewer is shown when recovery ran out of options.
+ *
+ * It leads with the failure that **started** the recovery rather than the one
+ * that ended it, because those are routinely about different nodes. A source
+ * failure on the node holding the session sends the walk to every other
+ * candidate, and `create()` throws the last of those to refuse — so reporting
+ * that one names a node the session was never on.
+ *
+ * Observed live on 2026-09-17: the session was on es-1, the walk ended on
+ * fi-1, and the screen read `Macha endpoint http://10.35.1.50:7438 failed:
+ * Failed to fetch` — fi-1's address, for a session fi-1 had never held. The
+ * report went to the wrong node, and so did a day of diagnosis.
+ *
+ * The last attempt is kept as `cause` rather than dropped: "and nothing else
+ * could serve it either" is the other half of what happened, and a host
+ * building a diagnostic trail wants both. The originating error object itself
+ * is returned rather than a copy of its message, so a `PlaybackSourceError`
+ * reaches the host with its `kind` intact.
+ */
+function terminalRecoveryError(originating: Error, lastAttempt: unknown): Error {
+  if (lastAttempt instanceof Error && lastAttempt !== originating && originating.cause === undefined) {
+    originating.cause = lastAttempt;
+  }
+  return originating;
 }
 
 function sourceIdentity(session: PlaybackSession): string {
@@ -465,6 +511,19 @@ export class PlaybackCoordinator {
    * it targets a source key the worker never configured.
    */
   private activeDirectPlaySource?: PlaybackSource;
+
+  private regenerationPromise?: Promise<void>;
+  /**
+   * The viewer position the last regeneration was started from.
+   *
+   * The loop stop. A `404` means either a reaped session or a fragment past
+   * the end of the plan, and only the first is fixed by regenerating — so a
+   * player that keeps asking for something no plan will ever contain would
+   * otherwise regenerate, ask again, regenerate, for as long as the viewer sat
+   * there. Arriving here twice at the same position means the last
+   * regeneration changed nothing, and the next step has to be a different one.
+   */
+  private lastRegenerationPositionMs?: number;
 
   private snapshot: PlaybackCoordinatorSnapshot;
 
@@ -1210,7 +1269,31 @@ export class PlaybackCoordinator {
   }
 
   private degrade(error: Error): void {
-    if (this.disposed || !isEndpointRetryablePlaybackFailure(error)) return;
+    if (this.disposed) return;
+    // Before the endpoint-evidence guard, which would otherwise drop this on
+    // the floor now that `not-found` is not endpoint evidence — and before the
+    // standby machinery below, which is the wrong answer to it.
+    //
+    // **This is the best moment core ever gets at this fault**, and it is
+    // earlier than it looks. Measured 2026-09-17: hls.js topping up its buffer
+    // during a pause hit the reaped session and reported the first `404`
+    // **3.7 seconds before the viewer pressed play**, with 62.8 seconds of
+    // buffer still in front of them. Recovering inside that cover is the
+    // difference between a viewer seeing nothing at all and a viewer watching
+    // their cache run out and a failure screen arrive.
+    //
+    // What happened instead, until this branch existed, was
+    // `alternate-preparation-start`: the kind said `stream`, so a healthy node
+    // that had merely forgotten one session was scored as failing and a
+    // standby was built somewhere else.
+    //
+    // Deliberately not gated on paused state. A paused viewer is precisely who
+    // this happens to, and the early warning is the whole value.
+    if (isMissingSourceFailure(error)) {
+      this.beginMissingSessionRecovery(error, false);
+      return;
+    }
+    if (!isEndpointRetryablePlaybackFailure(error)) return;
     const session = this.snapshot.session ?? this.serverSession;
     if (!session || this.alternatePreparations.size > 0) return;
     // A standby is already built and this node has failed again. There is
@@ -1493,6 +1576,13 @@ export class PlaybackCoordinator {
       ? Math.max(reportedPositionMs, this.lastObservedPositionMs)
       : reportedPositionMs;
     this.lastObservedPositionMs = absolutePositionMs;
+    // Real progress past the point a regeneration was started from is the only
+    // proof available that it worked. Once it has, the next outage is a new
+    // outage and is entitled to the same one attempt this one had.
+    if (this.lastRegenerationPositionMs !== undefined
+      && absolutePositionMs > this.lastRegenerationPositionMs + REGENERATION_PROGRESS_MS) {
+      this.lastRegenerationPositionMs = undefined;
+    }
     const absolute: PlaybackEvent = {
       ...next,
       positionMs: absolutePositionMs,
@@ -1594,13 +1684,170 @@ export class PlaybackCoordinator {
       });
       return;
     }
+    // A `404` that reached the fatal channel rather than the degradation one:
+    // either the adapter has no degradation channel, or the cover ran out
+    // before recovery finished. Same question, same answer, and still not a
+    // reason to condemn the node.
+    if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
-      this.failoverPromise = this.recoverFromSourceFailure(failedSession, fatalError).finally(() => {
-        this.failoverPromise = undefined;
-      });
+      this.beginSourceFailover(failedSession, fatalError);
       return;
     }
     this.failTerminal(fatalError);
+  }
+
+  private beginSourceFailover(failedSession: PlaybackSession, error: Error): void {
+    if (this.failoverPromise) return;
+    this.failoverPromise = this.recoverFromSourceFailure(failedSession, error).finally(() => {
+      this.failoverPromise = undefined;
+    });
+  }
+
+  /**
+   * Start recovery from a node reporting `404` for the media it was serving,
+   * if this coordinator is in a position to.
+   *
+   * Returns whether it took ownership of the error. A `false` on the terminal
+   * path means the caller must carry on to its ordinary handling — this is the
+   * one place a missing resolver capability or an in-flight recovery has to be
+   * distinguishable from "handled", because the alternative is a viewer left
+   * looking at a stalled player with nothing running.
+   */
+  private beginMissingSessionRecovery(error: Error, terminal: boolean): boolean {
+    const session = this.snapshot.session ?? this.serverSession;
+    const resolver = this.options.resolver;
+    if (!session || !resolver.sessionAlive || !resolver.regenerate) return false;
+    // Something is already replacing this generation. A second replacement for
+    // one outage is the two-owners problem, and both the failover path and the
+    // regeneration path end in an activation.
+    if (this.failoverPromise || this.regenerationPromise) return true;
+    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal).finally(() => {
+      this.regenerationPromise = undefined;
+    });
+    return true;
+  }
+
+  /**
+   * Ask whether the session still exists, and act on the answer.
+   *
+   * The `404` itself cannot say which of two things happened — a reaped
+   * session and a fragment past the end of the plan are the same status and
+   * the same `not_found` code, measured on one node in one run — so this asks
+   * the only question that separates them and treats the three possible
+   * answers as three different situations rather than collapsing them:
+   *
+   * - **Gone.** Regenerate on the same node at the viewer's position. The node
+   *   is fine and is the right place to ask; see
+   *   `ClusterPlaybackResolver.regenerate`.
+   * - **Alive.** The `404` was a genuine miss against a live plan, so
+   *   replacing the session would fix nothing. Say so and leave the source
+   *   alone, unless this was already fatal, in which case ordinary failover is
+   *   the remaining option.
+   * - **Could not tell.** Not evidence of anything. A probe that failed must
+   *   never be read as a session that is gone, or a node that was briefly
+   *   unreachable gets its live sessions torn down and rebuilt.
+   */
+  private async recoverFromMissingSession(
+    session: PlaybackSession,
+    error: Error,
+    terminal: boolean,
+  ): Promise<void> {
+    const fallThrough = (): void => {
+      if (!terminal || this.disposed || this.snapshot.fatalError) return;
+      if (this.options.resolver.failover) this.beginSourceFailover(session, error);
+      else this.failTerminal(error);
+    };
+
+    let alive: boolean;
+    try {
+      alive = await this.options.resolver.sessionAlive!(session.sessionId);
+    } catch (probeError) {
+      if (this.disposed) return;
+      this.log.warn('session-liveness-unknown', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        error: probeError,
+      });
+      fallThrough();
+      return;
+    }
+    if (this.disposed) return;
+
+    if (alive) {
+      this.log.warn('source-not-found-on-live-session', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        positionMs: this.snapshot.intent.positionMs,
+        error,
+      });
+      fallThrough();
+      return;
+    }
+
+    const requestedPositionMs = this.snapshot.intent.positionMs;
+    if (this.lastRegenerationPositionMs !== undefined
+      && Math.round(this.lastRegenerationPositionMs) === Math.round(requestedPositionMs)) {
+      this.log.error('session-regeneration-made-no-progress', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        positionMs: requestedPositionMs,
+      });
+      fallThrough();
+      return;
+    }
+
+    this.log.warn('session-reaped-regenerating', {
+      sessionId: session.sessionId,
+      endpoint: session.endpoint,
+      positionMs: requestedPositionMs,
+      paused: this.snapshot.intent.paused,
+      terminal,
+      error,
+    });
+    this.lastRegenerationPositionMs = requestedPositionMs;
+    this.patchSnapshot({ preparingSource: true, notice: undefined });
+    try {
+      const capabilities = await this.options.capabilities();
+      if (this.disposed) return;
+      const next = await this.options.resolver.regenerate!(
+        session,
+        this.options.media,
+        capabilities,
+        requestedPositionMs,
+        this.currentPreferences(session),
+      );
+      if (this.disposed) {
+        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        return;
+      }
+      this.serverSession = next;
+      // `activateSession` starts the replacement paused when the viewer is
+      // paused, which is the case this exists for: the source is swapped
+      // underneath a stopped player and pressing play just works.
+      this.activateSession(next, this.snapshot.intent.positionMs, requestedPositionMs);
+      this.log.info('session-regenerated', {
+        previousSessionId: session.sessionId,
+        sessionId: next.sessionId,
+        endpoint: next.endpoint,
+        positionMs: requestedPositionMs,
+      });
+      this.patchSnapshot({ preparingSource: false, notice: undefined });
+    } catch (regenerationError) {
+      if (this.disposed) return;
+      // The node refused fresh work. That is a claim about the node, unlike
+      // the `404` that started this, and `regenerate` has already recorded it.
+      this.log.error('session-regeneration-failed', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        error: regenerationError,
+      });
+      this.patchSnapshot({ preparingSource: false });
+      if (this.options.resolver.failover) {
+        this.beginSourceFailover(session, terminalRecoveryError(error, regenerationError));
+      } else if (terminal) {
+        this.failTerminal(terminalRecoveryError(error, regenerationError));
+      }
+    }
   }
 
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
@@ -1663,8 +1910,13 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ preparingSource: false, notice: undefined });
     } catch (failoverError) {
       if (this.disposed) return;
-      this.log.error('source-failover-exhausted', { failedSessionId: failedSession.sessionId, error: failoverError });
-      this.failTerminal(failoverError instanceof Error ? failoverError : error);
+      this.log.error('source-failover-exhausted', {
+        failedSessionId: failedSession.sessionId,
+        failedEndpoint: failedSession.endpoint,
+        originatingError: error,
+        error: failoverError,
+      });
+      this.failTerminal(terminalRecoveryError(error, failoverError));
     }
   }
 

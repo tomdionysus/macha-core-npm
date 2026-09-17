@@ -1395,8 +1395,34 @@ describe('PlaybackCoordinator player failures', () => {
 
     player.fail(new Error('node A stream failed'));
 
-    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError?.message).toContain('No untried'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
     expect(api.failover).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the failure that started the recovery, not the last node the walk tried', async () => {
+    // These name different nodes, and until 2026-09-17 the walk's last refusal
+    // was what reached the screen: a session on es-1 failed, the walk ended on
+    // fi-1, and the viewer was shown fi-1's address for a session it had never
+    // held. A day of diagnosis went to the wrong machine on the strength of it.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    const exhausted = new Error('Macha endpoint node-c failed: Failed to fetch');
+    api.failover = vi.fn(async () => { throw exhausted; });
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    const fatal = coordinator.getSnapshot().fatalError!;
+    expect(fatal.message).toBe('node A stream failed');
+    // Kept, not discarded: "and nothing else could serve it either" is the
+    // other half of what happened, and a diagnostic trail wants both.
+    expect(fatal.cause).toBe(exhausted);
+    // The originating error object itself, so a host still reads its kind.
+    expect(fatal).toBeInstanceOf(PlaybackSourceError);
+    await coordinator.close();
   });
 });
 
@@ -1743,6 +1769,166 @@ describe('a facts lookup that failed is retried, within a budget', () => {
 
     expect(coordinator.getSnapshot().instruction?.withoutFacts).toBe(true);
     expect(coordinator.getSnapshot().instruction?.factsError).toBeUndefined();
+    await coordinator.close();
+  });
+});
+
+describe('a node that reaped the session it was serving', () => {
+  // The P0 of 2026-09-17, reproduced live from the web client and again here.
+  //
+  // A viewer pauses. hls.js fills its forward buffer, hits `maxBufferLength`
+  // and stops asking for fragments, so nothing touches the session and
+  // `streaming.session_idle_ms` erases it half an hour later. The node is
+  // fine. It holds the title's pipeline and will happily issue another
+  // session. It simply does not have that one any more, and says so with a
+  // `404`.
+  //
+  // What the viewer got instead was their cache playing out, sixty-two
+  // seconds of blind retries, and a failure screen naming a node their
+  // session had never been on.
+
+  function reapedResolver(initial: PlaybackSession, replacement: PlaybackSession) {
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async () => false),
+      regenerate: vi.fn(async () => replacement),
+      failover: vi.fn(async () => replacement),
+      prepareAlternate: vi.fn(async () => undefined),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const replacement = () => session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+
+  it('asks the same node for a new generation instead of condemning it', async () => {
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+    expect(api.sessionAlive).toHaveBeenCalledWith('s1');
+    // The three things that were happening before, none of which should.
+    expect(api.failover).not.toHaveBeenCalled();
+    expect(api.prepareAlternate).not.toHaveBeenCalled();
+    expect(api.recordEndpointFailure).not.toHaveBeenCalled();
+    await coordinator.close();
+  });
+
+  it('swaps the source under a paused viewer, so pressing play just works', async () => {
+    // The whole point of catching it on the degradation channel. Measured on
+    // 2026-09-17, the first 404 arrived 3.7 seconds *before* the viewer pressed
+    // play, with 62.8 seconds of buffer still in front of them. A replacement
+    // activated inside that cover is invisible.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    coordinator.setPaused(true);
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe(replacement().source.url));
+    expect(player.playCalls.at(-1)?.startPaused).toBe(true);
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('leaves a live session alone, because then the 404 was a miss and not a reaping', async () => {
+    // Both answer `404` with the identical code `not_found`, measured against
+    // one node in one run, so the status cannot separate them and the session
+    // route has to. A fragment past the end of a live plan is not fixed by
+    // replacing the session it is already being served by.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    api.sessionAlive = vi.fn(async () => true);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+    await flush();
+    expect(api.regenerate).not.toHaveBeenCalled();
+    expect(api.failover).not.toHaveBeenCalled();
+    await coordinator.close();
+  });
+
+  it('does not read a probe it could not complete as a session that is gone', async () => {
+    // "I could not find out" and "it is gone" are different answers, and
+    // acting on the second when you have the first tears down a live session
+    // because a node was briefly unreachable.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    api.sessionAlive = vi.fn(async () => { throw new Error('Failed to fetch'); });
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+    await flush();
+    expect(api.regenerate).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('stops regenerating when regenerating changed nothing', async () => {
+    // A `404` can also mean a fragment no plan will ever contain. Left
+    // unbounded, that regenerates, asks again, regenerates, for as long as the
+    // viewer sits there. Arriving twice at the same position is the proof that
+    // the last replacement did not help, and the next step has to differ.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(notFound());
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+    player.fail(notFound());
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+    expect(api.regenerate).toHaveBeenCalledTimes(1);
+    await coordinator.close();
+  });
+
+  it('recovers from the fatal channel too, for an adapter with no early warning', async () => {
+    // Not every player reports degradation, and the cover can run out before
+    // recovery finishes. Same question, same answer, and still not a reason to
+    // condemn the node.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(notFound());
+
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+    expect(api.failover).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('falls over to another node when the same one refuses fresh work', async () => {
+    // A node that will not issue a new session is making a claim about itself,
+    // unlike the `404` that started this, and that one is ordinary evidence.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    api.regenerate = vi.fn(async () => { throw new Error('Macha endpoint node-a failed: 503'); });
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+
+    player.fail(notFound());
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
     await coordinator.close();
   });
 });
