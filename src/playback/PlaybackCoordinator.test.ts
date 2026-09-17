@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PlaybackSourceError, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
+import { PlaybackSourceError, type PlaybackTransition, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
 import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
@@ -15,7 +15,7 @@ class FakePlayer implements Player {
   listener?: PlaybackListener;
   failureListener?: PlaybackFailureListener;
   degradationListener?: PlaybackDegradationListener;
-  playCalls: Array<{ source: PlaybackSource; positionMs: number; startPaused: boolean }> = [];
+  playCalls: Array<{ source: PlaybackSource; positionMs: number; startPaused: boolean; transition?: PlaybackTransition }> = [];
   seekCalls: number[] = [];
   pauseCalls = 0;
   resumeCalls = 0;
@@ -29,8 +29,8 @@ class FakePlayer implements Player {
 
   attach(): void {}
   detach(): void { this.detachCalls += 1; }
-  play(source: PlaybackSource, positionMs = 0, startPaused = false): Promise<boolean> {
-    this.playCalls.push({ source, positionMs, startPaused });
+  play(source: PlaybackSource, positionMs = 0, startPaused = false, transition?: PlaybackTransition): Promise<boolean> {
+    this.playCalls.push({ source, positionMs, startPaused, transition });
     return this.playResult;
   }
   pause(): void { this.pauseCalls += 1; }
@@ -317,7 +317,7 @@ describe('PlaybackCoordinator transport invariants', () => {
     await coordinator.start();
     expect(api.resolve).toHaveBeenCalledTimes(1);
     expect(api.update).not.toHaveBeenCalled();
-    expect(player.playCalls).toEqual([{ source: aligned.source, positionMs: 0, startPaused: false }]);
+    expect(player.playCalls).toEqual([{ source: aligned.source, positionMs: 0, startPaused: false, transition: 'relocate' }]);
   });
 
   it('does not wait for media play readiness before startup orchestration completes', async () => {
@@ -2011,7 +2011,7 @@ describe('a host that keeps the old source playing while it prepares the new one
     const player = new FakePlayer();
     const outgoing = session({ sessionId: 's1', mode: 'transcode', seekMs: 100_000 });
     const incoming = session({
-      sessionId: 's2', mode: 'transcode', seekMs: 400_000,
+      sessionId: 's2', mode: 'transcode', seekMs: 150_000,
       source: {
         mediaId: 'm1', url: '/generation-incoming.m3u8', mimeType: 'application/vnd.apple.mpegurl',
         isManifest: true, mode: 'transcode', durationMs: 600_000,
@@ -2022,7 +2022,10 @@ describe('a host that keeps the old source playing while it prepares the new one
       media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 100_000,
     });
     await coordinator.start();
-    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    // The viewer has watched 50 s of the outgoing generation.
+    player.emit({ positionMs: 49_800, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 50_000, durationMs: 600_000, paused: false, ended: false });
+    await flush();
 
     // Hold the cut open, exactly as a real handover does.
     const cut = deferred<boolean>();
@@ -2032,16 +2035,19 @@ describe('a host that keeps the old source playing while it prepares the new one
 
     // Mid-handover: the outgoing element reports 20 s into its own generation.
     player.emit({
-      positionMs: 20_000, durationMs: 600_000, paused: false, ended: false,
+      positionMs: 60_000, durationMs: 600_000, paused: false, ended: false,
       bufferedRangesMs: [{ startMs: 0, endMs: 120_000 }],
     });
     await flush();
 
     // Described through the generation actually playing — 100 s origin, not
     // 400 s. Mapping through the incoming origin would put both 300 s out.
+    // Described through the generation actually playing — 100 s origin, not the
+    // incoming 150 s. Mapping through the incoming origin would put both 50 s out.
     const during = coordinator.getSnapshot();
-    expect(during.event.positionMs).toBe(120_000);
+    expect(during.event.positionMs).toBe(160_000);
     expect(during.event.bufferedRangesMs?.[0]).toEqual({ startMs: 100_000, endMs: 220_000 });
+    expect(during.session?.sessionId).toBe('s1');
 
     // The host cuts.
     cut.resolve(true);
@@ -2050,7 +2056,7 @@ describe('a host that keeps the old source playing while it prepares the new one
     player.emit({ positionMs: 5_000, durationMs: 600_000, paused: false, ended: false });
     player.emit({ positionMs: 7_000, durationMs: 600_000, paused: false, ended: false });
     await flush();
-    expect(coordinator.getSnapshot().event.positionMs).toBe(407_000);
+    expect(coordinator.getSnapshot().event.positionMs).toBe(157_000);
     await coordinator.close();
   });
 });
@@ -2449,16 +2455,56 @@ describe('replacing a reaped source without making the viewer wait', () => {
     await coordinator.close();
   });
 
+  it('renegotiates rather than silently skipping content the node overshot by', async () => {
+    // Measured: a generation asked for at 908.8 s came back starting at
+    // 918.1 s. Core accepted it at its own origin — the old rule accepted *any*
+    // overshoot so long as the viewer had not moved since the request, which is
+    // exactly the case during a recovery — and 9.3 s of the film was gone. The
+    // viewer saw the cursor flick back and the picture jump forward.
+    //
+    // More than two segments is not keyframe alignment. A second round trip is
+    // the right price for content nobody gets back.
+    const player = new FakePlayer();
+    const overshot = session({
+      sessionId: 's2', mode: 'transcode', seekMs: 15_300,
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      source: {
+        mediaId: 'm1', url: '/generation-overshot.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+        isManifest: true, mode: 'transcode', durationMs: 600_000,
+      },
+    });
+    const api = reapedResolver(onNodeA(), overshot);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 5_800, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 1_000 });
+    player.emit({ positionMs: 6_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 1_000 });
+    await flush();
+
+    player.degrade(notFound());
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await flush();
+
+    // The overshooting generation is never put in front of the viewer, and a
+    // fresh one is negotiated at the position they are actually at.
+    expect(player.playCalls.some((call) => call.source.url === '/generation-overshot.m3u8')).toBe(false);
+    await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
+    expect(api.update.mock.calls.at(-1)?.[1].seekMs).toBe(6_000);
+    await coordinator.close();
+  });
+
   it('leads by the measured cost of replacing a source, inside what a node produces ahead', () => {
-    // Measured against es-1: 3.8 s to negotiate a session, because the node
-    // blocks on the first fragment inside the 201, plus 9.5 s for a host to get
-    // the join point resident before it can cut to it. 13.3 s, so the lead
-    // carries half as much again for a slower link.
+    // Measured: ~4 s to negotiate a session, because the node blocks on the
+    // first fragment inside the 201, plus up to 16 s for a host to get the join
+    // point resident before it can cut to it. The preparation figure tracks the
+    // node rather than the mechanism — 1.0 s, 14.5 s and 16.0 s across one
+    // evening — so the lead is built on the worst observed, not the first.
     //
     // Bounded above by the node's look-ahead, and that bound is what makes
     // leading long safe at all: inside it the join is already produced, past it
     // the encoder runs forward sequentially to reach the viewer.
-    const MEASURED_REPLACEMENT_COST_MS = 13_300;
+    const MEASURED_REPLACEMENT_COST_MS = 20_000;
     const CONSERVATIVE_LOOK_AHEAD_MS = 32_000;
     expect(REPLACEMENT_LEAD_TIME_MS).toBeGreaterThan(MEASURED_REPLACEMENT_COST_MS);
     expect(REPLACEMENT_LEAD_TIME_MS).toBeLessThan(CONSERVATIVE_LOOK_AHEAD_MS - LOOK_AHEAD_MARGIN_MS);
@@ -2488,7 +2534,9 @@ describe('replacing a reaped source without making the viewer wait', () => {
       media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
     });
     await coordinator.start();
+    player.emit({ positionMs: 5_800, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 1_000 });
     player.emit({ positionMs: 6_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 1_000 });
+    await flush();
 
     player.degrade(notFound());
     await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));

@@ -1,5 +1,5 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
-import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type Player } from '../platform/Platform.js';
+import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import type {
   PlaybackPreferencesUpdate,
@@ -221,7 +221,11 @@ const REGENERATION_PROGRESS_MS = 1_000;
  *   *resident* before it can cut to it, and at full quality over a WAN link
  *   that is megabytes. Aligning and cutting were 0.5 s of the 9.5.
  *
- * 13.3 s measured, so this leads by half as much again for a slower link.
+ * 13.3 s when first measured — but the host preparation figure is dominated by
+ * the join fetch and that tracks the *node*, not the mechanism. Three handovers
+ * on one evening: 1.0 s, 14.5 s and 16.0 s, the fast one on a different node
+ * from the two slow ones. So the lead is built on the worst observed rather
+ * than the first: ~4 s to negotiate plus ~16 s to prepare, and margin.
  *
  * **Bounded above by `look_ahead_ms`, and the bound is what makes leading long
  * safe.** A generation is created at the position the viewer will reach, so a
@@ -237,7 +241,7 @@ const REGENERATION_PROGRESS_MS = 1_000;
  * under-leading is a gap in front of a viewer. **Long, capped, is now the safe
  * direction** — and 10 s was wrong because it was chosen under the old bias.
  */
-export const REPLACEMENT_LEAD_TIME_MS = 20_000;
+export const REPLACEMENT_LEAD_TIME_MS = 26_000;
 
 /**
  * How far inside a node's stated look-ahead the arrival point is kept.
@@ -254,17 +258,23 @@ const UNCACHED_SEEK_DEBOUNCE_MS = 300;
  * How far ahead of the viewer a freshly negotiated generation may begin and
  * still be attached at its own origin rather than renegotiated.
  *
- * This is keyframe alignment, not viewer intent. A node asked for a generation
- * at X starts it at the next keyframe, which is up to one segment later — 4 s
- * on the measured nodes, and the segment length is not something a client can
- * read. Sized above that with slack rather than derived, because the quantity
- * it has to exceed is the one number in this area still not on the wire.
+ * This is keyframe alignment, not viewer intent, and it is bounded at **one
+ * segment** — 4 s on the measured nodes — because that is the furthest a
+ * keyframe can be. A shipped test pins a 3 s alignment as acceptable, so
+ * anything much tighter renegotiates on ordinary server behaviour. Anything the viewer would notice
+ * as a jump rather than a seam is not alignment and must be renegotiated: a
+ * node that answered a request for 908.8 s with a generation starting at
+ * 918.1 s was overshooting by more than two segments, and accepting that threw
+ * away 9.3 s of the film.
+ *
+ * Sized under the segment length rather than derived from it, because the
+ * segment length is the one number in this area still not on the wire.
  *
  * **The alternative is not a smaller jump, it is a second generation.** That
  * was measured at 6.21 s of frozen picture against a forward skip of under a
  * segment, which no viewer would choose.
  */
-const GENERATION_ALIGNMENT_TOLERANCE_MS = 5_000;
+const GENERATION_ALIGNMENT_TOLERANCE_MS = 4_000;
 
 /**
  * How long a player may report nothing, while a replacement is pending and the
@@ -874,7 +884,7 @@ export class PlaybackCoordinator {
 
       const currentDesired = this.snapshot.intent.positionMs;
       const userMovedDuringResolve = requestedPositionRevision !== this.positionRevision;
-      if (userMovedDuringResolve && this.activationPosition(session, currentDesired, requestedPositionMs) === undefined) {
+      if (userMovedDuringResolve && this.activationPosition(session, currentDesired) === undefined) {
         this.scheduleSeekMutation({
           reason: 'seek',
           update: {
@@ -886,7 +896,7 @@ export class PlaybackCoordinator {
         // A transformed server may keyframe-align the requested generation after
         // the exact requested point. When this is the generation we explicitly
         // requested, accept that alignment rather than creating a retry loop.
-        this.activateSession(session, currentDesired, requestedPositionMs);
+        this.activateSession(session, currentDesired, 'relocate');
       }
     } catch (error) {
       this.fail(error);
@@ -1065,7 +1075,6 @@ export class PlaybackCoordinator {
   private activationPosition(
     session: PlaybackSession,
     desiredAbsoluteMs: number,
-    preparedAbsoluteMs: number,
   ): number | undefined {
     const localPositionMs = generationLocalPosition(session, desiredAbsoluteMs);
     if (localPositionMs !== undefined) return localPositionMs;
@@ -1093,7 +1102,19 @@ export class PlaybackCoordinator {
     // them.
     const startsAheadBy = Math.max(0, session.seekMs) - desiredAbsoluteMs;
     if (startsAheadBy >= 0 && startsAheadBy <= GENERATION_ALIGNMENT_TOLERANCE_MS) return 0;
-    return Math.round(preparedAbsoluteMs) === Math.round(desiredAbsoluteMs) ? 0 : undefined;
+    // **Beyond that it is not alignment, it is lost content**, and accepting it
+    // silently discards however much the node overshot by. The old rule here
+    // accepted *any* overshoot so long as the viewer had not moved since the
+    // request — which is exactly the case during a recovery. Measured: a
+    // generation asked for at 908.8 s came back starting at 918.1 s, was
+    // accepted at its own origin, and 9.3 s of the film was gone. The viewer
+    // saw the cursor flick back and the picture jump forward.
+    //
+    // Renegotiating costs a second round trip, which is the fault the
+    // tolerance above exists to avoid. That is the right trade at a keyframe's
+    // distance and the wrong one at nine seconds: a seam nobody notices versus
+    // content nobody gets back.
+    return undefined;
   }
 
   update(update: PlaybackUpdate): void {
@@ -1282,7 +1303,7 @@ export class PlaybackCoordinator {
 
         const currentDesired = this.snapshot.intent.positionMs;
         const userMovedDuringRequest = requestedPositionRevision !== this.positionRevision;
-        if (userMovedDuringRequest && this.activationPosition(next, currentDesired, requestedPositionMs) === undefined) {
+        if (userMovedDuringRequest && this.activationPosition(next, currentDesired) === undefined) {
           this.scheduleSeekMutation({
             reason: 'seek',
             update: {
@@ -1303,7 +1324,7 @@ export class PlaybackCoordinator {
           continue;
         }
 
-        this.activateSession(next, currentDesired, requestedPositionMs);
+        this.activateSession(next, currentDesired, pending.reason === 'seek' ? 'relocate' : 'continue');
         if (!this.disposed) this.patchSnapshot({ notice: undefined });
       } catch (error) {
         if (this.disposed) return;
@@ -1330,7 +1351,7 @@ export class PlaybackCoordinator {
     }
   }
 
-  private activateSession(session: PlaybackSession, desiredAbsoluteMs: number, preparedAbsoluteMs: number): void {
+  private activateSession(session: PlaybackSession, desiredAbsoluteMs: number, transition: PlaybackTransition): void {
     if (this.disposed) return;
     // Catalogue profiling may already have prepared the reusable player. The
     // session supplies the same facts authoritatively and completes that setup
@@ -1338,7 +1359,7 @@ export class PlaybackCoordinator {
     this.options.player.prepare?.(technicalProfileFromSession(session));
     const activationRevision = ++this.sourceActivationRevision;
     this.releaseObsoleteAlternates(session.sessionId);
-    const localPositionMs = this.activationPosition(session, desiredAbsoluteMs, preparedAbsoluteMs);
+    const localPositionMs = this.activationPosition(session, desiredAbsoluteMs);
 
     if (localPositionMs === undefined) {
       // The user moved behind the generation while it was being prepared. This
@@ -1435,7 +1456,7 @@ export class PlaybackCoordinator {
       paused: startPaused,
     });
 
-    void this.options.player.play(session.source, localPositionMs, startPaused).then((started) => {
+    void this.options.player.play(session.source, localPositionMs, startPaused, transition).then((started) => {
       if (this.disposed || activationRevision !== this.sourceActivationRevision) return;
       present();
       // User intent may have changed while the source was attaching. Reconcile
@@ -1609,7 +1630,7 @@ export class PlaybackCoordinator {
     // pick it back up as an apparently untried candidate.
     if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
     const desiredMs = this.snapshot.intent.positionMs;
-    this.activateSession(alternate, desiredMs, alternate.seekMs);
+    this.activateSession(alternate, desiredMs, 'continue');
     // Closed now rather than after buffered evidence on the replacement: the
     // standby was promoted because the primary stopped serving, so there is
     // nothing to fall back to and no reason to hold the slot. Fire and
@@ -2287,7 +2308,7 @@ export class PlaybackCoordinator {
       this.serverSession = next;
       // Starts paused when the viewer is paused, so a source swapped in under
       // a stopped player simply works when they press play.
-      this.activateSession(next, this.snapshot.intent.positionMs, requestedPositionMs);
+      this.activateSession(next, this.snapshot.intent.positionMs, 'continue');
       this.patchSnapshot({ preparingSource: false, notice: undefined });
     } catch (regenerationError) {
       if (this.disposed) return;
@@ -2347,13 +2368,13 @@ export class PlaybackCoordinator {
       this.alternateExpiryTimers.delete(next.sessionId);
       const currentDesired = this.snapshot.intent.positionMs;
       const userMovedDuringRequest = requestedPositionRevision !== this.positionRevision;
-      if (userMovedDuringRequest && this.activationPosition(next, currentDesired, requestedPositionMs) === undefined) {
+      if (userMovedDuringRequest && this.activationPosition(next, currentDesired) === undefined) {
         this.queueMutation({
           reason: 'seek',
           update: { seekMs: currentDesired, preferences: preservedSeekPreferences(next) },
         });
       } else {
-        this.activateSession(next, currentDesired, requestedPositionMs);
+        this.activateSession(next, currentDesired, 'continue');
       }
       // The failed session is not closed here. `resolver.failover()` released
       // it as it abandoned it, which is the only layer every client passes

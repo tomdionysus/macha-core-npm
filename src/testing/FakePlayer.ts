@@ -1,4 +1,5 @@
 import type {
+  PlaybackTransition,
   Player,
   PlaybackDegradationListener,
   PlaybackFailureListener,
@@ -10,6 +11,7 @@ export interface FakePlayerPlayCall {
   source: PlaybackSource;
   positionMs: number;
   startPaused: boolean;
+  transition?: PlaybackTransition;
 }
 
 /**
@@ -54,8 +56,8 @@ export class FakePlayer implements Player {
   attach(): void { this.attachCalls += 1; }
   detachHost(): void { this.detachHostCalls += 1; }
   detach(): void { this.detachCalls += 1; }
-  play(source: PlaybackSource, positionMs = 0, startPaused = false): Promise<boolean> {
-    this.playCalls.push({ source, positionMs, startPaused });
+  play(source: PlaybackSource, positionMs = 0, startPaused = false, transition?: PlaybackTransition): Promise<boolean> {
+    this.playCalls.push({ source, positionMs, startPaused, transition });
     return this.playResult;
   }
   prepare(profile: MediaTechnicalProfile): void { this.prepareCalls.push(profile); }
