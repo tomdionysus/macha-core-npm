@@ -2143,12 +2143,63 @@ describe('replacing a reaped source without making the viewer wait', () => {
     });
 
     player.fail(notFound());
-    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await flush();
 
     expect(api.sessionAlive).not.toHaveBeenCalled();
     expect(api.failover).not.toHaveBeenCalled();
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
     await coordinator.close();
+  });
+
+  it('does not spend the viewer\'s media because the player gave up first', async () => {
+    // The channel must not decide this. hls concedes about 28 s into a dead
+    // source, against a lead of 10 — so a rule that built on any fatal would
+    // build every time and the deferral would never once happen.
+    //
+    // It is only safe because an adapter reporting `not-found` leaves the
+    // element alone, so a fatal now arrives with the buffer intact. That is
+    // the obligation written on `Player.subscribeFailure`.
+    const { player, api, coordinator } = await pending();
+
+    player.fail(notFound());
+    await flush();
+
+    expect(api.regenerate).not.toHaveBeenCalled();
+    expect(player.playCalls).toHaveLength(1);
+
+    // And the stall, when the media really does run out, is what builds it.
+    player.emit(playing(0, { buffering: true }));
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+    await coordinator.close();
+  });
+
+  it('resolves a pending replacement even if no further event ever arrives', async () => {
+    // Core is now the only thing that ends this playback: the client stops
+    // tearing down its presentation on `not-found`, so nothing else will. A
+    // recovery that waits on an event is a recovery that hangs when one does
+    // not come, and the cost of being wrong is a viewer watching a frozen
+    // picture with nothing on the way.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      const coordinator = new PlaybackCoordinator({
+        media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      });
+      await coordinator.start();
+      player.emit(playing(ampleRunway));
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(0);
+      expect(api.regenerate).not.toHaveBeenCalled();
+
+      // Not one further player event, ever.
+      await vi.advanceTimersByTimeAsync(ampleRunway);
+
+      expect(api.regenerate).toHaveBeenCalledTimes(1);
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('lets the dead source go on complaining without building three times', async () => {

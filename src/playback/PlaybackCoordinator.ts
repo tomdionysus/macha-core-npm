@@ -604,6 +604,7 @@ export class PlaybackCoordinator {
    * source actually playing.
    */
   private pendingReplacement?: PlaybackSession;
+  private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
 
   private snapshot: PlaybackCoordinatorSnapshot;
 
@@ -892,6 +893,8 @@ export class PlaybackCoordinator {
     // leaves DOM-host ownership to PlaybackRuntime/PlayerHost.
     this.options.player.stop();
     const ownedAtClose = this.serverSession ?? this.snapshot.session;
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
     // Only a decision, never a session — see `discardPendingReplacement`. The
     // shape this replaced had a live generation here holding the node's only
     // transcode slot, which had to be closed explicitly or leaked for thirty
@@ -1856,7 +1859,13 @@ export class PlaybackCoordinator {
         runwayMs: this.runwayMs(),
         error: fatalError,
       });
-      void this.buildReplacement(this.pendingReplacement, 'source-failed');
+      // Same rule as above: a failure from a source already given up on is not
+      // a reason to spend the viewer's remaining media. Build only if there is
+      // none left to spend.
+      const pendingSession = this.pendingReplacement;
+      const runwayMs = this.runwayMs();
+      if (runwayMs > this.leadTimeMs(pendingSession)) return;
+      void this.buildReplacement(pendingSession, 'source-failed');
       return;
     }
     if (this.regenerationPromise) {
@@ -2037,9 +2046,19 @@ export class PlaybackCoordinator {
       terminal,
       error,
     });
-    if (!terminal && runwayMs > leadTimeMs) {
-      this.pendingReplacement = session;
-      this.patchSnapshot({ preparingSource: false, notice: undefined });
+    // **The channel does not decide this; the runway does.** An earlier
+    // version deferred only on the degradation channel, because a fatal used
+    // to mean the presentation had already been torn down and there was
+    // nothing left to play out. Under the `not-found` contract on
+    // `Player.subscribeFailure` that is no longer true: an adapter reporting
+    // this kind leaves the element alone, so a fatal arrives with the viewer's
+    // buffer intact and is worth deferring for exactly like any other notice.
+    //
+    // Left as it was, a player that concedes before the lead is reached — hls
+    // gives up around 28 s, against a lead of 10 — would force an immediate
+    // build every time and the deferral would never happen at all.
+    if (runwayMs > leadTimeMs) {
+      this.startPendingReplacement(session, runwayMs, leadTimeMs);
       return;
     }
     await this.buildReplacement(session, terminal ? 'no-cover' : 'lead-time-reached', error);
@@ -2061,6 +2080,8 @@ export class PlaybackCoordinator {
    */
   private async buildReplacement(dead: PlaybackSession, reason: string, originating?: Error): Promise<void> {
     this.pendingReplacement = undefined;
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
     const requestedPositionMs = this.snapshot.intent.positionMs;
     if (this.lastRegenerationPositionMs !== undefined
       && Math.round(this.lastRegenerationPositionMs) === Math.round(requestedPositionMs)) {
@@ -2304,7 +2325,41 @@ export class PlaybackCoordinator {
    * created until it is nearly needed now, so there is no session to close and
    * no slot to leak — only a decision to forget.
    */
+  /**
+   * Record that this source must be replaced, and guarantee it will be.
+   *
+   * **The timer is not the mechanism, it is the proof that there is one.**
+   * Player events normally decide: the runway falls to the lead, or the
+   * element reports it is buffering, or it ends short. All three are ordinary
+   * and all three arrive first. But the client that reports `not-found` no
+   * longer tears its presentation down, which means core is now the only thing
+   * that will ever end this playback — and a recovery that depends on an event
+   * arriving is a recovery that hangs when one does not.
+   *
+   * So the wait is bounded by what the viewer actually has. Worst case it
+   * fires early against a paused viewer and builds a generation sooner than
+   * needed, which costs a session; the alternative costs a viewer staring at a
+   * frozen picture with nothing coming.
+   */
+  private startPendingReplacement(session: PlaybackSession, runwayMs: number, leadTimeMs: number): void {
+    this.pendingReplacement = session;
+    this.patchSnapshot({ preparingSource: false, notice: undefined });
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = setTimeout(() => {
+      this.pendingReplacementTimer = undefined;
+      const pending = this.pendingReplacement;
+      if (!pending || this.disposed) return;
+      this.log.warn('pending-replacement-deadline', {
+        sessionId: pending.sessionId,
+        runwayMs: this.runwayMs(),
+      });
+      void this.buildReplacement(pending, 'deadline');
+    }, Math.max(0, runwayMs - leadTimeMs));
+  }
+
   private discardPendingReplacement(reason: string): void {
+    if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
     const pending = this.pendingReplacement;
     if (!pending) return;
     this.pendingReplacement = undefined;
