@@ -254,27 +254,6 @@ export const REPLACEMENT_LEAD_TIME_MS = 26_000;
 export const LOOK_AHEAD_MARGIN_MS = 4_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
-/**
- * How far ahead of the viewer a freshly negotiated generation may begin and
- * still be attached at its own origin rather than renegotiated.
- *
- * This is keyframe alignment, not viewer intent, and it is bounded at **one
- * segment** — 4 s on the measured nodes — because that is the furthest a
- * keyframe can be. A shipped test pins a 3 s alignment as acceptable, so
- * anything much tighter renegotiates on ordinary server behaviour. Anything the viewer would notice
- * as a jump rather than a seam is not alignment and must be renegotiated: a
- * node that answered a request for 908.8 s with a generation starting at
- * 918.1 s was overshooting by more than two segments, and accepting that threw
- * away 9.3 s of the film.
- *
- * Sized under the segment length rather than derived from it, because the
- * segment length is the one number in this area still not on the wire.
- *
- * **The alternative is not a smaller jump, it is a second generation.** That
- * was measured at 6.21 s of frozen picture against a forward skip of under a
- * segment, which no viewer would choose.
- */
-const GENERATION_ALIGNMENT_TOLERANCE_MS = 4_000;
 
 /**
  * How long a player may report nothing, while a replacement is pending and the
@@ -1100,21 +1079,24 @@ export class PlaybackCoordinator {
     // viewer who moves behind a generation by more than one alignment step
     // means it, and skipping to the generation's origin would silently ignore
     // them.
-    const startsAheadBy = Math.max(0, session.seekMs) - desiredAbsoluteMs;
-    if (startsAheadBy >= 0 && startsAheadBy <= GENERATION_ALIGNMENT_TOLERANCE_MS) return 0;
-    // **Beyond that it is not alignment, it is lost content**, and accepting it
-    // silently discards however much the node overshot by. The old rule here
-    // accepted *any* overshoot so long as the viewer had not moved since the
-    // request — which is exactly the case during a recovery. Measured: a
-    // generation asked for at 908.8 s came back starting at 918.1 s, was
-    // accepted at its own origin, and 9.3 s of the film was gone. The viewer
-    // saw the cursor flick back and the picture jump forward.
+    // The generation starts *ahead* of where the viewer is, so there is no
+    // position inside it that corresponds to where they were. Its own origin
+    // is the earliest thing it can offer, and that is what they get.
     //
-    // Renegotiating costs a second round trip, which is the fault the
-    // tolerance above exists to avoid. That is the right trade at a keyframe's
-    // distance and the wrong one at nine seconds: a seam nobody notices versus
-    // content nobody gets back.
-    return undefined;
+    // **Accepted at any distance, and rejecting is not available.** A bound
+    // here was tried and livelocked: a node's alignment is deterministic, so
+    // asking again for the same position returns the same generation, for ever.
+    // Measured — 147 negotiations in 33.3 s, every `serverSeekMs` identical,
+    // nothing ever activated, the viewer's seek never happened and the node
+    // took four requests a second for its trouble. Rejecting cannot converge
+    // when the answer does not change.
+    //
+    // So the overshoot is the server's to fix and cannot be corrected here.
+    // What core owes is not to *lie* about it: the position reported is this
+    // generation's real origin, not the position that was asked for, so a
+    // viewer who lands 8.9 s late sees that they did rather than losing 8.9 s
+    // of film invisibly.
+    return 0;
   }
 
   update(update: PlaybackUpdate): void {

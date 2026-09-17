@@ -2455,15 +2455,16 @@ describe('replacing a reaped source without making the viewer wait', () => {
     await coordinator.close();
   });
 
-  it('renegotiates rather than silently skipping content the node overshot by', async () => {
-    // Measured: a generation asked for at 908.8 s came back starting at
-    // 918.1 s. Core accepted it at its own origin — the old rule accepted *any*
-    // overshoot so long as the viewer had not moved since the request, which is
-    // exactly the case during a recovery — and 9.3 s of the film was gone. The
-    // viewer saw the cursor flick back and the picture jump forward.
+  it('accepts a generation the node started ahead, because asking again returns the same one', async () => {
+    // A bound here was tried and livelocked. A node's alignment is
+    // deterministic: asked for 2926000 it returned 2934933, and returned it
+    // again every time it was asked. Measured — 147 negotiations in 33.3 s,
+    // every `serverSeekMs` identical, nothing ever activated, the viewer's seek
+    // never happened, and the node took four requests a second throughout.
     //
-    // More than two segments is not keyframe alignment. A second round trip is
-    // the right price for content nobody gets back.
+    // Rejecting cannot converge when the answer does not change. The overshoot
+    // is the server's to fix; what core owes is to attach *something* and to
+    // report where the viewer actually landed rather than where they asked to.
     const player = new FakePlayer();
     const overshot = session({
       sessionId: 's2', mode: 'transcode', seekMs: 15_300,
@@ -2483,14 +2484,15 @@ describe('replacing a reaped source without making the viewer wait', () => {
     await flush();
 
     player.degrade(notFound());
-    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
     await flush();
 
-    // The overshooting generation is never put in front of the viewer, and a
-    // fresh one is negotiated at the position they are actually at.
-    expect(player.playCalls.some((call) => call.source.url === '/generation-overshot.m3u8')).toBe(false);
-    await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
-    expect(api.update.mock.calls.at(-1)?.[1].seekMs).toBe(6_000);
+    // Attached, once, and never renegotiated.
+    expect(player.playCalls.at(-1)?.source.url).toBe('/generation-overshot.m3u8');
+    expect(api.update).not.toHaveBeenCalled();
+    // Reported where they landed — the generation's origin — not where they
+    // asked to be. Claiming the latter is what made the skip invisible.
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(15_300);
     await coordinator.close();
   });
 
