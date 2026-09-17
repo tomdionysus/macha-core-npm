@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
 import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
+import { equivalentDirectSources, generationLocalPosition, HELD_REPLACEMENT_SWAP_FLOOR_MS, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
+import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1802,7 +1803,15 @@ describe('a node that reaped the session it was serving', () => {
   }
 
   const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
-  const replacement = () => session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const replacement = () => session({
+    sessionId: 's2',
+    mode: 'transcode',
+    endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    source: {
+      mediaId: 'm1', url: '/generation-replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
   const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
 
   it('asks the same node for a new generation instead of condemning it', async () => {
@@ -1859,6 +1868,57 @@ describe('a node that reaped the session it was serving', () => {
     await flush();
     expect(api.regenerate).not.toHaveBeenCalled();
     expect(api.failover).not.toHaveBeenCalled();
+    // And no standby either. The node is cleared, so building one is the churn
+    // `not-found` exists to stop — this is the case that must *not* fall back
+    // into ordinary degradation handling.
+    expect(api.prepareAlternate).not.toHaveBeenCalled();
+    await coordinator.close();
+  });
+
+  it('builds a standby when it cannot find out, rather than swallowing the warning', async () => {
+    // The node went away between answering the 404 and being asked about it.
+    // Core does not know its state, the source may still be playing, and this
+    // is exactly the evidence the standby machinery exists for.
+    //
+    // The first version of the fix returned here, which made the degradation
+    // channel *worse* than before `not-found` existed: the same evidence used
+    // to arrive as `stream` and build a rescue. Swallowing it left the viewer
+    // waiting for the fatal with nothing being prepared.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    api.sessionAlive = vi.fn(async () => { throw new Error('Failed to fetch'); });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+    // Still not a failover, and still nothing charged: not knowing is not
+    // evidence that the node is bad.
+    expect(api.failover).not.toHaveBeenCalled();
+    expect(api.recordEndpointFailure).not.toHaveBeenCalled();
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('fails over when it cannot find out and there is no cover left', async () => {
+    // Same unresolved answer arriving on the fatal channel instead. There is
+    // nothing still playing to protect, so a standby is no longer the useful
+    // move and failover is the remaining option.
+    const player = new FakePlayer();
+    const api = reapedResolver(onNodeA(), replacement());
+    api.sessionAlive = vi.fn(async () => { throw new Error('Failed to fetch'); });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+
+    player.fail(notFound());
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+    expect(api.regenerate).not.toHaveBeenCalled();
     await coordinator.close();
   });
 
@@ -1930,5 +1990,231 @@ describe('a node that reaped the session it was serving', () => {
 
     await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
     await coordinator.close();
+  });
+});
+
+describe('holding a replacement while the buffer plays out', () => {
+  // Measured against es-1, 2026-09-17: the viewer had 62.1 s of playable video
+  // buffered when core swapped the source in, and the element went emptied ->
+  // waiting -> playing over 5.16 s. The 3.44 s spent noticing and regenerating
+  // was free because it came out of that buffer; the swap threw the rest away
+  // one step before it was used.
+  //
+  // Tom's call, and the reasoning is about who pays: the session holds the
+  // node's only video transcode slot for as long as it is held, and the viewer
+  // it is held for is the same viewer who would otherwise be using it. Nobody
+  // else is kept out of anything.
+
+  function heldResolver(initial: PlaybackSession, replacement: PlaybackSession) {
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async () => false),
+      regenerate: vi.fn(async () => replacement),
+      failover: vi.fn(async () => replacement),
+      prepareAlternate: vi.fn(async () => undefined),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const replacement = () => session({
+    sessionId: 's2',
+    mode: 'transcode',
+    endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    source: {
+      mediaId: 'm1', url: '/generation-replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
+  const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+  const playing = (forwardBufferMs: number) => ({
+    positionMs: 0, durationMs: 600_000, paused: false, ended: false, forwardBufferMs,
+  });
+
+  async function held() {
+    const player = new FakePlayer();
+    const api = heldResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit(playing(60_000));
+    player.degrade(notFound());
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await flush();
+    // The precondition every test below rests on: built, and not attached.
+    // Asserted here so a regression to attaching-on-ready fails all of them
+    // rather than quietly satisfying the ones that only count upwards.
+    expect(player.playCalls).toHaveLength(1);
+    return { player, api, coordinator };
+  }
+
+  it('does not empty a full buffer the moment the replacement is ready', async () => {
+    const { player, api, coordinator } = await held();
+
+    // Built, and deliberately not attached: one `play()` call, the original.
+    expect(api.regenerate).toHaveBeenCalledTimes(1);
+    expect(player.playCalls).toHaveLength(1);
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('swaps it in once the runway is nearly spent', async () => {
+    const { player, coordinator } = await held();
+
+    player.emit(playing(5_000));
+    await flush();
+
+    expect(player.playCalls).toHaveLength(2);
+    expect(player.playCalls.at(-1)?.source.url).toBe('/generation-replacement.m3u8');
+    await coordinator.close();
+  });
+
+  it('swaps it in the moment the viewer is actually waiting, whatever the arithmetic said', async () => {
+    // The runway figure can be wrong or stale. Once the element reports it is
+    // buffering the viewer is already stalled, so there is nothing left to
+    // protect by holding.
+    const { player, coordinator } = await held();
+
+    player.emit({ ...playing(40_000), buffering: true });
+    await flush();
+
+    expect(player.playCalls).toHaveLength(2);
+    await coordinator.close();
+  });
+
+  it('closes a replacement it never used, rather than leaving a transcode slot held', async () => {
+    // The one thing holding the slot obliges. `serverSession` still names the
+    // source that was playing, so nothing else in teardown knows this exists —
+    // and an unclosed session keeps the node's only video transcode slot until
+    // `session_idle`, thirty minutes later.
+    const { player, api, coordinator } = await held();
+
+    await coordinator.close();
+
+    expect(player.playCalls).toHaveLength(1);
+    expect(api.stop).toHaveBeenCalledWith('s2', expect.anything());
+  });
+
+  it('swaps it in on a seek rather than abandoning it', async () => {
+    // A seek discards the buffered runway anyway, so the thing the hold was
+    // protecting is already gone. It also has to happen *before* the seek: until
+    // the swap, the coordinator still names the session the node reaped, and the
+    // seek would PATCH a session that answers 404.
+    const { player, api, coordinator } = await held();
+
+    coordinator.seek(120_000);
+    await flush();
+
+    expect(player.playCalls).toHaveLength(2);
+    expect(api.stop).not.toHaveBeenCalledWith('s2', expect.anything());
+    await coordinator.close();
+  });
+
+  it('attaches immediately when the player reports no runway at all', async () => {
+    // `forwardBufferMs` is optional, and an adapter that reports none is not an
+    // adapter with an empty buffer. But a replacement held against a runway
+    // nobody measures is never swapped in, and the source it replaces is
+    // already dead — so silence has to read as "swap now".
+    const player = new FakePlayer();
+    const api = heldResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+
+    player.degrade(notFound());
+
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+    expect(player.playCalls.at(-1)?.source.url).toBe('/generation-replacement.m3u8');
+    await coordinator.close();
+  });
+
+  it('does not ask about a session it has already replaced', async () => {
+    // Their run 1, and it cost a viewer 82 seconds of playable video.
+    //
+    // hls.js kept retrying the reaped session for 29 s after the replacement
+    // was built and waiting, then went fatal. That fatal reached the liveness
+    // probe -- which cannot answer, because `regenerate()` released the old
+    // session and took its endpoint binding with it. "Could not find out" went
+    // to failover, and failover released the replacement on the way past. The
+    // element was emptied and playback moved to a node that had never served
+    // the title: strictly worse than the stall the hold exists to prevent.
+    //
+    // A late failure naming a superseded source is unprobeable by
+    // construction, so it must never reach the probe.
+    const { player, api, coordinator } = await held();
+    api.sessionAlive.mockClear();
+    api.sessionAlive.mockImplementation(async () => {
+      throw new Error('Playback generation http://a::old-id has no endpoint provenance.');
+    });
+
+    player.fail(notFound());
+    await flush();
+
+    expect(api.sessionAlive).not.toHaveBeenCalled();
+    expect(api.failover).not.toHaveBeenCalled();
+    expect(player.playCalls).toHaveLength(2);
+    expect(player.playCalls.at(-1)?.source.url).toBe('/generation-replacement.m3u8');
+    expect(api.stop).not.toHaveBeenCalledWith('s2', expect.anything());
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('lets the dead source go on complaining without spending the hold', async () => {
+    // A retrying player reports one of these every few seconds. Acting on the
+    // first would collapse the deferral back into the buffer flush it exists
+    // to prevent, and probing on each one asks about a session that no longer
+    // has anywhere to be asked.
+    const { player, api, coordinator } = await held();
+    api.sessionAlive.mockClear();
+
+    player.degrade(notFound());
+    player.degrade(notFound());
+    player.degrade(notFound());
+    await flush();
+
+    expect(api.sessionAlive).not.toHaveBeenCalled();
+    expect(api.prepareAlternate).not.toHaveBeenCalled();
+    expect(api.regenerate).toHaveBeenCalledTimes(1);
+    expect(player.playCalls).toHaveLength(1);
+    await coordinator.close();
+  });
+
+  it('derives the runway from buffered ranges when the player reports no scalar', async () => {
+    // `forwardBufferMs` is optional. An adapter reporting ranges and not the
+    // scalar was getting no deferral at all, for no reason -- the contiguous
+    // run ahead of the viewer is the same quantity.
+    const player = new FakePlayer();
+    const api = heldResolver(onNodeA(), replacement());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({
+      positionMs: 0, durationMs: 600_000, paused: false, ended: false,
+      bufferedRangesMs: [{ startMs: 0, endMs: 90_000 }],
+    });
+
+    player.degrade(notFound());
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+    await flush();
+
+    expect(player.playCalls).toHaveLength(1);
+    await coordinator.close();
+  });
+
+  it('keeps the swap floor clear of two server-side fragment holds', async () => {
+    // The floor is a budget for the new source's first fragment arriving, and a
+    // node near the production frontier may hold that request for the whole
+    // segment timeout before answering at all -- twice over if the retry is
+    // held too, before a byte of transfer. Asserted as the relation, not the
+    // figure: both numbers have moved before, and the 5.16 s once measured
+    // against a healthy node is no guide to the ceiling.
+    expect(HELD_REPLACEMENT_SWAP_FLOOR_MS).toBeGreaterThan(SERVER_SEGMENT_HOLD_MS * 4);
   });
 });

@@ -204,6 +204,40 @@ const PLAYBACK_END_TOLERANCE_MS = 5_000;
  * does not.
  */
 const REGENERATION_PROGRESS_MS = 1_000;
+
+/**
+ * How much buffered runway must remain before a held replacement is swapped in.
+ *
+ * **The reason the whole deferral exists.** A replacement is attached by
+ * handing the player a new source, and on a media-element host that means a
+ * new `MediaSource` — which empties the element. Measured against `es-1` on
+ * 2026-09-17: the viewer had 62.1 s of playable video buffered, core activated
+ * the moment the session was created, and the element went `emptied` ->
+ * `waiting` -> `playing` over **5.16 s**. The 3.44 s spent noticing and
+ * regenerating cost nothing, because it was paid out of buffer. The swap threw
+ * the rest of that buffer away one step before it was used.
+ *
+ * So the session is created at once — failing early is worth knowing about —
+ * and then held until the runway is nearly spent.
+ *
+ * **The floor is a budget, not a preference**, and it is sized for the worst
+ * case rather than the measured one. It has to cover the new source's first
+ * fragment arriving, and a node near the production frontier may hold that
+ * request for `SERVER_SEGMENT_HOLD_MS` before answering at all — twice over,
+ * if the retry is held too — before any transfer happens. The 5.16 s measured
+ * above was a healthy node and is no guide to the ceiling.
+ *
+ * **Biased high on purpose, because the two errors are not symmetric.** Too
+ * low and the viewer stalls, which is the whole fault being fixed. Too high
+ * and some buffer that could have been played is discarded instead, which
+ * nobody can see. Against the 66.9 s and 110 s runways measured in the field
+ * this still spends most of the cover.
+ *
+ * Asserted against the hold rather than pinned to a figure, the same way
+ * `MEDIA_STALL_TIMEOUT_MS` is — both numbers have moved before and the
+ * relation is what matters.
+ */
+export const HELD_REPLACEMENT_SWAP_FLOOR_MS = 30_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
 interface PendingMutation {
@@ -525,6 +559,21 @@ export class PlaybackCoordinator {
    */
   private lastRegenerationPositionMs?: number;
 
+  /**
+   * A replacement generation that is built and waiting for the buffered
+   * runway to run down. See `HELD_REPLACEMENT_SWAP_FLOOR_MS`.
+   *
+   * **It holds the node's video transcode slot for as long as it is held**,
+   * and that is a deliberate decision rather than an oversight: the viewer
+   * whose session was reaped is the same viewer the slot would be held for, so
+   * nobody else is being kept out of something they were using. It does mean
+   * this must be released on every path that abandons it — closing, seeking,
+   * failing over — which is why it is torn down in `close()` alongside the
+   * standbys rather than left to `serverSession`, which still points at the
+   * source actually playing.
+   */
+  private heldReplacement?: PlaybackSession;
+
   private snapshot: PlaybackCoordinatorSnapshot;
 
   constructor(private readonly options: PlaybackCoordinatorOptions) {
@@ -812,6 +861,8 @@ export class PlaybackCoordinator {
     // leaves DOM-host ownership to PlaybackRuntime/PlayerHost.
     this.options.player.stop();
     const ownedAtClose = this.serverSession ?? this.snapshot.session;
+    const held = this.heldReplacement;
+    this.heldReplacement = undefined;
 
     this.closePromise = (async () => {
       await this.startPromise?.catch(() => undefined);
@@ -825,8 +876,18 @@ export class PlaybackCoordinator {
           this.log.warn('session-close-failed', { sessionId: session.sessionId, error });
         }
       }
+      // Held deliberately while the viewer watched out their buffer, so it is
+      // still open and still holding the node's transcode slot. Nothing else
+      // knows about it — `serverSession` points at the source that was
+      // actually playing — so if this does not close it, nothing will until
+      // `session_idle` thirty minutes later.
+      if (held && held.sessionId !== session?.sessionId) {
+        await this.options.resolver.stop(held.sessionId, this.closeOptions).catch((error) => {
+          this.log.warn('held-replacement-close-failed', { sessionId: held.sessionId, error });
+        });
+      }
       for (const alternate of this.alternateSessions.values()) {
-        if (alternate.sessionId === session?.sessionId) continue;
+        if (alternate.sessionId === session?.sessionId || alternate.sessionId === held?.sessionId) continue;
         await this.options.resolver.stop(alternate.sessionId, this.closeOptions).catch((error) => {
           this.log.warn('alternate-session-close-failed', { sessionId: alternate.sessionId, error });
         });
@@ -865,6 +926,15 @@ export class PlaybackCoordinator {
     if (session && !session.options.canSeek) {
       this.patchSnapshot({ notice: 'This stream cannot seek.' });
       return false;
+    }
+    // A held replacement is swapped in *before* the seek rather than released.
+    // Two reasons and both are load-bearing: a seek discards the buffered
+    // runway regardless, so the thing the hold was protecting is already gone;
+    // and until the swap happens `serverSession` still names the session the
+    // node reaped, so a seek mutation would PATCH a session that returns 404
+    // and be read as the replacement failing.
+    if (this.heldReplacement) {
+      this.swapIn(this.heldReplacement, this.heldReplacement.seekMs, 'seek');
     }
     const durationMs = session?.durationMs || this.snapshot.event.durationMs || this.options.media.durationMs;
     const bounded = clampPosition(positionMs, durationMs);
@@ -1270,6 +1340,19 @@ export class PlaybackCoordinator {
 
   private degrade(error: Error): void {
     if (this.disposed) return;
+    // Same superseded-source rule as `failNow`, with the opposite action.
+    // Dropped rather than swapped in: hls.js reports one of these every few
+    // seconds while it retries a dead source, and acting on the first would
+    // collapse the deferral straight back into the buffer-flush it exists to
+    // prevent. Nothing is lost by waiting — the replacement is already built,
+    // and the ordinary runway and buffering triggers decide when it goes in.
+    if (this.heldReplacement || this.regenerationPromise) {
+      this.log.debug('source-degradation-superseded-by-replacement', {
+        sessionId: (this.snapshot.session ?? this.serverSession)?.sessionId,
+        error,
+      });
+      return;
+    }
     // Before the endpoint-evidence guard, which would otherwise drop this on
     // the floor now that `not-found` is not endpoint evidence — and before the
     // standby machinery below, which is the wrong answer to it.
@@ -1294,6 +1377,20 @@ export class PlaybackCoordinator {
       return;
     }
     if (!isEndpointRetryablePlaybackFailure(error)) return;
+    this.degradeOnEndpointEvidence(error);
+  }
+
+  /**
+   * Ordinary handling for degradation evidence core cannot act on more
+   * specifically: promote a rescue that is already built, or build one.
+   *
+   * Named and separated so `recoverFromMissingSession` can fall back into it.
+   * A `not-found` whose meaning could not be established is exactly this case
+   * — evidence core cannot act on specifically — and the first version of that
+   * method simply returned instead, which made the degradation channel *worse*
+   * than before `not-found` existed.
+   */
+  private degradeOnEndpointEvidence(error: Error): void {
     const session = this.snapshot.session ?? this.serverSession;
     if (!session || this.alternatePreparations.size > 0) return;
     // A standby is already built and this node has failed again. There is
@@ -1614,6 +1711,14 @@ export class PlaybackCoordinator {
         durationMs: absolute.durationMs,
         remainingMs: absolute.durationMs - absolute.positionMs,
       });
+      // A replacement already built is the answer to this, not a failure. The
+      // dead source running out of buffer is precisely the moment it was held
+      // for, and it arrives here as a premature `ended` rather than as a
+      // buffering stall on some hosts.
+      if (this.heldReplacement) {
+        this.swapIn(this.heldReplacement, this.heldReplacement.seekMs, 'source-ended');
+        return;
+      }
       this.fail(new PlaybackSourceError('Playback source ended before the media was complete', 'stream'));
       return;
     }
@@ -1631,6 +1736,19 @@ export class PlaybackCoordinator {
       ? this.snapshot.intent
       : { ...this.snapshot.intent, positionMs: absolutePositionMs };
     this.patchSnapshot({ event: absolute, intent });
+
+    // Read after the patch, so the decision is made on the runway the player
+    // has just reported rather than the previous one.
+    const held = this.heldReplacement;
+    if (held && !this.seekIntentActive) {
+      if (absolute.buffering) {
+        // The runway is gone sooner than the figures said. Whatever the
+        // arithmetic, the viewer is already waiting, so stop holding.
+        this.swapIn(held, held.seekMs, 'buffer-exhausted');
+      } else if (this.runwayMs() <= HELD_REPLACEMENT_SWAP_FLOOR_MS) {
+        this.swapIn(held, held.seekMs, 'runway-spent');
+      }
+    }
   }
 
   private fail(error: unknown): void {
@@ -1664,6 +1782,49 @@ export class PlaybackCoordinator {
 
   private failNow(fatalError: Error): void {
     const failedSession = this.snapshot.session ?? this.serverSession;
+    // A replacement for this exact source is already built, or being built.
+    // Nothing the dying source says now is news — and, more sharply, **there
+    // is nobody left to ask about it**: `regenerate()` releases the old
+    // session from the resolver, so the endpoint binding `sessionAlive()`
+    // needs is gone the moment the replacement exists. A late fatal naming a
+    // superseded source is unprobeable by construction.
+    //
+    // Measured 2026-09-17, and it cost a viewer 82 seconds of playable video:
+    // hls.js went on retrying a reaped session for 29 s after the replacement
+    // was built and waiting, then went fatal. That fatal reached the probe,
+    // the probe threw `has no endpoint provenance`, "could not find out" sent
+    // it to failover, and failover released the replacement on its way past.
+    // Every step doing exactly what it was told. **Strictly worse than the
+    // stall the hold exists to prevent** — the element was emptied and
+    // playback moved to a node that had never served the title.
+    //
+    // This is not about the error's kind or the delivery path. Any player
+    // that retries a dead source for longer than a replacement takes to build
+    // arrives here, and hls.js always does.
+    if (this.heldReplacement) {
+      // Swapped in rather than dropped, and this is a fact about the host
+      // rather than a preference: the web adapter tears the element down
+      // *inside* its terminal — `hls.destroy()`, `video.pause()`, and a flag
+      // that suppresses the next play request — synchronously, before this
+      // listener is called. So by the time we are here the runway is already
+      // gone, whatever the last event said about it. Holding on to spend a
+      // buffer that no longer exists would leave the viewer on a dead
+      // element until a timer expired.
+      this.log.warn('source-failure-superseded-by-replacement', {
+        sessionId: failedSession?.sessionId,
+        replacementSessionId: this.heldReplacement.sessionId,
+        error: fatalError,
+      });
+      this.swapIn(this.heldReplacement, this.heldReplacement.seekMs, 'source-failed');
+      return;
+    }
+    if (this.regenerationPromise) {
+      this.log.debug('source-failure-during-regeneration', {
+        sessionId: failedSession?.sessionId,
+        error: fatalError,
+      });
+      return;
+    }
     // A dead source does not fall silent when recovery starts. It is neither
     // stopped nor unsubscribed while the replacement is negotiated, so it goes
     // on emitting: the element plays out whatever it had buffered and reports
@@ -1698,6 +1859,10 @@ export class PlaybackCoordinator {
 
   private beginSourceFailover(failedSession: PlaybackSession, error: Error): void {
     if (this.failoverPromise) return;
+    // Whatever is about to be built will be on a different node, so a
+    // replacement held on this one is now just a transcode slot nobody will
+    // ever claim.
+    this.releaseHeldReplacement('failover');
     this.failoverPromise = this.recoverFromSourceFailure(failedSession, error).finally(() => {
       this.failoverPromise = undefined;
     });
@@ -1718,9 +1883,11 @@ export class PlaybackCoordinator {
     const resolver = this.options.resolver;
     if (!session || !resolver.sessionAlive || !resolver.regenerate) return false;
     // Something is already replacing this generation. A second replacement for
-    // one outage is the two-owners problem, and both the failover path and the
-    // regeneration path end in an activation.
-    if (this.failoverPromise || this.regenerationPromise) return true;
+    // one outage is the two-owners problem, and every one of these paths ends
+    // in an activation. `heldReplacement` counts: it is a replacement that has
+    // already been built and is waiting, and the session it replaces can no
+    // longer be probed at all.
+    if (this.failoverPromise || this.regenerationPromise || this.heldReplacement) return true;
     this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal).finally(() => {
       this.regenerationPromise = undefined;
     });
@@ -1752,10 +1919,37 @@ export class PlaybackCoordinator {
     error: Error,
     terminal: boolean,
   ): Promise<void> {
-    const fallThrough = (): void => {
-      if (!terminal || this.disposed || this.snapshot.fatalError) return;
+    const giveUpOnThisSource = (): void => {
+      if (this.disposed || this.snapshot.fatalError) return;
       if (this.options.resolver.failover) this.beginSourceFailover(session, error);
       else this.failTerminal(error);
+    };
+
+    /**
+     * The node's state could not be established: the probe did not complete,
+     * or a regeneration has already been tried here and changed nothing.
+     *
+     * **Not an answer, and it must not be treated as one.** On the terminal
+     * channel there is nothing left to protect and failover is the remaining
+     * option. On the degradation channel the source may still be playing, so
+     * this is evidence core cannot act on specifically — which is precisely
+     * what the standby machinery is for, and what this same evidence used to
+     * get before `not-found` existed, when it arrived as `stream`.
+     *
+     * The first version of this returned on the degradation path. That made
+     * the channel *worse* than before the fix: a node that had gone away
+     * between answering a `404` and being asked about it produced an early
+     * warning core then swallowed, and the viewer waited for the fatal with
+     * no rescue being built. The node going away is not a hypothetical — it
+     * is what the original report was a symptom of.
+     */
+    const unresolved = (): void => {
+      if (this.disposed || this.snapshot.fatalError) return;
+      if (terminal) {
+        giveUpOnThisSource();
+        return;
+      }
+      this.degradeOnEndpointEvidence(error);
     };
 
     let alive: boolean;
@@ -1768,19 +1962,24 @@ export class PlaybackCoordinator {
         endpoint: session.endpoint,
         error: probeError,
       });
-      fallThrough();
+      unresolved();
       return;
     }
     if (this.disposed) return;
 
     if (alive) {
+      // An answer, and it clears the node: the `404` was a fragment past the
+      // end of a live plan. Replacing the session would fix nothing and
+      // building a standby for it is the churn `not-found` exists to stop, so
+      // the degradation path deliberately stops here. A fatal one still needs
+      // somewhere to go.
       this.log.warn('source-not-found-on-live-session', {
         sessionId: session.sessionId,
         endpoint: session.endpoint,
         positionMs: this.snapshot.intent.positionMs,
         error,
       });
-      fallThrough();
+      if (terminal) giveUpOnThisSource();
       return;
     }
 
@@ -1792,7 +1991,7 @@ export class PlaybackCoordinator {
         endpoint: session.endpoint,
         positionMs: requestedPositionMs,
       });
-      fallThrough();
+      unresolved();
       return;
     }
 
@@ -1820,11 +2019,6 @@ export class PlaybackCoordinator {
         await this.options.resolver.stop(next.sessionId).catch(() => undefined);
         return;
       }
-      this.serverSession = next;
-      // `activateSession` starts the replacement paused when the viewer is
-      // paused, which is the case this exists for: the source is swapped
-      // underneath a stopped player and pressing play just works.
-      this.activateSession(next, this.snapshot.intent.positionMs, requestedPositionMs);
       this.log.info('session-regenerated', {
         previousSessionId: session.sessionId,
         sessionId: next.sessionId,
@@ -1832,6 +2026,20 @@ export class PlaybackCoordinator {
         positionMs: requestedPositionMs,
       });
       this.patchSnapshot({ preparingSource: false, notice: undefined });
+      // The old source is dead but its buffer is not, and swapping empties it.
+      // Hold the replacement while there is runway left to play out; see
+      // `HELD_REPLACEMENT_SWAP_FLOOR_MS` for what the swap actually costs.
+      if (this.runwayMs() > HELD_REPLACEMENT_SWAP_FLOOR_MS) {
+        this.heldReplacement = next;
+        this.log.info('replacement-held', {
+          sessionId: next.sessionId,
+          endpoint: next.endpoint,
+          runwayMs: this.runwayMs(),
+          floorMs: HELD_REPLACEMENT_SWAP_FLOOR_MS,
+        });
+        return;
+      }
+      this.swapIn(next, requestedPositionMs, 'no-runway');
     } catch (regenerationError) {
       if (this.disposed) return;
       // The node refused fresh work. That is a claim about the node, unlike
@@ -1920,8 +2128,72 @@ export class PlaybackCoordinator {
     }
   }
 
+  /**
+   * Buffered runway ahead of the viewer, or zero when the player does not say.
+   *
+   * **Silence reads as none, deliberately.** `forwardBufferMs` is optional on
+   * `PlaybackEvent` and an adapter that reports no buffer figure is not an
+   * adapter with an empty buffer — but a replacement held against a runway
+   * nobody is measuring is a replacement that is never swapped in, and the
+   * viewer's source is already dead. Treating the absence as "swap now" costs
+   * a buffer flush; treating it as "wait" costs the session.
+   */
+  private runwayMs(): number {
+    const { forwardBufferMs, bufferedRangesMs, positionMs } = this.snapshot.event;
+    if (typeof forwardBufferMs === 'number' && Number.isFinite(forwardBufferMs)) {
+      return Math.max(0, forwardBufferMs);
+    }
+    // `forwardBufferMs` is optional and an adapter may report only the ranges.
+    // The contiguous run ahead of the viewer is the same quantity, so derive
+    // it rather than treating a reported buffer as no buffer.
+    const containing = bufferedRangesMs?.find(
+      (range) => range.startMs <= positionMs && positionMs <= range.endMs,
+    );
+    if (containing) return Math.max(0, containing.endMs - positionMs);
+    return 0;
+  }
+
+  private swapIn(next: PlaybackSession, preparedPositionMs: number, reason: string): void {
+    this.heldReplacement = undefined;
+    this.serverSession = next;
+    this.log.info('replacement-swapped-in', {
+      sessionId: next.sessionId,
+      endpoint: next.endpoint,
+      runwayMs: this.runwayMs(),
+      reason,
+    });
+    // `activateSession` starts the replacement paused when the viewer is
+    // paused, so a source swapped in underneath a stopped player just works
+    // when they press play.
+    this.activateSession(next, this.snapshot.intent.positionMs, preparedPositionMs);
+  }
+
+  /**
+   * Give up a held replacement without using it, closing it on the node.
+   *
+   * Every path that abandons one has to come through here, because it is
+   * holding a transcode slot. Tom's call to hold the slot at all rests on the
+   * viewer who lost their session being the same viewer it is held for — which
+   * stops being true the moment they close the player or seek somewhere the
+   * generation cannot serve.
+   */
+  private releaseHeldReplacement(reason: string): void {
+    const held = this.heldReplacement;
+    if (!held) return;
+    this.heldReplacement = undefined;
+    this.log.info('replacement-released-unused', {
+      sessionId: held.sessionId,
+      endpoint: held.endpoint,
+      reason,
+    });
+    void this.options.resolver.stop(held.sessionId, this.closeOptions).catch((error) => {
+      this.log.warn('held-replacement-close-failed', { sessionId: held.sessionId, error });
+    });
+  }
+
   private failTerminal(fatalError: Error): void {
     if (this.disposed || this.snapshot.fatalError) return;
+    this.releaseHeldReplacement('terminal-failure');
     this.log.error('fatal', fatalError);
     this.patchSnapshot({ fatalError, notice: undefined, starting: false, preparingSource: false });
   }
