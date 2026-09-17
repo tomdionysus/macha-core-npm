@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
 import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
+import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -1992,6 +1992,121 @@ describe('a node that reaped the session it was serving', () => {
   });
 });
 
+describe('a host that keeps the old source playing while it prepares the new one', () => {
+  // A host that replaces a source seamlessly does not tear the old element
+  // down: it prepares the replacement alongside, and cuts when the join is
+  // resident. `play()` resolving is that cut. For nine measured seconds the
+  // OUTGOING element is still the one playing and reporting, and core must
+  // still be describing that element.
+  //
+  // Switching at call time mapped its ranges through the incoming generation's
+  // origin: a buffer of [0, 120.7] drawn at 2407.7 s when its own generation
+  // started at 1772.8 s — ten minutes to the right of the media it described,
+  // while the incoming element had buffered nothing at all.
+  //
+  // Invisible to every fake that resolves play() immediately, which is why it
+  // survived: call-time and resolve-time are the same instant there.
+
+  it('keeps describing the outgoing source until the host says it has cut', async () => {
+    const player = new FakePlayer();
+    const outgoing = session({ sessionId: 's1', mode: 'transcode', seekMs: 100_000 });
+    const incoming = session({
+      sessionId: 's2', mode: 'transcode', seekMs: 400_000,
+      source: {
+        mediaId: 'm1', url: '/generation-incoming.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+        isManifest: true, mode: 'transcode', durationMs: 600_000,
+      },
+    });
+    const api = resolver(outgoing, async () => incoming);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 100_000,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+
+    // Hold the cut open, exactly as a real handover does.
+    const cut = deferred<boolean>();
+    player.playResult = cut.promise;
+    coordinator.update({ preferences: { maxHeight: 720 } });
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+
+    // Mid-handover: the outgoing element reports 20 s into its own generation.
+    player.emit({
+      positionMs: 20_000, durationMs: 600_000, paused: false, ended: false,
+      bufferedRangesMs: [{ startMs: 0, endMs: 120_000 }],
+    });
+    await flush();
+
+    // Described through the generation actually playing — 100 s origin, not
+    // 400 s. Mapping through the incoming origin would put both 300 s out.
+    const during = coordinator.getSnapshot();
+    expect(during.event.positionMs).toBe(120_000);
+    expect(during.event.bufferedRangesMs?.[0]).toEqual({ startMs: 100_000, endMs: 220_000 });
+
+    // The host cuts.
+    cut.resolve(true);
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.sessionId).toBe('s2'));
+
+    player.emit({ positionMs: 5_000, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 7_000, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+    expect(coordinator.getSnapshot().event.positionMs).toBe(407_000);
+    await coordinator.close();
+  });
+});
+
+describe('a player that settles somewhere other than core asked for', () => {
+  // Observed in the live client and reported by the viewer for several
+  // sessions before anyone had an explanation: after a seamless source
+  // replacement the reported position froze permanently at the new
+  // generation's origin, while the picture played on and the buffer ran ahead.
+  // The drawn gap between playhead and buffer grew as the player evicted
+  // behind a playhead that was not moving, and every later seek was computed
+  // from the frozen value.
+  //
+  // `seekIntentActive` exists to stop the transient zero/paused events a
+  // source emits while attaching from overwriting a transport target. It was
+  // released only by the player arriving within 1.5 s of that target — so a
+  // host that cuts at the point the outgoing element actually reached, rather
+  // than the point core nominated, never released it at all.
+
+  it('reports the position again once the player is demonstrably tracking', async () => {
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'transcode', seekMs: 60_000 }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 60_000,
+    });
+    await coordinator.start();
+
+    // The host joined 40 s into the generation, nowhere near the 0 core asked
+    // for, and then plays on normally.
+    player.emit({ positionMs: 40_000, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 42_000, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+
+    // 60_000 generation origin + 42_000 local.
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(102_000);
+    await coordinator.close();
+  });
+
+  it('still ignores the transient events a source emits while attaching', async () => {
+    // The latch has a job and this is it: one zero-position report during
+    // attachment must not drag the viewer back to the start of the film.
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'transcode', seekMs: 60_000 }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 60_000,
+    });
+    await coordinator.start();
+
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: true, ended: false });
+    await flush();
+
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(60_000);
+    await coordinator.close();
+  });
+});
+
 describe('replacing a reaped source without making the viewer wait', () => {
   // Three measurements against `es-1` shaped this, and each overturned the
   // shape before it.
@@ -2299,18 +2414,55 @@ describe('replacing a reaped source without making the viewer wait', () => {
     await coordinator.close();
   });
 
-  it('leads by more than a negotiation costs, and less than a node produces ahead', () => {
-    // Both directions matter and they are not symmetric. Too short and the
-    // negotiation lands after the buffer ends, costing a wait the viewer would
-    // have had anyway. Too long and they arrive past the production frontier,
-    // which is the nine-second fault this exists to remove.
+  it('leads by the measured cost of replacing a source, inside what a node produces ahead', () => {
+    // Measured against es-1: 3.8 s to negotiate a session, because the node
+    // blocks on the first fragment inside the 201, plus 9.5 s for a host to get
+    // the join point resident before it can cut to it. 13.3 s, so the lead
+    // carries half as much again for a slower link.
     //
-    // A measured create was 1.9-2.9 s. The default this falls back to must sit
-    // under the smallest look-ahead a node is likely to be configured with,
-    // because a node too old to report one cannot be asked.
-    const MEASURED_CREATE_MS = 2_900;
-    const CONSERVATIVE_LOOK_AHEAD_MS = 16_000;
-    expect(REPLACEMENT_LEAD_TIME_MS).toBeGreaterThan(MEASURED_CREATE_MS * 3);
-    expect(REPLACEMENT_LEAD_TIME_MS).toBeLessThan(CONSERVATIVE_LOOK_AHEAD_MS);
+    // Bounded above by the node's look-ahead, and that bound is what makes
+    // leading long safe at all: inside it the join is already produced, past it
+    // the encoder runs forward sequentially to reach the viewer.
+    const MEASURED_REPLACEMENT_COST_MS = 13_300;
+    const CONSERVATIVE_LOOK_AHEAD_MS = 32_000;
+    expect(REPLACEMENT_LEAD_TIME_MS).toBeGreaterThan(MEASURED_REPLACEMENT_COST_MS);
+    expect(REPLACEMENT_LEAD_TIME_MS).toBeLessThan(CONSERVATIVE_LOOK_AHEAD_MS - LOOK_AHEAD_MARGIN_MS);
+  });
+
+  it('attaches a generation the node started slightly ahead, rather than negotiating another', async () => {
+    // The largest single slice of a measured recovery: 6.21 s of frozen picture.
+    // A node aligns a requested start to the next keyframe, so a generation
+    // asked for at X can begin a segment later — and a viewer who travelled less
+    // than that while it was being negotiated ends up behind its own origin.
+    // The old test was exact equality of requested and desired, which holds only
+    // if playback did not advance during the request, and a recovery takes
+    // seconds the viewer spends watching.
+    const player = new FakePlayer();
+    const initial = onNodeA();
+    // Server aligned the start 2 s past where the viewer now is.
+    const aligned = session({
+      sessionId: 's2', mode: 'transcode', seekMs: 8_000,
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      source: {
+        mediaId: 'm1', url: '/generation-aligned.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+        isManifest: true, mode: 'transcode', durationMs: 600_000,
+      },
+    });
+    const api = reapedResolver(initial, aligned);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 6_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 1_000 });
+
+    player.degrade(notFound());
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+
+    // Attached at the generation's own origin. The alternative was a whole
+    // second negotiation for a forward skip of two seconds.
+    expect(player.playCalls.at(-1)?.source.url).toBe('/generation-aligned.m3u8');
+    expect(player.playCalls.at(-1)?.positionMs).toBe(0);
+    expect(api.update).not.toHaveBeenCalled();
+    await coordinator.close();
   });
 });

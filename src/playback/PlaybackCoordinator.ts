@@ -209,52 +209,35 @@ const REGENERATION_PROGRESS_MS = 1_000;
  * How much playable media a viewer must still have in front of them before
  * core starts building the replacement for a source that has died.
  *
- * **Short on purpose, and bounded by the server's look-ahead rather than by
- * any client budget.**
+ * **Every component is measured, against `es-1` on 2026-09-17**, because the
+ * two figures chosen by reasoning before it were both wrong and in opposite
+ * directions.
  *
- * The first shape created the replacement immediately and held it. Measured
- * against `es-1` that was *worse* than attaching at once — 12.7 s of frozen
- * picture against a 5.16 s baseline, 9.0 s of it on a single fragment — and
- * the cause is the production frontier. A node produces from
- * `highest_requested` out to `max_ahead_segments` and parks. A generation held
- * 28 s puts the viewer 28 s beyond anything ever requested from it, so the
- * encoder has to run forward at roughly realtime to reach them, answering
- * `500 segment_not_ready` meanwhile.
+ * - **Negotiation: 3.3–3.8 s, and structurally expensive.** The node calls
+ *   `start_pipeline` and blocks on the first fragment inside the `201`, so
+ *   there is no version of this where creating a session is cheap.
+ * - **Host preparation: 9.5 s**, almost all of it fetching the join fragment.
+ *   A host that replaces a source seamlessly has to get the join point
+ *   *resident* before it can cut to it, and at full quality over a WAN link
+ *   that is megabytes. Aligning and cutting were 0.5 s of the 9.5.
  *
- * **So the replacement is created at the position it will be used, and the
- * whole mechanism is that the lead stays inside the look-ahead window.** The
- * viewer then arrives at generation-local `L`, production has had `L` of wall
- * clock to produce `L` of content, and permission already covers it. Nothing
- * needs warming and nothing can be warmed past the frontier: raising
- * `highest_requested` only moves *permission*, while fragments are still
- * appended in order at encoder speed.
+ * 13.3 s measured, so this leads by half as much again for a slower link.
  *
- * **Two things this is not, both believed for several hours and both wrong.**
- * A held session does not go cold — the pipeline starts synchronously inside
- * the session `POST` and the node's journal reports startup complete in
- * 1,924 ms before the `201`. And walking the frontier out in steps buys
- * nothing over asking for the far index once, because the intervening
- * fragments encode either way.
+ * **Bounded above by `look_ahead_ms`, and the bound is what makes leading long
+ * safe.** A generation is created at the position the viewer will reach, so a
+ * longer lead puts the join deeper into it — and past the node's look-ahead
+ * the encoder has to run forward sequentially to get there, which is the 9 s
+ * fault an earlier shape of this shipped. Inside the look-ahead the join is
+ * already produced and costs nothing.
  *
- * **Why this figure.** A measured create was 1.9–2.9 s, so 10 s carries more
- * than three times the observed cost. It is deliberately *not* derived from
- * `GENERATION_ATTEMPT_BUDGET_MS` or `SERVER_STARTUP_TIMEOUT_MS`: both are
- * ceilings on what is tolerable, and a ceiling is the wrong basis for a lead,
- * which wants a typical cost plus margin. Using an entitlement here is how the
- * previous version reached 30 s and landed 2 s from the frontier of the one
- * node anyone had measured.
- *
- * **Undershooting is the safe error.** Too short and the negotiation finishes
- * a little after the buffer ends, costing a brief wait the viewer would have
- * had anyway. Too long and they arrive past the frontier, which is the
- * nine-second fault this exists to remove. The look-ahead is server
- * configuration a client cannot read today — `max_ahead_segments` times
- * `segment_duration_ms`, 32 s on the measured node and possibly half that
- * elsewhere — so this stays well under any plausible value rather than
- * assuming one. A `look_ahead_ms` on the session's `stream` object would let
- * it be derived instead of bounded by guesswork.
+ * **That bound inverts the bias, which is the thing to hold on to.** While the
+ * frontier was unknown, over-leading risked seconds of encode and
+ * under-leading cost a short wait, so short was safe. With the frontier read
+ * per session, over-leading is capped by a number the node reports and
+ * under-leading is a gap in front of a viewer. **Long, capped, is now the safe
+ * direction** — and 10 s was wrong because it was chosen under the old bias.
  */
-export const REPLACEMENT_LEAD_TIME_MS = 10_000;
+export const REPLACEMENT_LEAD_TIME_MS = 20_000;
 
 /**
  * How far inside a node's stated look-ahead the arrival point is kept.
@@ -264,8 +247,34 @@ export const REPLACEMENT_LEAD_TIME_MS = 10_000;
  * the drift between a runway figure, the moment a negotiation completes, and
  * the segment boundary the node actually produced to.
  */
-const LOOK_AHEAD_MARGIN_MS = 4_000;
+export const LOOK_AHEAD_MARGIN_MS = 4_000;
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
+
+/**
+ * How far ahead of the viewer a freshly negotiated generation may begin and
+ * still be attached at its own origin rather than renegotiated.
+ *
+ * This is keyframe alignment, not viewer intent. A node asked for a generation
+ * at X starts it at the next keyframe, which is up to one segment later — 4 s
+ * on the measured nodes, and the segment length is not something a client can
+ * read. Sized above that with slack rather than derived, because the quantity
+ * it has to exceed is the one number in this area still not on the wire.
+ *
+ * **The alternative is not a smaller jump, it is a second generation.** That
+ * was measured at 6.21 s of frozen picture against a forward skip of under a
+ * segment, which no viewer would choose.
+ */
+const GENERATION_ALIGNMENT_TOLERANCE_MS = 5_000;
+
+/**
+ * How long a player may report nothing, while a replacement is pending and the
+ * viewer is playing, before core stops waiting for an event that may not come.
+ *
+ * Not a prediction of anything — see `armPendingReplacementGuard`. A playing
+ * element reports several times a second, so this is silence of a kind that
+ * means something has gone wrong rather than a buffer running low.
+ */
+const PLAYER_SILENCE_GUARD_MS = 15_000;
 
 interface PendingMutation {
   update: PlaybackUpdate;
@@ -557,6 +566,12 @@ export class PlaybackCoordinator {
   private sourceActivationRevision = 0;
   private positionRevision = 0;
   private seekIntentActive = false;
+  /**
+   * The last position the player reported while `seekIntentActive` was held,
+   * so that "the player is tracking again" can be recognised without it having
+   * to land on a target it may never be asked to hit.
+   */
+  private seekIntentPositionMs?: number;
   /** The last position the player itself reported, independent of optimistic seek intent. */
   private lastObservedPositionMs?: number;
   private failoverPromise?: Promise<void>;
@@ -938,6 +953,9 @@ export class PlaybackCoordinator {
     this.patchSnapshot({ intent });
     if (paused) this.options.player.pause();
     else this.options.player.resume();
+    // A paused element reports nothing and owes nothing: its runway is not
+    // being spent. Disarmed on pause, restarted on resume.
+    this.armPendingReplacementGuard();
     this.log.info(paused ? 'pause-intent' : 'play-intent', {
       sessionId: this.snapshot.session?.sessionId,
       positionMs: intent.positionMs,
@@ -1037,10 +1055,30 @@ export class PlaybackCoordinator {
   ): number | undefined {
     const localPositionMs = generationLocalPosition(session, desiredAbsoluteMs);
     if (localPositionMs !== undefined) return localPositionMs;
-    // A transformed server may align the exact requested point to a later
-    // keyframe. Accept that explicit result at its local origin. If playback
-    // merely advanced while the request was in flight, localPositionMs above
-    // catches the new source up without negotiating another generation.
+    // The generation starts *ahead* of where the viewer is. A transformed
+    // server aligns the requested point to the next keyframe, so a generation
+    // asked for at X can begin a segment later — and if the viewer travelled
+    // less than that while it was being negotiated, they are now behind its
+    // own origin.
+    //
+    // **Accepted at local zero rather than renegotiated**, which is a change
+    // of mind about what this costs. The old test was exact equality of
+    // requested and desired, which holds only if playback did not advance
+    // during the request — true for a paused seek and false for every
+    // recovery, because creating a session takes seconds and the viewer
+    // spends them watching. Measured against `es-1`: a session created in
+    // 3.81 s while segments are 4 s long, so alignment routinely outruns the
+    // travel, and the fallback then queued a whole second generation. That
+    // cost **6.21 s of frozen picture** — larger than every other slice of
+    // the recovery budget combined, for a jump forward of less than one
+    // segment.
+    //
+    // The tolerance is bounded so a real backwards seek still negotiates: a
+    // viewer who moves behind a generation by more than one alignment step
+    // means it, and skipping to the generation's origin would silently ignore
+    // them.
+    const startsAheadBy = Math.max(0, session.seekMs) - desiredAbsoluteMs;
+    if (startsAheadBy >= 0 && startsAheadBy <= GENERATION_ALIGNMENT_TOLERANCE_MS) return 0;
     return Math.round(preparedAbsoluteMs) === Math.round(desiredAbsoluteMs) ? 0 : undefined;
   }
 
@@ -1167,6 +1205,7 @@ export class PlaybackCoordinator {
   private rollbackUnfulfilledSeek(): void {
     if (!this.seekIntentActive || this.pendingMutation || this.debouncedSeekMutation) return;
     this.seekIntentActive = false;
+    this.seekIntentPositionMs = undefined;
     const positionMs = this.lastObservedPositionMs;
     if (positionMs === undefined) return;
     this.patchSnapshot({
@@ -1301,44 +1340,89 @@ export class PlaybackCoordinator {
     }
 
     this.serverSession = session;
-    this.setSession(session);
-    this.activeDirectPlaySource = session.mode === 'direct' ? session.source : undefined;
-    this.streamOffsetMs = session.mode === 'direct' ? 0 : Math.max(0, session.seekMs);
+    const nextStreamOffsetMs = session.mode === 'direct' ? 0 : Math.max(0, session.seekMs);
     const absoluteStartMs = session.mode === 'direct'
       ? localPositionMs
-      : this.streamOffsetMs + localPositionMs;
-    // Source attachment emits transient zero/paused media events. Keep the
-    // requested transport target authoritative until the active player reports
-    // that it has actually reached this source-generation position.
-    this.seekIntentActive = true;
-    this.patchSnapshot({
-      intent: { ...this.snapshot.intent, positionMs: absoluteStartMs },
-      event: {
-        ...this.snapshot.event,
+      : nextStreamOffsetMs + localPositionMs;
+    const startPaused = this.snapshot.intent.paused;
+
+    /**
+     * Switch what core *reports* only once the player has actually changed
+     * source.
+     *
+     * **`play()` being called is not the source changing.** For a host that
+     * tears its element down synchronously the two are the same instant, which
+     * is why this survived until a host existed that prepares the replacement
+     * on a second element and cuts to it only when the join is resident. That
+     * opens a window — measured at nine seconds — in which the *outgoing*
+     * element is still the one playing and reporting.
+     *
+     * Switching at call time mapped that element's ranges through the incoming
+     * generation's origin. Measured: an outgoing buffer of `[0, 120.703]` drawn
+     * at 2407.7 s, its own generation starting at 1772.8 s, so the block sat
+     * **10.6 minutes to the right of the media it described** while the
+     * incoming element had buffered nothing at all.
+     *
+     * **Deferring it matters more now than it did, not less.** Until the
+     * position latch was fixed, `intent` was frozen through that window and the
+     * error showed up as a gap between playhead and buffer. With the latch
+     * releasing on progress, a call-time switch would instead report the
+     * outgoing element's position through the incoming offset — playhead and
+     * buffer wrong *together*, consistently, so the gap closes and the readout
+     * states a position ten minutes out with no visible sign. A seek taken in
+     * that window would start from it. The two fixes are not independent, and
+     * this one is what stops the other making things quieter rather than
+     * better.
+     *
+     * Ownership still moves at call time: core owns the new session from the
+     * moment it asks for it, and teardown must close the right one. Only
+     * presentation waits.
+     */
+    const present = (): void => {
+      if (this.disposed || activationRevision !== this.sourceActivationRevision) return;
+      this.setSession(session);
+      this.activeDirectPlaySource = session.mode === 'direct' ? session.source : undefined;
+      this.streamOffsetMs = nextStreamOffsetMs;
+      // Source attachment emits transient zero/paused media events. Keep the
+      // requested transport target authoritative until the active player
+      // reports that it is tracking — see the release condition in
+      // `onPlayerEvent`, which must not require an exact arrival.
+      this.seekIntentActive = true;
+      this.seekIntentPositionMs = undefined;
+      this.patchSnapshot({
+        intent: { ...this.snapshot.intent, positionMs: absoluteStartMs },
+        event: {
+          ...this.snapshot.event,
+          positionMs: absoluteStartMs,
+          durationMs: session.durationMs,
+          paused: this.snapshot.intent.paused,
+          ended: false,
+          // Buffer residency belongs to a source generation. Never carry the
+          // old generation's ranges across a transformed source activation.
+          bufferedRangesMs: [],
+          forwardBufferMs: 0,
+        },
+      });
+      this.log.info('source-presented', {
+        sessionId: session.sessionId,
+        generationStartMs: nextStreamOffsetMs,
         positionMs: absoluteStartMs,
-        durationMs: session.durationMs,
-        paused: this.snapshot.intent.paused,
-        ended: false,
-        // Buffer residency belongs to a source generation. Never carry the old
-        // generation's ranges across a transformed source activation.
-        bufferedRangesMs: [],
-        forwardBufferMs: 0,
-      },
-    });
+      });
+    };
 
     this.log.info('source-activate', {
       sessionId: session.sessionId,
       mode: session.mode,
       source: session.source.url,
-      generationStartMs: this.streamOffsetMs,
+      generationStartMs: nextStreamOffsetMs,
       desiredAbsoluteMs,
       localPositionMs,
-      paused: this.snapshot.intent.paused,
+      paused: startPaused,
     });
 
-    const startPaused = this.snapshot.intent.paused;
     void this.options.player.play(session.source, localPositionMs, startPaused).then((started) => {
       if (this.disposed || activationRevision !== this.sourceActivationRevision) return;
+      present();
       // User intent may have changed while the source was attaching. Reconcile
       // only the delta; source readiness is never a transport-state barrier.
       if (this.snapshot.intent.paused !== startPaused) {
@@ -1755,8 +1839,46 @@ export class PlaybackCoordinator {
     }
 
     const target = this.snapshot.intent.positionMs;
-    if (this.seekIntentActive && !next.seeking && Math.abs(absolutePositionMs - target) <= 1_500) {
-      this.seekIntentActive = false;
+    if (this.seekIntentActive && !next.seeking) {
+      // The fast path: the player reached what was asked for.
+      if (Math.abs(absolutePositionMs - target) <= 1_500) {
+        this.seekIntentActive = false;
+        this.seekIntentPositionMs = undefined;
+      } else {
+        // **It may never reach it, and then this latch is the bug.** It exists
+        // only to stop the transient zero/paused events a source emits while
+        // attaching from overwriting a transport target — a job that is over
+        // within a second or two. Waiting for an exact arrival makes it
+        // permanent whenever the player settles somewhere else, and a host
+        // that replaces a source seamlessly does exactly that: it cuts at the
+        // point the outgoing element actually reached, not at the point core
+        // nominated.
+        //
+        // Measured in the live client: after such a handover the reported
+        // position froze at the new generation's origin and never recovered —
+        // 11 consecutive samples identical to six decimal places while the
+        // element advanced ten seconds, the buffer ran a further 80 s ahead,
+        // and the drawn gap between playhead and buffer *grew* as hls.js
+        // evicted behind a playhead that was not moving. A handover that
+        // abandoned and fell back to the old teardown path tracked correctly,
+        // which is what isolates it. It also silently poisons every later
+        // seek, because each one is computed from the frozen value.
+        //
+        // So the release condition is the player demonstrating it is tracking
+        // — two consecutive non-seeking reports that moved — rather than the
+        // player confirming a number core chose.
+        const previous = this.seekIntentPositionMs;
+        if (previous !== undefined && absolutePositionMs !== previous) {
+          this.log.info('seek-intent-released-on-progress', {
+            targetMs: target,
+            positionMs: absolutePositionMs,
+          });
+          this.seekIntentActive = false;
+          this.seekIntentPositionMs = undefined;
+        } else {
+          this.seekIntentPositionMs = absolutePositionMs;
+        }
+      }
     }
 
     // Media events are observations, not commands. In particular, source swaps
@@ -1771,6 +1893,12 @@ export class PlaybackCoordinator {
     // Read after the patch, so the decision is made on the runway the player
     // has just reported rather than the previous one.
     const pending = this.pendingReplacement;
+    if (pending) {
+      // Every event is proof the player is still talking, so the silence guard
+      // starts again from here rather than counting down against a healthy
+      // source.
+      this.armPendingReplacementGuard();
+    }
     if (pending && !this.seekIntentActive) {
       if (absolute.buffering) {
         // Gone sooner than the arithmetic said. Whatever the figures, the
@@ -2344,17 +2472,49 @@ export class PlaybackCoordinator {
   private startPendingReplacement(session: PlaybackSession, runwayMs: number, leadTimeMs: number): void {
     this.pendingReplacement = session;
     this.patchSnapshot({ preparingSource: false, notice: undefined });
+    this.log.info('replacement-pending', {
+      sessionId: session.sessionId,
+      runwayMs,
+      leadTimeMs,
+    });
+    this.armPendingReplacementGuard();
+  }
+
+  /**
+   * Guard a pending replacement against the player going silent, without
+   * trying to predict when the runway will run out.
+   *
+   * **The first version predicted, and could not.** It armed a timer for
+   * `runway - lead` on the reasoning that a buffer drains a second per second.
+   * It does not: it drains only while the viewer is *playing*, and this whole
+   * fault begins with a pause long enough to have the session reaped. Measured
+   * — a 63.3 s timer spanned 59.4 s of playback across one 3.9 s pause, and
+   * drained 59.2 s of buffer. Exact, and exactly wrong. Every run built on the
+   * timer rather than the runway, so the mechanism never once decided.
+   *
+   * A margin cannot fix that. A margin large enough to survive an arbitrary
+   * pause is large enough never to fire.
+   *
+   * So the runway decides, from player events, which were measured tracking
+   * the element to the millisecond. This only asks whether those events have
+   * stopped arriving at all — and it is disarmed while the viewer is paused,
+   * because a paused element reports nothing and has nothing to report.
+   */
+  private armPendingReplacementGuard(): void {
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
+    this.pendingReplacementTimer = undefined;
+    if (!this.pendingReplacement || this.snapshot.intent.paused) return;
     this.pendingReplacementTimer = setTimeout(() => {
       this.pendingReplacementTimer = undefined;
       const pending = this.pendingReplacement;
       if (!pending || this.disposed) return;
-      this.log.warn('pending-replacement-deadline', {
+      this.log.warn('pending-replacement-player-silent', {
         sessionId: pending.sessionId,
+        silenceMs: PLAYER_SILENCE_GUARD_MS,
         runwayMs: this.runwayMs(),
       });
-      void this.buildReplacement(pending, 'deadline');
-    }, Math.max(0, runwayMs - leadTimeMs));
+      void this.buildReplacement(pending, 'player-silent');
+    }, PLAYER_SILENCE_GUARD_MS);
   }
 
   private discardPendingReplacement(reason: string): void {
