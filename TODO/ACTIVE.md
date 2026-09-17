@@ -8,7 +8,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** `0.11.1` is released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
+**Where things stand.** `0.13.0` is the release in hand — the reaped-session recovery, `not-found`, `lookAheadMs`, and the exported server constants two clients had been restating privately. `0.11.1` was released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **786 tests in 61 files, all passing** as of 2026-09-15. Run all five.
 
@@ -336,7 +336,11 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 
 ---
 
-## P0 — a paused session is reaped and core does not notice
+## P0 — a paused session is reaped and core does not notice — CORE DONE, in `0.13.0`
+
+**Core's half is complete and released.** What remains is the web client's `fail-not-found` teardown change and the three-arm comparison; neither is core's, and neither blocks anyone else. The account below is kept in full because the shape changed three times and each change was forced by a measurement rather than an argument.
+
+
 
 **Built and verified live on `develop` 2026-09-17, unreleased.** Found by the web client, reproduced live twice, fixed in core and in that client together.
 
