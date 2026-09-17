@@ -336,8 +336,30 @@ export interface PlaybackEvent {
   buffering?: boolean;
   /** Buffered media-time ranges reported by the active player. */
   bufferedRangesMs?: PlaybackTimeRange[];
-  /** Contiguous buffered runway ahead of the current media position. */
+  /**
+   * Contiguous buffered runway ahead of the current media position.
+   *
+   * **The element's own buffer and nothing else.** A host that reads ahead
+   * into a cache of its own reports that separately, in `readAheadBytes` —
+   * folding it in here would make one number mean two things, and a consumer
+   * comparing this against a media-time budget would be comparing it against
+   * bytes that are not yet playable.
+   */
   forwardBufferMs?: number;
+  /**
+   * Source bytes a host-side read-ahead holds beyond what the element has
+   * taken, where the host has such a cache at all.
+   *
+   * Direct Play on the web is the case this exists for: the read-ahead worker
+   * holds bytes in front of the element, so `forwardBufferMs` — computed from
+   * `video.buffered` — understates the real cover, on the path most likely to
+   * be serving a large file. Reported as bytes rather than milliseconds
+   * because bytes are what the host honestly knows; converting needs a
+   * bitrate, and the session carries one.
+   *
+   * **Absent means the host has no read-ahead, never that it holds zero.**
+   */
+  readAheadBytes?: number;
   /** Query/credential-free origin currently serving media bytes. */
   streamOrigin?: string;
 }

@@ -103,6 +103,16 @@ interface WireSession {
   stream: {
     url: string;
     mime_type: string;
+    /**
+     * How far past the last fragment requested the node will have produced —
+     * `max_ahead_segments` x `segment_duration_ms`. Server 0.45.0 and later.
+     *
+     * Three states, and collapsing any two of them is a defect. **Absent**:
+     * the node predates the field and cannot say. **`null`**: direct play,
+     * which has no transcode pipeline and therefore no production frontier —
+     * not the same claim as `0`. **A number**: the frontier, in milliseconds.
+     */
+    look_ahead_ms?: number | null;
     subtitle_url: string | null;
   };
   options: {
@@ -439,6 +449,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       mode: wire.mode,
       mimeType: wire.stream.mime_type,
       source,
+      lookAheadMs: wire.stream.look_ahead_ms,
       durationMs: wire.duration_ms,
       seekMs: wire.seek_ms,
       preferences: {

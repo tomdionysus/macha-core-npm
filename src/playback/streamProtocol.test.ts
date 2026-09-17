@@ -6,6 +6,7 @@ import {
   SEGMENT_NOT_READY_STATUS,
   SERVER_SEGMENT_HOLD_MS,
   SERVER_SESSION_IDLE_MS,
+  SERVER_STARTUP_TIMEOUT_MS,
   SOURCE_NOT_FOUND_STATUS,
 } from './streamProtocol.js';
 
@@ -68,6 +69,22 @@ describe('the session idle budget', () => {
     // budget follows below. A client sitting through a hold is still talking to
     // the node and is not what the reaper is for.
     expect(SERVER_SESSION_IDLE_MS).toBeGreaterThan(SERVER_SEGMENT_HOLD_MS * 100);
+  });
+});
+
+describe('what a node is entitled to before it is called broken', () => {
+  it('allows a cold pipeline longer than a single fragment hold', () => {
+    // Bringing a transformed stream up and holding one fragment are different
+    // waits, and a client that budgets the second for the first condemns a
+    // working node. A 5 s preflight against this 15 s entitlement was
+    // discarding healthy standbys before either number was compared.
+    expect(SERVER_STARTUP_TIMEOUT_MS).toBeGreaterThan(SERVER_SEGMENT_HOLD_MS);
+  });
+
+  it('is spent long before the session itself is reaped', () => {
+    // Otherwise a node could be entitled to take longer to start than it is
+    // willing to keep the session that is waiting for it.
+    expect(SERVER_STARTUP_TIMEOUT_MS).toBeLessThan(SERVER_SESSION_IDLE_MS);
   });
 });
 

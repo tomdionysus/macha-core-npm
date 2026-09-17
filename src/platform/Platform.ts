@@ -150,7 +150,32 @@ export interface Player {
   /** Release all source-side resources and cancel active acquisition. */
   stop(): void;
   subscribe(listener: PlaybackListener): () => void;
-  /** Subscribe to terminal source/player failures that require generation teardown. */
+  /**
+   * Subscribe to terminal source/player failures that require generation
+   * teardown.
+   *
+   * **An adapter that reports `not-found` must not tear the presentation down
+   * on it.** That kind means one thing only — the node did not serve this
+   * media — and the buffer the element already holds is unaffected and still
+   * playable. Core may have a replacement generation built and waiting, in
+   * which case the right outcome is for the viewer to watch out their buffer
+   * and be swapped onto the replacement with no visible interruption. An
+   * adapter that destroys its loader, pauses the element or suppresses the
+   * next play request on that kind throws away exactly the cover the recovery
+   * was going to spend. Measured: 82 seconds of it.
+   *
+   * **This obligation is opt-in and arrives with the kind.** An adapter that
+   * never reports `not-found` never reaches the path, and every other kind
+   * keeps the old contract — so a player that tears down on a terminal is
+   * still correct until the day it starts classifying `404`s.
+   *
+   * **What happens when there is no replacement is core's, not the
+   * adapter's.** If recovery is impossible core sets a fatal error on its
+   * snapshot and the owning runtime stops the player. The viewer gets a
+   * stated failure either way; the adapter does not have to manufacture one
+   * by tearing down, and should not, because doing so pre-empts a recovery
+   * that may still be seconds from ready.
+   */
   subscribeFailure?(listener: PlaybackFailureListener): () => void;
   /** Early network evidence while the current buffered source may still play. */
   subscribeDegradation?(listener: PlaybackDegradationListener): () => void;

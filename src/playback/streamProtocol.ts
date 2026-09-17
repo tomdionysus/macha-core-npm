@@ -59,6 +59,31 @@ export const SERVER_SEGMENT_HOLD_MS = 6_000;
 export const SERVER_SESSION_IDLE_MS = 1_800_000;
 
 /**
+ * How long a node may take to bring a transformed stream up before it is
+ * reasonable to call it broken.
+ *
+ * The server's `streaming.startup_timeout_ms`, read off a deployed
+ * `/etc/macha/macha.yaml` on 2026-09-17 rather than from source. **It is the
+ * node's own statement of what it is entitled to**, and a client budget
+ * shorter than it calls a working node broken for doing what it is allowed to
+ * do.
+ *
+ * That had already happened. A standby generation is a freshly created
+ * transcode session, so its pipeline is cold, and the web adapter's preflight
+ * gated it on a 5 s budget — a third of the node's entitlement. Healthy nodes
+ * were rejected and good rescues discarded, silently, because a failed
+ * standby is opportunistic and swallowed by design. A cold first fragment was
+ * measured at 9.0 s, comfortably inside the entitlement and nowhere near the
+ * budget.
+ *
+ * **Derive from this rather than from a measurement.** 9.0 s is one node on
+ * one day; this is the contract. The same caveat as its neighbours applies —
+ * it is a default, no status endpoint reports the real figure, and a client
+ * cannot read it at runtime.
+ */
+export const SERVER_STARTUP_TIMEOUT_MS = 15_000;
+
+/**
  * The statuses the rules above are written in terms of.
  *
  * **Exported because an adapter needs them and will otherwise write its own.**
@@ -93,6 +118,16 @@ export const SOURCE_NOT_FOUND_STATUS = 404;
  * - **`500` — a hold.** The node has not produced this fragment yet and is
  *   working correctly. Retry the same node; the next one is producing a
  *   different generation and does not have it either.
+ *
+ *   **Stated by the server, not inferred from behaviour** (0.45.0): a fragment
+ *   beyond the look-ahead is *refused, not missing* — `500 segment_not_ready`
+ *   with `Retry-After: 1` and `Cache-Control: no-store`, and deliberately
+ *   **never a `404`**, because the playlist has already promised the object
+ *   exists and a `404` would invite an intermediary to cache the absence.
+ *   Retrying is correct and succeeds as production advances. Production is
+ *   sequential, so asking for a distant index does not skip the fragments
+ *   before it — it authorises them and then waits while each one encodes.
+ *   `PlaybackSession.lookAheadMs` is where that boundary is.
  * - **`503` — a broken generation.** Terminal for this source.
  * - **`404` — this node did not serve it.** Either the session is gone or the
  *   fragment is past the end of the plan, and **the status cannot tell you

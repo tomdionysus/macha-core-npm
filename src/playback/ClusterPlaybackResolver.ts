@@ -5,6 +5,9 @@ import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
+import {
+  GENERATION_ATTEMPT_BUDGET_MS,
+} from './PlaybackResolver.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -157,7 +160,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   constructor(
     routerOrRegistry: ClusterEndpointRouter | EndpointRegistry,
     private readonly auth: AuthenticatedFetch = NO_AUTH,
-    private readonly generationAttemptTimeoutMs = 12_000,
+    private readonly generationAttemptTimeoutMs = GENERATION_ATTEMPT_BUDGET_MS,
   ) {
     this.registry = routerOrRegistry instanceof ClusterEndpointRouter
       ? routerOrRegistry.registry
