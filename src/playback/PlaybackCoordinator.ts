@@ -572,6 +572,14 @@ export class PlaybackCoordinator {
    * to land on a target it may never be asked to hit.
    */
   private seekIntentPositionMs?: number;
+  /**
+   * Whether the held transport target was pinned by a source actually being
+   * presented, rather than by a viewer asking to go somewhere.
+   *
+   * The two want opposite treatment from a player that is reporting progress,
+   * and conflating them has now caused a fault in each direction.
+   */
+  private seekIntentPinnedByPresentation = false;
   /** The last position the player itself reported, independent of optimistic seek intent. */
   private lastObservedPositionMs?: number;
   private failoverPromise?: Promise<void>;
@@ -986,6 +994,12 @@ export class PlaybackCoordinator {
     this.lastSeekTransitionAt = Date.now();
     this.positionRevision += 1;
     this.seekIntentActive = true;
+    // Pinned by the viewer, not by a source appearing. Until the generation
+    // they asked for is actually presented, nothing the outgoing source
+    // reports may lower this — it is still playing, still moving, and still
+    // somewhere else entirely.
+    this.seekIntentPinnedByPresentation = false;
+    this.seekIntentPositionMs = undefined;
     if (pendingAtSeek) {
       this.patchSnapshot({ intent: { ...this.snapshot.intent, positionMs: bounded } });
       void this.buildReplacement(pendingAtSeek, 'seek');
@@ -1389,6 +1403,7 @@ export class PlaybackCoordinator {
       // `onPlayerEvent`, which must not require an exact arrival.
       this.seekIntentActive = true;
       this.seekIntentPositionMs = undefined;
+      this.seekIntentPinnedByPresentation = true;
       this.patchSnapshot({
         intent: { ...this.snapshot.intent, positionMs: absoluteStartMs },
         event: {
@@ -1867,8 +1882,22 @@ export class PlaybackCoordinator {
         // So the release condition is the player demonstrating it is tracking
         // — two consecutive non-seeking reports that moved — rather than the
         // player confirming a number core chose.
+        // **Only once the source core asked for is the one being reported.**
+        // Movement alone is not evidence: during a seek that needs a new
+        // generation the *outgoing* source is still playing and still
+        // reporting progress, so releasing on movement discards the viewer's
+        // target within a frame of them letting go of the scrubber. Measured:
+        // released 65 ms after the request with the reported position and the
+        // target 685 seconds apart, and the generation was then created at the
+        // position the viewer was already at. The scrubber snapped back.
+        //
+        // That is the same fault as the freeze this replaced, in the other
+        // direction — the latch driven by "is the player moving" when the
+        // question is "has what core asked for been presented". Never released
+        // became released instantly. `present()` is the answer to the real
+        // question and it already exists.
         const previous = this.seekIntentPositionMs;
-        if (previous !== undefined && absolutePositionMs !== previous) {
+        if (this.seekIntentPinnedByPresentation && previous !== undefined && absolutePositionMs !== previous) {
           this.log.info('seek-intent-released-on-progress', {
             targetMs: target,
             positionMs: absolutePositionMs,

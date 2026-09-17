@@ -2089,6 +2089,41 @@ describe('a player that settles somewhere other than core asked for', () => {
     await coordinator.close();
   });
 
+  it('does not let the outgoing source talk the viewer out of a seek', async () => {
+    // A regression this fix caused once already, caught by the viewer dragging
+    // the scrubber. The release had been widened to "the player is moving",
+    // but during a seek that needs a new generation the OUTGOING source is
+    // still playing and still reporting progress — so the target was discarded
+    // 65 ms after the request, with the reported position and the target 685
+    // seconds apart, and the generation was created at the position the viewer
+    // was already at. The scrubber snapped back.
+    //
+    // Movement is not the question. The question is whether what core asked
+    // for is being shown yet.
+    const player = new FakePlayer();
+    const current = session({ mode: 'transcode', seekMs: 100_000 });
+    const api = resolver(current, async (update) => session({
+      sessionId: 's2', mode: 'transcode', seekMs: update.seekMs ?? 0,
+    }));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 150_000,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 50_000, durationMs: 600_000, paused: false, ended: false });
+
+    coordinator.seek(500_000);
+    // The outgoing source plays on while the generation is negotiated.
+    player.emit({ positionMs: 50_200, durationMs: 600_000, paused: false, ended: false });
+    player.emit({ positionMs: 50_400, durationMs: 600_000, paused: false, ended: false });
+    await flush();
+
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(500_000);
+    await vi.waitFor(() => expect(api.update).toHaveBeenCalled());
+    // The generation must be asked for where the viewer pointed.
+    expect(api.update.mock.calls.at(-1)?.[1].seekMs).toBe(500_000);
+    await coordinator.close();
+  });
+
   it('still ignores the transient events a source emits while attaching', async () => {
     // The latch has a job and this is it: one zero-position report during
     // attachment must not drag the viewer back to the start of the film.
