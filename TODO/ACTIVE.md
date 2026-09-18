@@ -10,7 +10,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Where things stand.** `0.13.0` is the release in hand — the reaped-session recovery, `not-found`, `lookAheadMs`, and the exported server constants two clients had been restating privately. `0.11.1` was released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
-**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **786 tests in 61 files, all passing** as of 2026-09-15. Run all five.
+**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **885 tests in 63 files, all passing** as of 2026-09-18. Run all five.
 
 **Build LAST, after the final `git checkout`.** `dist:check` compares mtimes, and a branch switch rewrites every source file's. So "build, merge to `main`, tag, checkout `develop`" leaves `dist` stale **even though no source changed**, and every client's `pretest` then refuses. This happened on the `0.10.0` release and blocked a client until it was caught. Core reported "dist is current" in good faith and was wrong within the minute.
 
@@ -336,6 +336,76 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 
 ---
 
+## P0 — core does not implement the seek contract, and reports every position in a remux generation too early
+
+**Waiting on:** core. **Raised 2026-09-18.** Viewer-visible, measured live, and the reason it exists is that **core was not reading the specification.**
+
+### What the contract says
+
+`macha/docs/streaming.md`, section *"Where a seek actually starts"*, shipped in server `0.46.0` and live on both nodes. Three flat fields on the session payload, on create and on every `PATCH`:
+
+- **`seek_ms`** — where the generation's media actually begins: the first sample the client receives.
+- **`seek_offset_ms`** — how far into that generation the requested position sits.
+- **`seek_requested_ms`** — the position the server honoured, after clamping to `[0, duration - 1 ms]`.
+
+```text
+seek_ms + seek_offset_ms == seek_requested_ms
+```
+
+Exact, integer milliseconds, no tolerance. `seek_offset_ms` is never negative. Per mode: transcode and direct are always `0`; **remux** begins at the last indexed keyframe at or before the request and carries the remainder as the offset. The document states the client's obligation directly:
+
+> **The client attaches at `seek_offset_ms` within the first fragment, so the pre-roll is fetched but never presented.**
+
+`seek_requested_ms` exists so a client can tell a violated invariant from an ordinary clamp near the end of a title — the document says so explicitly, and those want opposite handling.
+
+### What core does instead
+
+Nothing. It reads `seek_ms`, and derives its own local position as `intent - seekMs`.
+
+- **It never attaches at `seek_offset_ms`.** The derivation happens to agree when the requested position is still the current one, and diverges silently otherwise.
+- **It never checks the invariant**, so a `seek_ms` carrying the wrong quantity is undetectable and would be reported as a viewer position.
+- **`activationPosition` still carries a branch for "the generation starts after the requested position"**, which the contract makes unreachable — the server session said plainly to delete it rather than tune it. It is the branch that livelocked a seek on 2026-09-17 and it should not survive.
+
+The wire and domain fields are **typed but not consumed** as of this entry: `WireSession.seek_offset_ms`, `WireSession.seek_requested_ms`, `PlaybackSession.seekOffsetMs`, `PlaybackSession.seekRequestedMs`, mapped in `mapSession`. Nothing reads them.
+
+### The measured symptom
+
+From the web client, on `0.46.0`, remux, title 2464.462 s:
+
+| | |
+|---|---|
+| real generation origin | 2464.462 - 1748.9 = **715.56 s** |
+| origin core reports | **733.68 s**, constant to two decimals across 52 s of 100 ms samples |
+| difference | **18.12 s**, with the displayed playhead *ahead* of the picture |
+
+Control, same run: a seek the node landed on exactly, `seek_offset_ms` zero — core agreed with the element to within the readout's 1 s resolution. **So core's error is exactly `seek_offset_ms`.**
+
+**The viewer-visible consequence is what Tom reported as "odd jumping around the timeline, no user interaction".** Every generation has a different offset — 0, 449 ms, 1810.8 ms, 4779 ms, 8933 ms, 9293.9 ms and 18.12 s measured across this cluster — so the reported position lurches by the *difference* between the old offset and the new one on **every automatic regeneration**: reap recovery, quality change, failover. Nobody touches anything and the timeline moves. A seek also lands `seek_offset_ms` early, because core converts the target through the same wrong origin; self-consistent, so admission still works, just systematically early.
+
+### Whose fault is which half
+
+**The client has attributed the reporting arithmetic to itself and is fixing it there.** `WebMediaTimeline` establishes its origin on the first sample where `currentTime` sits inside the buffered range — `loadedmetadata` at `currentTime` 0 — and so derives `origin = -18120` when core attaches at a non-zero position.
+
+**What the client asks core to know:** any `play()` with `positionMs > 0` that takes the teardown path hits that, not only a snapped seek. A failover activation carrying `continue`, at a position the viewer has since moved past, falls through to teardown whenever a handover cannot be set up — straight after Direct Play, for instance — and arrives with `positionMs > 0`. **The server has stopped snapping, which removes the seek case but not that one.** The client has not reproduced that case live and says so; it has the arithmetic only.
+
+**Core's half is that it is not implementing the contract at all**, which is separate from whose arithmetic is wrong and is true regardless of how the client's origin logic behaves.
+
+### Two more from the same client report, both core's
+
+1. **The failure message names the cause, not the end.** A viewer saw *"The node no longer has this source, and the buffer has run out"* while the log ended with `generation-attempt-failed` after 12 s, then `source-failover-exhausted`. By construction: `terminalRecoveryError` returns the *originating* error and keeps the failover error only as `.cause`. That was deliberate — it stopped the screen naming a node the session had never been on — but it now hides what actually ended playback. **Decide one of:** core composes a message naming both, or the `Player`/snapshot contract states that hosts render `.cause`. The client will do its side either way and is waiting on which. Composing in core is the better half: four clients will otherwise each decide separately whether to unwrap.
+
+2. **`GENERATION_ATTEMPT_BUDGET_MS` is 12 s against a measured 11.7 s encode.** The server's journal for a seek to 1,500,000 ms: fast path ~1 ms, container seek 39 ms, **first fragment ready after 11,672 ms** — 4K HEVC decoded and re-encoded to H.264 in software on a Pi for a 2 s fragment. The client measured `session-update` round trips of 13,433 ms and 10,422 ms. On expiry `awaitWithEndpointDeadline` rejects, `releaseGenerationAdmittedLate` DELETEs a generation that landed 1.4 s later, and failover starts **the same encode from scratch on another node** — so the viewer gets a failure screen instead of a wait, and the cluster does the work twice.
+
+   **The asymmetry says raise it.** A genuinely dead node fails at the transport layer in well under a second; this budget only ever bites a node that is working but slow, and abandoning a working encode is strictly worse than waiting for it. Derive it rather than pick it — `SERVER_STARTUP_TIMEOUT_MS` (15 s) is what a node is *entitled* to take to bring a stream up, and the client's preflight budget is already `startup + hold + margin` for exactly this reason.
+
+### How this was missed, which is the part worth keeping
+
+The specification has been in `macha/docs/streaming.md` throughout. Core answered the server session's design questions about these fields, agreed the shape, agreed `seek_requested_ms` was worth a field, and then **did not read the document or implement any of it** — and stated in writing to the client session that the field was "a different field from today" and that core had not been asked to do the work. Both claims were wrong and checkable in one grep.
+
+Twice on 2026-09-17 a client session had to correct core for asserting a mechanism across the boundary without reading the code that implements it. This is the same fault against a *document*, which is cheaper to read than source and was written precisely so nobody had to infer the contract. **Read `macha/docs/streaming.md` before touching the seek path.**
+
+---
+
 ## P0 — a paused session is reaped and core does not notice — CORE DONE, in `0.13.0`
 
 **Core's half is complete and released.** What remains is the web client's `fail-not-found` teardown change and the three-arm comparison; neither is core's, and neither blocks anyone else. The account below is kept in full because the shape changed three times and each change was forced by a measurement rather than an argument.
@@ -481,6 +551,20 @@ The client can supply it — `directPlayReadAheadMetrics` already carries `resid
 **Kept separate from the P0 above on purpose.** It is what made the reaped-session failure *look* like a node problem: the screen named the `http` node the failover had just tried, so the report went to a machine that was never involved. Conflating them is how a day was spent in the wrong place, and merging them here would repeat that.
 
 **The shape, and why it is not simply "filter by scheme".** Core is no-DOM by construction — `npm run lint:platform` is the gate — so it cannot read `location.protocol`, and it must not sniff. The fact has to arrive from the host, which makes this a contract question rather than a filter: something like a stated page scheme on `MachaHost`, or an eligibility predicate the registry consults. Both are public surface. **Do not implement before the shape is settled**, and note the constraint that makes it awkward: the same endpoint list is correct for a React Native client, which has no page scheme at all and can reach both.
+
+### The standby windows are bounded by a server number nobody had read — `pipeline_idle_ms`
+
+**Waiting on:** the server for one open question, then core. **Found 2026-09-18** while bounding something else, and it is the same shape as the `look_ahead_ms` fault: a client constant sized against a server default that is configurable and on the wire.
+
+`ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` is 8 s and `ALTERNATE_RECOVERY_WINDOW_MS` is 30 s. A node reclaims an idle pipeline at `streaming.pipeline_idle_ms` — **default 60000, configured minimum 10000**, reported live by `GET /api/v1/playback/status` as `pipeline_idle_ms` alongside `idle_pipelines_reclaimed`.
+
+A standby is created, preflighted with one byte fetch, and then **not requested again until it is promoted**. So on a node at the 10 s floor the 30 s window outlives the pipeline by 20 s, and the 8 s window clears it by 2 s. Both numbers were chosen against what a standby costs the node, with no knowledge that the node would take it away.
+
+**What reclamation takes, from the server: the physical pipeline is stopped and the generation directory removed. The session id, its capability and its transcode entitlement survive.** So a reclaimed standby is not obviously dead — and whether a fragment request afterwards revives the pipeline or fails is **not established**. The server has that open and marked open; nobody should treat a reclaimed generation as recoverable until it is answered.
+
+**If it does not revive**, a promoted standby on a short-idle node hands the viewer a generation whose media is gone, which is worse than having no standby at all. **If it does revive**, the windows only cost a cold start on promotion and the present numbers are merely unlucky rather than wrong.
+
+Either way the fix is the same shape as `look_ahead_ms`: read `pipeline_idle_ms` from the node and assert the windows against it, rather than pinning a figure. **Do not hardcode 60 s** — that is the default, not the contract, and the whole class of fault this repository keeps recording is a client believing a default.
 
 ### A 5 s preflight budget has been throwing away healthy standbys, silently
 
@@ -686,6 +770,21 @@ All three are defects in what core ships, not in client discipline:
 1. **Refs arriving with no `url` at all** render as a placeholder on a client that cannot set headers: `artworkUrls` falls back to per-node authenticated URLs and a client filtering `requiresAuthorization` is left with nothing. Probably refs reconstructed from persisted state rather than a fresh catalogue read. The Android TV client is tracing where they come from; **if they originate in core's own persisted state, it is core's.**
 2. **An expired capability is not re-hosted**, so a client filtering authenticated sources keeps one dead URL and the walk finds nothing. Bounded and rare now: `expiredCapability` cannot fire on a freshly read payload — the server's bucket guarantees more than one TTL of validity — so this survives only for a payload held **across a bucket boundary** (persisted state, a long idle).
 3. **The Blob path never teaches the host preference**, because `ClusterCatalogueApi` walks internally and returns bytes. **Deliberately not plumbed out:** that path fetches the *authenticated* per-node URL, a different cache key, so a success there says a node serves artwork and says nothing about whether the platform holds capability-keyed bytes for that host. Moving the preference on it would act on evidence that does not bear on the question. Revisit only if a cluster turns up where the Blob path is the normal one rather than the fallback.
+
+### Ask the server to report `pipeline_idle_ms` where the other two budgets are
+**Waiting on:** Tom to reopen the server channel, then the server. **Not started, and the server has not been asked.**
+
+Server `0.46.2` reports `startup_timeout_ms` and `segment_timeout_ms` per node, in a `playback` object on the per-node entries of `GET /api/v1/status`. Core reads both and derives every deadline that descends from them. **`pipeline_idle_ms` is a third figure of exactly the same character, it is relevant to core, and it is in the wrong place to be read.**
+
+**What it bounds, and why it is ours.** It is how long a client may hold a generation before first requesting media, after which the node reclaims the physical remux/transcode pipeline. A standby is precisely that: created on another node, deliberately never streamed from, held against a failure that may not come. `ALTERNATE_RECOVERY_WINDOW_MS` holds remux and direct standbys for **30 s**; the default is 60,000 so today there is room, but the configured floor is **10,000**. On a node at or near that floor core would keep a standby it believes is warm for up to 20 s after the pipeline behind it was reclaimed, and find out at the moment of failover — the one moment the standby exists to make fast. `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` is 8 s and is safe at any configuration.
+
+**Not a live bug.** Both nodes run the 60,000 default, so nothing is broken on this cluster today. It is the same class as the 12,000-against-15,000 attempt budget: a core constant whose safety depends on a server value core cannot read, which held until someone reconfigured a node.
+
+**Why it is not already done.** It is reported on `GET /api/v1/playback/status`, a per-endpoint route core does not poll. Reading it there means a second per-endpoint request every cycle alongside the health probe, which is the Law 1 cost we deliberately declined when choosing where the other two budgets should live — and it cannot ride on the existing probe, because `probeEndpoint` tolerates a session without `media_viewer` on purpose so a gated node ends up ungraded rather than condemned (`EndpointHealthMonitor.ts:141`).
+
+**The ask, when the channel reopens:** move or copy `pipeline_idle_ms` into the same per-node `playback` object as the other two. It is each node's statement about itself, it moves under `reconfigure()` exactly as they do, and core already reads that payload every 10 s for endpoint discovery and capacity. Zero new requests, and the standby window stops being a guess. If the server prefers to leave it where it is, the fallback is for core to bound `ALTERNATE_RECOVERY_WINDOW_MS` by the configured floor of 10,000 rather than the default — correct but wasteful, since it would shorten every standby on every node to protect against a configuration almost nobody runs.
+
+**Do not close this by tuning the 30 s.** The number is not the fault; reading a figure the node already knows is the fix, and the whole point of the 0.46.2 work was to stop core holding private copies of server configuration.
 
 ---
 

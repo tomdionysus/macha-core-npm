@@ -221,6 +221,23 @@ export async function discoverClusterEndpoints(
         ...(node.storage?.free_bytes !== undefined ? { storageAvailableBytes: node.storage.free_bytes } : {}),
         observedAt,
       });
+      // Deadlines rather than load, and recorded even when the node reports
+      // neither: an entry that says "this node has been heard from and said
+      // nothing" is different from no entry at all, and the difference is what
+      // stops a stale figure surviving a node that has stopped reporting one.
+      //
+      // Read here rather than from the session payload because the budget has
+      // to be known for a node this client may be about to fail over to, before
+      // it has ever created a session there.
+      registry.recordPlaybackBudgets(endpointId(node.api_endpoint!), {
+        ...(node.playback?.startup_timeout_ms !== undefined
+          ? { startupTimeoutMs: node.playback.startup_timeout_ms }
+          : {}),
+        ...(node.playback?.segment_timeout_ms !== undefined
+          ? { segmentTimeoutMs: node.playback.segment_timeout_ms }
+          : {}),
+        observedAt,
+      });
     }
   } catch {
     // Membership discovery is opportunistic. Health probing of already-known

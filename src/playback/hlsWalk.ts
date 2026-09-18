@@ -38,6 +38,23 @@ import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
  */
 export const HLS_WALK_TIMEOUT_MS = SERVER_SEGMENT_HOLD_MS + 2_000;
 
+/** How far above a node's hold a walk deadline sits. The relationship, named. */
+export const HLS_WALK_HOLD_MARGIN_MS = 2_000;
+
+/**
+ * The hold this source's node actually enforces.
+ *
+ * **Prefers what the node said over what this package guessed.** Every figure
+ * above is expressed as "the hold, plus room", and until a node reported its
+ * own `segment_timeout_ms` the hold could only be a compiled-in assumption.
+ * Where the node has stated one, that is the number the relationship was
+ * always meant to be built on; `SERVER_SEGMENT_HOLD_MS` remains the answer for
+ * a node too old to say, and only for that.
+ */
+function sourceHoldMs(source: PlaybackSource): number {
+  return source.budgets?.segmentHoldMs ?? SERVER_SEGMENT_HOLD_MS;
+}
+
 /** How much of a media target preflight reads before deciding bytes are flowing. */
 export const HLS_PREFLIGHT_RANGE = 'bytes=0-65535';
 
@@ -78,7 +95,15 @@ export interface HlsWalkOptions {
   fetch: HlsWalkFetch;
   /** Caller cancellation, composed with this module's own deadline. */
   signal?: AbortSignal;
-  /** Overrides {@link HLS_WALK_TIMEOUT_MS}. Must stay above `SERVER_SEGMENT_HOLD_MS`. */
+  /**
+   * Overrides the derived deadline. Must stay above the serving node's hold.
+   *
+   * Left unset, the deadline comes from what the node itself reports through
+   * `PlaybackSource.budgets`, falling back to {@link HLS_WALK_TIMEOUT_MS} only
+   * for a node that does not report one. Passing a fixed value here opts out of
+   * that and re-accepts the risk the constant was written about: a deadline
+   * below the hold aborts before the node answers.
+   */
   timeoutMs?: number;
 }
 
@@ -280,7 +305,10 @@ async function walkFetch(
   const onConsumerAbort = () => controller.abort();
   consumerSignal?.addEventListener('abort', onConsumerAbort, { once: true });
   if (consumerSignal?.aborted) onConsumerAbort();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? HLS_WALK_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? sourceHoldMs(source) + HLS_WALK_HOLD_MARGIN_MS,
+  );
   try {
     return await options.fetch(url, {
       method: 'GET',
@@ -375,15 +403,15 @@ async function receivedBytes(response: Response): Promise<ByteEvidence> {
 export const HLS_MAX_RETRY_AFTER_MS = 60_000;
 
 /** `Retry-After` in seconds, or an HTTP-date. Absent or unparseable falls back to the hold. */
-function retryAfterMs(response: Response): number {
+function retryAfterMs(response: Response, holdMs: number): number {
   const header = response.headers?.get?.('retry-after');
-  if (!header) return SERVER_SEGMENT_HOLD_MS;
+  if (!header) return holdMs;
   const clamp = (ms: number) => Math.min(HLS_MAX_RETRY_AFTER_MS, Math.max(0, Math.round(ms)));
   const seconds = Number(header);
   if (Number.isFinite(seconds) && seconds >= 0) return clamp(seconds * 1_000);
   const date = Date.parse(header);
   if (Number.isFinite(date)) return clamp(date - Date.now());
-  return SERVER_SEGMENT_HOLD_MS;
+  return holdMs;
 }
 
 /** The message of a thrown value, where it has one worth reporting. */
@@ -510,7 +538,7 @@ export async function probeHlsReadiness(
     } catch (error) {
       return { state: 'unavailable', detail: causeDetail(error) };
     }
-    if (response.status === 500) return { state: 'holding', retryAfterMs: retryAfterMs(response) };
+    if (response.status === 500) return { state: 'holding', retryAfterMs: retryAfterMs(response, sourceHoldMs(source)) };
     if (!response.ok) return { state: 'unavailable', status: response.status };
   }
   return { state: 'ready' };

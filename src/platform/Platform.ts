@@ -74,6 +74,17 @@ export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-read
  * before seamless replacement existed, which is to attach and let it show. A
  * host that ignores this argument is therefore still correct; only a host that
  * can hide the change needs to know when it should.
+ *
+ * **`continue` is a request, never a guarantee, and core must not reason as
+ * though it were one.** Whether a change can be hidden is a property of the
+ * two sources, not of the reason for the change. A host replacing one managed
+ * HLS generation with another can prepare the replacement alongside and cut
+ * between them; a host leaving **Direct Play** cannot, because there is no
+ * second managed presentation to hand over to, so the transition falls through
+ * to an ordinary attach however it is labelled. That fall-through is correct
+ * and expected. Core should still say `continue` where it means it — the host
+ * honours it when it can — but nothing in core may treat the label as evidence
+ * that the viewer saw nothing.
  */
 export type PlaybackTransition = 'continue' | 'relocate';
 

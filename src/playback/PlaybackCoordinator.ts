@@ -1,6 +1,7 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
+import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -26,6 +27,24 @@ export interface PlaybackCoordinatorSnapshot {
   starting: boolean;
   preparingSource: boolean;
   pendingPreferences?: PlaybackPreferencesUpdate;
+  /**
+   * Why playback stopped and could not be recovered — **a chain, not a
+   * message.**
+   *
+   * Core does not decide what a viewer is shown. This carries everything core
+   * knows, leading with the failure that started the recovery, with each
+   * further `cause` a later stage of it: for an exhausted failover, the head is
+   * the source failure that began the walk and the tail is the attempt that
+   * ended it. Those are routinely about different nodes, and a host that
+   * renders only the head tells a viewer the node lost the source while never
+   * saying that nothing else could serve it either.
+   *
+   * **A host is expected to walk it**, and to choose how much of it a given
+   * surface deserves — a television and a diagnostics panel want different
+   * amounts of the same chain, and only the host knows which it is. A
+   * `PlaybackSourceError` anywhere in the chain keeps its `kind`, so a host can
+   * classify without parsing prose.
+   */
   fatalError?: Error;
   notice?: string;
   /**
@@ -252,6 +271,40 @@ export const REPLACEMENT_LEAD_TIME_MS = 26_000;
  * the segment boundary the node actually produced to.
  */
 export const LOOK_AHEAD_MARGIN_MS = 4_000;
+
+/**
+ * How much runway a replacement needs before the buffer runs out.
+ *
+ * Three quantities meet here and only one of them is about time to spare:
+ *
+ * - `REPLACEMENT_LEAD_TIME_MS` is the ceiling, a judgement about how early is
+ *   too early to start.
+ * - The node's look-ahead is the frontier, and starting nearer to it than
+ *   `LOOK_AHEAD_MARGIN_MS` risks arriving at a fragment the node has not
+ *   produced.
+ * - `attemptBudgetMs` is the floor, and it is not negotiable: **a replacement
+ *   started with less runway than one attempt needs cannot finish in time, so
+ *   leading by less than it guarantees the outcome the lead time exists to
+ *   prevent.**
+ *
+ * The clamp and the floor can genuinely conflict, because the look-ahead is
+ * derived from an unrelated quantity — the node's `max_ahead_segments` times
+ * its segment duration. A node configured with four four-second segments
+ * clamps to 12,000, under a single attempt against a node entitled to 15,000
+ * plus transport. When they disagree the floor wins: arriving slightly past
+ * the frontier is a retryable `500` that resolves as production advances,
+ * while running dry is a black screen.
+ */
+export function replacementLeadTimeMs(
+  lookAheadMs: number | null | undefined,
+  attemptBudgetMs: number,
+): number {
+  if (typeof lookAheadMs !== 'number' || !Number.isFinite(lookAheadMs)) {
+    return Math.max(REPLACEMENT_LEAD_TIME_MS, attemptBudgetMs);
+  }
+  const clamped = Math.min(REPLACEMENT_LEAD_TIME_MS, Math.max(0, lookAheadMs - LOOK_AHEAD_MARGIN_MS));
+  return Math.max(clamped, attemptBudgetMs);
+}
 const UNCACHED_SEEK_DEBOUNCE_MS = 300;
 
 
@@ -381,29 +434,50 @@ function isMissingSourceFailure(error: unknown): boolean {
 }
 
 /**
- * What a viewer is shown when recovery ran out of options.
+ * Everything core knows about why recovery ran out of options, in one chain.
  *
- * It leads with the failure that **started** the recovery rather than the one
- * that ended it, because those are routinely about different nodes. A source
- * failure on the node holding the session sends the walk to every other
- * candidate, and `create()` throws the last of those to refuse — so reporting
- * that one names a node the session was never on.
+ * **Core supplies context; the host decides what a viewer sees.** Presentation
+ * is the host's — it knows the surface, the audience and how much detail is
+ * appropriate — so nothing here composes viewer-facing prose or picks which
+ * half of the story matters. What core owes is not to lose anything it holds,
+ * and to put it somewhere a host can find without being told the shape.
  *
- * Observed live on 2026-09-17: the session was on es-1, the walk ended on
+ * The chain leads with the failure that **started** the recovery, which is the
+ * one worth defaulting to: a source failure on the node holding the session
+ * sends the walk to every other candidate, and `create()` throws the last of
+ * those to refuse — so leading with *that* names a node the session was never
+ * on. Observed live on 2026-09-17: the session was on es-1, the walk ended on
  * fi-1, and the screen read `Macha endpoint http://10.35.1.50:7438 failed:
- * Failed to fetch` — fi-1's address, for a session fi-1 had never held. The
- * report went to the wrong node, and so did a day of diagnosis.
+ * Failed to fetch` — fi-1's address, for a session fi-1 had never held. A day
+ * of diagnosis went to the wrong node.
  *
- * The last attempt is kept as `cause` rather than dropped: "and nothing else
- * could serve it either" is the other half of what happened, and a host
- * building a diagnostic trail wants both. The originating error object itself
- * is returned rather than a copy of its message, so a `PlaybackSourceError`
- * reaches the host with its `kind` intact.
+ * **But "what ended it" is the other half and must survive**, because leading
+ * with the originating failure alone tells a viewer the node lost the source
+ * and never that nothing else could serve it either. A host wanting to say
+ * both, or to say only the second, walks `cause`.
+ *
+ * The originating error object itself is returned rather than a copy of its
+ * message, so a `PlaybackSourceError` reaches the host with its `kind` intact.
+ *
+ * **Appended at the tail rather than only onto an empty `cause`.** The earlier
+ * form attached the ending failure only when `originating.cause` was unset,
+ * which meant an originating error that already carried one — and
+ * `PlaybackSourceError` takes a cause in its constructor — silently discarded
+ * the ending. That is core deciding a host does not need something core is
+ * holding, which is exactly the judgement that does not belong here.
  */
-function terminalRecoveryError(originating: Error, lastAttempt: unknown): Error {
-  if (lastAttempt instanceof Error && lastAttempt !== originating && originating.cause === undefined) {
-    originating.cause = lastAttempt;
+export function terminalRecoveryError(originating: Error, lastAttempt: unknown): Error {
+  if (!(lastAttempt instanceof Error) || lastAttempt === originating) return originating;
+  // Walking a chain that something upstream may have made cyclic must not hang
+  // the failure path: a viewer waiting on a hung error report is strictly worse
+  // than one told slightly less.
+  const seen = new Set<Error>([originating]);
+  let tail = originating;
+  while (tail.cause instanceof Error && !seen.has(tail.cause)) {
+    tail = tail.cause;
+    seen.add(tail);
   }
+  if (!seen.has(lastAttempt)) tail.cause = lastAttempt;
   return originating;
 }
 
@@ -872,9 +946,12 @@ export class PlaybackCoordinator {
           },
         });
       } else {
-        // A transformed server may keyframe-align the requested generation after
-        // the exact requested point. When this is the generation we explicitly
-        // requested, accept that alignment rather than creating a retry loop.
+        // A transformed generation rarely begins exactly where it was asked to.
+        // Since server 0.46.0 a remux begins at the last keyframe at or
+        // *before* the request and reports the remainder as `seek_offset_ms`,
+        // so the requested position is inside the generation and activation
+        // simply attaches at it. Older nodes aligned the other way, after the
+        // request; `activationPosition` is where that difference is handled.
         this.activateSession(session, currentDesired, 'relocate');
       }
     } catch (error) {
@@ -1057,45 +1134,35 @@ export class PlaybackCoordinator {
   ): number | undefined {
     const localPositionMs = generationLocalPosition(session, desiredAbsoluteMs);
     if (localPositionMs !== undefined) return localPositionMs;
-    // The generation starts *ahead* of where the viewer is. A transformed
-    // server aligns the requested point to the next keyframe, so a generation
-    // asked for at X can begin a segment later — and if the viewer travelled
-    // less than that while it was being negotiated, they are now behind its
-    // own origin.
+
+    // Nothing in this generation corresponds to where the viewer is: it begins
+    // after them. What to do about that depends entirely on *why*, and the two
+    // reasons want opposite handling.
     //
-    // **Accepted at local zero rather than renegotiated**, which is a change
-    // of mind about what this costs. The old test was exact equality of
-    // requested and desired, which holds only if playback did not advance
-    // during the request — true for a paused seek and false for every
-    // recovery, because creating a session takes seconds and the viewer
-    // spends them watching. Measured against `es-1`: a session created in
-    // 3.81 s while segments are 4 s long, so alignment routinely outruns the
-    // travel, and the fallback then queued a whole second generation. That
-    // cost **6.21 s of frozen picture** — larger than every other slice of
-    // the recovery budget combined, for a jump forward of less than one
-    // segment.
+    // **A node that reports `seekOffsetMs` cannot have overshot.** The 0.46.0
+    // contract begins a remux generation at the last keyframe at or *before*
+    // the request and carries the remainder as the offset, so the generation
+    // always contains the position that was asked for. Reaching here against
+    // such a node therefore means the viewer moved *backwards* while it was
+    // being negotiated — a seek they made, not an alignment artefact. So
+    // renegotiate, which is what returning `undefined` asks the callers to do.
     //
-    // The tolerance is bounded so a real backwards seek still negotiates: a
-    // viewer who moves behind a generation by more than one alignment step
-    // means it, and skipping to the generation's origin would silently ignore
-    // them.
-    // The generation starts *ahead* of where the viewer is, so there is no
-    // position inside it that corresponds to where they were. Its own origin
-    // is the earliest thing it can offer, and that is what they get.
+    // **That is only safe because the snap direction changed.** Rejecting was
+    // tried before and livelocked: a node aligning *forward* is deterministic,
+    // so asking again for the same position returned the same unusable
+    // generation for ever. Measured — 147 negotiations in 33.3 s, every
+    // `serverSeekMs` identical, nothing ever activated, the viewer's seek never
+    // happening and the node taking four requests a second for its trouble.
+    // Against a backward-snapping node the next answer contains the request, so
+    // it converges in one round; against a forward-snapping one it cannot
+    // converge at all.
     //
-    // **Accepted at any distance, and rejecting is not available.** A bound
-    // here was tried and livelocked: a node's alignment is deterministic, so
-    // asking again for the same position returns the same generation, for ever.
-    // Measured — 147 negotiations in 33.3 s, every `serverSeekMs` identical,
-    // nothing ever activated, the viewer's seek never happened and the node
-    // took four requests a second for its trouble. Rejecting cannot converge
-    // when the answer does not change.
-    //
-    // So the overshoot is the server's to fix and cannot be corrected here.
-    // What core owes is not to *lie* about it: the position reported is this
-    // generation's real origin, not the position that was asked for, so a
-    // viewer who lands 8.9 s late sees that they did rather than losing 8.9 s
-    // of film invisibly.
+    // Hence the gate, rather than deleting the fallback outright: `undefined`
+    // means the node predates 0.46.0 and may still snap forward, and for those
+    // the only terminating behaviour is to take the generation's own origin.
+    // Reporting that origin rather than the position asked for is what stops a
+    // viewer who lands 8.9 s late losing 8.9 s of film invisibly.
+    if (session.seekOffsetMs !== undefined) return undefined;
     return 0;
   }
 
@@ -2420,11 +2487,10 @@ export class PlaybackCoordinator {
    * which has no pipeline and no frontier to overshoot, so nothing bounds it.
    */
   private leadTimeMs(session: PlaybackSession): number {
-    const lookAheadMs = session.lookAheadMs;
-    if (typeof lookAheadMs !== 'number' || !Number.isFinite(lookAheadMs)) {
-      return REPLACEMENT_LEAD_TIME_MS;
-    }
-    return Math.min(REPLACEMENT_LEAD_TIME_MS, Math.max(0, lookAheadMs - LOOK_AHEAD_MARGIN_MS));
+    return replacementLeadTimeMs(
+      session.lookAheadMs,
+      session.source.budgets?.deadlineMs ?? generationAttemptBudgetMs(),
+    );
   }
 
   private runwayMs(): number {

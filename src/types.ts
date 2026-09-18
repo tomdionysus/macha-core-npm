@@ -287,6 +287,43 @@ export interface MediaTechnicalProfile {
 
 export type PlaybackMode = 'direct' | 'remux' | 'transcode';
 
+/**
+ * The deadlines that apply to acquiring one source from one node.
+ *
+ * **The division here is the contract between core and a host: core owns when
+ * to stop, the host owns what happens until then.** A host that invents its own
+ * stop time and a core that dictates retry behaviour are the two ways this goes
+ * wrong, and both have happened — a deadline living in two layers is a deadline
+ * nobody owns.
+ */
+export interface PlaybackSourceBudgets {
+  /**
+   * How long a host may spend acquiring this source before giving up on this
+   * node. Core's figure, derived from what the node says about itself plus the
+   * measured distance to it.
+   *
+   * **Not a target and not a prediction.** Most acquisitions finish far inside
+   * it; it is the point past which waiting longer is worse than trying
+   * elsewhere. A host must not shorten it on its own authority, because the
+   * shorter of two deadlines silently wins and the other layer then looks
+   * broken.
+   */
+  deadlineMs: number;
+  /**
+   * How long this node holds a request for a fragment it has not produced yet
+   * before answering `500 segment_not_ready`.
+   *
+   * **A hold is the node working, not the node failing.** A host waiting inside
+   * `deadlineMs` uses this to tell a node that is producing from one that is
+   * not: a refusal after roughly this long is the expected answer at the
+   * production frontier and is worth retrying, while a transfer that never
+   * became a response is evidence about the node. Nothing here says how many
+   * holds are worth sitting through — that is the host's, and it is the part
+   * core cannot see from where it sits.
+   */
+  segmentHoldMs: number;
+}
+
 export interface PlaybackSource {
   mediaId: string;
   url: string;
@@ -304,6 +341,23 @@ export interface PlaybackSource {
   durationMs?: number;
   /** Source byte length when known; enables bounded Direct Play read-ahead. */
   sizeBytes?: number;
+  /**
+   * What the node serving this source will wait for, and therefore what a host
+   * may wait for.
+   *
+   * **Carried on the source rather than passed as an argument** because every
+   * seam that acquires media already receives one — `play()`, and
+   * `preflightSource()` — so a host gets the figures without four client
+   * adapters changing a signature. It travels with the thing it describes: a
+   * replacement generation on another node brings that node's deadlines with
+   * it, and there is no window where a host holds a new source and the old
+   * node's numbers.
+   *
+   * Absent where core could not learn them — a node too old to report, one with
+   * streaming disabled, or a status call that has not landed yet. A host that
+   * finds this absent uses its own conservative default, exactly as before.
+   */
+  budgets?: PlaybackSourceBudgets;
   /**
    * Headers a host must attach when fetching this source, if any.
    *

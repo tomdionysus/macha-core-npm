@@ -6,7 +6,8 @@ import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import {
-  GENERATION_ATTEMPT_BUDGET_MS,
+  generationAttemptBudgetMs,
+  segmentHoldMs,
 } from './PlaybackResolver.js';
 import type {
   PlaybackPreferencesUpdate,
@@ -160,7 +161,14 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   constructor(
     routerOrRegistry: ClusterEndpointRouter | EndpointRegistry,
     private readonly auth: AuthenticatedFetch = NO_AUTH,
-    private readonly generationAttemptTimeoutMs = GENERATION_ATTEMPT_BUDGET_MS,
+    /**
+     * The deadline for a node that has not stated one. Derived rather than
+     * literal: a silent node gets the conservative published floor plus
+     * transport, never the stale constant that abandoned working nodes inside
+     * their own entitlement. An explicit value still wins, which is what lets a
+     * test drive the abandonment path without waiting out a real budget.
+     */
+    private readonly generationAttemptTimeoutMs = generationAttemptBudgetMs(),
   ) {
     this.registry = routerOrRegistry instanceof ClusterEndpointRouter
       ? routerOrRegistry.registry
@@ -537,14 +545,37 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     idempotencyKey: string,
   ): Promise<PlaybackSession> {
     const resolver = this.resolver(endpoint);
+    // What this node says about itself, where it has said anything. The health
+    // cycle records it for every known node, including ones never used, which
+    // is what makes a budget available for a failover target on first contact.
+    const stated = this.registry.playbackBudgets(endpoint.id);
+    // **The node's figure wins where it exists; the injected value is the
+    // fallback, not a cap.** Keeping the constructor parameter meaningful for a
+    // node that has said nothing is what lets a test set a short budget without
+    // that short budget silently overriding a real node's stated entitlement in
+    // production.
+    const deadlineMs = attemptTimeoutMs === undefined
+      ? undefined
+      : (stated ? generationAttemptBudgetMs(stated) : attemptTimeoutMs);
     const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
-    const session = attemptTimeoutMs
+    const session = deadlineMs
       ? await awaitWithEndpointDeadline(
         request,
-        attemptTimeoutMs,
+        deadlineMs,
         (late) => this.releaseGenerationAdmittedLate(endpoint, resolver, late),
       )
       : await request;
+    // Hand the host the same figures core just bounded itself by, so the two
+    // layers cannot disagree about what this node will wait for. Attached here
+    // rather than in `mapSession` because only this layer knows which endpoint
+    // served the session.
+    session.source = {
+      ...session.source,
+      budgets: {
+        deadlineMs: deadlineMs ?? generationAttemptBudgetMs(stated),
+        segmentHoldMs: segmentHoldMs(stated),
+      },
+    };
     session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
     const nodeSessionId = session.sessionId;
     session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
