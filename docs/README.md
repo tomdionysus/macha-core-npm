@@ -1,12 +1,13 @@
 # `@machafoundation/core` documentation
 
-The [package README](../README.md) covers what the core is, what it leaves to a host, and how to install and configure it. [History](../HISTORY.md) covers why it is shaped the way it is. These guides cover the work of bringing it to a new host.
+The [package README](../README.md) covers what the core is, how to install it and how to bring it up. These guides cover the work of using it against a real cluster and bringing it to a new host.
 
 | Guide | Read it when |
 | --- | --- |
-| [Headless client](headless-client.md) | You want to see the whole core working — session, cluster, catalogue, playback negotiation — before writing any UI, or you are debugging a server against a client that has no browser in the way. |
 | [Choosing how to play something](choosing-playback.md) | Always, if you touch playback. The server performs what it is told and chooses nothing, so this is the decision every client depends on and the package makes once. |
-| [Async storage on a synchronous interface](async-storage.md) | Your platform's storage is asynchronous (React Native's `AsyncStorage`, or anything else that returns promises) and the core wants a synchronous `StorageLike`. |
-| [Writing a player](writing-a-player.md) | You are bringing the core to a new platform. This is the one interface a host must implement, and the contracts that are not obvious from its type signature. |
+| [Writing a player](writing-a-player.md) | You are bringing the core to a new platform. This is the one interface a host must implement, and the contracts its type signature does not show. |
+| [A headless Macha client](headless-client.md) | You want to see the whole core working — session, cluster, catalogue, playback negotiation — before writing any UI, or you are debugging a server with no browser in the way. |
+| [Async storage on a synchronous interface](async-storage.md) | Your platform's storage is asynchronous and the core wants a synchronous `StorageLike`. |
+| [Principles and laws](principles-and-laws.md) | You are changing scheduling, priority or resource ownership. Shared with the server; these are constraints on design, not aspirations. |
 
-Every guide assumes the package is built (`npm install && npm run build`); a linked `file:` dependency does not build itself.
+[History](../HISTORY.md) records why the package is shaped the way it is, and is worth reading before changing something that looks arbitrary.
