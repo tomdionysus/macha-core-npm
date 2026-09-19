@@ -13,11 +13,9 @@ Macha is a self-hosted media server that runs as a cluster of nodes. This packag
 | `runtime/` | The host environment — storage, clock, id generator, base origin — the connection-state bus, and client configuration. |
 | `platform/` | The `Platform` and `Player` interfaces a host implements. |
 
-Properties worth knowing before you read further:
-
 - **The server chooses nothing.** It reports what the media is and performs what it is told; there is no `auto`. The client decides whether to play a file as it is, repackage it, or re-encode it, and this package makes that decision once for every client. See [Choosing how to play something](docs/choosing-playback.md).
-- **No runtime dependencies**, and none planned.
-- **No browser assumed.** Enforced rather than asserted: `npm run lint:platform` compiles the package against no DOM library at all, over the surface declared in [`types/platform-neutral.d.ts`](types/platform-neutral.d.ts). A host missing something on that list supplies it.
+- **No runtime dependencies.**
+- **No browser assumed.** `npm run lint:platform` compiles the package against no DOM library at all, over the surface declared in [`types/platform-neutral.d.ts`](types/platform-neutral.d.ts). A host that lacks anything on that list must supply it.
 - **ESM with type declarations**, built to `dist/`.
 
 ## Installing
@@ -25,8 +23,6 @@ Properties worth knowing before you read further:
 ```sh
 npm install @machafoundation/core
 ```
-
-Clients install the published package, including while developing against unreleased work.
 
 ## Getting started
 
@@ -117,11 +113,11 @@ npm run build         # typecheck, platform gate, emit to dist/
 npm run dist:check    # fails when dist/ is older than src/
 ```
 
-Run `typecheck`, `lint:platform`, the suite, `build` and `dist:check` before proposing a change. `src/test/setup.ts` gives every test a fresh in-memory host, so persisted state never leaks between tests.
+`npm run build` runs `typecheck` and `lint:platform` itself, so a change needs `npm test`, `npm run build` and `npm run dist:check`. `src/test/setup.ts` gives every test a fresh in-memory host, so persisted state never leaks between tests.
 
-Two conventions that are load-bearing:
+Two conventions to keep:
 
-- **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows are calibrated against a deliberately non-uniform cluster, and each says in a comment what it is calibrated against. Change the derivation, not the number.
+- **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows each state in a comment what they are derived from. Change the derivation, not the number.
 - **Deadlines that belong to a node are read from that node.** `startup_timeout_ms` and `segment_timeout_ms` arrive per endpoint on the cluster status payload; the compiled-in constants in `streamProtocol.ts` are the answer only for a node too old to report them. Do not add a new private copy of a server figure.
 
 Releases are cut from `develop`: bump the version in its own commit, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.

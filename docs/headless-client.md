@@ -10,7 +10,7 @@ node docs/examples/headless.mjs http://your-node:7438
 Against a live cluster it prints:
 
 ```
-server:    0.46.2
+server:    0.32.11
 catalogue: 973 items, ready=true
 movies:    98
   - 28 Days Later (2002)
@@ -24,7 +24,7 @@ playback:  "28 Days Later" -> mode=transcode mime=application/vnd.apple.mpegurl
 video:
   claimed  8-bit, SDR only
   source   depth unreported, transfer unreported
-  served   bt709, 8-bit (transcode)
+  served   depth unreported, transfer unreported (transcode)
            session stopped
 ```
 
