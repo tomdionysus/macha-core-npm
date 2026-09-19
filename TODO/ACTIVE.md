@@ -8,7 +8,13 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** `0.13.0` is the release in hand — the reaped-session recovery, `not-found`, `lookAheadMs`, and the exported server constants two clients had been restating privately. `0.11.1` was released **and published to npm** — merged to `main`, tagged, pushed, `dist` built, and live on the registry as `latest`. `develop` and `main` are level. Twenty tags, `0.2.0` through `0.11.1`. **npm holds only `0.8.1` and `0.11.1`**; see *Moving the clients onto public npm* for why that gap exists and why `git tag` is no longer the way to ask what a client can have. Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
+**Where things stand.** `0.14.0` is the baseline — released, tagged, pushed and **live on npm as `latest`**. It carries the per-node playback budgets, the seek contract, and the failure chain reaching hosts intact, together with `0.13.1`'s four seamless-host fixes, which had been bumped but never tagged. `develop` and `main` are level. Twenty-three tags, `0.2.0` through `0.14.0`; npm holds `0.8.1`, `0.11.1`, `0.12.0`, `0.13.0` and `0.14.0`.
+
+**The registry is now the answer to "what can a client have".** It was not, for a long stretch — see *Moving the clients onto public npm* for the gap and why `git tag` stopped being a safe question to ask. The last three releases have gone out, so the two questions have converged again; do not let them drift apart without saying so here.
+
+**The web client is on `@machafoundation/core@^0.14.0` from the registry**, not on a `file:` link to this tree. Its `0.17.2` was re-cut against the published tarball so that the tag points at something a user could actually install. A link is for verifying a fix that is not yet releasable, taken and removed in one sitting; anything a client builds on is a published version.
+
+Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
 **How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **885 tests in 63 files, all passing** as of 2026-09-18. Run all five.
 
