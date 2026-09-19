@@ -149,7 +149,7 @@ A transformed playlist is a complete VOD list: `#EXT-X-PLAYLIST-TYPE:VOD`, every
 
 **The production frontier lives in the fragment responses.** A fragment or `init.mp4` not yet produced answers `500 segment_not_ready` immediately — a hold, not a fault, and not evidence about the node. A broken generation answers `503 stream_failed` and is terminal. A request past the end of the plan answers `404`. Read all three from the status; the body's machine code is unreachable on a fragment error in every stack checked. See [writing-a-player.md](writing-a-player.md) for why the hold is the `500`.
 
-Two consequences worth knowing before diagnosing anything:
+Two consequences that catch people out:
 
 - **The duration comes from the session, never from the media element.** `session.durationMs` is the title; `video.duration` is whatever the element currently believes. A scrubber reading 8 seconds into a 92-minute film is a client reading the wrong field.
 - **A seek past the generated frontier is a `seekMs` PATCH, not a media-element seek.** It is satisfied by moving the frontier rather than waiting for it, which is why `seek()` consults `localSeekCoverage()` first and replaces the source generation when the target falls outside it. A `Player` must therefore report coverage honestly rather than returning the title's length: claim a target is locally reachable and the resulting `player.seek()` is silently ignored — no request, no error, and a seek that lands somewhere other than asked.
