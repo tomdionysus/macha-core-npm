@@ -7,10 +7,9 @@ npm install && npm run build
 node docs/examples/headless.mjs http://your-node:7438
 ```
 
-Against a live cluster it prints:
+An abridged run against a live cluster:
 
 ```
-server:    0.32.11
 catalogue: 973 items, ready=true
 movies:    98
   - 28 Days Later (2002)
@@ -21,12 +20,14 @@ playback:  "28 Days Later" -> mode=transcode mime=application/vnd.apple.mpegurl
            video transcode, audio transcode
            source matroska,webm, 6787615 ms
            node http://10.44.1.50:7438
-video:
-  claimed  8-bit, SDR only
-  source   depth unreported, transfer unreported
-  served   depth unreported, transfer unreported (transcode)
            session stopped
 ```
+
+It also prints the node's version, the instruction the chooser formed and the
+reasons behind it, and a `video:` block comparing what the client claimed
+against what the source carried and what the node served. Those vary by node
+and by title, so they are described under step 5 and step 6 below rather than
+pinned to one capture here.
 
 It is started with **one** URL and ends with three: the health monitor found the siblings on its own.
 
