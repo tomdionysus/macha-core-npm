@@ -26,7 +26,7 @@ Properties worth knowing before you read further:
 npm install @machafoundation/core
 ```
 
-The published package is what every client uses, including during development. A `file:` link to a working tree is for verifying a fix that is not yet releasable — taken and removed in one sitting — never a development loop: a loop that resolves differently from the thing being shipped is how code reaches a release working only locally.
+Clients install the published package, including while developing against unreleased work.
 
 ## Getting started
 
