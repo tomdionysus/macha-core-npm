@@ -65,6 +65,48 @@ export interface NodeRuntimeStatus {
   rpc_connections_canonical?: number;
 }
 
+/**
+ * The deadlines this node enforces on itself, so a client stops guessing them.
+ *
+ * **Each node's statement about itself**, relayed by whichever node answers the
+ * status call exactly as `load1` and `cpu_cores` are. No node computes these
+ * for a peer, and nothing here is a cluster-wide figure.
+ *
+ * **Absent means the node cannot say** — it predates server 0.46.2, or it runs
+ * with `streaming.enabled` false and will not honour a playback budget it does
+ * not run. Never read absence as a default: a client that substitutes its own
+ * number has invented one, and a number that came from nowhere is
+ * indistinguishable at runtime from one the node sent.
+ *
+ * The pair is all-or-nothing on the wire. A truncated record reports neither
+ * rather than pairing a real startup budget with a fabricated hold, so a client
+ * never has to wonder whether one of the two is genuine.
+ *
+ * Both move under a live session: the node's `reconfigure()` applies them
+ * immediately with no restart. Read them per cycle rather than caching them
+ * against an endpoint for the life of the process.
+ */
+export interface NodePlaybackBudgets {
+  /**
+   * How long this node may take to bring a transformed stream up before it
+   * abandons the attempt — its `startup_timeout_ms`.
+   *
+   * Bounds what the *node* spends: it starts when the node begins work and
+   * stops when the node gives up on itself. Getting the request there and the
+   * response back is outside it, which is what
+   * `ENDPOINT_TRANSPORT_ALLOWANCE_MS` covers.
+   */
+  startup_timeout_ms?: number;
+  /**
+   * How long this node holds a request for a fragment it has not produced yet
+   * before answering `500 segment_not_ready` — its `segment_timeout_ms`.
+   *
+   * A hold is the node working, not the node failing. Any client deadline that
+   * expires inside one abandons a node that was about to answer.
+   */
+  segment_timeout_ms?: number;
+}
+
 export interface ClusterNodeStatus {
   id: string;
   state: NodeState;
@@ -103,6 +145,8 @@ export interface ClusterNodeStatus {
   storage_backends_online: number;
   roles: string[];
   runtime: NodeRuntimeStatus;
+  /** The deadlines this node enforces on playback. Absent on a node that cannot say. */
+  playback?: NodePlaybackBudgets;
   identity_association_reset: IdentityAssociationReset | null;
 }
 

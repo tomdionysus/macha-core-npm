@@ -64,7 +64,40 @@ interface WireSession {
   media_id: string;
   mode: PlaybackMode;
   duration_ms: number;
+  /**
+   * Where the generation's media actually begins on the title's timeline —
+   * the first sample the client receives.
+   *
+   * **Not necessarily the position that was asked for.** A remux generation
+   * begins at the last keyframe at or before the request, because a stream
+   * copy has no decoder and an fMP4 fragment's first sample must be a sync
+   * sample. `seek_offset_ms` carries the remainder.
+   */
   seek_ms: number;
+  /**
+   * How far into this generation the requested position sits. Server 0.46.0
+   * and later; absent on an older node.
+   *
+   * `seek_ms + seek_offset_ms === seek_requested_ms`, exactly, in integer
+   * milliseconds. Never negative, so a generation always contains the position
+   * that was asked for and nothing between the request and the stream start
+   * can go missing.
+   *
+   * Zero exactly when the mode can be frame-accurate: always for transcode and
+   * direct, and for remux when the request already sits on a keyframe.
+   */
+  seek_offset_ms?: number;
+  /**
+   * The position the server honoured, after clamping to `[0, duration - 1ms]`.
+   * Server 0.46.0 and later.
+   *
+   * **Present so a client can tell a clamp from a broken invariant.** Without
+   * it, a sum that does not match the request is either a server fault or an
+   * out-of-range request, and those want opposite handling — which makes the
+   * check useless exactly at the end of a title, where it would otherwise
+   * raise a false alarm every time.
+   */
+  seek_requested_ms?: number;
   preferences: {
     mode: PlaybackMode;
     max_height: number | null;
@@ -185,6 +218,52 @@ export function isManifestMimeType(mimeType: string | undefined): boolean {
 function reportedContainer(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed || undefined;
+}
+
+/**
+ * Check the seek contract's invariant, once, for every client.
+ *
+ * `seek_ms + seek_offset_ms === seek_requested_ms`, exact integer milliseconds,
+ * no tolerance. **This is the only place it is checked**, deliberately: every
+ * client would otherwise write the same comparison, and a violation and an
+ * ordinary clamp need opposite handling — a judgement no host should have to
+ * duplicate. A client's job is to render what core reports.
+ *
+ * **A clamp cannot trip this.** Near the end of a title the server clamps the
+ * request into `[0, duration - 1ms]` and reports the clamped value as
+ * `seek_requested_ms`, so the sum still balances; the clamp shows up as
+ * `seek_requested_ms` differing from what was *asked for*, which is a different
+ * comparison and not a fault. That is precisely why the field exists, and
+ * without it this check would raise a false alarm every time a viewer seeked
+ * near the end.
+ *
+ * **Reported and never acted on.** Nothing here rejects a generation or
+ * triggers a renegotiation. A violated invariant means the node's `seek_ms`
+ * cannot be trusted, and asking the same node again is the least likely thing
+ * to produce a better answer — that path livelocked once already, 147
+ * negotiations in 33.3 s against an answer that never changed. Core carries on
+ * with what it was given and says loudly that it did.
+ */
+function checkSeekInvariant(
+  wire: WireSession,
+  log: ReturnType<typeof createClientLogger>,
+): void {
+  const { seek_ms: seekMs, seek_offset_ms: offsetMs, seek_requested_ms: requestedMs } = wire;
+  // Absent means the node predates 0.46.0 and cannot say. There is nothing to
+  // check and nothing is wrong: silence here is the correct handling of a node
+  // that never promised the invariant.
+  if (offsetMs === undefined || requestedMs === undefined) return;
+  if (seekMs + offsetMs === requestedMs) return;
+  log.error('seek-invariant-violated', {
+    sessionId: wire.session_id,
+    mode: wire.mode,
+    seekMs,
+    seekOffsetMs: offsetMs,
+    seekRequestedMs: requestedMs,
+    // The size and sign of the discrepancy is what tells a wrong baseline from
+    // a wrong offset, and it is the first thing anyone reading this will want.
+    differenceMs: requestedMs - (seekMs + offsetMs),
+  });
 }
 
 function mapStream(stream: WireStream): PlaybackStreamInfo {
@@ -419,6 +498,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
   }
 
   private mapSession(wire: WireSession): PlaybackSession {
+    checkSeekInvariant(wire, this.log);
     const options: PlaybackOptions = {
       // Direct is an explicit user override, not a capability-derived offer.
       // Always expose it alongside the server-derived Remux/Transcode choices.
@@ -450,6 +530,8 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       mimeType: wire.stream.mime_type,
       source,
       lookAheadMs: wire.stream.look_ahead_ms,
+      seekOffsetMs: wire.seek_offset_ms,
+      seekRequestedMs: wire.seek_requested_ms,
       durationMs: wire.duration_ms,
       seekMs: wire.seek_ms,
       preferences: {

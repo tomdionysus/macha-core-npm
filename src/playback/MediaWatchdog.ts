@@ -1,3 +1,4 @@
+import type { PlaybackSource } from '../types.js';
 import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
 /**
  * Bounds the one playback failure the player could not previously see: a media
@@ -88,11 +89,24 @@ class VisibleDeadline {
   private segmentStartedAt?: number;
 
   constructor(
-    private readonly timeoutMs: number,
+    private timeoutMs: number,
     private readonly environment: MediaWatchdogEnvironment,
   ) {}
 
   get running(): boolean { return this.expired !== undefined; }
+
+  /**
+   * Adopt a new deadline, restarting the countdown if one is running.
+   *
+   * Restarting rather than rescaling: the figure changes when the source
+   * changes, and time already spent waiting on the previous node is not
+   * evidence about the new one.
+   */
+  setTimeoutMs(timeoutMs: number): void {
+    if (timeoutMs === this.timeoutMs) return;
+    this.timeoutMs = timeoutMs;
+    this.restart();
+  }
 
   arm(expired: (visibleMs: number) => void): void {
     this.disarm();
@@ -247,6 +261,23 @@ export class MediaStartWatchdog {
  */
 export const MEDIA_STALL_TIMEOUT_MS = SERVER_SEGMENT_HOLD_MS + 1_000;
 
+/** How far above the serving node's hold the stall budget sits. The relationship, named. */
+export const MEDIA_STALL_MARGIN_MS = 1_000;
+
+/**
+ * The stall budget for the node actually serving this source.
+ *
+ * The rule above — longer than the longest legitimate wait the node can impose
+ * — was only ever expressible against a compiled-in guess at that wait. Where
+ * the node states its own `segment_timeout_ms` this uses it, so a node
+ * configured with a longer hold is no longer called dead for using it.
+ * {@link MEDIA_STALL_TIMEOUT_MS} remains the answer for a node that cannot say.
+ */
+export function mediaStallTimeoutMs(source?: PlaybackSource): number {
+  const holdMs = source?.budgets?.segmentHoldMs;
+  return (holdMs === undefined ? SERVER_SEGMENT_HOLD_MS : Math.max(0, holdMs)) + MEDIA_STALL_MARGIN_MS;
+}
+
 /**
  * The stall watchdog: playback stopped and nothing is arriving to restart it.
  *
@@ -296,6 +327,18 @@ export class MediaStallWatchdog {
     timeoutMs: number = MEDIA_STALL_TIMEOUT_MS,
   ) {
     this.deadline = new VisibleDeadline(timeoutMs, environment);
+  }
+
+  /**
+   * Take the stall budget from the node serving this source.
+   *
+   * **A host should call this whenever it attaches a source**, because the
+   * watchdog outlives any one generation while the figure belongs to a node.
+   * A host that does not is no worse off than before — the constructed default
+   * still applies — but it keeps guessing a number the node is now stating.
+   */
+  useSourceBudgets(source?: PlaybackSource): void {
+    this.deadline.setTimeoutMs(mediaStallTimeoutMs(source));
   }
 
   /**

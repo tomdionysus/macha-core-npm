@@ -47,6 +47,47 @@ export type PlaybackDegradationListener = (error: Error) => void;
  */
 export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-ready' | 'not-found' | 'unknown';
 
+/**
+ * What a source activation means for the person watching.
+ *
+ * **The one bit a host cannot work out for itself, and the only thing that
+ * decides whether replacing a source should be invisible or obvious.**
+ *
+ * - `continue` — the viewer did not ask for this and should not see it. A
+ *   session the node reaped, a failover to another node, a quality change. A
+ *   host able to prepare the replacement alongside the current one and cut
+ *   between them should do exactly that.
+ * - `relocate` — the viewer asked to be somewhere else. Attach at the new
+ *   position and let them see it happen. Holding them where they were while a
+ *   replacement is prepared is the one outcome they did not want.
+ *
+ * **Both arrive as `play(source, positionMs)` and are byte-identical.**
+ * Measured: a viewer's seek and a reaped-session recovery both reached a host
+ * as position `0` with the same offsets, so a host that cut seamlessly on both
+ * held a viewer at 17:40 for fourteen seconds after they asked to go to 47:00,
+ * while the clock read 46:58 the whole time. No inference from position deltas
+ * separates them either — a short seek and a reap recovery look alike, and
+ * guessing wrong reintroduces a visible cut on the recovery path or keeps the
+ * lie on the seek path.
+ *
+ * **Optional, and absent means `relocate`** — the behaviour every player had
+ * before seamless replacement existed, which is to attach and let it show. A
+ * host that ignores this argument is therefore still correct; only a host that
+ * can hide the change needs to know when it should.
+ *
+ * **`continue` is a request, never a guarantee, and core must not reason as
+ * though it were one.** Whether a change can be hidden is a property of the
+ * two sources, not of the reason for the change. A host replacing one managed
+ * HLS generation with another can prepare the replacement alongside and cut
+ * between them; a host leaving **Direct Play** cannot, because there is no
+ * second managed presentation to hand over to, so the transition falls through
+ * to an ordinary attach however it is labelled. That fall-through is correct
+ * and expected. Core should still say `continue` where it means it — the host
+ * honours it when it can — but nothing in core may treat the label as evidence
+ * that the viewer saw nothing.
+ */
+export type PlaybackTransition = 'continue' | 'relocate';
+
 /** Terminal player evidence, kept distinct from endpoint/API failures. */
 export class PlaybackSourceError extends Error {
   constructor(
@@ -99,8 +140,27 @@ export interface Player {
   detachHost?(): void;
   /** Final player destruction. This is resource-destructive. */
   detach(): void;
-  /** Attach a source at a source-generation-local position and request playback. Resolves once dispatched, never when buffering completes. */
-  play(source: PlaybackSource, positionMs?: number, startPaused?: boolean): Promise<boolean>;
+  /**
+   * Attach a source at a source-generation-local position and request
+   * playback.
+   *
+   * **Resolves when this source is the one being presented**, which for a host
+   * that tears the old element down is the moment it is dispatched, and for a
+   * host that prepares the replacement alongside is the moment it cuts. Core
+   * treats the resolution as the instant the source changed: until then it
+   * goes on describing the source that is still playing. Never resolve on
+   * buffering completing.
+   *
+   * `transition` says whether the viewer asked for this — see
+   * `PlaybackTransition`. A host that can replace a source invisibly must only
+   * do so for `continue`.
+   */
+  play(
+    source: PlaybackSource,
+    positionMs?: number,
+    startPaused?: boolean,
+    transition?: PlaybackTransition,
+  ): Promise<boolean>;
   /** Non-blocking, idempotent local setup from advisory or session-derived technical facts. */
   prepare?(profile: MediaTechnicalProfile): void;
   /** Pause transport and suspend avoidable/speculative source acquisition. */

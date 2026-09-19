@@ -53,6 +53,38 @@ function withSessionCloses(fetchMock: ReturnType<typeof vi.fn>): ReturnType<type
 describe('ClusterPlaybackResolver', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('hands the host the deadlines of the node that actually served the session', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
+    // As the health cycle records it, for every known node, before any session
+    // exists on it.
+    registry.recordPlaybackBudgets('http://b', {
+      startupTimeoutMs: 15_000,
+      segmentTimeoutMs: 6_000,
+      observedAt: 1,
+    });
+    const resolver = new ClusterPlaybackResolver(registry);
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    // The stated figure plus transport, so a host and core cannot disagree
+    // about what this node will wait for.
+    expect(session.source.budgets).toEqual({ deadlineMs: 19_000, segmentHoldMs: 6_000 });
+  });
+
+  it('falls back to the published defaults for a node that has said nothing', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://b'])));
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    // Absent is not zero and not a shorter guess: a node too old to report
+    // still gets the full conservative allowance.
+    expect(session.source.budgets).toEqual({ deadlineMs: 19_000, segmentHoldMs: 6_000 });
+  });
+
   it('creates a disposable generation on an alternate endpoint after node failure', async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('node A unreachable'))

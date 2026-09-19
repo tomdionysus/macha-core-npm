@@ -50,6 +50,29 @@ export interface EndpointCapacity {
 }
 
 /**
+ * The deadlines a node enforces on itself, as it last reported them.
+ *
+ * **Deliberately not folded into `EndpointCapacity`.** Capacity is measured
+ * evidence about how hard a node is working and is used to rank candidates;
+ * this is stated policy about how long it will wait before giving up, and is
+ * used to set deadlines. Ranking on a deadline or timing out on a load average
+ * would both be category errors, and one type holding both invites exactly
+ * that.
+ *
+ * Each field is independently optional because the node may be too old to
+ * report either. **Absent never shortens a deadline** — a missing figure falls
+ * back to the conservative published default, never to zero and never to
+ * whatever the last node happened to say.
+ */
+export interface EndpointPlaybackBudgets {
+  /** The node's `startup_timeout_ms`: how long it may take to bring a stream up. */
+  startupTimeoutMs?: number;
+  /** The node's `segment_timeout_ms`: how long it holds a fragment it has not produced. */
+  segmentTimeoutMs?: number;
+  observedAt: number;
+}
+
+/**
  * Which comparison actually separated one endpoint from the next.
  *
  * Ranking on four axes is only debuggable if the client can say which one
@@ -251,6 +274,7 @@ export class EndpointRegistry {
   private preferredId?: string;
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
+  private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
   /** So the abstention is reported once rather than on every probe cycle. */
@@ -281,6 +305,7 @@ export class EndpointRegistry {
     for (const id of this.health.keys()) if (!retained.has(id)) this.health.delete(id);
     for (const id of this.latencySamples.keys()) if (!retained.has(id)) this.latencySamples.delete(id);
     for (const id of this.capacities.keys()) if (!retained.has(id)) this.capacities.delete(id);
+    for (const id of this.playbackBudgetsById.keys()) if (!retained.has(id)) this.playbackBudgetsById.delete(id);
     this.bandwidth?.retain(retained);
     if (this.preferredId && !retained.has(this.preferredId)) this.preferredId = undefined;
     if (this.latencyAdvantageId && !retained.has(this.latencyAdvantageId)) {
@@ -595,6 +620,33 @@ export class EndpointRegistry {
   /** The node's last self-reported load, or undefined if it has never answered. */
   capacity(endpointIdValue: string): EndpointCapacity | undefined {
     const value = this.capacities.get(endpointIdValue);
+    return value ? { ...value } : undefined;
+  }
+
+  /**
+   * Record the deadlines a node reports for itself, from the status call the
+   * health cycle already makes.
+   *
+   * **Replaces rather than merges.** These follow the node's `reconfigure()`,
+   * so a field that has stopped being reported has stopped being true, and
+   * keeping the last value would let a figure outlive the configuration that
+   * produced it.
+   */
+  recordPlaybackBudgets(endpointIdValue: string, budgets: EndpointPlaybackBudgets): void {
+    this.playbackBudgetsById.set(endpointIdValue, budgets);
+  }
+
+  /**
+   * What this node last said its playback deadlines are, or undefined where it
+   * has never said.
+   *
+   * Undefined is not an error and not a default: it is the answer for a node
+   * too old to report, one running with streaming disabled, and one this client
+   * has not yet heard a status call about. Callers apply the conservative
+   * published floor rather than inventing a figure.
+   */
+  playbackBudgets(endpointIdValue: string): EndpointPlaybackBudgets | undefined {
+    const value = this.playbackBudgetsById.get(endpointIdValue);
     return value ? { ...value } : undefined;
   }
 

@@ -1,4 +1,5 @@
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
+import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS } from './streamProtocol.js';
 
 export type PlaybackStreamType = 'video' | 'audio' | 'subtitle' | 'other';
 export type PlaybackTransform = 'copy' | 'transcode' | 'omit';
@@ -158,7 +159,31 @@ export interface PlaybackSession {
    * 12.7 s viewer freeze on 2026-09-17.
    */
   lookAheadMs?: number | null;
+  /**
+   * Where this generation's media begins on the title's timeline.
+   *
+   * **The baseline, not the position that was asked for.** A remux generation
+   * begins at the last keyframe at or before the request; `seekOffsetMs`
+   * carries the remainder. A consumer that treats this as "where the viewer
+   * is" reports every position in such a generation too early by the offset.
+   */
   seekMs: number;
+  /**
+   * How far into this generation the requested position sits, where the node
+   * reports it.
+   *
+   * `seekMs + seekOffsetMs === seekRequestedMs`, exactly. Never negative, so
+   * the generation always contains the position asked for. Zero exactly when
+   * the mode can be frame-accurate.
+   *
+   * **Undefined means the node predates server 0.46.0 and cannot say** — not
+   * that the offset is zero. An older node snapped a remux seek *forward* to
+   * the next keyframe instead, by up to 9.3 s measured, so on those nodes the
+   * generation may begin after the request rather than before it.
+   */
+  seekOffsetMs?: number;
+  /** The position the node honoured, after clamping to the title's duration. */
+  seekRequestedMs?: number;
   preferences: PlaybackPreferences;
   sourceInfo: PlaybackSourceInfo;
   output: PlaybackOutputInfo;
@@ -214,17 +239,75 @@ export interface PlaybackStopOptions {
 }
 
 /**
- * How long one attempt to negotiate a generation on one endpoint may take
- * before the caller stops waiting for it.
+ * How much longer than a node's own startup budget core waits, to cover
+ * getting the request there and the response back.
  *
- * Lives on the contract rather than inside an implementation because two
- * layers need it and neither owns it. `ClusterPlaybackResolver` enforces it
- * per endpoint, abandoning a slow node and moving to the next; the coordinator
- * budgets against it when deciding how far ahead of a viewer's remaining media
- * it must start building a replacement. Declared once so those two cannot
- * drift, which is the fault this package keeps recording.
+ * **A node's `startup_timeout_ms` bounds what the node spends, not what core
+ * observes.** It starts when the node begins work and stops when the node
+ * gives up on itself; the request travelling out and the response travelling
+ * back are outside it by definition. So budgeting exactly the stated figure
+ * kills a node that met its own deadline: one producing a first fragment at
+ * 14.9 s, comfortably inside a 15 s entitlement, arrives here later than that
+ * and is abandoned for being punctual.
+ *
+ * Measured once, on 2026-09-18 against `tmdb:episode:7203311`: a
+ * `session-update` round trip of 13,433 ms against a node-side first fragment
+ * at 11,672 ms, so about 1,761 ms of transport. **One sample, and it is worth
+ * knowing that is all it is** — 4,000 is a guess with roughly 2.3x headroom
+ * over that reading, chosen to work in most situations rather than derived
+ * from a distribution nobody has.
+ *
+ * **What it is not.** It is not slack for a slow node and not a margin on the
+ * server's policy. A node that overruns its own `startup_timeout_ms` has
+ * failed by its own rule, and this does not extend that — it only stops core
+ * charging a node for the distance between them.
+ *
+ * **It is meant to stop being a constant.** Core already holds per-endpoint
+ * round-trip samples (`EndpointRegistry.recordLatency`) and per-endpoint
+ * throughput (`EndpointBandwidth`), which is the evidence a real figure comes
+ * from, and the distance to a node is the one term in this arithmetic that no
+ * node can report about itself. Until that heuristic exists, one number for
+ * every endpoint is the honest placeholder rather than a settled answer.
  */
-export const GENERATION_ATTEMPT_BUDGET_MS = 12_000;
+export const ENDPOINT_TRANSPORT_ALLOWANCE_MS = 4_000;
+
+/**
+ * What a node says about itself, as far as a deadline is concerned. Structural
+ * only, so this module does not depend on the cluster layer that supplies it.
+ */
+export interface StatedNodeBudgets {
+  startupTimeoutMs?: number;
+  segmentTimeoutMs?: number;
+}
+
+/**
+ * How long one attempt against **this** node may take.
+ *
+ * `startup_timeout_ms` is law for the node that stated it: it is that node's
+ * own rule for when it stops trying, and core has no standing to second-guess
+ * it in either direction. Core adds only the distance between them, which is
+ * the one term the node cannot know about itself.
+ *
+ * **Absence falls back to the published default and never to something
+ * shorter.** A node that cannot say is not a node that needs less time, and
+ * the failure this exists to stop — abandoning a working node inside its own
+ * entitlement — is caused precisely by budgeting under the real figure.
+ */
+export function generationAttemptBudgetMs(stated?: StatedNodeBudgets): number {
+  const startupMs = stated?.startupTimeoutMs ?? SERVER_STARTUP_TIMEOUT_MS;
+  return Math.max(0, startupMs) + ENDPOINT_TRANSPORT_ALLOWANCE_MS;
+}
+
+/**
+ * How long **this** node holds a fragment it has not produced yet.
+ *
+ * No transport allowance: this one describes the node's behaviour to a host
+ * deciding whether a refusal was expected, not a deadline core enforces, and
+ * padding it would misreport what the node does.
+ */
+export function segmentHoldMs(stated?: StatedNodeBudgets): number {
+  return Math.max(0, stated?.segmentTimeoutMs ?? SERVER_SEGMENT_HOLD_MS);
+}
 
 /** Server-side playback negotiation and session-control seam. */
 export interface PlaybackResolver {
