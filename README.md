@@ -2,65 +2,35 @@
 
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
-Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on — the React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds the parts that are genuinely the same on all of them, so they cannot drift apart:
+Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on — a React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds what is genuinely the same on all of them, so they cannot drift apart.
 
 | Area | What it owns |
 | --- | --- |
-| `api/` | The Macha REST families — catalogue, media, manage, acquisition, server and cluster status — plus HTTP compatibility, error-envelope decoding and the anonymous session lifecycle. |
+| `api/` | The Macha REST families — catalogue, media, manage, acquisition, users, server and cluster status — plus HTTP compatibility, error-envelope decoding and the session lifecycle. |
 | `cluster/` | The endpoint registry, evidence-ranked routing, failure classification, and the bounded health and discovery loop. |
-| `playback/` | Deciding how to play something, resolving a session against the cluster, coordinating transport and failover, and the stall/start watchdogs. |
+| `playback/` | Deciding how to play something, resolving a session against the cluster, coordinating transport and failover, and the stall and start watchdogs. |
 | `state/` | Continue Watching, the play queue, playlists and volume, over an injected synchronous storage. |
 | `runtime/` | The host environment — storage, clock, id generator, base origin — the connection-state bus, and client configuration. |
 | `platform/` | The `Platform` and `Player` interfaces a host implements. |
 
-**The one idea worth knowing before reading anything else:** the server reports what the media is and performs what it is told. It chooses nothing, and there is no `auto`. So the client decides whether to play a file as it is, repackage it, or re-encode it — and this package makes that decision once, for every client. See [Choosing how to play something](docs/choosing-playback.md).
+Properties worth knowing before you read further:
 
+- **The server chooses nothing.** It reports what the media is and performs what it is told; there is no `auto`. The client decides whether to play a file as it is, repackage it, or re-encode it, and this package makes that decision once for every client. See [Choosing how to play something](docs/choosing-playback.md).
 - **No runtime dependencies**, and none planned.
-- **No browser assumed.** Enforced, not asserted: `npm run lint:platform` compiles the package with no DOM library at all, against the surface declared in [`types/platform-neutral.d.ts`](types/platform-neutral.d.ts). A host that lacks something on that list must supply it.
+- **No browser assumed.** Enforced rather than asserted: `npm run lint:platform` compiles the package against no DOM library at all, over the surface declared in [`types/platform-neutral.d.ts`](types/platform-neutral.d.ts). A host missing something on that list supplies it.
 - **ESM with type declarations**, built to `dist/`.
-
-## What it deliberately leaves to a host
-
-Presentation, navigation, React, the `hls.js` web player, the Service Worker read-ahead proxy, and anything that resolves a build mode.
-
-Beyond implementing `Player`, a host is expected to supply:
-
-- a `MachaClientConfiguration` built from wherever its endpoints come from;
-- its own `PlatformTarget`, applied once at start;
-- `facts` and `policyOverrides` to `PlaybackRuntime`, so the chooser knows what the media is, what the node can do with it, and what this device gets wrong about itself;
-- lifecycle binding for `EndpointHealthMonitor` and memoization for `createMachaServices`;
-- **a call to `PlaybackRuntime.terminateForPageExit()` when the host is going away.** Nothing here can decide this, and getting it wrong is invisible locally: a node holds the session's transcode entitlement for 30 minutes, so on a one-slot node the *next* viewer gets a 429 and nothing points at the client that caused it. `pagehide` is right for a browser tab and useless on a TV, which suspends without firing it. Note the ceiling: the closing `DELETE` rides on `keepalive`, which is browser-only, so on native hosts this is best-effort in a way no client can fully close.
-
-## Documentation
-
-| Guide | Read it when |
-| --- | --- |
-| [Choosing how to play something](docs/choosing-playback.md) | Always, if you touch playback. |
-| [Writing a player](docs/writing-a-player.md) | You are bringing the core to a new platform — the one interface a host must implement, and the contracts its type signature does not show. |
-| [A headless Macha client](docs/headless-client.md) | You want the whole core working with no UI, or a server smoke test. [`docs/examples/headless.mjs`](docs/examples/headless.mjs) runs against a real node in one command. |
-| [Async storage on a synchronous interface](docs/async-storage.md) | Your platform's storage returns promises and `StorageLike` does not. |
-| [History](HISTORY.md) | You want to know why something is the way it is before changing it. |
-| [Active work](TODO/ACTIVE.md) · [Completed](TODO/COMPLETED.md) | You want to know what is open, who it waits on, and what has already been tried and abandoned. |
 
 ## Installing
 
-Consumers link it from the working tree:
-
 ```sh
-npm install file:../macha-ts
+npm install @machafoundation/core
 ```
 
-`file:` dependencies are symlinked and npm does not build them for you, so **build it first and rebuild after every change**. A stale `dist/` typechecks green against fresh source and only fails at runtime:
-
-```sh
-cd macha-ts && npm install && npm run build
-```
-
-Run `npm run dist:check` from a consumer's `pretest` to catch that automatically. It reports a `dist/` older than `src/`; nothing reports a `src/` ahead of its last commit, so read `git log -1` rather than `package.json` when you need to know what a build contains.
+The published package is what every client uses, including during development. A `file:` link to a working tree is for verifying a fix that is not yet releasable — taken and removed in one sitting — never a development loop: a loop that resolves differently from the thing being shipped is how code reaches a release working only locally.
 
 ## Getting started
 
-Install the host environment once, at application start, **before any service is constructed** — several module-level singletons read it lazily on first use and keep whatever they find.
+Install the host environment once, at application start, **before any service is constructed**. Several module-level singletons read it lazily on first use and keep whatever they find.
 
 ```ts
 import { configureMachaHost, MachaClientConfiguration } from '@machafoundation/core';
@@ -76,7 +46,7 @@ const configuration = new MachaClientConfiguration({
 });
 ```
 
-`storage` is a `StorageLike` — `getItem` / `setItem` / `removeItem`, all **synchronous**. React Native's `AsyncStorage` is not, so a native host hydrates it into memory at start and writes through behind that interface; there is a worked implementation in [Async storage on a synchronous interface](docs/async-storage.md).
+`storage` is a `StorageLike`: `getItem` / `setItem` / `removeItem`, all **synchronous**. React Native's `AsyncStorage` is not, so a native host hydrates it into memory at start and writes through behind that interface — see [Async storage on a synchronous interface](docs/async-storage.md).
 
 Then bring up the session, the registry and the services over them:
 
@@ -102,32 +72,59 @@ new EndpointHealthMonitor({
 
 Memoize `createMachaServices` on `endpointRegistry` and `auth`. Rebuilding services mid-playback orphans the active generation's node ownership, and a token refresh is never a reason to — every service authenticates through `auth` at request time.
 
-`EndpointHealthMonitor` is what feeds routing its evidence. Without it running, endpoint ranking has nothing to rank on and falls back to configured order. `start()`/`stop()` bind to whatever lifecycle the host has; `stop()` is idempotent.
+`EndpointHealthMonitor` feeds routing its evidence: endpoint ranking, sibling discovery, and the per-node playback budgets. Without it running, ranking has nothing to rank on and falls back to configured order. `start()` and `stop()` bind to whatever lifecycle the host has; `stop()` is idempotent.
 
 ## Playback
 
-The core drives a `Player` that the host implements. It never touches a media element or a native view.
+The core drives a `Player` the host implements, and never touches a media element or a native view. It decides what should be playing and from where, hands that to the player, and reasons about what comes back.
 
-`PlaybackResolver` is an interface, and every consumer takes the interface rather than a concrete class — so a resolver can be composed in front of another to answer what it can and delegate the rest, which is how offline playback is meant to work.
+`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform, and several of its contracts are not visible in the types — read [Writing a player](docs/writing-a-player.md) and start from `FakePlayer` in `@machafoundation/core/testing`.
 
-`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform and several of its contracts are not visible in the types — read [Writing a player](docs/writing-a-player.md), and start from `FakePlayer` in `@machafoundation/core/testing`.
+`PlaybackResolver` is an interface, and every consumer takes the interface rather than a concrete class, so a resolver can be composed in front of another to answer what it can and delegate the rest.
 
-## Tests and checks
+## What a host supplies
+
+Presentation, navigation, React, the web `hls.js` player and any Service Worker read-ahead stay with the host. Beyond implementing `Player`, a host provides:
+
+- a `MachaClientConfiguration` built from wherever its endpoints come from;
+- its own `PlatformTarget`, applied once at start;
+- `facts` and `policyOverrides` to `PlaybackRuntime`, so the chooser knows what the media is, what the node can do with it, and what this device gets wrong about itself;
+- lifecycle binding for `EndpointHealthMonitor`, and memoization for `createMachaServices`;
+- a call to `PlaybackRuntime.terminateForPageExit()` when the host is going away.
+
+That last one cannot be decided here and is invisible when wrong: a node holds a session's transcode entitlement for 30 minutes, so on a one-slot node the *next* viewer gets a 429 and nothing points at the client responsible. `pagehide` is right for a browser tab and useless on a television, which suspends without firing it. The closing `DELETE` rides on `keepalive`, which is browser-only, so on native hosts this is best-effort in a way no client can fully close.
+
+## Documentation
+
+| Guide | Read it when |
+| --- | --- |
+| [Choosing how to play something](docs/choosing-playback.md) | Always, if you touch playback. |
+| [Writing a player](docs/writing-a-player.md) | You are bringing the core to a new platform. |
+| [A headless Macha client](docs/headless-client.md) | You want the whole core working with no UI, or a server smoke test. |
+| [Async storage on a synchronous interface](docs/async-storage.md) | Your platform's storage returns promises and `StorageLike` does not. |
+| [Principles and laws](docs/principles-and-laws.md) | You are changing scheduling, priority or ownership. Shared with the server. |
+| [History](HISTORY.md) | You want to know why something is the way it is before changing it. |
+| [Active work](TODO/ACTIVE.md) · [Completed](TODO/COMPLETED.md) | You want to know what is open and who it waits on. |
+
+## Contributing
 
 ```sh
 npm test              # node environment, no DOM
-npm run test:coverage # statements/branches, with declaration-only files excluded
+npm run typecheck     # types only
 npm run lint:platform # compiles with no DOM library at all
-npm run build         # typecheck, platform gate, emit
+npm run test:coverage # statements and branches, declaration-only files excluded
+npm run build         # typecheck, platform gate, emit to dist/
+npm run dist:check    # fails when dist/ is older than src/
 ```
 
-`src/test/setup.ts` gives every test a fresh in-memory host, so persisted state never leaks between tests.
+Run `typecheck`, `lint:platform`, the suite, `build` and `dist:check` before proposing a change. `src/test/setup.ts` gives every test a fresh in-memory host, so persisted state never leaks between tests.
 
-Several defaults — request timeouts, retry cooldowns, throughput thresholds, the standby window — are tuned against a deliberately non-uniform cluster: a wired node, one behind flaky wifi, one across a WAN. They carry comments saying what they are calibrated *against*, not just what they are. They look arbitrary and are not.
+Two conventions that are load-bearing:
 
-## Why the name is scoped
+- **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows are calibrated against a deliberately non-uniform cluster, and each says in a comment what it is calibrated against. Change the derivation, not the number.
+- **Deadlines that belong to a node are read from that node.** `startup_timeout_ms` and `segment_timeout_ms` arrive per endpoint on the cluster status payload; the compiled-in constants in `streamProtocol.ts` are the answer only for a node too old to report them. Do not add a new private copy of a server figure.
 
-`@machafoundation/core` rather than `macha-client`, on readability grounds: the web app's own package is `macha-client`, and a dependency sharing its dependant's name is hard to read in a lockfile or a stack trace. It is **not** a workaround for a Metro haste-map collision — that was raised, tested on Metro 0.84.5 / React Native 0.86, and bundled clean.
+Releases are cut from `develop`: bump the version in its own commit, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
 
 ## Licence
 
