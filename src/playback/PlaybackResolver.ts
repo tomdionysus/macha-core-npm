@@ -1,5 +1,5 @@
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
-import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS } from './streamProtocol.js';
+import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS, type PlaybackProduction } from './streamProtocol.js';
 
 export type PlaybackStreamType = 'video' | 'audio' | 'subtitle' | 'other';
 export type PlaybackTransform = 'copy' | 'transcode' | 'omit';
@@ -159,6 +159,24 @@ export interface PlaybackSession {
    * 12.7 s viewer freeze on 2026-09-17.
    */
   lookAheadMs?: number | null;
+  /**
+   * How fast this generation is producing, from `stream.production`.
+   *
+   * **Absent means the node cannot say** — direct play, which has no
+   * pipeline, or a node older than server 0.47.0. Never read absence as zero
+   * and never substitute a default; the same convention `lookAheadMs` and the
+   * per-node budgets already use, which is what makes it safe in a
+   * mixed-version cluster.
+   *
+   * **Per generation, and it resets.** A PATCH that changes mode, quality,
+   * seek or media builds a new generation with a new segment store, so the
+   * block on that response is the first reading of a *different* pipeline,
+   * not a fresh reading of the same one. **A rate carried across a generation
+   * change is a rate for a pipeline that no longer exists** — discard it
+   * rather than decaying it. For a current reading on a running generation,
+   * re-read the session.
+   */
+  production?: PlaybackProduction;
   /**
    * Where this generation's media begins on the title's timeline.
    *

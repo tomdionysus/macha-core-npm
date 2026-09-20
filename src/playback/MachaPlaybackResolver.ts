@@ -1,4 +1,5 @@
 import { mergeRequestHeaders, normalizeBaseUrl, queryString } from '../api/httpCompat.js';
+import type { PlaybackProduction } from './streamProtocol.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { parseErrorEnvelope } from '../api/errorEnvelope.js';
@@ -146,6 +147,31 @@ interface WireSession {
      * not the same claim as `0`. **A number**: the frontier, in milliseconds.
      */
     look_ahead_ms?: number | null;
+    /**
+     * How fast this generation is producing. Server 0.47.0 and later.
+     *
+     * **Absent for direct play, and absent on an older node** — no pipeline,
+     * no rate. Absent means the node cannot say and never means zero.
+     */
+    production?: {
+      /** Media produced, in media time. Also the production frontier. */
+      produced_ms: number;
+      /**
+       * Encoder time spent producing it, **excluding time parked on the
+       * look-ahead gate** and including everything else: demux, decode,
+       * filter, encode, mux, disk, GPU and contention with another session.
+       *
+       * Measured from one `publish_segment` returning to the next being
+       * entered, with the timestamp taken before the mutex is acquired, so
+       * the parked interval falls outside the span structurally rather than
+       * being subtracted from it.
+       */
+      producing_ms: number;
+      /** How long since the last fragment published, measured on the node. */
+      produced_age_ms: number;
+      /** Whether the producer is blocked on the look-ahead gate. */
+      producer_parked: boolean;
+    };
     subtitle_url: string | null;
   };
   options: {
@@ -372,6 +398,28 @@ function wirePreferences(preferences?: PlaybackPreferencesUpdate): Record<string
   return out;
 }
 
+/**
+ * The wire block, mapped, with every field required rather than optional.
+ *
+ * A partial block is dropped whole instead of being filled in: a rate built
+ * from a present `produced_ms` and a missing `producing_ms` would be a number
+ * nobody sent, and `production` is documented as absent-means-cannot-say, so
+ * dropping it lands in a branch every consumer already has to handle.
+ */
+function productionFromWire(wire: {
+  produced_ms: number;
+  producing_ms: number;
+  produced_age_ms: number;
+  producer_parked: boolean;
+} | undefined): PlaybackProduction | undefined {
+  if (!wire) return undefined;
+  const { produced_ms: producedMs, producing_ms: producingMs, produced_age_ms: producedAgeMs } = wire;
+  if (typeof producedMs !== 'number' || typeof producingMs !== 'number' || typeof producedAgeMs !== 'number') {
+    return undefined;
+  }
+  return { producedMs, producingMs, producedAgeMs, producerParked: wire.producer_parked === true };
+}
+
 export class MachaPlaybackResolver implements PlaybackResolver {
   readonly available = true;
   private readonly baseUrl: string;
@@ -545,6 +593,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       mimeType: wire.stream.mime_type,
       source,
       lookAheadMs: wire.stream.look_ahead_ms,
+      production: productionFromWire(wire.stream.production),
       seekOffsetMs: wire.seek_offset_ms,
       seekRequestedMs: wire.seek_requested_ms,
       durationMs: wire.duration_ms,

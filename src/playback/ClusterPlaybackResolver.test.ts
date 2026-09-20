@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
+import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 
 const media: MediaSummary = { id: 'movie:test', kind: 'movie', title: 'Test', mediaIds: ['macha:media'] };
 const capabilities: PlaybackCapabilities = {
@@ -915,5 +916,81 @@ describe('closing a generation that will not close', () => {
 
     expect(standby).toBeUndefined();
     expect(deletes).toEqual(['http://b/api/v1/playback/sessions/session-b']);
+  });
+});
+
+describe('a regeneration whose close never comes back', () => {
+  // **The one unbounded wait on the recovery path, measured on hardware.**
+  // `releaseFailedSession` resolves when the first DELETE settles, and nothing
+  // bounds that DELETE - the attempt deadline wraps only the POST in
+  // `createOn`. Its own docblock says it must never be awaited, because "a
+  // slow node is exactly where failover fires"; `regenerate` awaits it anyway,
+  // because the node's transcode slot is held by the session being replaced.
+  //
+  // On the Android TV client on 2026-09-20 that hung a viewer indefinitely:
+  // the chrome sat on "Preparing new stream", the position froze at 5:00, and
+  // no failure screen ever arrived - because nothing threw, and a hang is not
+  // an error. Every bounded thing below was waiting on the one unbounded thing
+  // above it.
+
+  it('asks for the replacement anyway rather than waiting for ever', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      // A close that never comes back, which is what "no timeout anywhere"
+      // means in practice.
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Promise<Response>(() => {});
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 50);
+
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const next = await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+
+    // The replacement exists. Before the bound, this line was never reached.
+    expect(next.sessionId).toContain('session-2');
+    expect(admissionCalls(fetchMock)).toHaveLength(2);
+  });
+
+  it('says the close timed out rather than letting it pass unrecorded', async () => {
+    // The node is now holding a transcode slot nothing has released, which is
+    // the operator-visible half of Law 4's discipline. It is a warn because
+    // the recovery continued; the leak is real and needs somewhere to be read.
+    clearClientDiagnostics();
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Promise<Response>(() => {});
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 50);
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+
+    expect(clientDiagnosticsSnapshot().filter((e) => e.event === 'failed-session-close-timeout')).toHaveLength(1);
+  });
+
+  it('does not wait out the bound when the close answers promptly', async () => {
+    // The ordinary path must not have acquired a delay. A 404 on the DELETE is
+    // the commonest case of all - the session was reaped, so there is nothing
+    // to close - and it has to stay fast.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 404 });
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 10_000);
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    const startedAt = Date.now();
+    await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });

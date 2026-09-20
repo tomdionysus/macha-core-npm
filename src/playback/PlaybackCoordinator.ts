@@ -2630,7 +2630,10 @@ export class PlaybackCoordinator {
         await this.stopOnDisposal(next.sessionId);
         return;
       }
-      this.log.info('session-regenerated', {
+      // `warn` rather than `info`: see `generation-regenerate`. This is the
+      // line that says the negotiation came back, and it was the only one
+      // missing from a capture of a recovery that hung.
+      this.log.warn('session-regenerated', {
         previousSessionId: dead.sessionId,
         sessionId: next.sessionId,
         endpoint: next.endpoint,

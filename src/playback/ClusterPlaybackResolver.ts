@@ -285,14 +285,42 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     if (!endpoint) {
       throw new Error(`Playback generation ${failedSession.sessionId} has no endpoint to regenerate on.`);
     }
-    this.log.info('generation-regenerate', {
+    // `warn`, like every other step of this recovery. At `info` these two
+    // were the only blind spots on a path whose other lines are all visible,
+    // so a capture could not distinguish "the POST never returned" from "the
+    // POST returned and the failure is after it" — which cost the Android TV
+    // client a hardware run on 2026-09-20. A regeneration is a degraded state
+    // by definition; the contract says those must be visible.
+    this.log.warn('generation-regenerate', {
       endpointId: endpoint.id,
       endpoint: endpoint.baseUrl,
       mediaId: media.id,
       previousSessionId: failedSession.sessionId,
       seekMs,
     });
-    await this.releaseFailedSession(failedSession);
+    // **Bounded, and proceeding anyway is the point.** `releaseFailedSession`
+    // resolves when the first `DELETE` settles, and nothing anywhere bounds
+    // that `DELETE` — the attempt deadline wraps the `POST` in `createOn` and
+    // nothing else. So this `await` is the one unbounded wait on the whole
+    // recovery path, on a call whose own docblock says it must never be
+    // awaited because "a slow node is exactly where failover fires".
+    // Regenerating has to wait, because the node's transcode slot is held by
+    // the session being replaced; it does not have to wait for ever.
+    //
+    // **Measured on the Android TV client 2026-09-20 and it hangs a viewer
+    // indefinitely.** A reaped session took this path, the chrome sat on
+    // "Preparing new stream" and the position froze, with no failure screen
+    // and no further trail line for minutes. Nothing threw, so nothing failed
+    // over: a hang is not an error, and every bounded thing below it was
+    // waiting on the one unbounded thing above it.
+    //
+    // On expiry the release continues in the background on its own ladder and
+    // the create is attempted regardless. If the slot really is still held
+    // the node refuses, which throws, which fails over — bounded and visible,
+    // and strictly better than a viewer watching a frozen frame. Same budget
+    // as the create deliberately: one number for "how long core may spend on
+    // this node before giving up on it".
+    await this.releaseWithin(failedSession, this.generationAttemptTimeoutMs);
     try {
       return await this.createOn(
         endpoint,
@@ -401,6 +429,33 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *   there is teardown half the consumers do not get. This is the only
    *   layer all of them pass through, which is why the retry ladder is here.
    */
+  /**
+   * Wait for the failed session's first close, but not indefinitely.
+   *
+   * Resolves either way and never rejects: the caller's next act is to ask
+   * the node for fresh work, and that is bounded and can fail honestly. A
+   * rejection here would only turn a slow close into a failure the node never
+   * reported.
+   */
+  private async releaseWithin(failedSession: PlaybackSession, timeoutMs: number): Promise<void> {
+    const release = this.releaseFailedSession(failedSession);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<'expired'>((resolve) => {
+      timer = setTimeout(() => resolve('expired'), timeoutMs);
+    });
+    try {
+      if (await Promise.race([release.then(() => 'closed' as const), expired]) === 'expired') {
+        this.log.warn('failed-session-close-timeout', {
+          sessionId: failedSession.sessionId,
+          endpoint: failedSession.endpoint,
+          timeoutMs,
+        });
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   private releaseFailedSession(failedSession: PlaybackSession): Promise<void> {
     const owned = this.sessions.get(failedSession.sessionId);
     if (!owned) return Promise.resolve();
