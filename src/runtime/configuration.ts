@@ -186,11 +186,30 @@ export class MachaClientConfiguration {
         throw new Error('invalid endpoint state');
       }
       const normalized = normalizeUrls(record.urls);
-      if (JSON.stringify(record.urls) !== JSON.stringify(normalized)) this.writeEndpointValue(normalized, key);
+      if (JSON.stringify(record.urls) !== JSON.stringify(normalized)) this.healEndpointValue(normalized, key);
       return normalized;
     } catch {
       this.storage.removeItem(key);
       return undefined;
+    }
+  }
+
+  /**
+   * Rewrite a stored list that read back in a form we would not have written.
+   *
+   * Separate from the read's own `catch`, which removes the key: this write
+   * used to sit inside that `try`, so a store refusing a write — a full
+   * television, a private-mode quota — **deleted the endpoints the read had
+   * just successfully parsed**. The value was sound and the tidy-up was
+   * optional; the failure of the optional half destroyed the sound whole.
+   * Losing the normalisation until next time costs nothing.
+   */
+  private healEndpointValue(urls: string[], key: string): void {
+    try {
+      this.writeEndpointValue(urls, key);
+    } catch {
+      // Left as it was found. It parsed, and it will be normalised on read
+      // every time until a write succeeds.
     }
   }
 

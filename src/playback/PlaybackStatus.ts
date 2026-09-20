@@ -9,12 +9,13 @@ const CONTAINER_LABELS: Record<string, string> = {
 /**
  * The container actually served, as the panel should show it.
  *
- * Only ever from `output.container`. Synthesising it from the request would
- * put the thing we asked for on screen wearing the clothes of the thing we
- * got, and the entire value of this field is telling those two apart — a
- * segment-container preference that the node quietly ignored looks identical
- * to one it honoured until something reports back. Absent means absent: no
- * text rather than a default.
+ * Only ever from what the server says it produced — `output.container`, or
+ * `output.format` where the node could not name a container. Never from the
+ * request: synthesising it there would put the thing we asked for on screen
+ * wearing the clothes of the thing we got, and the entire value of this field
+ * is telling those two apart — a segment-container preference that the node
+ * quietly ignored looks identical to one it honoured until something reports
+ * back. Absent means absent: no text rather than a default.
  */
 function servedContainer(session: PlaybackSession): string | undefined {
   // `output.format` is the fallback, not a default: it is still the server

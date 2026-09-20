@@ -431,6 +431,35 @@ describe('persisted endpoint memory across a reload', () => {
   });
 });
 
+describe('a discovery that lands after the monitor stopped', () => {
+  it('does not reshape the registry or notify hosts on behalf of a torn-down monitor', async () => {
+    // The cycle checks the signal either side of the probe walk; the status
+    // call sat above the first of those checks, so an advertisement arriving
+    // after `stop()` was still applied — and applying one fires every host
+    // listener for a monitor the host has already disposed.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const notified = vi.fn();
+    registry.subscribe(notified);
+    const controller = new AbortController();
+    let answer: (snapshot: ClusterStatusSnapshot) => void = () => undefined;
+    const clusterStatusApi: ClusterStatusApi = {
+      status: () => new Promise((resolve) => { answer = resolve; }),
+      node: async () => { throw new Error('not implemented'); },
+      checkConnectivity: async () => { throw new Error('not implemented'); },
+    };
+
+    const discovering = discoverClusterEndpoints(registry, clusterStatusApi, controller.signal);
+    controller.abort();
+    answer({ nodes: [
+      { id: 'peer', state: 'online', api_endpoint: 'http://peer.example' } as unknown as ClusterNodeStatus,
+    ] } as ClusterStatusSnapshot);
+    await discovering;
+
+    expect(registry.snapshot().map(({ endpoint }) => endpoint.baseUrl)).toEqual(['http://a']);
+    expect(notified).not.toHaveBeenCalled();
+  });
+});
+
 describe('seeding a registry the way the README says to', () => {
   it('keeps a remembered discovery across a restart instead of persisting it away', () => {
     // Seeding everything through the default source labels remembered

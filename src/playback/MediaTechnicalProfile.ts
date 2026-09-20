@@ -18,7 +18,10 @@ function normalizedStream(stream: CatalogueMediaProfile['streams'][number] | Pla
     // Both shapes carry these from profile schema 2 onward. Zero and empty
     // string are the server's "not probed" markers, so they normalise to
     // absent rather than to a confident wrong answer.
-    level: ('bit_depth' in stream ? stream.level : stream.level) || undefined,
+    // No discriminator here: both shapes spell it `level`, unlike the two
+    // below. The ternary that used to be here chose between one expression and
+    // itself.
+    level: stream.level || undefined,
     colorTransfer: ('bit_depth' in stream ? stream.color_transfer : stream.colorTransfer) || undefined,
     dolbyVisionProfile: ('bit_depth' in stream ? stream.dolby_vision_profile : stream.dolbyVisionProfile) || undefined,
     dolbyVisionCompatibility: 'bit_depth' in stream

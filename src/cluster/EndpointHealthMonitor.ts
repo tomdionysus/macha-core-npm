@@ -187,9 +187,16 @@ export function persistConfirmedEndpoints(
 export async function discoverClusterEndpoints(
   registry: EndpointRegistry,
   clusterStatusApi: ClusterStatusApi,
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
     const { nodes } = await clusterStatusApi.status();
+    // `stop()` may have run while that was in flight. Applying an
+    // advertisement after it reshapes the registry and fires every host
+    // listener on behalf of a monitor the host has already torn down — the
+    // same rule the cycle applies either side of the probe walk, which this
+    // call sat above rather than inside.
+    if (signal?.aborted) return;
     // `host`/`port` is the node's internal RPC bind address, not its HTTP API —
     // using it here would guess at a port that is frequently wrong, and at a
     // scheme that TLS offload makes unguessable. `api_endpoint` is the whole
@@ -376,7 +383,7 @@ export class EndpointHealthMonitor {
   private async runCycle(controller: AbortController): Promise<void> {
     const { registry, clusterStatusApi, configuration } = this.options;
     try {
-      await discoverClusterEndpoints(registry, clusterStatusApi);
+      await discoverClusterEndpoints(registry, clusterStatusApi, controller.signal);
       if (controller.signal.aborted) return;
       const reachable = await probeKnownEndpoints(registry, this.auth, controller.signal);
       if (controller.signal.aborted) return;

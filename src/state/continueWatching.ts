@@ -159,8 +159,15 @@ export class ContinueWatchingStore {
   private parse(value: string | null | undefined): PlaybackProgress[] | undefined {
     if (!value) return undefined;
     try {
-      const parsed = JSON.parse(value) as PlaybackProgress[];
-      return Array.isArray(parsed) ? parsed : undefined;
+      const parsed: unknown = JSON.parse(value);
+      // The entries too, not just the array. This was the one store that
+      // checked only `Array.isArray`, so a single `null` in the list threw out
+      // of `isFinished` on every `list()` — a viewer's whole Continue Watching
+      // row broken until somebody cleared their history, by one bad write.
+      // Bad entries are dropped rather than the list discarded: the rest of
+      // the history is still true, and refusing all of it costs the viewer
+      // more than the one entry that is wrong.
+      return Array.isArray(parsed) ? parsed.filter(isPlaybackProgress) : undefined;
     } catch {
       return undefined;
     }
@@ -170,6 +177,15 @@ export class ContinueWatchingStore {
     this.storage.setItem(this.key(), JSON.stringify(entries));
     this.changed();
   }
+}
+
+function isPlaybackProgress(entry: unknown): entry is PlaybackProgress {
+  if (!entry || typeof entry !== 'object') return false;
+  const record = entry as Partial<PlaybackProgress>;
+  return typeof record.mediaId === 'string'
+    && typeof record.positionMs === 'number'
+    && typeof record.durationMs === 'number'
+    && typeof record.updatedAt === 'number';
 }
 
 export function isFinished(progress: PlaybackProgress): boolean {
