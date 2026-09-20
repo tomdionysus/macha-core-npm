@@ -428,12 +428,43 @@ function causeDetail(error: unknown): string | undefined {
  * again — a fourth copy of this descent was days from being written when this
  * module was created.
  */
+/**
+ * A playlist answered with a status rather than a playlist.
+ *
+ * **This exists because the status was being thrown away, and a node paid for
+ * it.** `hlsWalkTargets` used to return `[]` for a manifest that answered
+ * `404`, which `probeHlsReadiness` could only report as `unassessable /
+ * empty-manifest` — indistinguishable from a `200` that parsed to nothing.
+ * Measured on the Android TV client on 2026-09-20: a reaped session makes the
+ * *master* playlist answer `404`, the walk read `.ok`, discarded the number,
+ * and the host had no choice but to classify the failure `unknown`. Core reads
+ * `unknown` as evidence against the endpoint, so **a node that had answered
+ * honestly about a session was charged for it** and a generation was walked
+ * across a site when asking that same node to regenerate was the cheap correct
+ * move. `playbackFailureKindForStatus(404)` had said `not-found` all along;
+ * nothing ever called it, because nothing still held the 404.
+ *
+ * Thrown rather than returned so that **every** caller of the primitive meets
+ * it. A host asking the exported walk its own question got the same empty list
+ * and the same missing number, and an empty array is the one answer that reads
+ * as "nothing here" no matter how carefully it is documented.
+ *
+ * `preflightHlsSource` is unaffected: it already catches to `false`, which is
+ * the same answer it gave on an empty list.
+ */
+export class HlsManifestUnavailableError extends Error {
+  constructor(public readonly url: string, public readonly status: number) {
+    super(`HLS playlist ${url} answered ${status}`);
+    this.name = 'HlsManifestUnavailableError';
+  }
+}
+
 export async function hlsWalkTargets(
   source: PlaybackSource,
   options: HlsWalkOptions,
 ): Promise<string[]> {
   const manifest = await walkFetch(source.url, source, undefined, options);
-  if (!manifest.ok) return [];
+  if (!manifest.ok) throw new HlsManifestUnavailableError(source.url, manifest.status);
   const text = await manifest.text();
   const variant = firstVariantUri(text);
   if (!variant) {
@@ -441,7 +472,7 @@ export async function hlsWalkTargets(
   }
   const variantUrl = resolveUrl(source.url, variant);
   const media = await walkFetch(variantUrl, source, undefined, options);
-  if (!media.ok) return [];
+  if (!media.ok) throw new HlsManifestUnavailableError(variantUrl, media.status);
   const mediaText = await media.text();
   const targets = mediaPlaylistTargets(mediaText).map((uri) => resolveUrl(variantUrl, uri));
   return [...new Set(targets)];
@@ -532,8 +563,19 @@ export async function probeHlsReadiness(
     // there is no console, so a failure trail on screen is the whole mechanism
     // for telling a stalled node from a timed-out one from a refused one, and
     // swallowing this leaves it printing "the node did not answer".
+    // A playlist that answered with a status is exactly as much evidence as a
+    // fragment that did, and it is reported the same way — see `:545`, which
+    // this now mirrors. `detail` names *which* playlist, because the status
+    // alone cannot separate a reaped session (the master 404s) from a variant
+    // the node has lost, and on a television the trail is the only console.
+    if (error instanceof HlsManifestUnavailableError) {
+      return { state: 'unavailable', status: error.status, detail: causeDetail(error) };
+    }
     return { state: 'unavailable', detail: causeDetail(error) };
   }
+  // Now means what it says: a playlist that was served and parsed to nothing.
+  // While a non-ok manifest arrived here too, the real case was drowning the
+  // one this reason exists to name.
   if (targets.length === 0) return { state: 'unassessable', reason: 'empty-manifest' };
   for (const target of targets) {
     let response: Response;

@@ -314,6 +314,63 @@ describe('readiness: has the first fragment arrived', () => {
     expect(await probeHlsReadiness(source(), { fetch })).toEqual({ state: 'unavailable', status: 503 });
   });
 
+  it('reports the status when the master playlist itself answers, rather than calling it empty', async () => {
+    // **The reaped-session case, and the whole reason this branch exists.**
+    // When a node reaps a session the *master* playlist 404s, and the walk
+    // used to read `.ok`, return `[]` and report `empty-manifest` — throwing
+    // away the one number that says what happened. Measured on the Android TV
+    // client on 2026-09-20: its host had no choice but to classify the
+    // failure `unknown`, core reads `unknown` as evidence against the
+    // endpoint, and a node that had answered honestly about a session was
+    // charged for it and a generation walked across a site.
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { status: 404 },
+    });
+    const outcome = await probeHlsReadiness(source(), { fetch });
+    expect(outcome.state).toBe('unavailable');
+    expect(outcome).toMatchObject({ status: 404 });
+  });
+
+  it('reports the status when the variant playlist is the one that has gone', async () => {
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: MASTER },
+      'https://node-a.example/stream/abc/v0/index.m3u8': { status: 404 },
+    });
+    expect(await probeHlsReadiness(source(), { fetch })).toMatchObject({ state: 'unavailable', status: 404 });
+  });
+
+  it('names which playlist answered, because the status alone cannot', async () => {
+    // A reaped session and a variant the node has lost are both `404`. On a
+    // television the trail is the only console, so the URL is the difference
+    // between the two and it is carried rather than inferred.
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: MASTER },
+      'https://node-a.example/stream/abc/v0/index.m3u8': { status: 404 },
+    });
+    const outcome = await probeHlsReadiness(source(), { fetch });
+    expect(outcome.state === 'unavailable' && outcome.detail).toContain('v0/index.m3u8');
+  });
+
+  it('still says empty-manifest for a playlist that was served and parsed to nothing', async () => {
+    // The reason keeps its real meaning now that the common case has stopped
+    // drowning it: a 200 with no media in it.
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { body: '#EXTM3U\n#EXT-X-ENDLIST' },
+    });
+    expect(await probeHlsReadiness(source(), { fetch }))
+      .toEqual({ state: 'unassessable', reason: 'empty-manifest' });
+  });
+
+  it('leaves the preflight answering false, which is what it already said', async () => {
+    // `preflightHlsSource` catches to `false`, and `false` is the same answer
+    // it gave on the empty list. The throw must not turn a negative answer
+    // into an exception escaping into a caller that never expected one.
+    const { fetch } = stubFetch({
+      'https://node-a.example/stream/abc/index.m3u8': { status: 404 },
+    });
+    await expect(preflightHlsSource(source(), { fetch })).resolves.toBe(false);
+  });
+
   it('says it cannot assess a non-manifest source rather than calling it unavailable', async () => {
     const { fetch } = stubFetch({});
     expect(await probeHlsReadiness(source({ isManifest: false }), { fetch }))
