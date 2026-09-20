@@ -53,6 +53,19 @@ describe('ClusterEndpointRouter', () => {
     expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
   });
 
+  it('does not let a host listener that throws turn a successful route into a failure', async () => {
+    // The registry notifies on every recorded outcome, and the recording is
+    // on the success path — so an unguarded listener turned a request that had
+    // *worked* into a rejection, and could take the health loop with it.
+    // Presentation must not be able to break routing.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const router = new ClusterEndpointRouter(registry);
+    registry.subscribe(() => { throw new Error('a host listener blew up'); });
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
+    expect(registry.candidates()[0]?.health.lastSuccessAt).toBeDefined();
+  });
+
   it('routes a mutation once through current authority and does not replay an ambiguous failure', async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const router = new ClusterEndpointRouter(registry);

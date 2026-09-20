@@ -467,12 +467,13 @@ Two numbers chosen independently and never compared — the fault this file keep
 
 **Do not fold this into the `not-found` work.** It predates it, it affects a path that ships today, and it deserves its own before-and-after.
 
-### A storage write error kills the health loop silently
-**Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:167,385`; `src/runtime/configuration.ts:185-187`.
+### ~~A storage write error kills the health loop silently~~ — BUILT on `develop` 2026-09-20, unreleased
 
-`persistConfirmedEndpoints` -> `setItem` is uncaught. A `QuotaExceededError` (TVs) rejects `cycle()`, the `void` swallows it as an unhandled rejection, no reschedule runs, and `running` stays `true`. `EndpointBandwidth.write()` catches for exactly this reason — two copies of one rule, disagreeing. Fix: try/catch the persist, reschedule in a `finally`. **`probeNow()` now shares this loop**, so a caller awaiting an off-cycle probe inherits the same silent death.
+**Waiting on:** a release. Nothing for a client to do.
 
-**Pair it with `EndpointRegistry.notify()` (`:863-865`), which is the same fault from the other side:** it does not isolate listeners, so a throwing host listener turns a succeeded `route()` into a rejection and can kill the same loop. `publishConnectionState` already guards. **Both are Law 1 violations by the principles' own wording** — *"control … must never queue behind or execute inline with bulk data work"*, and a health loop that dies silently with `running` still `true` is control work that has stopped without anyone being told. The laws add that *failure … must be visible and actionable rather than becoming indefinite waiting*; this is the indefinite kind. Cheap, and it is one of the coverage-leverage scenarios.
+**Both halves, as the item said to pair them.** `runCycle` wraps `persistConfirmedEndpoints` in its own `try`/`catch` and logs `discovered-endpoints-not-persisted`, and the reschedule has moved into a `finally` that arms unless the controller was aborted — so the loop surviving no longer depends on the body having succeeded. `EndpointRegistry.notify()` isolates each listener and logs `endpoint-listener-failed`, the posture `publishConnectionState` has always taken; it also copies the set before iterating, since a listener may unsubscribe itself on delivery.
+
+**Two tests, and the first needed both guards removed before it went red — which is the point.** With only the inner `catch` removed it still passed, because the reschedule was inside the `try` and nothing threw past it; with only the `finally` removed it still passed, because the `catch` swallowed the throw. Restoring the original shape — no inner catch, reschedule in the body — fails it at `expected 2 to be greater than 2`: the loop stopped probing. The listener test rejects with the host's own error when `notify` is left unguarded. 909 tests, typecheck and `lint:platform` clean.
 
 ### The throughput axis may never have ranked anything, anywhere
 **Waiting on:** core for one small change, and on the web client for one measurement. **Rewritten 2026-09-20 after reading the code this entry had admitted not reading.**

@@ -860,7 +860,23 @@ export class EndpointRegistry {
     return result;
   }
 
+  /**
+   * Publish to listeners without letting one of them break the caller.
+   *
+   * A host listener that throws used to turn a `route()` that had *succeeded*
+   * into a rejection — the recording happens on the success path — and could
+   * take the health loop down with it. Presentation cannot be allowed to
+   * break routing: the same posture `publishConnectionState` has always
+   * taken, and for the same reason. Copied before iterating, since a listener
+   * may unsubscribe itself on delivery.
+   */
   private notify(): void {
-    for (const listener of this.listeners) listener();
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch (error) {
+        this.log.warn('endpoint-listener-failed', { error });
+      }
+    }
   }
 }

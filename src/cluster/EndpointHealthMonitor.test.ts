@@ -454,6 +454,49 @@ describe('EndpointHealthMonitor lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('keeps probing when the store it remembers discoveries in refuses the write', async () => {
+    // A television with a full store throws `QuotaExceededError` out of
+    // `setItem`. That used to reject the cycle, the `void` on the caller
+    // swallowed it, no reschedule ran, and `running` stayed `true`: a health
+    // loop dead with nothing said, which is the indefinite-wait failure the
+    // contract says must never be silent.
+    vi.useFakeTimers();
+    const readable = memoryStorage();
+    const storage = {
+      getItem: (key: string) => readable.getItem(key),
+      removeItem: (key: string) => readable.removeItem(key),
+      setItem: () => { throw new Error('QuotaExceededError'); },
+    };
+    const configuration = new MachaClientConfiguration({ storage });
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    const monitor = new EndpointHealthMonitor({
+      registry,
+      clusterStatusApi: fakeClusterStatusApi([
+        { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_endpoint: 'http://10.44.1.51:7438' } as ClusterNodeStatus,
+      ]),
+      auth: fixedBearerToken(undefined, fetchImpl),
+      configuration,
+      intervalMs: 10_000,
+    });
+
+    monitor.start();
+    await vi.waitFor(() => expect(calls()).toBeGreaterThan(0));
+    const afterFirstCycle = calls();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(calls()).toBeGreaterThan(afterFirstCycle);
+    expect(monitor.running).toBe(true);
+    // And it is not silent, which is the other half: a client that never
+    // remembers a discovery again can be told why.
+    expect(clientDiagnosticsSnapshot().some((entry) => entry.event === 'discovered-endpoints-not-persisted')).toBe(true);
+
+    monitor.stop();
+    vi.useRealTimers();
+  });
+
   it('is idempotent on start and on stop, so a repeated teardown cannot leave a loop running', async () => {
     vi.useFakeTimers();
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
