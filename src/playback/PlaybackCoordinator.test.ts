@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
-import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
+import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
@@ -2709,5 +2709,132 @@ describe('the runway is measured when it is spent, not when it was last reported
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('a recovery restates the transforms the chooser picked', () => {
+  // The Android TV client measured this on hardware, 2026-09-20. A generation
+  // passing HEVC 1920x1040 through untouched — `mode: transcode`, `video:
+  // copy`, DTS 5.1 converted to AAC — was reaped on its node, and the
+  // replacement re-encoded the video to H264, taking the new node's only
+  // `max_video_transcodes` slot to convert a picture the television had been
+  // decoding natively. The server ruled out its own substitution: its journal
+  // showed `mode=transcode` from admission. Something asked for it, and this
+  // is what asked.
+
+  function copyVideoTranscodeAudio(): PlaybackCapabilities {
+    return { platform: 'android', videoCodecs: ['hevc'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [] };
+  }
+
+  function hevcWithDts() {
+    return { profile: { mediaId: 'm1', format: 'matroska', container: 'mkv', durationMs: 600_000, bitrate: 20_000_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'hevc', profile: 'Main 10', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'dts', profile: '', language: '', default: true, forced: false },
+    ] } };
+  }
+
+  async function startChosen(api: PlaybackResolver, player: FakePlayer): Promise<PlaybackCoordinator> {
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => copyVideoTranscodeAudio(),
+      initialPositionMs: 0,
+      facts: async () => hevcWithDts(),
+    });
+    await coordinator.start();
+    return coordinator;
+  }
+
+  it('sends video and audio on a failover, not a bare mode the server reads as a fresh transcode', async () => {
+    const player = new FakePlayer();
+    const initial = session({
+      mode: 'transcode',
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      preferences: { mode: 'transcode', maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+    });
+    const replacement = session({
+      sessionId: 's2', mode: 'transcode',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, mode: 'transcode', url: 'http://b/replacement.m3u8' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => replacement);
+    const coordinator = await startChosen(api, player);
+
+    // The chooser did pick a copy, or this test pins nothing.
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
+
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.fail(new Error('node A stream failed'));
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalled());
+    expect(api.failover.mock.calls[0]?.[4]).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
+  });
+
+  it('gives up the copy once when the replacement node refuses it, rather than leaving the viewer with nothing', async () => {
+    // Restating the copy asks a node that never agreed to it to perform it,
+    // and a 400 is not a retryable endpoint failure — the candidate walk
+    // throws rather than trying the next one. Without the single step down,
+    // this fix would trade a silent full transcode for a terminal failure.
+    const player = new FakePlayer();
+    const initial = session({
+      mode: 'transcode',
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      preferences: { mode: 'transcode', maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+    });
+    const replacement = session({
+      sessionId: 's2', mode: 'transcode',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, mode: 'transcode', url: 'http://b/replacement.m3u8' },
+    });
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async (_failed, _media, _caps, _seekMs, preferences: PlaybackPreferencesUpdate) => {
+      if (preferences.video === 'copy') throw Object.assign(new Error('cannot copy HEVC into fMP4 on this build'), { status: 400 });
+      return replacement;
+    });
+    const coordinator = await startChosen(api, player);
+
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.fail(new Error('node A stream failed'));
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(2));
+    expect(api.failover.mock.calls[1]?.[4]).toMatchObject({ mode: 'transcode', video: 'transcode' });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+
+    // And the downgrade is what the generation is now running on, so the next
+    // recovery does not re-ask for the copy this one has already given up.
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'transcode', video: 'transcode' });
+  });
+
+  it('does not pair the old mode\'s transforms with a mode the viewer has just changed to', async () => {
+    // A wrong restatement is worse than none: it pins a transform to a mode it
+    // did not belong to. The pending change is the mode being sent, so the
+    // report describing the previous one has nothing to say about it.
+    const player = new FakePlayer();
+    const initial = session({
+      mode: 'transcode',
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      preferences: { mode: 'transcode', maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+    });
+    const update = deferred<PlaybackSession>();
+    const api = resolver(initial, async () => update.promise) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => session({
+      sessionId: 's2', mode: 'remux',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, mode: 'remux', url: 'http://b/replacement.m3u8' },
+    }));
+    const coordinator = await startChosen(api, player);
+
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    coordinator.update({ preferences: { mode: 'remux' } });
+    await flush();
+    player.fail(new Error('node A stream failed'));
+
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalled());
+    const sent = api.failover.mock.calls[0]?.[4] as PlaybackPreferencesUpdate;
+    expect(sent.mode).toBe('remux');
+    expect(sent.video).toBeUndefined();
+    expect(sent.audio).toBeUndefined();
+    update.resolve(initial);
   });
 });

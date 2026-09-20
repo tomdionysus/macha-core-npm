@@ -591,6 +591,53 @@ function withRestatedSegmentContainer(
   return { ...preferences, container: requestedContainer };
 }
 
+/**
+ * Restate the per-stream transforms on a generation being rebuilt.
+ *
+ * The same server rule as the container above, one field further in, and this
+ * side of it *does* need restating. From server 0.34.0 a request carrying
+ * `mode` restates the whole transform, so a recovery that names `transcode`
+ * and nothing else clears the `video: 'copy'` that made it a copy and the
+ * replacement node plans video from scratch. Measured on the Android TV client
+ * 2026-09-20: a generation passing HEVC 1920x1040 through untouched was reaped,
+ * and its replacement re-encoded that stream to H264 — taking the node's only
+ * `max_video_transcodes` slot to convert a picture the television was decoding
+ * natively. The node was asked for it. Nothing was wrong with the node.
+ *
+ * **Restated from the instruction, not from the session's echo.** The two
+ * differ after a server-side substitution, and `session.transform` is what the
+ * node did rather than what was asked for. Restating that makes one bad plan
+ * permanent — each recovery would rebuild from the last recovery's downgrade,
+ * and the copy would never come back. It is also the only source that can
+ * disagree with the `mode` sitting beside it: `mode` comes from the session's
+ * *confirmed preferences* overlaid with anything the viewer has changed since,
+ * so pairing it with the node's echo can state `remux` alongside a transcoded
+ * video — an instruction nobody chose and the server is entitled to refuse.
+ * `degradeInstruction` is the same coupling from the other side: giving up an
+ * audio copy forces `remux` to become `transcode`, because a remux that does
+ * not copy every stream is not a remux.
+ *
+ * So the mode and the transforms are restated from one place or not at all,
+ * which is why a report for a *different* mode is left alone entirely: it
+ * describes a transform that no longer applies, and pinning it to a mode it
+ * did not belong to is the failure this whole item is about, inverted.
+ *
+ * Fields already present win, so a viewer's in-flight change is never
+ * overwritten — the same precedence the container follows. `direct` copies
+ * every stream by definition and has no per-stream step, so it is skipped.
+ */
+function withRestatedTransforms(
+  preferences: PlaybackPreferencesUpdate,
+  instruction: PlaybackInstructionReport | undefined,
+): PlaybackPreferencesUpdate {
+  if (preferences.mode !== 'remux' && preferences.mode !== 'transcode') return preferences;
+  if (!instruction || instruction.mode !== preferences.mode) return preferences;
+  const restated = { ...preferences };
+  if (restated.video === undefined && instruction.video !== undefined) restated.video = instruction.video;
+  if (restated.audio === undefined && instruction.audio !== undefined) restated.audio = instruction.audio;
+  return restated;
+}
+
 export function equivalentDirectSources(primary: PlaybackSession, alternate: PlaybackSession): boolean {
   const primaryMime = (primary.source.mimeType ?? primary.mimeType).split(';', 1)[0]?.trim().toLowerCase();
   const alternateMime = (alternate.source.mimeType ?? alternate.mimeType).split(';', 1)[0]?.trim().toLowerCase();
@@ -899,29 +946,118 @@ export class PlaybackCoordinator {
     positionMs: number,
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
-    const viewerChose = (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
     try {
       return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences);
     } catch (error) {
-      const instruction = this.chosenInstruction;
-      if (viewerChose || !instruction || !isExecutorRefusal(error)) throw error;
-      const degraded = degradeInstruction(instruction);
+      const degraded = this.degradedInstructionFor(error);
       if (!degraded) throw error;
-
-      this.log.warn('instruction-degraded', {
-        mediaId: this.options.media.id,
-        from: { video: instruction.video, audio: instruction.audio, mode: instruction.mode },
-        to: { video: degraded.video, audio: degraded.audio, mode: degraded.mode },
-        error,
-      });
-      this.chosenInstruction = degraded;
-      this.patchSnapshot({ notice: 'This node could not copy the original streams, so they are being converted.' });
+      this.applyDegradedInstruction(degraded, error);
       return await this.options.resolver.resolve(
         this.options.media,
         capabilities,
         positionMs,
         { ...preferences, ...instructionPreferences(degraded) },
       );
+    }
+  }
+
+  /** The viewer named the mode themselves, so nothing here may quietly change it. */
+  private get viewerChoseMode(): boolean {
+    return (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
+  }
+
+  /**
+   * The one step down this failure allows, or nothing.
+   *
+   * Narrow on purpose, and the narrowness is the point: only a 400 — the node
+   * saying it cannot perform this, as distinct from 429 capacity or 5xx health
+   * — only against an instruction the chooser produced, and never over a mode
+   * the viewer chose themselves.
+   */
+  private degradedInstructionFor(error: unknown): PlaybackInstruction | undefined {
+    const instruction = this.chosenInstruction;
+    if (this.viewerChoseMode || !instruction || !isExecutorRefusal(error)) return undefined;
+    return degradeInstruction(instruction);
+  }
+
+  /**
+   * Record a downgrade as the instruction this generation is now running on.
+   *
+   * The snapshot report is patched, not just the private field. It was not,
+   * and the gap mattered twice over: a host's diagnostics went on showing
+   * `video: 'copy'` for a generation the node had refused to copy, and — once
+   * recoveries began restating the transforms — the value a replacement would
+   * have been rebuilt from was the refused one, so every recovery re-asked for
+   * the copy the first attempt had already given up on.
+   */
+  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown): void {
+    const instruction = this.chosenInstruction;
+    this.log.warn('instruction-degraded', {
+      mediaId: this.options.media.id,
+      from: { video: instruction?.video, audio: instruction?.audio, mode: instruction?.mode },
+      to: { video: degraded.video, audio: degraded.audio, mode: degraded.mode },
+      error,
+    });
+    this.chosenInstruction = degraded;
+    this.patchSnapshot({
+      instruction: {
+        ...this.snapshot.instruction,
+        mode: degraded.mode,
+        video: degraded.video,
+        audio: degraded.audio,
+        container: degraded.container,
+        reasons: degraded.reasons,
+        assumed: degraded.assumed,
+        chosenByViewer: false,
+        withoutFacts: this.snapshot.instruction?.withoutFacts ?? false,
+      },
+      notice: 'This node could not copy the original streams, so they are being converted.',
+    });
+  }
+
+  /**
+   * Build a replacement from the current preferences, and give up the copies
+   * once if the node refuses them.
+   *
+   * Restating `video`/`audio` is what stops a recovery silently re-encoding a
+   * stream that was being passed through — but it also asks a node that has
+   * never agreed to that copy to perform it, and a 400 is **not** a retryable
+   * endpoint failure: `create` throws it rather than walking to the next
+   * candidate. Without this the fix would trade a silent full transcode for a
+   * terminal failure, which is the worse of the two by a distance.
+   *
+   * So the fallback is exactly as wide as the restatement that needs it. It
+   * fires only when this request actually asked a node to copy something; a
+   * 400 for any other reason is rethrown untouched, leaving the behaviour of
+   * every path that existed before this identical.
+   *
+   * **Standby preparation deliberately does not use it.** A downgrade here
+   * rewrites the instruction the *live* generation will be rebuilt from, and a
+   * weak node refusing a copy it was only ever offered speculatively must not
+   * decide that for the session the viewer is watching. A standby that cannot
+   * reproduce the generation is not a standby; it simply does not get made.
+   */
+  private async recoverWithPreferences<T>(
+    session: PlaybackSession,
+    run: (preferences: PlaybackPreferencesUpdate) => Promise<T>,
+  ): Promise<T> {
+    const preferences = this.currentPreferences(session);
+    try {
+      return await run(preferences);
+    } catch (error) {
+      if (preferences.video !== 'copy' && preferences.audio !== 'copy') throw error;
+      const degraded = this.degradedInstructionFor(error);
+      if (!degraded) throw error;
+      this.applyDegradedInstruction(degraded, error);
+      // The container is left as `currentPreferences` settled it. It was
+      // decided by rules that have already run over the pending preferences,
+      // and the instruction's copy of it is the older answer of the two.
+      return await run({
+        ...preferences,
+        mode: degraded.mode,
+        video: degraded.video,
+        audio: degraded.audio,
+      });
     }
   }
 
@@ -1560,11 +1696,22 @@ export class PlaybackCoordinator {
    * confirmed. Both alternate preparation and failover must use this rather
    * than the bare session echo, or a preference change racing a node failure
    * would be silently dropped on recovery.
+   *
+   * The confirmed set does not carry everything a generation was created with.
+   * `container` and the per-stream transforms are named in the instruction and
+   * echoed nowhere a replacement can read them back, so both are restated from
+   * the instruction report before this leaves — see
+   * `withRestatedSegmentContainer` and `withRestatedTransforms` for why naming
+   * a `mode` without them is not a smaller request but a different one.
    */
   private currentPreferences(session: PlaybackSession): PlaybackPreferencesUpdate {
-    return withRestatedSegmentContainer(
-      { ...completePreferences(session), ...this.snapshot.pendingPreferences },
-      this.snapshot.instruction?.container,
+    const instruction = this.snapshot.instruction;
+    return withRestatedTransforms(
+      withRestatedSegmentContainer(
+        { ...completePreferences(session), ...this.snapshot.pendingPreferences },
+        instruction?.container,
+      ),
+      instruction,
     );
   }
 
@@ -2367,13 +2514,13 @@ export class PlaybackCoordinator {
     try {
       const capabilities = await this.options.capabilities();
       if (this.disposed) return;
-      const next = await this.options.resolver.regenerate!(
+      const next = await this.recoverWithPreferences(dead, (preferences) => this.options.resolver.regenerate!(
         dead,
         this.options.media,
         capabilities,
         requestedPositionMs,
-        this.currentPreferences(dead),
-      );
+        preferences,
+      ));
       if (this.disposed) {
         await this.stopOnDisposal(next.sessionId);
         return;
@@ -2448,14 +2595,14 @@ export class PlaybackCoordinator {
         ));
       const capabilities = await this.options.capabilities();
       if (this.disposed) return;
-      const next = await this.options.resolver.failover!(
+      const next = await this.recoverWithPreferences(failedSession, (preferences) => this.options.resolver.failover!(
         failedSession,
         this.options.media,
         capabilities,
         requestedPositionMs,
-        this.currentPreferences(failedSession),
+        preferences,
         preparedAlternate,
-      );
+      ));
       if (this.disposed) {
         await this.stopOnDisposal(next.sessionId);
         return;

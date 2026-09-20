@@ -132,6 +132,14 @@ function withServedSegmentContainer(
  * `withServedSegmentContainer` exists for, arriving through the standby door
  * rather than the fresh-create one.
  *
+ * **Nor is the mode the whole of the transform.** `transcode` covers both a
+ * generation copying an HEVC stream through untouched and one re-encoding it to
+ * H264, and those are not substitutes for each other: swapping the first for
+ * the second hands the viewer a re-encoded picture and takes a scarce
+ * `max_video_transcodes` slot to produce it, with nothing anywhere reporting a
+ * change. So the per-stream transforms are compared as well, from what each
+ * node says it is doing rather than from what either was asked for.
+ *
  * An unreported container is not a mismatch. A node that does not say what it
  * served gives no grounds to reject a standby that is otherwise right, and
  * refusing one costs a viewer a rescue that is already built and ready over a
@@ -144,6 +152,9 @@ function withServedSegmentContainer(
 function interchangeableGeneration(alternate: PlaybackSession, replaced: PlaybackSession): boolean {
   if (alternate.mode !== replaced.mode) return false;
   if (alternate.mode === 'direct') return true;
+  if (alternate.transform && replaced.transform
+    && (alternate.transform.video !== replaced.transform.video
+      || alternate.transform.audio !== replaced.transform.audio)) return false;
   const alternateContainer = alternate.output?.container?.trim().toLowerCase();
   const replacedContainer = replaced.output?.container?.trim().toLowerCase();
   if (!alternateContainer || !replacedContainer) return true;
