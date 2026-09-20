@@ -1010,6 +1010,19 @@ export class PlaybackCoordinator {
     this.closePromise = (async () => {
       await this.startPromise?.catch(() => undefined);
       await this.mutationLoop?.catch(() => undefined);
+      // A recovery in flight is still negotiating a replacement session on
+      // another node, and that session is created *after* this point. Both
+      // paths stop what they built once they see `disposed`, so nothing is
+      // orphaned — but that stop is the last thing this coordinator owes the
+      // cluster, and without waiting for it `close()` resolves while it is
+      // still outstanding. A host that tears down auth on the strength of
+      // that resolution races its own `DELETE`.
+      //
+      // Nothing can start a new recovery from here: `close()` has already
+      // unsubscribed the failure channel, and every entry point re-checks
+      // `disposed` after each await, so these two promises are all there is.
+      await this.failoverPromise?.catch(() => undefined);
+      await this.regenerationPromise?.catch(() => undefined);
       await Promise.all([...this.alternatePreparations].map((preparation) => preparation.catch(() => undefined)));
       const session = this.serverSession ?? this.snapshot.session ?? ownedAtClose;
       if (session) {
@@ -2362,7 +2375,7 @@ export class PlaybackCoordinator {
         this.currentPreferences(dead),
       );
       if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        await this.stopOnDisposal(next.sessionId);
         return;
       }
       this.log.info('session-regenerated', {
@@ -2371,10 +2384,6 @@ export class PlaybackCoordinator {
         endpoint: next.endpoint,
         positionMs: requestedPositionMs,
       });
-      if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
-        return;
-      }
       this.serverSession = next;
       // Starts paused when the viewer is paused, so a source swapped in under
       // a stopped player simply works when they press play.
@@ -2399,6 +2408,26 @@ export class PlaybackCoordinator {
   }
 
 
+
+  /**
+   * Release a session built by a recovery that finished after `close()`.
+   *
+   * It carries the close options, and `keepalive` is the reason this is not
+   * an inline `stop()`. A page-unload teardown sets it because a `DELETE`
+   * issued as the document goes away is cancelled otherwise — and a session
+   * created during the unload is the one most likely to be cancelled, since
+   * it is negotiated at the last possible moment. Without the flag that node
+   * holds the transcode entitlement until `session_idle`, thirty minutes,
+   * with nothing pointing at the client responsible.
+   *
+   * Logged rather than swallowed: this is the one release nobody is waiting
+   * on a return value for, so a silent failure here is a leak with no trace.
+   */
+  private async stopOnDisposal(sessionId: string): Promise<void> {
+    await this.options.resolver.stop(sessionId, this.closeOptions).catch((error: unknown) => {
+      this.log.warn('recovered-session-close-failed', { sessionId, error });
+    });
+  }
 
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
     const requestedPositionMs = this.snapshot.intent.positionMs;
@@ -2428,7 +2457,7 @@ export class PlaybackCoordinator {
         preparedAlternate,
       );
       if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        await this.stopOnDisposal(next.sessionId);
         return;
       }
       this.serverSession = next;

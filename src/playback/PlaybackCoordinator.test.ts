@@ -1107,6 +1107,43 @@ describe('PlaybackCoordinator player failures', () => {
     expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b');
   });
 
+  it('waits for an in-flight failover to release the session it built before close() resolves, and releases it with the close options', async () => {
+    // `close()` used to await the start, the mutation loop and every alternate
+    // preparation, and not the failover. So it resolved while a replacement
+    // session was still being negotiated on another node — the recovery does
+    // stop what it built once it sees `disposed`, but a host that tears down
+    // auth on the strength of `close()` resolving races that `DELETE`. On the
+    // unload path the flag is the difference between the DELETE surviving and
+    // the node holding the entitlement for thirty minutes.
+    const player = new FakePlayer();
+    const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({
+      sessionId: 's2', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...initial.source, url: 'http://b/replacement.mp4' },
+    });
+    const built = deferred<PlaybackSession>();
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => built.promise);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    player.fail(new Error('node A stream failed'));
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalled());
+
+    let closed = false;
+    const closing = coordinator.close({ keepalive: true }).then(() => { closed = true; });
+    // Generously more turns than the close path itself needs, so this is a
+    // statement about the failover being awaited and not about scheduling.
+    for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+    expect(closed).toBe(false);
+
+    built.resolve(replacement);
+    await closing;
+
+    expect(closed).toBe(true);
+    expect(api.stop).toHaveBeenCalledWith('s2', { keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+  });
+
   it('does not act on a stream error during an in-flight seek-driven generation replacement until the seek settles, then drops it as stale once the seek replaces the source', async () => {
     // Mirrors the degrade() race (see the transport-invariants test above),
     // but fail() can never just drop the error the way degrade() does — it
