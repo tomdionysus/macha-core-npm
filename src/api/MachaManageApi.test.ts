@@ -40,6 +40,16 @@ describe('MachaManageApi', () => {
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer secret');
   });
 
+  it('says which array the unmatched envelope is missing rather than returning undefined', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ unmatched: [unmatched] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const error = await new MachaManageApi('http://node.test').unmatched().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 502, code: 'invalid_response' });
+    expect((error as Error).message).toContain('items');
+  });
+
   it('searches prospective catalogue matches with an encoded query', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ query: 'Alien (1979)', matches: [] }));
     vi.stubGlobal('fetch', fetchMock);

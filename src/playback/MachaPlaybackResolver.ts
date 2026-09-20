@@ -249,10 +249,25 @@ function checkSeekInvariant(
   log: ReturnType<typeof createClientLogger>,
 ): void {
   const { seek_ms: seekMs, seek_offset_ms: offsetMs, seek_requested_ms: requestedMs } = wire;
-  // Absent means the node predates 0.46.0 and cannot say. There is nothing to
-  // check and nothing is wrong: silence here is the correct handling of a node
-  // that never promised the invariant.
-  if (offsetMs === undefined || requestedMs === undefined) return;
+  // Absent means the node predates 0.46.0 and cannot say. Nothing is wrong,
+  // and nothing is *checked* either — which used to be indistinguishable from
+  // a check that passed, since both produced silence. A client reading a
+  // capture then has three readings to separate and only two records: the
+  // node's arithmetic is wrong (the report below), the invariant held, or it
+  // could never be tested. Recorded at `debug`, because an old node in a
+  // mixed-version set is ordinary and this must not reach a failure screen.
+  if (offsetMs === undefined || requestedMs === undefined) {
+    log.debug('seek-invariant-not-stated', {
+      sessionId: wire.session_id,
+      mode: wire.mode,
+      seekMs,
+      // Which field is missing, because a node stating one and not the other
+      // is a different fault from a node too old to state either.
+      seekOffsetMs: offsetMs,
+      seekRequestedMs: requestedMs,
+    });
+    return;
+  }
   if (seekMs + offsetMs === requestedMs) return;
   log.error('seek-invariant-violated', {
     sessionId: wire.session_id,

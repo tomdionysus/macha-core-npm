@@ -1,4 +1,4 @@
-import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, queryString, readJsonBody, readResponseBody } from './httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, envelopeArray, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, queryString, readJsonBody, readResponseBody } from './httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
@@ -30,7 +30,9 @@ export class MachaManageApi implements ManageApi {
 
   async unmatched(): Promise<UnmatchedFile[]> {
     const response = await this.request<{ items: UnmatchedFile[] }>('/api/v1/manage/unmatched', { method: 'GET', cache: 'no-store' });
-    return response.items;
+    return envelopeArray<UnmatchedFile>(response, 'items', (message) => (
+      new MachaManageApiError(message, 502, 'invalid_response')
+    ));
   }
 
   unmatchedDetail(id: string): Promise<UnmatchedDetail> {
@@ -122,6 +124,17 @@ export class MachaManageApi implements ManageApi {
       throw new MachaManageApiError(`Macha management request failed: ${parsed.message}`, response.status, parsed.code);
     }
     if (response.status === 204) return undefined as T;
-    return await readJsonBody<T>(response);
+    try {
+      return await readJsonBody<T>(response);
+    } catch (error) {
+      // A 200 that is not JSON — a captive portal or a proxy answering with
+      // HTML — used to surface as a raw `SyntaxError`, which has no status, so
+      // the router read it as non-retryable and the parse message was what a
+      // caller got.
+      if (error instanceof SyntaxError) {
+        throw new MachaManageApiError('Macha management answered with a body that is not JSON.', 502, 'invalid_response');
+      }
+      throw error;
+    }
   }
 }

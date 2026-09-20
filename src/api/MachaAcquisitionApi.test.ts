@@ -31,6 +31,20 @@ describe('MachaAcquisitionApi', () => {
     expect(options.headers).toMatchObject({ Authorization: 'Bearer secret', Accept: 'application/json' });
   });
 
+  it('says which array a job envelope is missing rather than failing at .map', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ enabled: true, staging: { path: '/stage', limit_bytes: 100, disk_bytes: 10, reserved_bytes: 5, accounted_bytes: 15 } }))
+      .mockResolvedValueOnce(jsonResponse({ enabled: true, build_available: true, search_enabled: false }))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const error = await new MachaAcquisitionApi('http://node.test').snapshot().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 502, code: 'invalid_response' });
+    expect((error as Error).message).toContain('jobs');
+  });
+
   it('submits filesystem paths without deleting the source', async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'ingest-1' }, 202));
     vi.stubGlobal('fetch', fetchMock);

@@ -7,7 +7,7 @@ import type {
   TorrentStatus,
 } from './AcquisitionApi.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
-import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readJsonBody, readResponseBody } from './httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, envelopeArray, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readJsonBody, readResponseBody } from './httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 
@@ -47,8 +47,8 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     return {
       ingestStatus,
       torrentStatus,
-      ingestJobs: ingestJobs.jobs,
-      torrentJobs: torrentJobs.jobs,
+      ingestJobs: this.jobs<IngestJob>(ingestJobs),
+      torrentJobs: this.jobs<TorrentJob>(torrentJobs),
     };
   }
 
@@ -92,6 +92,12 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     return this.request(`/api/v1/torrents/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
   }
 
+  private jobs<T>(response: unknown): T[] {
+    return envelopeArray<T>(response, 'jobs', (message) => (
+      new MachaAcquisitionApiError(message, 502, 'invalid_response')
+    ));
+  }
+
   private getJson<T>(path: string): Promise<T> {
     return this.request(path, { method: 'GET' });
   }
@@ -105,7 +111,17 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     );
 
     if (!response.ok) await this.throwResponseError(response);
-    return await readJsonBody<T>(response);
+    try {
+      return await readJsonBody<T>(response);
+    } catch (error) {
+      // A 200 carrying HTML — a captive portal, a proxy — used to surface as a
+      // raw `SyntaxError`, which has no status, so the router read it as
+      // non-retryable and the parse message reached the caller.
+      if (error instanceof SyntaxError) {
+        throw new MachaAcquisitionApiError('Macha acquisition answered with a body that is not JSON.', 502, 'invalid_response');
+      }
+      throw error;
+    }
   }
 
   private async throwResponseError(response: Response): Promise<never> {
