@@ -94,6 +94,36 @@ preloaded or embedded.
    downstream throughput limits, but not by an artificial quiet period or the
    mere existence of another open writer.
 
+4. **Thou Shalt Not Shoot Thyself In The Foot.** No operation, code path or
+   subsystem may leave the node — or the client — in a state it cannot recover
+   from on its own. *Added by the server on 2026-09-20 and adopted here
+   unchanged.* It is different in kind from the three above: laws 1-3 decide who
+   goes first, this one decides what may not be done **at any priority**. It is
+   a veto over all three and where it conflicts it wins, because a component
+   that has destroyed itself serves no viewer. Its test, in the server's words:
+   *if this goes wrong on the node furthest away, does it come back without me?*
+   The client's version of the same question is a television in another room
+   that nobody will relaunch.
+
+   Five self-healing disciplines come with it, and four of them bite here:
+   **re-derive, do not assert**; **every retried work item gets backoff, a
+   failure budget, a parked state and an operator action**; **recover by
+   resolving rather than refusing**; and **a bound smaller than one unit of its
+   own work is not a bound**. (The fifth, keeping snapshot size a function of
+   the live namespace, is the server's.)
+
+> **The numbering here and the server's do not agree, and both repositories
+> cite laws by number.** This document has control at 1, viewer at 2 and
+> loader at 3. The server's `ARCHITECTURE.md`, as of 2026-09-20, has viewer at
+> 1, loader at 2 and control at 3 — so a citation of "Law 1" means the opposite
+> thing in each tree, and core's own `TODO/ACTIVE.md` cites the numbering below.
+> The *content* of the three is the same in both; only the order differs, along
+> with how the control law is framed (a strict class order here, a floor the
+> viewer law may not eat through there). **Law 4 is unambiguous because neither
+> tree previously had a fourth.** Do not renumber either side to match without
+> Tom: every existing citation in both trees moves with it. Raised with the
+> server session 2026-09-20; recorded in *Waiting on Tom*.
+
 These laws define priority, not polling. Viewer demand, resource availability,
 durability completion, queue transitions and pressure thresholds must wake or
 pace work through events.
