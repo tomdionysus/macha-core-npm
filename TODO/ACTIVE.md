@@ -77,7 +77,7 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 **Core owes a reply to nobody right now** — every peer message received has been answered. What core owes is *work*, listed below.
 
 **Waiting on the Android TV client (television, `macha-client-rn-androidtv`):**
-- **Re-run the reap against `0e787f8`.** Expected: `source-reaped`, `session-reaped-regenerating`, then `generation-regenerate` and `session-regenerated` **both now at warn where they can be seen**, then a recovery or a bounded failover within ~20 s. **If it still hangs, there is a second unbounded wait core has not found** — that is the highest-priority signal outstanding anywhere.
+- **Re-run done 2026-09-21: recovered in 1.2 s, bound not exercised, cause unconfirmed.** The next reap is the one that matters, with its `info` trail on. **If it freezes again the trail names the last line before the silence** — that is the highest-priority signal outstanding anywhere, and the entry stays open until it arrives.
 - Whether `isFallbackAvailable` can be true against what Macha nodes actually serve. The whole `425` decision turns on it.
 - It is fixing its own `kindForTerminalError` gap and has added `terminal-failure-unclassified` to its trail.
 
@@ -413,7 +413,7 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Ordered against the laws on 2026-09-20, not by age or by who found them.** *Numbering is core's, per `docs/principles-and-laws.md`; the server numbers the same three differently — see the entry in* Waiting on Tom. Law 2 first — anything that makes the viewer wait or stall. Then Law 1 — control work reaching into the viewer's data path, which the principles call a correctness failure rather than a benchmark. Then failures the contract says must be *visible and actionable* and are currently neither. Then the two remaining places core still holds a private copy of server configuration, which is the class `0.14.0` set out to end. The rest is real, verified, and cheaper. Everything here is core's to do; the items that need a decision first have moved up to *Waiting on Tom*.
 
-### ~~A regeneration waits for ever on a close nobody bounded, and the viewer freezes~~ — BUILT on `develop` 2026-09-20, unreleased
+### A regeneration waits for ever on a close nobody bounded — BOUND BUILT on `develop` 2026-09-20, **cause NOT confirmed**
 
 **Waiting on:** a re-run on the television, then a release. **Found 2026-09-20 on hardware by the Android TV client, in front of Tom, within an hour of core opening the path that reaches it.** `ClusterPlaybackResolver.ts` — `releaseWithin`, `regenerate`; `PlaybackCoordinator.ts` — `session-regenerated`'s level.
 
@@ -430,6 +430,19 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 **And the diagnostic asymmetry that made it cost a hardware run.** `generation-regenerate` and `session-regenerated` were at `info` while **every other step of that recovery is `warn`**. So a capture could not distinguish *"the POST never returned"* from *"the POST returned and the failure is after it"* — the one distinction needed. Both are `warn` now. There was no reason for it in any comment, and a regeneration is a degraded state by definition.
 
 **Three tests. The two hang cases are verified red by reproducing the symptom rather than an assertion** — with the bound removed they do not fail, they **time out**, which is what "the viewer waits for ever" looks like from a test. The third guards that a prompt `404` close (the commonest case, since the session was reaped) acquires no delay, and is green either way by design.
+
+**Re-run 2026-09-21 against `0e787f8`: recovered in 1.2 s, and it did NOT confirm the diagnosis.** Close settled (`failed-session-closed`, `attempts: 1`) → create → `session-regenerated` → activate → first fragment in 59 ms → presented. Same node, copy intact. **But `failed-session-close-timeout` never fired, so the bound was never exercised.** The client insisted on the distinction and is right: **this run shows "did not reproduce, and the path works when the close settles", not "fixed".** Recorded that way here at its request and on the merits.
+
+**What the elimination now says, done properly rather than asserted.** Working back through the first freeze's trail:
+- `http-error-response` for the `DELETE` **is logged after the body read** (`MachaPlaybackResolver.throwResponseError` awaits `response.json()` first). Its presence proves the body completed, which **rules out a hung body read** — the most plausible receive-then-hang mechanism.
+- `stop()` then catches, and a failed `instanceof MachaPlaybackError` (two bundled copies of core, a real hazard under Metro) would log `session-stop-failed` at **error**. Not seen, so the `instanceof` held and `stop()` returned normally.
+- `releaseFailedSession`'s `.then` therefore ran, which means **the release settled in run 1**.
+- The `POST` is bounded: `generationAttemptBudgetMs` returns at least `ENDPOINT_TRANSPORT_ALLOWANCE_MS` (4 s) and can never be `0`, so `deadlineMs` is always truthy and `awaitWithEndpointDeadline` always applies. A 19 s expiry would have thrown `generation-regenerate-failed` at **warn**. Not seen.
+- `activateSession` is synchronous (`:1603`) and returns `void`; a throw inside it lands in the catch as `session-regeneration-failed` at **error**. Not seen, and `preparingSource` stayed `true`, which it can only do if `activateSession` was never reached.
+
+**Those five facts do not fit together, and saying so is the honest position.** Each path that could hang is either bounded or would have logged at a level the run 1 capture could see. **So either the run 1 capture was incomplete, or there is a mechanism nobody has named.** The client has since found that its own trail-watching detector was silently broken — an image crop producing nothing — which is a reason to hold run 1's *absence* of lines more loosely than its presence of them. Tom watching the position stay frozen at 5:00 is not in doubt; what the trail did and did not contain in the gap is.
+
+**So: the bound stays, as insurance rather than as a fix.** A viewer must never wait on that close for ever, whatever caused this one. **The entry stays open** until a freeze is reproduced with the `info` trail on, which now names every step. **Core over-claimed here** — "found it" was asserted from one candidate consistent with the symptom, before eliminating the others, and the elimination above should have come first.
 
 **The lesson worth more than the fix: a correct classification that opens an untested path is not an improvement yet.** The walk fix was right. It moved a live reap off a path that worked badly onto a path that had never run, and core shipped it without asking what was on the other side. The client's `201 in 1.21 s` probe against the node is what proved this was core's rather than the server's, before core looked at all.
 
