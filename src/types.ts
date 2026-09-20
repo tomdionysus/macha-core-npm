@@ -398,6 +398,28 @@ export interface PlaybackEvent {
    * folding it in here would make one number mean two things, and a consumer
    * comparing this against a media-time budget would be comparing it against
    * bytes that are not yet playable.
+   *
+   * **Report it as a measurement, never as a request.** While core is
+   * recovering a source, a `0` from an event that also says the element is
+   * playing — not `buffering`, not `ended`, not `paused` — is treated as a
+   * player on its way down rather than as real exhaustion, and the last
+   * figure core had reason to trust stands in its place, aged. `positionMs`
+   * has had that guard for longer: a tearing-down element can report zero,
+   * and one reading from a source already given up on would otherwise send
+   * the viewer back to the start of the film. This field rode through the
+   * same spread without one, feeding a decision that is not reversible.
+   *
+   * **So `buffering` must be produced independently of this number.** An
+   * adapter that derives `buffering` *from* an empty buffer can be wrong
+   * about both at once and core has nothing left to cross-check; one that
+   * takes it from the player's own state — `readyState`, a `status` field —
+   * cannot. Signalling exhaustion by zeroing this instead of setting
+   * `buffering` will not work during a recovery, and is not the contract.
+   *
+   * **It is also read as having an age**, not as a current fact: core
+   * subtracts the time elapsed since this event before spending the figure,
+   * while the viewer is playing. Emitting on a cadence is therefore worth
+   * more than emitting a precise number once.
    */
   forwardBufferMs?: number;
   /**
@@ -412,6 +434,16 @@ export interface PlaybackEvent {
    * bitrate, and the session carries one.
    *
    * **Absent means the host has no read-ahead, never that it holds zero.**
+   * A transformed source, or a worker that never registered, reports nothing
+   * here rather than `0`, so a generation cannot claim a cache it has not got.
+   *
+   * **Do not include it in an event-dedupe comparison.** It changes on every
+   * prefetch response, so comparing it turns a deduped event stream into a
+   * firehose on the path already moving the most bytes. Let it ride on events
+   * published for some other reason and recompute it each time; it is then
+   * never older than the event carrying it. Named here because the omission
+   * reads exactly like a bug to the next person who looks — the web client
+   * had to comment it as deliberate in its own adapter for that reason.
    */
   readAheadBytes?: number;
   /** Query/credential-free origin currently serving media bytes. */

@@ -692,6 +692,22 @@ export class PlaybackCoordinator {
   private pendingReplacement?: PlaybackSession;
   private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
 
+  /**
+   * When the last player event landed, on the duration clock.
+   *
+   * The runway is a *measurement with an age*, and every decision that spends
+   * it happens after at least one round trip. On the terminal path the player
+   * has by definition stopped sending events, so the age is unbounded there.
+   */
+  private lastPlayerEventAt?: number;
+  /**
+   * The last element cover a player event gave core reason to trust, and when.
+   *
+   * Kept so a tearing-down element reporting an empty buffer cannot erase a
+   * figure that was true a moment earlier. See `emptyBufferIsEvidence`.
+   */
+  private trustedElementRunway?: { ms: number; at: number };
+
   private snapshot: PlaybackCoordinatorSnapshot;
 
   constructor(private readonly options: PlaybackCoordinatorOptions) {
@@ -1853,6 +1869,9 @@ export class PlaybackCoordinator {
 
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
+    // Stamped before any branch, because both paths out of here patch the
+    // snapshot and both figures are read long afterwards.
+    this.lastPlayerEventAt = machaHost().now();
     const session = this.snapshot.session;
     const reportedPositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
     // A source being replaced goes on rendering, and must: the tail it has
@@ -1906,6 +1925,7 @@ export class PlaybackCoordinator {
         ? this.snapshot.intent
         : { ...this.snapshot.intent, positionMs: absolutePositionMs };
       this.patchSnapshot({ event: interrupted, intent });
+      this.noteElementRunway();
       this.log.warn('premature-source-end', {
         sessionId: session?.sessionId,
         positionMs: absolute.positionMs,
@@ -1988,6 +2008,7 @@ export class PlaybackCoordinator {
       ? this.snapshot.intent
       : { ...this.snapshot.intent, positionMs: absolutePositionMs };
     this.patchSnapshot({ event: absolute, intent });
+    this.noteElementRunway();
 
     // Read after the patch, so the decision is made on the runway the player
     // has just reported rather than the previous one.
@@ -2515,10 +2536,12 @@ export class PlaybackCoordinator {
       ? session.sourceInfo?.bitrate
       : session?.output?.bitrate ?? session?.sourceInfo?.bitrate;
     if (typeof bitrate !== 'number' || !Number.isFinite(bitrate) || bitrate <= 0) return 0;
-    return bytes * 8 / bitrate * 1_000;
+    // Aged like the element half: this cache drains against the same playhead.
+    return this.spentSince(bytes * 8 / bitrate * 1_000, this.lastPlayerEventAt);
   }
 
-  private elementRunwayMs(): number {
+  /** The element's own cover, exactly as the last event reported it. */
+  private reportedElementRunwayMs(): number {
     const { forwardBufferMs, bufferedRangesMs, positionMs } = this.snapshot.event;
     if (typeof forwardBufferMs === 'number' && Number.isFinite(forwardBufferMs)) {
       return Math.max(0, forwardBufferMs);
@@ -2531,6 +2554,69 @@ export class PlaybackCoordinator {
     );
     if (containing) return Math.max(0, containing.endMs - positionMs);
     return 0;
+  }
+
+  private noteElementRunway(): void {
+    const reported = this.reportedElementRunwayMs();
+    if (reported > 0) this.trustedElementRunway = { ms: reported, at: machaHost().now() };
+  }
+
+  /**
+   * What is left of a cover figure measured at `at`.
+   *
+   * **A buffer drains only while the viewer is playing**, which is why this is
+   * not simply elapsed time. The fault this whole path exists for begins with
+   * a pause long enough to have the session reaped, so the paused case is the
+   * common one rather than the corner — and charging a paused viewer for the
+   * probe would build a replacement against cover they still have. Measured
+   * once already, on the timer this replaced: a 63.3 s span covered 59.4 s of
+   * playback across one 3.9 s pause.
+   *
+   * A pause *between* the measurement and now is not tracked, so this
+   * under-counts in that case. It is the safe direction only because nothing
+   * decides on the runway while paused: the silence guard is disarmed and
+   * `startPendingReplacement` returns early.
+   */
+  private spentSince(ms: number, at: number | undefined): number {
+    if (at === undefined || this.snapshot.intent.paused) return Math.max(0, ms);
+    return Math.max(0, ms - Math.max(0, machaHost().now() - at));
+  }
+
+  /**
+   * Whether an empty buffer report is a fact about the media or about a player
+   * on its way down.
+   *
+   * `positionMs` already has a guard for this: an element tearing down can
+   * report zero, and `lastObservedPositionMs` keeps it forward-only so one
+   * reading from a source already given up on cannot send the viewer back to
+   * the start of the film. **`forwardBufferMs` rides through the same spread
+   * with no such guard**, and it feeds a decision that is not reversible — a
+   * spurious zero spends the cover the deferral exists to protect.
+   *
+   * The test is a contradiction rather than a heuristic: an element that is
+   * *playing*, not buffering and not ended, with no cover ahead of the viewer,
+   * is describing a state that cannot occur. `buffering` is the honest signal
+   * for real exhaustion and is handled on its own, so distrusting the zero
+   * here cannot hide a viewer who is actually waiting.
+   *
+   * Only while a recovery is in flight. Outside one there is nothing about to
+   * spend the figure, and believing the player is the right default.
+   */
+  private emptyBufferIsEvidence(): boolean {
+    const recovering = this.pendingReplacement !== undefined
+      || this.regenerationPromise !== undefined
+      || this.failoverPromise !== undefined;
+    if (!recovering) return true;
+    const { buffering, ended } = this.snapshot.event;
+    return Boolean(buffering) || Boolean(ended) || this.snapshot.intent.paused;
+  }
+
+  private elementRunwayMs(): number {
+    const reported = this.reportedElementRunwayMs();
+    if (reported > 0) return this.spentSince(reported, this.lastPlayerEventAt);
+    if (this.emptyBufferIsEvidence()) return 0;
+    const trusted = this.trustedElementRunway;
+    return trusted ? this.spentSince(trusted.ms, trusted.at) : 0;
   }
 
   /**

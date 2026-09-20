@@ -116,6 +116,16 @@ Emit `PlaybackEvent` on every meaningful transport change, and at a steady tick 
 
 The first four are required and drive the visible transport. The rest are how the coordinator reasons about health: `forwardBufferMs` and `bufferedRangesMs` tell it whether a degradation warning is survivable, and `streamOrigin` tells it which node is actually serving bytes, which can differ from the node that negotiated the session after a direct-source promotion. A player emitting only the first four works; one emitting all of them fails over better.
 
+### `buffering` must not be derived from the buffer
+
+`forwardBufferMs` is a measurement and core reads it as one. It is also read as having an *age*: core subtracts the time elapsed since the event carried it before spending the figure, while the viewer is playing. So emitting on a cadence is worth more than emitting one precise number and going quiet.
+
+And while core is recovering a source, a `0` from an event that also says the element is playing — not `buffering`, not `ended`, not `paused` — is treated as a player on its way down rather than as real exhaustion. Core keeps the last figure it had reason to trust, aged, instead. That guard exists because a tearing-down element can report an empty buffer a beat before it admits it is waiting, and the decision it feeds — whether to spend the viewer's remaining media — cannot be taken back.
+
+The consequence for an adapter is one rule: **derive `buffering` from the player's own state, never from the buffer being empty.** `readyState`, or a `status` field, or whatever the platform gives you. An adapter that computes `buffering` *from* an empty buffer can be wrong about both at once and leaves core nothing to cross-check; one that takes it from the player cannot. It also means signalling exhaustion by zeroing `forwardBufferMs` will not work during a recovery — set `buffering`, which is believed immediately and always.
+
+A genuine zero is safe. A buffer that drained by being watched took exactly as long to drain as it was worth, so the aged figure reaches zero at the same moment the real one does; the guard can decline to believe a collapse the clock has not accounted for, but it cannot invent cover you do not have.
+
 ## Capabilities
 
 `Platform.capabilities()` is answered separately and is the other half of getting playback right. Advertise only what your pipeline can decode *and* present.

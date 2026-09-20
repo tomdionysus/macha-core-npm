@@ -2551,3 +2551,183 @@ describe('replacing a reaped source without making the viewer wait', () => {
     await coordinator.close();
   });
 });
+
+describe('the runway is measured when it is spent, not when it was last reported', () => {
+  // Found 2026-09-19, answering a client's question about how long it may
+  // spend classifying a statusless player error. `runwayMs()` reads
+  // `snapshot.event`, which is the *last event the player sent* — and on the
+  // terminal path the player has by definition stopped sending. Then
+  // `recoverFromMissingSession` awaits `sessionAlive()`, a whole router walk,
+  // and only then compares the cover against the lead time. So the comparison
+  // was between a figure measured before two round trips and a lead time that
+  // assumed it was current. It only ever reads high, so core deferred a
+  // replacement it no longer had the cover to defer.
+
+  function reapedResolver(initial: PlaybackSession, replacement: PlaybackSession, aliveDelayMs: number) {
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, aliveDelayMs));
+        return false;
+      }),
+      regenerate: vi.fn(async () => replacement),
+      failover: vi.fn(async () => replacement),
+      prepareAlternate: vi.fn(async () => undefined),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const replacement = () => session({
+    sessionId: 's2',
+    mode: 'transcode',
+    endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    source: {
+      mediaId: 'm1', url: '/generation-replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
+  const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+
+  it('builds at once when the probe outlasted the cover it was deferring against', async () => {
+    // 40 s of cover against a 26 s lead defers — but the probe takes 20 s, so
+    // by the time the answer arrives there are 20 s left and the lead is no
+    // longer covered. Reading the pre-probe figure defers anyway, and the
+    // viewer then waits for the 15 s silence guard to notice.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement(), 20_000);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 40_000 });
+
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+      expect(api.regenerate).toHaveBeenCalledTimes(1);
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not spend a paused viewer’s buffer, because a paused element drains nothing', async () => {
+    // The counterpart, and the reason the decay cannot simply be elapsed time.
+    // This whole fault begins with a pause long enough to have the session
+    // reaped, so the paused case is the common one rather than the corner.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement(), 40_000);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      coordinator.setPaused(true);
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: true, ended: false, forwardBufferMs: 60_000 });
+
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('distrusts an empty buffer from an element that is not reporting the viewer waiting', async () => {
+    // The obvious fix for the above is to have the adapter emit a fresh event
+    // before it reports a failure. It is unsafe today: `positionMs` is guarded
+    // against a tearing-down element reporting zero, and `forwardBufferMs`
+    // rides through the same spread with no guard at all. A player that zeroes
+    // its buffer on the way down would write `no-cover` straight into this
+    // decision. A playing element with no cover ahead and no `buffering` flag
+    // is describing a state that cannot happen, so it is not evidence.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement(), 0);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 40_000 });
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0 });
+
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(10);
+
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not invent cover when the buffer genuinely drained to nothing', async () => {
+    // Raised by the web client 2026-09-20, against the guard above. On a
+    // `source-gone` generation that adapter deliberately does not tear down,
+    // so the element plays out the buffer built before the source went away.
+    // As `currentMs` passes the end of the last range `forwardBufferMs` is
+    // genuinely `0`, while `readyState` stays at 4 for a beat before dropping
+    // below `HAVE_FUTURE_DATA` and flipping `buffering` true. That is a real
+    // zero wearing the exact shape the guard distrusts.
+    //
+    // It is harmless, and the reason is that the two halves of this fix are
+    // not independent: the trusted figure is *aged*, and a buffer that drained
+    // by playing took exactly as long to drain as it was worth. So by the
+    // moment the true zero arrives the decayed figure has reached zero too,
+    // and the guard can only ever hold a figure the viewer has already spent.
+    // Pinned rather than reasoned about, because the guard would otherwise be
+    // one edit away from handing core cover it does not have.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement(), 0);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      // Deliberately above the 26 s lead, so the two behaviours differ: an
+      // un-aged trusted figure would still read as 40 s of cover here and
+      // defer, which is the failure this pins.
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 40_000 });
+      // The forty seconds of cover are actually watched.
+      await vi.advanceTimersByTimeAsync(40_000);
+      player.emit({ positionMs: 50_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0 });
+
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(10);
+
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('believes an empty buffer when the element says the viewer is waiting', async () => {
+    // The other half, and the one that stops the guard becoming a way to
+    // ignore real exhaustion: `buffering` means the viewer is already waiting,
+    // whatever the arithmetic says, so there is nothing left to defer for.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement(), 0);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 40_000 });
+      player.emit({ positionMs: 10_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0, buffering: true });
+
+      player.degrade(notFound());
+      await vi.advanceTimersByTimeAsync(10);
+
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
