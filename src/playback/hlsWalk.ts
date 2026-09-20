@@ -1,5 +1,5 @@
 import type { PlaybackSource } from '../types.js';
-import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
+import { SEGMENT_NOT_READY_STATUS, SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
 
 /**
  * Walking an HLS manifest to find out whether a node will actually serve it.
@@ -486,7 +486,11 @@ export async function preflightHlsSource(
   for (const target of targets) {
     try {
       const response = await walkFetch(target, source, HLS_PREFLIGHT_RANGE, options);
-      if (response.status === 500) continue;
+      // The hold, through the one constant that defines it. Spelling the
+      // number here is how a walk goes on recognising a status the protocol
+      // has moved off, and it fails in the expensive direction: an unmatched
+      // hold falls to `!response.ok` and condemns a node that is working.
+      if (response.status === SEGMENT_NOT_READY_STATUS) continue;
       if (!response.ok) return false;
       // `unreadable` is this module's own rule turned on itself: the node
       // answered, the status says it is serving, and all that failed was this
@@ -538,7 +542,7 @@ export async function probeHlsReadiness(
     } catch (error) {
       return { state: 'unavailable', detail: causeDetail(error) };
     }
-    if (response.status === 500) return { state: 'holding', retryAfterMs: retryAfterMs(response, sourceHoldMs(source)) };
+    if (response.status === SEGMENT_NOT_READY_STATUS) return { state: 'holding', retryAfterMs: retryAfterMs(response, sourceHoldMs(source)) };
     if (!response.ok) return { state: 'unavailable', status: response.status };
   }
   return { state: 'ready' };
