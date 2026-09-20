@@ -8,6 +8,14 @@ Anything reverted or retracted stays here, marked, because knowing what was trie
 
 ---
 
+## Nothing arrived here on 2026-09-20, and that is the point
+
+Twelve commits landed on `develop` that day and **none of them shipped**, so none of them belongs here yet: this file records what a client could have, and a client can only have what npm holds. `0.14.0` is still the whole answer to "what is released".
+
+What was built is in [ACTIVE.md](ACTIVE.md), each item marked *BUILT on `develop`, unreleased* with the tests that pin it — the runway re-read, advisory status routing, `close()` awaiting its own recoveries, the session-manager generation, the health loop surviving a full store, success-envelope validation, `find`'s absence reporting, the fake-player merge, the already-charged close, and six from the low register. **They move here when a release carries them, with the version, and not before.** Moving them early is the exact mistake that re-opened the seek-invariant entry: work recorded as done, then re-opened by a later session that could not find it, having been filed under a release it never went out in.
+
+---
+
 ## Checked and dismissed — from the 2026-09-12 review
 
 Four findings that did not survive contact with the evidence. Recorded because each looked right, and the reasoning that killed them is the part worth keeping.
