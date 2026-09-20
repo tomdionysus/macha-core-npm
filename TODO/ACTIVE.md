@@ -332,6 +332,22 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Ordered against the laws on 2026-09-20, not by age or by who found them.** Law 2 first — anything that makes the viewer wait or stall. Then Law 1 — control work reaching into the viewer's data path, which the principles call a correctness failure rather than a benchmark. Then failures the contract says must be *visible and actionable* and are currently neither. Then the two remaining places core still holds a private copy of server configuration, which is the class `0.14.0` set out to end. The rest is real, verified, and cheaper. Everything here is core's to do; the items that need a decision first have moved up to *Waiting on Tom*.
 
+### A recovery restates the mode and drops the transforms the chooser picked
+
+**Waiting on:** core. **Found 2026-09-20 by reading, prompted by an on-hardware report from the Android TV client — measured there, read here, and not yet reproduced in a test.** `PlaybackCoordinator.ts:495-505` (`completePreferences`), `:374-379` (`instructionPreferences`), `:585-592` (`withRestatedSegmentContainer`), `:507-515` (the docblock that states the server rule this falls foul of).
+
+**What the client measured.** A remux generation with **video COPY** (HEVC 1920x1040 passed through, DTS 5.1 transcoded to AAC) was reaped on its node. Recovery rebuilt it on another node as a **full transcode**, HEVC re-encoded to H264 — taking the only `max_video_transcodes` slot on that node to re-encode a stream the television was decoding natively. The server session ruled out its own remux-to-transcode substitution: that path logs at INFO and did not fire, and its journal shows `mode=transcode` from admission onward. **Something asked for a transcode.**
+
+**What core sends on a recovery, and it is the candidate.** Both `prepareAlternate` and `failover` are handed `currentPreferences(session)`, which is `completePreferences(session)` — `mode`, `maxHeight`, `maxBitrate`, `audioStream`, `subtitleStream`, `audioLanguage`, `subtitleLanguage` — plus a restated segment container. **There is no `video` and no `audio` in it.** The *initial* create merges `instructionPreferences(instruction)`, which carries exactly those two fields from `choosePlaybackInstruction`.
+
+**And core already documents why that is fatal**, two functions further down: *"From server 0.34.0 a PATCH carrying `mode` restates the whole transform: `video`, `audio`, `max_height` and `max_bitrate` are cleared unless the same request names them again."* The container was restated for exactly this reason. **The per-stream transforms were not**, so a recovery names `remux` and clears the `video: 'copy'` that made it a copy, and the node re-plans video from scratch.
+
+**This is the same class as the `0.14.0` work and it is core's own.** Not a parallel server model this time but its mirror: core holding an instruction the server has been told to forget.
+
+**Two things to establish before fixing, and the second decides the shape.** Whether the transforms should be restated from the *instruction* (what core chose) or from the *session echo* (what the node did) — they differ after a server-side substitution, and restating the node's own downgrade would make one bad plan permanent. And whether a replacement node's capabilities should be re-consulted at all: the client's other candidate is that the new node genuinely cannot copy this stream, in which case the transcode is right and the only fault is leaving a node that could.
+
+**Do not close this by adding `video`/`audio` to `completePreferences` without answering those.** The field list is shared by failover, regeneration and standby preparation, and a wrong restatement is worse than none: it pins a transform to a node that never agreed to it.
+
 ### ~~The runway is read from a stale snapshot, and the field that would refresh it has no guard~~ — BUILT on `develop` 2026-09-20, unreleased
 
 **Waiting on:** a release, and on both RN clients to know the event contract moved. **Found 2026-09-19**, while answering the Android TV client's question about how long it may spend classifying a statusless player error. Not found by reading core — found because a client asked what core's deadlines were and the answer required opening the path.
