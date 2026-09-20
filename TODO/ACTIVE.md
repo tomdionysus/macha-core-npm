@@ -686,11 +686,11 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 
 **Measured 2026-09-15, not estimated.** `npm run test:coverage` prints the table; `coverage/coverage-summary.json` has the per-file numbers.
 
-| | 2026-09-13 (600 tests) | before the pass (720) | after it (786) | 2026-09-20 (897) |
-|---|---|---|---|---|
-| Statements | 93.4% | 92.1% | 93.94% | **94.12%** |
-| Branches | 84.4% | 84.39% | 85.39% | **85.66%** |
-| Functions | — | 88.16% | 91.56% | **92.01%** |
+| | 2026-09-13 (600) | before the pass (720) | after it (786) | 2026-09-20 (897) | 2026-09-20 (935) |
+|---|---|---|---|---|---|
+| Statements | 93.4% | 92.1% | 93.94% | 94.12% | **94.84%** |
+| Branches | 84.4% | 84.39% | 85.39% | 85.66% | **86.30%** |
+| Functions | — | 88.16% | 91.56% | 92.01% | **93.12%** |
 
 Note the middle column: between 600 and 720 tests statements fell 1.3 points. Tests were added and coverage went *down*, because what landed in `0.10.0` and `0.11.0` was covered below the existing average. Worth re-measuring after a release rather than assuming a rising number.
 
@@ -708,7 +708,7 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 
 ### Left — and it is mostly one place
 
-**Re-measured 2026-09-20 at 897 tests.** `PlaybackCoordinator` is 90.09% statements / 78.58% branches — unchanged through two releases that added several hundred lines to it, which means the new code arrived covered at about the file's own average. **`PlaybackRuntime` is now the laggard: 90.15% statements, 72.80% branches, 86.11% functions** — the lowest branch and function figures of any file this backlog names. `ClusterPlaybackResolver` at 78.64% branches was not on this list before and should be. Those three are **most of what remains uncovered**. ACTIVE.md has always said these need scenarios rather than assertions, and that is still true of what is left.
+**Re-measured 2026-09-20 at 935 tests.** `PlaybackCoordinator` is 92.35% statements / 80.76% branches — it has risen through two releases that added several hundred lines to it, so the new code is now arriving *above* the file's own average rather than at it. `PlaybackRuntime` was the laggard and is not any more (see below): 94.41% / 79.23% / **100% functions**. **`ClusterPlaybackResolver` at 77.57% branches is now the lowest branch figure of any file this backlog names**, and it is the next place to go — it is also the layer two of the four clients use *directly*, without a coordinator, so a gap there is a gap nothing else covers for them. Those three are **most of what remains uncovered**. ACTIVE.md has always said these need scenarios rather than assertions, and that is still true of what is left.
 
 **The leverage: several of those scenarios are the P1 fixes.** Build the scenario and the fix together so the test is seen red — a test written against today's behaviour would pin the bug.
 
@@ -728,7 +728,11 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 
 917 tests, typecheck and `lint:platform` clean.
 
-**Four of the five scenarios in the table above were built today**, each alongside the fix it pins, each seen red against the unfixed code: the health-cycle storage write, `setBootstrapEndpoints([])`, the HTML-200 and missing-`items` pair, and the per-title fault on a facts read. What is left in that table is the coordinator's degrade-during-failover; `close()` with a failover in flight is now covered.
+**Four of the five scenarios in the table above were built today**, each alongside the fix it pins, each seen red against the unfixed code: the health-cycle storage write, `setBootstrapEndpoints([])`, the HTML-200 and missing-`items` pair, and the per-title fault on a facts read.
+
+**The fifth is now built too, and it produced a finding rather than just a number.** A dead source goes on talking while its replacement is negotiated — the element drains, reports `ended` short of duration, and `onPlayerEvent` sends that back as a second fatal one to three seconds after the first. Two tests: one for an in-flight failover, one for an in-flight regeneration. The regeneration guard is load-bearing and the test is red without it. **The failover one is not.** `failNow` returns early on `failoverPromise`, and `beginSourceFailover` independently refuses to start a second failover — and **the entire 935-test suite passes with the `failNow` branch removed**, so on current code it is shadowed for every input any test can construct. Both are kept: they are different intents (drop a dying source's noise; keep recovery single) that happen to coincide, and the `failNow` comment records a measured 82-second viewer loss. But the test says so rather than claiming to pin a line it does not. **Do not remove `beginSourceFailover`'s guard on the strength of `failNow` having one.**
+
+**`PlaybackRuntime` is no longer the laggard.** The surface a viewer still has *after* a generation has failed had no coverage at all — `seek`, `seekBy`, the bound on a nonsense scrub, and the scrub-then-retry chain a viewer actually takes out of a failure screen. Nine tests later: statements 90.15% → **94.41%**, branches 72.80% → **79.23%**, functions 86.11% → **100%**. Each was verified red against the specific line it pins, and two of them were re-checked after a first version passed for the wrong reason. Also pinned: immediate delivery to a new subscriber (a subscription that only fires on the next change leaves a host blank on an idle runtime), `getPlaybackSnapshot` handing out a copy a host may keep and mutate, a resolver installed after construction, and `setVolume` forwarding a level and holding none — the half of the distinction whose docblock records two occasions when applying a level was confused with persisting one.
 
 ### Not worth chasing
 
@@ -935,6 +939,8 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 **Coordinator and playback**
 - ~~`PlaybackCoordinator.ts:1688` (and the silent direct promotion above it) — both promotion paths record the endpoint failure and then call `resolver.stop()` on the same node~~ **FIXED on `develop` 2026-09-20.** `PlaybackStopOptions.endpointAlreadyCharged` is the seam the entry said was missing: `ClusterPlaybackResolver.stop` neither records a failure nor keeps the provenance entry when it is set, so one observation charges the node once and a throwing DELETE cannot walk the cooldown ladder on its own. Both promotion paths pass it; three existing assertions moved to the new call shape.
 - `PlaybackCoordinator.ts:1542-1582` — `degrade()` does not check `failoverPromise`, so a degradation during failover POSTs a redundant standby on a third node. Churn, not a leak.
+- `failNow`'s `failoverPromise` branch is **shadowed**, found 2026-09-20 while covering it. `beginSourceFailover` independently refuses to start a second failover, and the whole 935-test suite passes with the `failNow` branch removed — its only unique effect on current code is its `debug` line, and a corner where `snapshot.session` and `serverSession` are both absent mid-failover, which nothing produces. **Keep both**: they are different intents that happen to coincide, and the `failNow` comment records a measured 82-second viewer loss. This entry exists so nobody removes `beginSourceFailover`'s guard believing `failNow` still covers it — it does, today, and only today. Its twin on the degradation channel is the entry above.
+- `testing/FakePlayer.ts` — `setVolume()` is declared with **no parameters** and discards the level, so no test anywhere can assert what was applied. The `setVolume` docblock records two occasions when applying a level was confused with persisting one, which makes an unobservable level the wrong gap to leave in the one shared double. **Not widened yet because `FakePlayer` ships on the `./testing` export**: adding a parameter turns `() => void` into `(volume: number) => void`, and a client calling `player.setVolume()` bare would stop typechecking. Do it with a release that carries a note, alongside `detach()` now stopping.
 - `PlaybackCoordinator.ts:1765` — the transcode standby window is keyed on `alternate.mode === 'transcode'`; if the entitlement is video-only, `transform.video === 'transcode'` is the precise test. The 8 s comment records the slot cost but not the quantity it must exceed.
 - `PlaybackCoordinator.ts:1712-1756` — there is a disposed/revision re-check after the awaited `prepare` (`:1726`) but none after the preflight that follows it.
 - ~~`PlaybackStatus.ts:12` — header says "only ever from `output.container`" while the code falls back to `output.format`.~~ **FIXED on `develop` 2026-09-20.** The header now says what the body does — the server's own account of what it produced, container or format, never the request.

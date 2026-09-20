@@ -2838,3 +2838,100 @@ describe('a recovery restates the transforms the chooser picked', () => {
     update.resolve(initial);
   });
 });
+
+describe('a dead source goes on talking while its replacement is negotiated', () => {
+  // The last uncovered scenario in ACTIVE.md's coverage table. A source that
+  // has failed is neither stopped nor unsubscribed while recovery runs, so it
+  // plays out its buffer and reports `ended` short of duration — which
+  // `onPlayerEvent` correctly reads as a premature end and sends back as a
+  // second fatal failure, from the same source, about the same outage, one to
+  // three seconds after the first. Taken terminal it closes the coordinator,
+  // and the replacement that was seconds from ready is thrown away by the
+  // disposed path: the viewer gets the failure screen instead of the recovery
+  // that had already worked.
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const onNodeB = () => session({
+    sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+    source: {
+      mediaId: 'm1', url: 'http://b/replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
+
+  // **Guarded twice, and this test pins the behaviour rather than either
+  // line.** `failNow` returns early on `failoverPromise`, and
+  // `beginSourceFailover` refuses to start a second failover on the same
+  // field. Removing either alone leaves the whole suite green — 935 tests,
+  // checked — and only removing both turns this red. The two are not the same
+  // intent (one drops a dying source's noise, one keeps recovery single), so
+  // both belong; but neither may be described as the thing under test here.
+  it('drops a second failure that arrives while a failover is still in flight', async () => {
+    const player = new FakePlayer();
+    const initial = onNodeA();
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    const negotiation = deferred<PlaybackSession>();
+    api.failover = vi.fn(() => negotiation.promise);
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+
+    // The tail running out, arriving as a bare Error — which the default
+    // classification treats as endpoint evidence, so it would otherwise
+    // condemn a node for an outage already being recovered from.
+    player.fail(new Error('Playback ended at 33000 of 600000'));
+    await flush();
+    player.fail(new Error('Playback ended at 33000 of 600000'));
+    await flush();
+
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    expect(api.failover).toHaveBeenCalledTimes(1);
+
+    negotiation.resolve(onNodeB());
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8'));
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('drops a failure that arrives while the session is being regenerated', async () => {
+    // Same shape through the other recovery door. The node forgot the session
+    // rather than failing, so the replacement is being built on the node that
+    // is fine — and the element draining in the meantime must not be allowed
+    // to condemn it.
+    const player = new FakePlayer();
+    const initial = onNodeA();
+    const regeneration = deferred<PlaybackSession>();
+    const api = {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async () => false),
+      regenerate: vi.fn(() => regeneration.promise),
+      failover: vi.fn(async () => onNodeB()),
+      prepareAlternate: vi.fn(async () => undefined),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    // No cover left, so the replacement is built now rather than deferred.
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0, buffering: true } as PlaybackEvent);
+
+    player.fail(new PlaybackSourceError('HTTP Error 404', 'not-found'));
+    await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+    player.fail(new Error('Playback ended at 30000 of 600000'));
+    await flush();
+
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    expect(api.failover).not.toHaveBeenCalled();
+
+    regeneration.resolve(onNodeB());
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8'));
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+});
