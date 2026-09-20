@@ -843,6 +843,7 @@ export class PlaybackCoordinator {
   private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
   private substitutionReportedFor?: string;
+  private unclassifiedReportedFor?: string;
 
   private facts(): Promise<PlaybackDecisionFacts | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
@@ -1749,6 +1750,52 @@ export class PlaybackCoordinator {
     );
   }
 
+  /**
+   * An adapter that reports a failure it never classified is charged for it,
+   * and the charge is invisible.
+   *
+   * `isEndpointRetryablePlaybackFailure` treats a bare `Error` and a
+   * `PlaybackSourceError` of kind `unknown` identically, because from core's
+   * side they are identical: no evidence about what failed. They are not the
+   * same event, though. One is a host that never wired classification, which
+   * the `Player` contract expressly permits. The other is a host whose
+   * classifier ran and could not tell -- or, as measured on the Android TV
+   * client on 2026-09-20, a host whose classifier was meant to run and
+   * silently did not: a reaped session arrived as `kind: 'unknown'` with
+   * `Response code: 404` sitting in the message. Core charged a node that had
+   * answered honestly, and walked a generation that `not-found` would have had
+   * regenerated in place on the node already holding it.
+   *
+   * Core cannot fix that from here and must not try. Reading a status out of
+   * an error message is the inference this repository keeps recording as a
+   * fault class, and the message is the host's to format. What core can do is
+   * stop the misattribution being silent -- the evidence was in the message,
+   * and a line naming it is the difference between a hardware run and a grep.
+   *
+   * `debug`, once per session, for the reason `seek-invariant-not-stated` is:
+   * an unclassified failure is permitted by the contract, so it is ordinary
+   * rather than a fault, and one client renders warnings onto the television
+   * for the whole of a film.
+   */
+  private noteUnclassifiedFailure(error: unknown, channel: 'degradation' | 'fatal'): void {
+    const kind = error instanceof PlaybackSourceError ? error.kind : undefined;
+    if (kind !== undefined && kind !== 'unknown') return;
+    const session = this.snapshot.session ?? this.serverSession;
+    const key = session?.sessionId ?? 'no-session';
+    if (this.unclassifiedReportedFor === key) return;
+    this.unclassifiedReportedFor = key;
+    this.log.debug('source-failure-unclassified', {
+      sessionId: session?.sessionId,
+      endpoint: session?.endpoint,
+      mediaId: session?.mediaId,
+      channel,
+      // Whether the host classified and could not tell, or never classified.
+      // The contract permits both; only the first is the host having tried.
+      classified: kind !== undefined,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   private degrade(error: Error): void {
     if (this.disposed) return;
     // Same superseded-source rule as `failNow`, with the opposite action.
@@ -1788,6 +1835,7 @@ export class PlaybackCoordinator {
       return;
     }
     if (!isEndpointRetryablePlaybackFailure(error)) return;
+    this.noteUnclassifiedFailure(error, 'degradation');
     this.degradeOnEndpointEvidence(error);
   }
 
@@ -2365,6 +2413,7 @@ export class PlaybackCoordinator {
     // reason to condemn the node.
     if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
+      this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);
       return;
     }

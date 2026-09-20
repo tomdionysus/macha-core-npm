@@ -3063,3 +3063,143 @@ describe('a node that performs a different mode from the one it was asked for', 
     await coordinator.close();
   });
 });
+
+describe('a failure the host never classified is still charged to a node', () => {
+  // `isEndpointRetryablePlaybackFailure` cannot tell a host that never wired
+  // classification from one whose classifier ran and could not tell — and, as
+  // the Android TV client measured on 2026-09-20, it cannot tell either of
+  // those from a classifier that was meant to run and silently did not. That
+  // last case sent a reaped session through as `kind: 'unknown'` carrying
+  // `Response code: 404` in its message: core charged a node that had
+  // answered honestly and walked a generation `not-found` would have
+  // regenerated in place. Core must not read the status out of the message.
+  // It can stop the charge being silent, which is what these pin.
+
+  function unclassifiedReports(): Array<Record<string, unknown>> {
+    return clientDiagnosticsSnapshot()
+      .filter((entry) => entry.event === 'source-failure-unclassified')
+      // The coordinator's logger is scoped, so its own context is the entry
+      // and what the call site passed is nested under `detail`.
+      .map((entry) => ((entry.data as { detail?: unknown })?.detail ?? {}) as Record<string, unknown>);
+  }
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const onNodeB = () => session({
+    sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+    source: {
+      mediaId: 'm1', url: 'http://b/replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
+
+  function failingResolver(initial: PlaybackSession) {
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      failover: vi.fn(async () => onNodeB()),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  it('names the node it is about to charge on a failure carrying no kind at all', async () => {
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const api = failingResolver(onNodeA());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    // The shape the Android TV client shipped: the status is in the message,
+    // and nothing else about the error says what happened.
+    player.fail(new Error('A playback exception has occurred: Source error Response code: 404'));
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+
+    const reports = unclassifiedReports();
+    expect(reports).toHaveLength(1);
+    expect(reports[0].classified).toBe(false);
+    expect(reports[0].channel).toBe('fatal');
+    expect(reports[0].endpoint).toEqual({ id: 'node-a', baseUrl: 'http://a' });
+    // The evidence core is forbidden from parsing is carried verbatim, so a
+    // capture shows what the host had and did not use.
+    expect(reports[0].message).toContain('Response code: 404');
+    await coordinator.close();
+  });
+
+  it('separates a host that tried and could not tell from one that never tried', async () => {
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const api = failingResolver(onNodeA());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    player.fail(new PlaybackSourceError('could not establish a cause', 'unknown'));
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+
+    expect(unclassifiedReports()).toHaveLength(1);
+    expect(unclassifiedReports()[0].classified).toBe(true);
+    await coordinator.close();
+  });
+
+  it('says nothing when the host classified the failure', async () => {
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const api = failingResolver(onNodeA());
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    // Real evidence about the node. The charge is earned and needs no note.
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+
+    expect(unclassifiedReports()).toHaveLength(0);
+    await coordinator.close();
+  });
+
+  it('reports once per session, not once per failure', async () => {
+    // **The fatal channel cannot show this and must not be used for it.** A
+    // second fatal arriving during a failover is dropped by `failNow`'s
+    // `failoverPromise` guard before it ever reaches the note, so a test
+    // driven that way passes with the latch deleted — checked, and that is
+    // exactly how this test read on its first writing.
+    //
+    // The degradation channel does reach it twice, when `prepareAlternate`
+    // has nothing to offer: no standby is held, so nothing short-circuits the
+    // next one. That is also the live shape — a dead source goes on emitting
+    // while a cluster with no spare node has nothing to prepare, so the same
+    // unclassified outage arrives over and over. One line per generation, for
+    // the reason the mode substitution takes one: a client renders this onto
+    // a television for the whole of a film.
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const api = failingResolver(onNodeA());
+    api.prepareAlternate = vi.fn(async () => undefined);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    player.degrade(new Error('Source error Response code: 404'));
+    await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+    player.degrade(new Error('Source error Response code: 404'));
+    await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(2));
+
+    expect(unclassifiedReports()).toHaveLength(1);
+    expect(unclassifiedReports()[0].channel).toBe('degradation');
+    await coordinator.close();
+  });
+});
