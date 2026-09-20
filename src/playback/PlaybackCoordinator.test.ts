@@ -533,7 +533,7 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     // the registered fallback, so bookkeeping must move immediately rather
     // than waiting on reactive failure evidence: the superseded primary
     // session is closed right away, well before the coordinator itself closes.
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary'));
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', { endpointAlreadyCharged: true }));
     // No session negotiation ever failed for the primary endpoint — nothing
     // else would ever tell endpoint health tracking it is down — so a silent
     // promotion must report that failure itself, or a later failover (for an
@@ -612,12 +612,12 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     player.degrade(new PlaybackSourceError('read-ahead TCP failed', 'stream'));
     await vi.waitFor(() => expect(player.directAlternatives).toHaveLength(1));
     expect(player.directAlternatives[0]).toEqual({ active: primary.source, alternate: alternateA.source });
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary'));
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', { endpointAlreadyCharged: true }));
 
     player.degrade(new PlaybackSourceError('read-ahead TCP failed', 'stream'));
     await vi.waitFor(() => expect(player.directAlternatives).toHaveLength(2));
     expect(player.directAlternatives[1]).toEqual({ active: primary.source, alternate: alternateB.source });
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('alternate-a'));
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('alternate-a', { endpointAlreadyCharged: true }));
 
     await coordinator.close();
     expect(api.stop).toHaveBeenCalledWith('alternate-b', {});
@@ -934,7 +934,7 @@ describe('PlaybackCoordinator player failures', () => {
 
       player.degrade(new PlaybackSourceError('second', 'stream'));
       await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
-      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary'));
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', { endpointAlreadyCharged: true }));
       expect(api.stop).not.toHaveBeenCalledWith('alternate');
 
       await coordinator.close();

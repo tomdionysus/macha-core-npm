@@ -627,11 +627,19 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   async stop(sessionId: string, options?: PlaybackStopOptions): Promise<void> {
     const owned = this.sessions.get(sessionId);
     if (!owned) return;
+    // Abandoned before the attempt when the caller has already charged the
+    // node: the generation is not coming back either way, and an entry left
+    // behind by a throwing DELETE is what a later cleanup path finds and
+    // charges the registry for again. Same two rules as `releaseFailedSession`
+    // one level down, for a caller that cannot reach it.
+    if (options?.endpointAlreadyCharged) this.sessions.delete(sessionId);
     try {
       await owned.resolver.stop(owned.nodeSessionId, options);
       this.sessions.delete(sessionId);
     } catch (error) {
-      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (!options?.endpointAlreadyCharged
+        && retryableEndpointFailure(error)
+        && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }

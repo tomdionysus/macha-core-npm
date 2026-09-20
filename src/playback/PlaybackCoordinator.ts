@@ -1714,7 +1714,7 @@ export class PlaybackCoordinator {
     // nothing to fall back to and no reason to hold the slot. Fire and
     // forget, exactly as the silent direct promotion does — retrying belongs
     // to the resolver, which is the layer every client passes through.
-    void this.options.resolver.stop(session.sessionId).catch((error) => {
+    void this.options.resolver.stop(session.sessionId, { endpointAlreadyCharged: true }).catch((error) => {
       this.log.warn('superseded-primary-close-failed', { sessionId: session.sessionId, error });
     });
   }
@@ -1836,7 +1836,7 @@ export class PlaybackCoordinator {
     // failover (for an unrelated cause) can still blindly pick this same
     // endpoint back up as an apparently-untried, apparently-healthy candidate.
     if (previous.endpoint) this.options.resolver.recordEndpointFailure?.(previous.endpoint.id);
-    void this.options.resolver.stop(previous.sessionId).catch((error) => {
+    void this.options.resolver.stop(previous.sessionId, { endpointAlreadyCharged: true }).catch((error) => {
       this.log.warn('superseded-primary-close-failed', { sessionId: previous.sessionId, error });
     });
   }

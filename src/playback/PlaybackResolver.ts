@@ -236,6 +236,24 @@ export interface PlaybackUpdate {
 export interface PlaybackStopOptions {
   /** Keep the teardown request alive while the browser is navigating away. */
   keepalive?: boolean;
+  /**
+   * This node has already been charged for the outage that made this close
+   * necessary, so the close itself must not charge it again.
+   *
+   * A promotion records the endpoint's failure — nothing else would, because
+   * the node never refused anything, it stopped serving bytes — and then
+   * closes the session it was serving. That DELETE goes to the same node,
+   * which is by now unwell, so it frequently throws; without this the throw
+   * records a *second* failure for one observation, and a session closed on
+   * every retry walks the cooldown ladder (500 ms, 2 s, 10 s, 30 s) for a node
+   * that failed once. It is the same double-charge `releaseFailedSession`
+   * exists to avoid, reached from the layer above it.
+   *
+   * It also means the generation is abandoned: an implementation holding
+   * per-session provenance drops it whether or not the node ever acknowledges
+   * the close, so a later cleanup path cannot find it and charge a third time.
+   */
+  endpointAlreadyCharged?: boolean;
 }
 
 /**
