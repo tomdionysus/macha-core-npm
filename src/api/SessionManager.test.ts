@@ -270,6 +270,88 @@ describe('SessionManager', () => {
     manager.stop();
   });
 
+  it('stops handing a rejected token to callers outside this class while the re-mint is in flight', async () => {
+    // `authorization()` answers from the current token and only waits when
+    // there is none, so a token left in place across a reactive re-mint is
+    // handed to a native player for the whole length of that mint — and it is
+    // the one token a node has just refused.
+    let grantSecond: (session: { token: string; expiresAtMs: number }) => void = () => undefined;
+    vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
+      .mockImplementationOnce(() => new Promise((resolve) => { grantSecond = resolve; }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new SessionManager();
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    const request = manager.fetch('http://a/x');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    let header: string | undefined | 'pending' = 'pending';
+    const asked = manager.authorization().then((value) => { header = value; });
+    for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+    expect(header).toBe('pending');
+
+    grantSecond({ token: 'token-b', expiresAtMs: Date.now() + DAY_MS });
+    await asked;
+    expect(header).toBe('Bearer token-b');
+    await request;
+    manager.stop();
+  });
+
+  it('contacts the new registry when restarted mid-bootstrap, and does not adopt the old one\'s session', async () => {
+    // `stop()` sets `cancelled` and `start()` clears it, so the flag cannot
+    // disown work started against the registry just replaced: the in-flight
+    // bootstrap was returned as this start's own answer, the new registry was
+    // never contacted, and whatever the old one eventually said was adopted.
+    let grantFirst: (session: { token: string; expiresAtMs: number }) => void = () => undefined;
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockImplementationOnce(() => new Promise((resolve) => { grantFirst = resolve; }))
+      .mockResolvedValue({ token: 'token-b', expiresAtMs: Date.now() + DAY_MS });
+    const manager = new SessionManager();
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(1));
+
+    const corrected = new EndpointRegistry(bootstrapEndpoints(['http://b']));
+    manager.start(corrected);
+
+    await vi.waitFor(() => expect(mint).toHaveBeenCalledTimes(2));
+    expect(mint.mock.calls[1]?.[0]).toBe(corrected);
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    // The abandoned bootstrap lands last, which is the case that matters: it
+    // must not overwrite the session the registry in use granted.
+    grantFirst({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS });
+    for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+    expect(await manager.authorization()).toBe('Bearer token-b');
+    manager.stop();
+  });
+
+  it('leaves no timer behind when a retry timer is armed over a pending refresh', async () => {
+    // Both sites assigned `refreshTimer` without clearing it, and `stop()`
+    // clears only the handle it can still see. The refresh armed by the first
+    // adoption was overwritten by the retry armed when the re-mint failed, and
+    // went on running with nothing able to cancel it.
+    vi.useFakeTimers();
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
+      .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + 2 * DAY_MS })
+      .mockRejectedValue(new Error('unreachable'));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const manager = new SessionManager();
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await manager.fetch('http://a/x');
+
+    expect(mint).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+    manager.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('never lets a long-lived expiry overflow setTimeout into an immediate re-mint loop', async () => {
     // Regression test: setTimeout's delay is a 32-bit signed int (~24.8 day
     // max) — scheduling a refresh for the full remaining time on a

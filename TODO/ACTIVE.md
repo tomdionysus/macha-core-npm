@@ -387,15 +387,17 @@ Also collapsed a duplicated `disposed` check in `recoverFromMissingSession`: two
 
 **`degrade()` not checking `failoverPromise` stays in the low register** and is still the bounded cousin: a redundant standby, churn rather than a leak.
 
-### Session manager: three mint/re-mint gaps `0.10.0` did not touch
-**Waiting on:** core. `src/api/SessionManager.ts`. **Re-verified 2026-09-20:** gap 1 at `mint():674-680` (nothing clears `token` before `mintNow` replaces or fails it at `:584`/`:656`); gap 2 at `start():358-366` (`stop()` sets `cancelled`, `start()` clears it at `:360`, so an old bootstrap's `adopt()` passes the check at `:580`); gap 3 at `:669` and `:689` (both assign `refreshTimer` without clearing). **Take them together — they are all the mint and re-mint paths, and fixing them twice would be worse than once.**
+### ~~Session manager: three mint/re-mint gaps `0.10.0` did not touch~~ — BUILT on `develop` 2026-09-20, unreleased
 
-`0.10.0` rebuilt the *model* around these and deliberately did not fix them; they are still live.
+**Waiting on:** a release. Nothing for a client to do; no signature moved and no behaviour a host has to adopt. Item 4's remainder is still open and is the entry below.
 
-1. **`authorization()` hands out the dead token during a reactive re-mint**, because `mint()` never clears the rejected token. The doc on `fetch()` claims the opposite.
-2. **`start()` during an in-flight bootstrap adopts the old registry's result** and never contacts the new one; `mintNow` then reports the corrected config as unreachable. The doc "safe to call again if the registry changes" is false in that window.
-3. **Refresh timers overwritten without clearing**; `stop()` clears only the last.
-4. ~~**`fetch()` promises to wait for the mint and only waits when one is already in flight.**~~ **Half shipped in `0.12.0`, and the other half is the next item.** The no-registry case now throws `SessionNotStartedError` (`:509`), and the doc that promised the wait has moved onto `fetch()` and says so (`:504-506`). What survives is the registry-present, mint-failed case, which is its own entry immediately below because the fix is a different shape.
+**Taken together, as the item said to.** They are all the mint and re-mint paths, and two of the three had the same root: **a boolean cannot say which lifecycle a promise belongs to.** `stop()` sets `cancelled`, `start()` clears it, so work cancelled by the `stop()` *inside* `start()` sees the flag false again by the time it lands. There is now a `generation` counter that only ever moves forward, moved by every `stop()`, and `abandoned(generation)` replaces the bare `cancelled` checks in `adopt`, `mintNow`, `bootstrap` and `scheduleRefresh`.
+
+1. **`authorization()` no longer hands out a rejected token.** `fetch` drops the token before asking for a replacement, rather than leaving it to be overwritten when the mint lands — `authorization()` answers from `this.token` and only waits when it is undefined, so the old shape handed a native player the one token a node had just refused, for the whole length of the re-mint. The doc on `authorization()` now states the guarantee it keeps.
+2. **A restart mid-bootstrap contacts the new registry.** `bootstrap` and `mint` coalesce only within a generation, so an in-flight run against the registry just replaced is no longer returned as this start's own answer; and the abandoned run cannot adopt its session or clear its successor's `inFlight` handle when it finally lands.
+3. **Timers are replaced, not overwritten.** Both sites now go through `armTimer`, which clears whatever was pending. A retry timer armed over a refresh timer used to leave the refresh running with nothing able to cancel it, since `stop()` clears only the handle it can still see.
+
+**Three tests, each seen red against its own defect and only its own.** Neutering the token drop fails the first with `'Bearer token-a'` where the test wants a pending promise; restoring the generation-blind coalescing fails the second with one mint where two are owed; removing the `clearTimeout` from `armTimer` fails the third with two pending timers where one is owed. 907 tests, typecheck and `lint:platform` clean.
 
 ### `fetch` still returns a bare 401 when the mint failed — decision 1 closed only half the window
 **Waiting on:** core, and it needs its own go/no-go. **Re-verified on `develop` 2026-09-20** — `:509` refuses only on no registry; `:513` hands back the 401 whenever `sent === undefined`. Unchanged since `0.12.0`. **Under the laws this is a visibility failure, not a nicety:** a mint that failed is a degraded state, and the contract says it must be *visible and actionable* — a bare 401 is neither, because it reads as an auth rejection. `src/api/SessionManager.ts`, the `fetch` guard. **Found by the phone client on 2026-09-15 by declining an instruction of mine and checking the installed build.**
