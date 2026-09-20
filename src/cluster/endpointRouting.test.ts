@@ -31,6 +31,28 @@ describe('ClusterEndpointRouter', () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 
+  it('records health from an advisory read without moving authority to whichever node answered', async () => {
+    let now = 1_000;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    const router = new ClusterEndpointRouter(registry);
+    // Real work first, because authority is meant to follow real work alone.
+    await router.request(async (endpoint) => endpoint.id);
+
+    const advisory = vi.fn(async (endpoint: { id: string }) => {
+      if (endpoint.id === 'http://a') throw new TypeError('status call timed out');
+      return endpoint.id;
+    });
+    await expect(router.request(advisory, undefined, { advisory: true })).resolves.toBe('http://b');
+
+    // The failure is still evidence: it cools the node down and the walk moved
+    // on, so this is not an advisory read that recorded nothing.
+    expect(registry.candidates()[0]?.endpoint.id).toBe('http://b');
+    // Past that cooldown only authority is left to explain the order, and a
+    // background read must not have taken it from the node serving the viewer.
+    now += 60_000;
+    expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
+  });
+
   it('routes a mutation once through current authority and does not replay an ambiguous failure', async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
     const router = new ClusterEndpointRouter(registry);

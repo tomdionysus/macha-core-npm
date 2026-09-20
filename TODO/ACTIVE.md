@@ -360,10 +360,15 @@ So the comparison is between a cover figure measured before the walk and a lead 
 
 **Cross-checked rather than asserted.** The Android TV client read the same functions in its installed copy and reported the line numbers back before either of us acted; it has recorded that it will not emit, and why. Its own case is the same fault on a shorter path — a client reading a runway to bound a probe — and it has fixed its half with a test that fails without the subtraction.
 
-### Background discovery records real routing evidence
-**Waiting on:** core. `src/cluster/EndpointHealthMonitor.ts:192`; `src/api/ClusterStatusRouter.ts:23-36`; `src/cluster/endpointRouting.ts:145-170`. **Re-verified 2026-09-20:** `ClusterStatusRouter.status()` goes through `router.request`, which is `route()`, which records `recordSuccess`/`recordFailure` and has **no advisory option** — only `find()` does (`:98-100`). **This is a priority inversion in the laws' exact sense:** the ten-second health probe is control work, and a timeout on it reshuffles the sticky endpoint the viewer's media is flowing through. *"Client bookkeeping … diagnostics … must not delay playback"* — and un-sticking the preferred node is a delay in waiting.
+### ~~Background discovery records real routing evidence~~ — BUILT on `develop` 2026-09-20, unreleased
 
-`clusterStatusApi` routes through `route()`, so each 10 s discovery call does `recordSuccess`/`recordFailure`. A status timeout permanently un-sticks the preferred endpoint — precisely what `recordProbeFailure` exists to avoid — and a success elsewhere steals preference. Contradicts `EndpointHealthMonitor.ts:192` ("owns no server or playback state") and `endpointRouting.ts:21-23`. Fix: an advisory path using the probe variants.
+**Waiting on:** a release. Nothing for a client to do: no signature moved and no host emits anything new.
+
+**What landed.** `ClusterEndpointRouter.request` takes the `advisory` option `find` already had, and `ClusterStatusRouter`'s read path passes it. So the ten-second discovery call — and any status read a client makes for a diagnostics screen — records health through `recordProbeSuccess`/`recordProbeFailure` and leaves authority alone. A status timeout no longer un-sticks the endpoint the viewer's media is flowing through, and a status success on another node no longer steals preference from it. `mutation` (`checkConnectivity`) is untouched: it is a deliberate action on one node.
+
+**Stronger than `find`'s advisory, and the asymmetry is deliberate.** There, an advisory *hit* records probe success but a failure still records a failure, because artwork is a real request a viewer is waiting on and a node that cannot serve it has failed real work. Nothing routed through the status path is waited on by anyone, so both directions use the probe variants. Said in the code, so the next reader does not converge them.
+
+**Two tests, both seen red against the unfixed recording.** They are built so the cooldown and the preference are separable: the advisory walk fails on the authoritative node and succeeds elsewhere, the first assertion checks the failover happened *and* cost the node a cooldown — so the advisory path is not a no-op — and then the clock advances past that cooldown, at which point sticky is the only absolute axis left that can explain the order. With the probe variants swapped back for the real ones, both fail on exactly that last assertion. 903 tests, typecheck and `lint:platform` clean.
 
 ### `close()` resolves while a failover `POST` is still in flight
 **Waiting on:** core. `src/playback/PlaybackCoordinator.ts:966-997`. **Promoted from the low register 2026-09-20**, because the principles make it a correctness item rather than a tidy-up.
