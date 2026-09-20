@@ -690,7 +690,15 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 | A per-title fault on a facts read | P1 — `ClusterPlaybackFactsApi` demotes a node for one bad extent |
 | Degrade during failover; `close()` with a failover in flight | Low register — coordinator `1134-1140`, `698-718` |
 
-**What is blocking that work, and is worth doing first: there are three `FakePlayer` implementations.** The shared one (`src/testing/FakePlayer.ts`, which ships publicly on the `./testing` export) and a local one in each of `PlaybackRuntime.test.ts` and `PlaybackCoordinator.test.ts`. The shared one's own header records what the split already cost — a round of "prove the test fails against the broken code" that ran green every time because the code it was meant to break was never the code under test, **and a good test was deleted on the strength of it.** Building failover-racing-a-seek scenarios against that split pays the tax a third time.
+**~~What is blocking that work: there are three `FakePlayer` implementations.~~ MERGED on `develop` 2026-09-20, unreleased.** There is now one, `src/testing/FakePlayer.ts`, and both local copies are gone. The header records what the split cost — a round of "prove the test fails against the broken code" that ran green every time because the code it was meant to break was never the code under test, and a good test deleted on the strength of it.
+
+**The two divergences the merge had to settle, neither of which any test named.** The runtime's copy recorded `play()` as a bare `PlaybackSource`, so its assertions could not see the position, the start-paused flag or the transition; nothing asserted on those, so the shared shape absorbed it with no test change. The other is a real behaviour difference: the runtime's `detach()` also stopped, the other two only counted. **Settled in favour of the interface** — `Player.detach` is documented as *"Final player destruction. This is resource-destructive."*, so a double whose `detach()` only counts lets a test pass where the real player would have torn the source down. The coordinator never calls `detach` (it deliberately leaves host ownership to `PlaybackRuntime`), so nothing there moved.
+
+**Note for the release:** `FakePlayer` ships publicly on the `./testing` export, so `detach()` now stopping is a visible change to a test double a client may be asserting against. It is a fix, not a widening, and it belongs in the release note rather than in a client's surprise.
+
+917 tests, typecheck and `lint:platform` clean.
+
+**Four of the five scenarios in the table above were built today**, each alongside the fix it pins, each seen red against the unfixed code: the health-cycle storage write, `setBootstrapEndpoints([])`, the HTML-200 and missing-`items` pair, and the per-title fault on a facts read. What is left in that table is the coordinator's degrade-during-failover; `close()` with a failover in flight is now covered.
 
 ### Not worth chasing
 

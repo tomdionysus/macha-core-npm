@@ -23,15 +23,19 @@ export interface FakePlayerPlayCall {
  * failover story without a browser.
  */
 /**
- * **Not the only fake player in this repository.** `PlaybackCoordinator.test.ts`
- * defines its own, locally, and does not import this one.
+ * **The only fake player in this repository, as of 2026-09-20.** There were
+ * three: this one, and a local one in each of `PlaybackCoordinator.test.ts`
+ * and `PlaybackRuntime.test.ts`. Editing this file to change a coordinator
+ * test's behaviour then changed nothing, silently — which cost a full round of
+ * "prove the test fails against the broken code", green every time because the
+ * code it was meant to break was never the code under test, and a good test
+ * was deleted on the strength of it. A test that has never been seen red is an
+ * assertion about intentions rather than behaviour.
  *
- * Worth knowing before you edit this file to change a coordinator test's
- * behaviour: doing so changes nothing, silently. That cost a full round of
- * "prove the test fails against the broken code" — the check ran green every
- * time because the code it was meant to break was never the code under test,
- * and a good test was deleted on the strength of it. A test that has never
- * been seen red is an assertion about intentions rather than behaviour.
+ * **Keep it one.** A local double is quicker to write than to reconcile, and
+ * the three had already drifted in ways no test named: two of them counted
+ * `detach()` without destroying anything, and one recorded `play()` as a bare
+ * source so its assertions could not see the position or the transition.
  */
 export class FakePlayer implements Player {
   listener?: PlaybackListener;
@@ -55,7 +59,14 @@ export class FakePlayer implements Player {
 
   attach(): void { this.attachCalls += 1; }
   detachHost(): void { this.detachHostCalls += 1; }
-  detach(): void { this.detachCalls += 1; }
+  /**
+   * Destructive, because the interface says it is: *"Final player destruction.
+   * This is resource-destructive."* A double whose `detach()` only counts lets
+   * a test pass where the real player would have torn the source down, so it
+   * stops as well — which is what the runtime's own local double always did,
+   * and the divergence the merge resolved in favour of the contract.
+   */
+  detach(): void { this.detachCalls += 1; this.stop(); }
   play(source: PlaybackSource, positionMs = 0, startPaused = false, transition?: PlaybackTransition): Promise<boolean> {
     this.playCalls.push({ source, positionMs, startPaused, transition });
     return this.playResult;

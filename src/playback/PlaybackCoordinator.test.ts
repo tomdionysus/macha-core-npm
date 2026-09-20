@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PlaybackSourceError, type PlaybackTransition, type Player, type PlaybackDegradationListener, type PlaybackFailureListener, type PlaybackListener } from '../platform/Platform.js';
-import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
+import { PlaybackSourceError, type Player } from '../platform/Platform.js';
+import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
 import type { PlaybackPreferences, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
+import { FakePlayer } from '../testing/FakePlayer.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -11,64 +12,6 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-class FakePlayer implements Player {
-  listener?: PlaybackListener;
-  failureListener?: PlaybackFailureListener;
-  degradationListener?: PlaybackDegradationListener;
-  playCalls: Array<{ source: PlaybackSource; positionMs: number; startPaused: boolean; transition?: PlaybackTransition }> = [];
-  seekCalls: number[] = [];
-  pauseCalls = 0;
-  resumeCalls = 0;
-  detachCalls = 0;
-  stopCalls = 0;
-  subtitleCalls: Array<string | undefined> = [];
-  directAlternatives: Array<{ active: PlaybackSource; alternate: PlaybackSource }> = [];
-  preflightCalls: PlaybackSource[] = [];
-  playResult: Promise<boolean> = Promise.resolve(true);
-  localSeekRanges: PlaybackTimeRange[] = [];
-
-  attach(): void {}
-  detach(): void { this.detachCalls += 1; }
-  play(source: PlaybackSource, positionMs = 0, startPaused = false, transition?: PlaybackTransition): Promise<boolean> {
-    this.playCalls.push({ source, positionMs, startPaused, transition });
-    return this.playResult;
-  }
-  pause(): void { this.pauseCalls += 1; }
-  resume(): void { this.resumeCalls += 1; }
-  seek(positionMs: number): void { this.seekCalls.push(positionMs); }
-  localSeekCoverage(): readonly PlaybackTimeRange[] {
-    const source = this.playCalls.at(-1)?.source;
-    return source?.mode === 'direct'
-      ? [{ startMs: 0, endMs: Number.POSITIVE_INFINITY }]
-      : this.localSeekRanges;
-  }
-  setVolume(): void {}
-  setSubtitle(subtitleUrl?: string): void { this.subtitleCalls.push(subtitleUrl); }
-  addDirectSourceAlternative(active: PlaybackSource, alternate: PlaybackSource): boolean {
-    this.directAlternatives.push({ active, alternate });
-    return true;
-  }
-  preflightSource(source: PlaybackSource): Promise<boolean> {
-    this.preflightCalls.push(source);
-    return Promise.resolve(true);
-  }
-  stop(): void { this.stopCalls += 1; }
-  subscribe(listener: PlaybackListener): () => void {
-    this.listener = listener;
-    return () => { if (this.listener === listener) this.listener = undefined; };
-  }
-  subscribeFailure(listener: PlaybackFailureListener): () => void {
-    this.failureListener = listener;
-    return () => { if (this.failureListener === listener) this.failureListener = undefined; };
-  }
-  subscribeDegradation(listener: PlaybackDegradationListener): () => void {
-    this.degradationListener = listener;
-    return () => { if (this.degradationListener === listener) this.degradationListener = undefined; };
-  }
-  emit(event: PlaybackEvent): void { this.listener?.(event); }
-  fail(error: Error): void { this.failureListener?.(error); }
-  degrade(error: Error): void { this.degradationListener?.(error); }
-}
 
 function media(): MediaSummary {
   return { id: 'tmdb:movie:1', kind: 'movie', title: 'Movie', mediaIds: ['m1'], durationMs: 600_000 };

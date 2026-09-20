@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Platform, Player, PlaybackFailureListener, PlaybackListener } from '../platform/Platform.js';
-import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackTimeRange } from '../types.js';
+import type { Platform, Player } from '../platform/Platform.js';
+import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackSource } from '../types.js';
 import type { PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackStopOptions, PlaybackUpdate } from './PlaybackResolver.js';
 import { PlaybackRuntime } from './PlaybackRuntime.js';
+import { FakePlayer } from '../testing/FakePlayer.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -60,41 +61,6 @@ function session(media: MediaSummary, sessionId = `session:${media.id}`): Playba
   };
 }
 
-class FakePlayer implements Player {
-  listener?: PlaybackListener;
-  failureListener?: PlaybackFailureListener;
-  attachCalls = 0;
-  detachHostCalls = 0;
-  detachCalls = 0;
-  stopCalls = 0;
-  pauseCalls = 0;
-  resumeCalls = 0;
-  playCalls: PlaybackSource[] = [];
-  prepareCalls: MediaTechnicalProfile[] = [];
-  playResult: Promise<boolean> = Promise.resolve(true);
-
-  attach(): void { this.attachCalls += 1; }
-  detachHost(): void { this.detachHostCalls += 1; }
-  detach(): void { this.detachCalls += 1; this.stop(); }
-  play(source: PlaybackSource): Promise<boolean> { this.playCalls.push(source); return this.playResult; }
-  prepare(profile: MediaTechnicalProfile): void { this.prepareCalls.push(profile); }
-  pause(): void { this.pauseCalls += 1; }
-  resume(): void { this.resumeCalls += 1; }
-  seek(): void {}
-  localSeekCoverage(): readonly PlaybackTimeRange[] { return [{ startMs: 0, endMs: Number.POSITIVE_INFINITY }]; }
-  setVolume(): void {}
-  stop(): void { this.stopCalls += 1; }
-  subscribe(listener: PlaybackListener): () => void {
-    this.listener = listener;
-    return () => { if (this.listener === listener) this.listener = undefined; };
-  }
-  subscribeFailure(listener: PlaybackFailureListener): () => void {
-    this.failureListener = listener;
-    return () => { if (this.failureListener === listener) this.failureListener = undefined; };
-  }
-  emit(event: PlaybackEvent): void { this.listener?.(event); }
-  fail(error: Error): void { this.failureListener?.(error); }
-}
 
 class FakePlatform implements Platform {
   readonly name = 'web' as const;
