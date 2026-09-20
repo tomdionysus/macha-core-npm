@@ -686,10 +686,10 @@ It is now the only throughput wiring a host can forget, and forgetting it means 
 
 **Measured 2026-09-15, not estimated.** `npm run test:coverage` prints the table; `coverage/coverage-summary.json` has the per-file numbers.
 
-| | 2026-09-13 (600) | before the pass (720) | after it (786) | 2026-09-20 (897) | 2026-09-20 (935) |
+| | 2026-09-13 (600) | before the pass (720) | after it (786) | 2026-09-20 (897) | 2026-09-20 (939) |
 |---|---|---|---|---|---|
-| Statements | 93.4% | 92.1% | 93.94% | 94.12% | **94.84%** |
-| Branches | 84.4% | 84.39% | 85.39% | 85.66% | **86.30%** |
+| Statements | 93.4% | 92.1% | 93.94% | 94.12% | **94.99%** |
+| Branches | 84.4% | 84.39% | 85.39% | 85.66% | **86.45%** |
 | Functions | — | 88.16% | 91.56% | 92.01% | **93.12%** |
 
 Note the middle column: between 600 and 720 tests statements fell 1.3 points. Tests were added and coverage went *down*, because what landed in `0.10.0` and `0.11.0` was covered below the existing average. Worth re-measuring after a release rather than assuming a rising number.
@@ -708,7 +708,7 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 
 ### Left — and it is mostly one place
 
-**Re-measured 2026-09-20 at 935 tests.** `PlaybackCoordinator` is 92.35% statements / 80.76% branches — it has risen through two releases that added several hundred lines to it, so the new code is now arriving *above* the file's own average rather than at it. `PlaybackRuntime` was the laggard and is not any more (see below): 94.41% / 79.23% / **100% functions**. **`ClusterPlaybackResolver` at 77.57% branches is now the lowest branch figure of any file this backlog names**, and it is the next place to go — it is also the layer two of the four clients use *directly*, without a coordinator, so a gap there is a gap nothing else covers for them. Those three are **most of what remains uncovered**. ACTIVE.md has always said these need scenarios rather than assertions, and that is still true of what is left.
+**Re-measured 2026-09-20 at 935 tests.** `PlaybackCoordinator` is 92.35% statements / 80.76% branches — it has risen through two releases that added several hundred lines to it, so the new code is now arriving *above* the file's own average rather than at it. `PlaybackRuntime` was the laggard and is not any more (see below): 94.41% / 79.23% / **100% functions**. `ClusterPlaybackResolver` was the lowest branch figure of any file this backlog named, at 77.57%; **it is now 82.14% / 95.92% statements**, and what was uncovered there was the whole of teardown-that-will-not-close — the layer two of the four clients use *directly*, without a coordinator, so a gap there was a gap nothing else covered for them. Four tests, each verified red against its own line: `stop()` charging a refusing node exactly once and naming which node it was; `endpointAlreadyCharged` suppressing the second charge and dropping the map entry *before* the attempt rather than on success; the five-rung close ladder giving up rather than holding a timer for the life of the process; and a standby that came back as a different mode being closed rather than offered. The ladder had never been run at all — it is the mechanism keeping a dead node's transcode slot from being held until `session_idle` reclaims it half an hour later. Those three are **most of what remains uncovered**. ACTIVE.md has always said these need scenarios rather than assertions, and that is still true of what is left.
 
 **The leverage: several of those scenarios are the P1 fixes.** Build the scenario and the fix together so the test is seen red — a test written against today's behaviour would pin the bug.
 
