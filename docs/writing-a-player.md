@@ -70,7 +70,9 @@ The JSON body carries the machine code for operators; it is not the discriminato
 
 **The hold is `500` and not `503` deliberately.** Every proxy, tunnel and load balancer emits `503` for a service that is genuinely down, so that status is not the server's alone to assign. Give the hold `503` and a dead node behind an intermediary reads as a healthy one still producing fragments — no failover, ever, and nothing surfaced. The two mistakes are not symmetric: misreading a hold as a loss costs one unnecessary failover, visible as a hitch and self-correcting; misreading a dead node as a hold costs failover entirely, silently and permanently, and is likeliest exactly where a proxy is involved.
 
-Only the player can tell a hold from a real fragment failure, and what it has to tell them apart with depends on the stack. The core does not name the discriminator, because the obvious one is often unreachable: hls.js reports a bad status as `{ code, text }` and sets `response.data` to `undefined`, so an error envelope in the body never reaches the error event — it is available only through `data.networkDetails`, which is the raw `XMLHttpRequest` and becomes something else under `FetchLoader`. The HTTP status is the one field both loaders populate identically. Find what your stack exposes before designing around what the server sends.
+Only the player can tell a hold from a real fragment failure, and what it has to tell them apart with depends on the stack. The core does not name the discriminator, because the obvious one is often out of reach.
+
+**hls.js, read from the artifact at 1.6.18 on 2026-09-20.** A bad status arrives as `{ code, text }` with `response.data` set to `undefined`, so an error envelope never reaches the error event. It is not *unreachable* — the third argument to `onError` is the `XMLHttpRequest` itself, exposed as `data.networkDetails` — but getting at it has a trap: **fragment requests set `responseType = 'arraybuffer'`, so `networkDetails.responseText` throws `InvalidStateError`** and the envelope has to be decoded out of `networkDetails.response` as an `ArrayBuffer`. Under `FetchLoader` (not the default; hls.js 1.6.18 still ships `loader: XhrLoader`) `networkDetails` is something else again. The HTTP status is the one field every loader populates identically, which is why it is the discriminator. Find what your stack exposes before designing around what the server sends.
 
 ### Hold windows and your stack's deadline
 
@@ -78,7 +80,15 @@ A held request sends no bytes. If a node holds for longer than your stack's time
 
 The node reports its own hold as `segment_timeout_ms`, and the core passes it to you on `PlaybackSource.budgets.segmentHoldMs` — use it rather than assuming. Known stack deadlines, read from shipped artifacts: hls.js governs on `fragLoadPolicy.default.maxTimeToFirstByteMs` at 10000 (the deprecated `fragLoadingTimeOut` is inert unless a config sets it); media3's `DEFAULT_READ_TIMEOUT_MILLIS` is 8000. AVFoundation's has not been established. If your platform is not listed, find its deadline and record it here — a platform whose number nobody knows is the one most likely to sit just under the hold.
 
-Retry a hold on the same node, backing off exponentially rather than at a fixed interval. `Retry-After` is a hint, and hls.js ignores it on the fragment path.
+Retry a hold on the same node, backing off exponentially rather than at a fixed interval. `Retry-After` is a hint, and hls.js ignores it on the fragment path — confirmed at 1.6.18, where the only read of that header in the whole bundle is in the content-steering loader, for a `429` on the steering manifest.
+
+### Why the hold is a `5xx` and not an honest `4xx`
+
+Asked again on 2026-09-20 because the constraint was old and undated, and the answer held. **hls.js refuses to retry any 4xx**, by an explicit rule rather than an accident — `retryForHttpStatus` returns false for `400-499`, and its only widening is `status === 0 && navigator.onLine === false`. A `404` and a `425` are abandoned identically; a 5xx retries.
+
+`425 Too Early` is semantically exact for a fragment that is not produced yet, and it is **viable at a price**: a client-supplied `fragLoadPolicy.default.errorRetry.shouldRetry` is handed the computed answer as its last argument and its return value wins outright, so about five lines make hls.js retry a `425`. The hook has to sit on the error controller's path — for fragments the loader itself is built with `getLoaderConfigWithoutReties(...)`, so `errorRetry` is null there and the decision is taken in the error controller.
+
+**That price is the argument against it, and it is not the retry mechanics.** An honest status would be per-client opt-in: every player must ship the hook, and one that does not sees a hold as a hard failure — which is the expensive direction. Against that, `500` works everywhere by default and needs nothing of a new host. So the hold stays a `500`, and `425` is recorded as the option that becomes available if a coordinated release is ever worth it.
 
 ### Deadlines come from the node, not from your constants
 

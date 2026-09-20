@@ -147,7 +147,7 @@ A container the server cannot name arrives as `""` rather than as an absent key;
 
 A transformed playlist is a complete VOD list: `#EXT-X-PLAYLIST-TYPE:VOD`, every planned fragment, `#EXT-X-ENDLIST`, arriving whole on the first fetch and byte-identical on every later fetch of the same generation. Nothing needs to re-fetch or diff it. Detect it by that shape rather than by a version string.
 
-**The production frontier lives in the fragment responses.** A fragment or `init.mp4` not yet produced answers `500 segment_not_ready` immediately — a hold, not a fault, and not evidence about the node. A broken generation answers `503 stream_failed` and is terminal. A request past the end of the plan answers `404`. Read all three from the status; the body's machine code is unreachable on a fragment error in every stack checked. See [writing-a-player.md](writing-a-player.md) for why the hold is the `500`.
+**The production frontier lives in the fragment responses.** A fragment or `init.mp4` not yet produced answers `500 segment_not_ready` immediately — a hold, not a fault, and not evidence about the node. A broken generation answers `503 stream_failed` and is terminal. A request past the end of the plan answers `404`. Read all three from the status. The body's machine code is **awkward rather than unreachable** — corrected 2026-09-20 against hls.js 1.6.18, where it is available through `networkDetails` but not through the error event; see [writing-a-player.md](writing-a-player.md). The status is what every stack populates identically, which is why it is the discriminator. See [writing-a-player.md](writing-a-player.md) for why the hold is the `500`.
 
 Two consequences that catch people out:
 
