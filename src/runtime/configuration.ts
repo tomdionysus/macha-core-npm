@@ -111,8 +111,14 @@ export class MachaClientConfiguration {
   bootstrapEndpoints(): string[] {
     if (this.pinned) return this.environment;
 
+    // An empty list is not a configuration. `[]` is truthy, so a stored empty
+    // list used to answer this question and the environment was never
+    // consulted again: a client that cleared its server URL was unconfigured
+    // for good, with the defaults it was shipped with sitting right there.
+    // Read as absent as well as written as absent, because a client may
+    // already be carrying one from a build that wrote it.
     const stored = this.readEndpointValue(BOOTSTRAP_ENDPOINTS_KEY);
-    if (stored) return stored;
+    if (stored && stored.length > 0) return stored;
 
     const interim = this.readEndpointValue(INTERIM_SERVER_ENDPOINTS_KEY);
     if (interim) {
@@ -137,7 +143,13 @@ export class MachaClientConfiguration {
   }
 
   setBootstrapEndpoints(urls: readonly string[]): void {
-    this.writeEndpointValue(normalizeUrls(urls), BOOTSTRAP_ENDPOINTS_KEY);
+    const normalized = normalizeUrls(urls);
+    // Clearing the configuration removes it, exactly as
+    // `setDiscoveredEndpoints` does — the two setters used to disagree about
+    // what an empty list means, and this one wrote a record that then read
+    // back as "configured with nothing".
+    if (normalized.length === 0) this.storage.removeItem(BOOTSTRAP_ENDPOINTS_KEY);
+    else this.writeEndpointValue(normalized, BOOTSTRAP_ENDPOINTS_KEY);
     this.storage.removeItem(SERVER_URL_KEY);
     this.storage.removeItem(INTERIM_SERVER_ENDPOINTS_KEY);
   }

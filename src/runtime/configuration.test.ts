@@ -71,6 +71,31 @@ describe('client server endpoint persistence', () => {
     expect(configuration.bootstrapEndpoints()).toEqual(['http://typed-in']);
   });
 
+  it('treats clearing the configuration as unconfigured, not as configured with nothing', () => {
+    // `[]` is truthy, so a stored empty list answered `bootstrapEndpoints()`
+    // and the environment was never consulted again: a client that cleared
+    // its server URL stayed unconfigured for good, with the defaults it
+    // shipped with sitting right there.
+    const storage = memoryStorage();
+    const configuration = configured(storage, { environmentEndpoints: ['http://env-a/'] });
+    configuration.setBootstrapEndpoints(['http://typed-in']);
+
+    configuration.setBootstrapEndpoints([]);
+
+    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(configuration.bootstrapEndpoints()).toEqual(['http://env-a']);
+  });
+
+  it('recovers a client already carrying an empty stored list from an older build', () => {
+    // Written as absent is not enough on its own: the record exists in the
+    // field, so it has to read as absent too.
+    const storage = memoryStorage({
+      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: [] }),
+    });
+
+    expect(configured(storage, { environmentEndpoints: ['http://env-a'] }).bootstrapEndpoints()).toEqual(['http://env-a']);
+  });
+
   it('lets a pinned build ignore stale stored configuration entirely', () => {
     const storage = memoryStorage({
       'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://stale-dev-install'] }),

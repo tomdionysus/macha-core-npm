@@ -431,6 +431,29 @@ describe('persisted endpoint memory across a reload', () => {
   });
 });
 
+describe('seeding a registry the way the README says to', () => {
+  it('keeps a remembered discovery across a restart instead of persisting it away', () => {
+    // Seeding everything through the default source labels remembered
+    // discoveries `bootstrap`, and `persistConfirmedEndpoints` only ever
+    // persists what is labelled `discovered` — so the next cycle wrote the
+    // remembered set back as empty and the history was gone on every second
+    // start. The registry was right and the seed was lying to it.
+    const storage = memoryStorage();
+    const configuration = new MachaClientConfiguration({ storage });
+    configuration.setDiscoveredEndpoints(['http://10.44.1.51:7438']);
+
+    const registry = new EndpointRegistry([
+      ...bootstrapEndpoints(configuration.bootstrapEndpoints()),
+      ...bootstrapEndpoints(configuration.discoveredEndpoints(), 'discovered'),
+    ]);
+    // What a cycle does once that node answers.
+    registry.recordSuccess('http://10.44.1.51:7438');
+    persistConfirmedEndpoints(registry, configuration);
+
+    expect(configuration.discoveredEndpoints()).toEqual(['http://10.44.1.51:7438']);
+  });
+});
+
 describe('EndpointHealthMonitor lifecycle', () => {
   it('runs a cycle on start, publishes reachability, and reschedules itself', async () => {
     vi.useFakeTimers();

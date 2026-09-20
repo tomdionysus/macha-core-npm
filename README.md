@@ -52,10 +52,13 @@ import {
   EndpointRegistry, sessionManager,
 } from '@machafoundation/core';
 
-const registry = new EndpointRegistry(bootstrapEndpoints([
-  ...configuration.bootstrapEndpoints(),
-  ...configuration.discoveredEndpoints(),
-]));
+const registry = new EndpointRegistry([
+  ...bootstrapEndpoints(configuration.bootstrapEndpoints()),
+  // Seeded under their own source, or the health cycle sees nothing it is
+  // allowed to persist and writes the remembered set back as empty: the
+  // discovered history is wiped on every second start.
+  ...bootstrapEndpoints(configuration.discoveredEndpoints(), 'discovered'),
+]);
 sessionManager.start(registry);
 
 const services = createMachaServices({ endpointRegistry: registry, auth: sessionManager });

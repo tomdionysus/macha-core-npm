@@ -393,6 +393,14 @@ export class SessionManager implements AuthenticatedFetch {
    * and retrying it on a timer would lock the account out on their behalf.
    * The previous session is simply replaced — it belonged to a different
    * user, so revoking it here would sign out whoever else was holding it.
+   *
+   * Playback must be stopped before calling this, for the same reason it must
+   * be stopped before `signOut`. Nothing connects a playback session to an
+   * identity, and once the token changes a session created under the old one
+   * can no longer be closed: the node holds its transcode entitlement until
+   * `session_idle`, thirty minutes, and on a one-slot node the next viewer
+   * gets `429 resource_limit` with nothing pointing at the client that caused
+   * it. Invisible from here, which is why it is said here.
    */
   async signIn(credentials: SessionCredentials): Promise<void> {
     // The same fault fetch() refuses for, and typed the same way: a login
