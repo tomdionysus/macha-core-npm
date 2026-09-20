@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { ARTWORK_ENDPOINT_TIMEOUT_MS, ClusterCatalogueApi, MAX_ABANDONED_MEDIA_PROFILE_REQUESTS } from './ClusterCatalogueApi.js';
+import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
 function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
@@ -158,6 +159,35 @@ describe('ClusterCatalogueApi', () => {
     await expect(api.mediaProfile('macha:pending')).resolves.toBeUndefined();
     await expect(api.mediaProfile('macha:pending')).resolves.toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('separates a profile nobody has from a profile nobody could answer for', async () => {
+    // Both walks answer `undefined`, and the chooser transcodes everything on
+    // it either way — but one of those is a complete answer and the other is a
+    // partial one, and the return cannot tell them apart by design.
+    clearClientDiagnostics();
+    configureClientDiagnostics({ level: 'debug', console: false, maxEntries: 100 });
+    const unavailable = { error: 'profile_not_available', message: 'pending' };
+    const bothAbsent = vi.fn().mockResolvedValue(response(unavailable, 404));
+    vi.stubGlobal('fetch', bothAbsent);
+
+    await expect(new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])))
+      .mediaProfile('macha:one')).resolves.toBeUndefined();
+
+    expect(clientDiagnosticsSnapshot().map((entry) => entry.event)).toContain('media-profile-absent');
+    expect(clientDiagnosticsSnapshot().map((entry) => entry.event)).not.toContain('media-profile-absent-after-failure');
+
+    clearClientDiagnostics();
+    const oneBroken = vi.fn()
+      .mockResolvedValueOnce(response(unavailable, 404))
+      .mockRejectedValueOnce(new TypeError('node B unreachable'));
+    vi.stubGlobal('fetch', oneBroken);
+
+    await expect(new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])))
+      .mediaProfile('macha:two')).resolves.toBeUndefined();
+
+    expect(clientDiagnosticsSnapshot().find((entry) => entry.event === 'media-profile-absent-after-failure'))
+      .toMatchObject({ level: 'warn', data: { absent: ['http://a'], failed: ['http://b'] } });
   });
 
   it('accepts profile_pending when other profile endpoints are unreachable', async () => {

@@ -16,6 +16,30 @@ export class MachaClusterRouteError extends Error {
 }
 
 /**
+ * How a `find` walk that produced nothing ended.
+ *
+ * `find` answers `undefined` both when every node said "not here yet" and when
+ * some said that while another failed — deliberately, so optional metadata
+ * cannot be blocked by an unrelated node failure. For some callers those are
+ * different answers: an absent media profile makes the chooser transcode
+ * everything, silently, and "nobody has it" and "the node that might have had
+ * it was broken" deserve different handling and at minimum different logs.
+ *
+ * Reported through a callback rather than in the return, so the callers that
+ * do not care are unchanged.
+ */
+export interface FindAbsence {
+  /** Every node asked, in the order they were asked. */
+  attempted: readonly string[];
+  /** Nodes that answered, and said the thing is not there yet. */
+  absent: readonly string[];
+  /** Nodes whose attempt failed in a way the walk tolerated and moved past. */
+  failed: readonly string[];
+  /** True when every node asked answered absence and none failed. */
+  unanimous: boolean;
+}
+
+/**
  * One routing authority shared by every client API family.
  *
  * Real successful work makes that endpoint authoritative through
@@ -112,12 +136,14 @@ export class ClusterEndpointRouter {
   async find<T>(
     operation: EndpointOperation<T | undefined>,
     signal?: AbortSignal,
-    options?: { advisory?: boolean },
+    options?: { advisory?: boolean; onAbsence?: (absence: FindAbsence) => void },
   ): Promise<T | undefined> {
     let lastError: unknown;
     let observedTemporaryAbsence = false;
     let allUnreachable = true;
     const attempted: string[] = [];
+    const absent: string[] = [];
+    const failed: string[] = [];
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('find-attempt', { endpointId: endpoint.id, order: attempted.length, advisory: Boolean(options?.advisory) });
@@ -135,11 +161,13 @@ export class ClusterEndpointRouter {
         reportClusterReachable();
         log.debug('find-temporary-absence', { endpointId: endpoint.id });
         observedTemporaryAbsence = true;
+        absent.push(endpoint.id);
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         this.registry.recordFailure(endpoint.id);
+        failed.push(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
         log.debug('find-endpoint-failed', { endpointId: endpoint.id, unreachable: unreachableEndpointFailure(error) });
       }
@@ -151,6 +179,15 @@ export class ClusterEndpointRouter {
       log.warn('find-exhausted', { attempted, allUnreachable });
       throw new MachaClusterRouteError(attempted, allUnreachable, lastError);
     }
+    // Only on the way to answering `undefined`: a caller asks for this to tell
+    // "nobody has it" from "the node that might have had it was broken", and
+    // that question does not arise when the walk found the thing.
+    options?.onAbsence?.({
+      attempted,
+      absent,
+      failed,
+      unanimous: failed.length === 0 && absent.length === attempted.length && attempted.length > 0,
+    });
     return undefined;
   }
 

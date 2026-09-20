@@ -559,10 +559,11 @@ All three are defects in what core ships, not in client discipline:
 
 Specified, not built. `GET /api/v1/playback/sessions/{id}` returns `engine_running` and `segments_ready` **only when an engine is present**, so their absence is the "reclaimed, needs a cold start" signal — one cheap round trip, and the same GET renews the 30-minute session timer without touching the 60 s pipeline clock. Promotion should expect a cold start rather than counting the promotion as failed.
 
-### `find` cannot distinguish absence from partial failure
-**Waiting on:** core.
+### ~~`find` cannot distinguish absence from partial failure~~ — BUILT on `develop` 2026-09-20, unreleased
 
-`ClusterEndpointRouter.find` returns `undefined` both when every node says "not available" and when some said that while another failed with a 5xx. Deliberate — it stops optional metadata blocking playback on an unrelated node failure — but for playback facts the two are different answers, because absent means *transcode everything*, silently. Shape: report whether the walk ended on unanimous absence or on absence-plus-failure, without changing the return for callers that do not care.
+`find` takes an optional `onAbsence` callback, called only on the way to answering `undefined`, carrying `attempted`, `absent`, `failed` and `unanimous`. The return is unchanged, so every caller that does not care is untouched — the deliberate behaviour the entry defends (optional metadata must not be blocked by an unrelated node failure) stays exactly as it was.
+
+The caller that cares is the media profile: an absent one makes the chooser transcode everything, silently, so `readMediaProfile` now logs `media-profile-absent` at `debug` when every node answered absence, and `media-profile-absent-after-failure` at **`warn`** when it did not — with which nodes were absent and which failed. The decision is the same; what changed is that a capture can say whether it was made on a complete answer. One test, both halves, red when `unanimous` is stubbed true.
 
 ---
 
