@@ -441,6 +441,18 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Until it lands, the mitigation is in place and is deliberately narrow.** The step down fires only when the request actually asked a node to copy something, so a 400 for any other reason is rethrown untouched. Core's field types also make most malformed shapes unsendable — `mode`, `video`, `audio` and `container` are union types. What remains is a host-supplied preference reaching `instructedPreferences` untyped at runtime, and that is small enough to live with.
 
+**Shape, as the server proposed it back and core amended it.** Three optional fields beside `code`, each omitted when the server cannot honestly state it: a **scope** (content, this node, or the request), a **node-health** flag answering charge, and an **alternative-may-succeed** flag answering retry-with-less.
+
+**Core's one amendment, and it is the case that started this: `scope` must be three-valued.** Content-versus-node has nowhere to put a *malformed request*, which is neither. Labelled node-scoped, core walks the whole cluster collecting identical refusals for its own bug — **worse than today**, where a 400 stops the walk at once. Labelled content-scoped, core behaves correctly but the wire says a core bug is a property of the viewer's film, which is what a diagnostic surface then shows a person. Three values and the walk decision follows unambiguously in all three. **If the approved scope stays narrow, the three-valued `scope` alone delivers it**; the other two fields are the general half and can follow.
+
+**The strongest argument for doing it at all is not the trace above — it is that core is still holding server knowledge it should not hold.** `src/cluster/endpointFailure.ts` holds three hardcoded sets — `TERMINAL_SOURCE_REASONS`, `NODE_LOCAL_SOURCE_REASONS`, `PER_TITLE_FAILURE_CODES` — which are core's private copy of the server's judgement about the server's own failures. They are correct only while someone updates them by hand, and **nothing fails when they drift**: the walk silently starts making the wrong call. That is the class `0.14.0` was spent removing. Stating the axes lets core **delete all three**, and a fault the server adds next year is classified correctly by a core that has never heard of it.
+
+**`alternative_may_succeed` is permission, not instruction** — core keeps its own narrowing regardless. **Not needed:** a fourth axis for "same node, same instruction, wait"; 429 plus `retry-after` already carries it.
+
+**The server's precedent, worth keeping:** the per-node playback budgets are already documented as *"absence means the node cannot say, never a default"*, so unstated-stays-unstated is how this server already talks about unknowns rather than a new convention. That also makes incremental landing safe.
+
+**Status 2026-09-20:** the server judged the three-axis version wider than what Tom approved — a distinct code for the capability case, correct HTTP status, specific code in the body — and took it back to him rather than building past it. Correct call. **Core is not blocked either way**, and the server has been asked to say so to Tom, so it is scheduled on merit rather than as an unblock.
+
 ### A node substitutes a remux for a transcode and says so in the payload, and core has never looked
 
 **Waiting on:** core. **Found 2026-09-20** from the server session, unprompted, while answering a different question. Nothing in core reads this today.
