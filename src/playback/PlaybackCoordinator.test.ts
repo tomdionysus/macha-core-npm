@@ -3,6 +3,7 @@ import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
+import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -2932,6 +2933,133 @@ describe('a dead source goes on talking while its replacement is negotiated', ()
     regeneration.resolve(onNodeB());
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    await coordinator.close();
+  });
+});
+
+describe('a node that performs a different mode from the one it was asked for', () => {
+  // The server does exactly one substitution and it is not silent — it is
+  // merely unexamined. When a remux's keyframe index is unusable as a segment
+  // plan and the node allows the video-transcode fallback, it plans a
+  // transcode and says so: the top-level `mode` is what it performed while
+  // `preferences` still echoes what it was asked for. Nothing in core compared
+  // the two, so a title whose keyframe index will never be usable was
+  // re-asked for a remux on every recovery and substituted every time.
+
+  function substitutionReports(): unknown[] {
+    return clientDiagnosticsSnapshot().filter((entry) => entry.event === 'generation-mode-substituted');
+  }
+
+  const remuxPreferences = (): PlaybackPreferences => ({
+    mode: 'remux', maxHeight: null, maxBitrate: null,
+    audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '',
+  });
+
+  it('reports the substitution rather than leaving it to be inferred from a slow generation', async () => {
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    // Asked for remux; the node planned a transcode and said so.
+    const substituted = session({
+      sessionId: 's1', mode: 'transcode', preferences: remuxPreferences(),
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(substituted),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux' },
+    });
+    await coordinator.start();
+
+    const report = coordinator.getSnapshot().instruction;
+    expect(report?.performedMode).toBe('transcode');
+    expect(report?.modeHonoured).toBe(false);
+    expect(substitutionReports()).toHaveLength(1);
+    await coordinator.close();
+  });
+
+  it('says the mode was honoured when the node did what it was asked', async () => {
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const honoured = session({
+      sessionId: 's1', mode: 'remux', preferences: remuxPreferences(),
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(honoured),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux' },
+    });
+    await coordinator.start();
+
+    expect(coordinator.getSnapshot().instruction?.modeHonoured).toBe(true);
+    expect(substitutionReports()).toHaveLength(0);
+    await coordinator.close();
+  });
+
+  it('does not report a viewer mode change as a node substitution', async () => {
+    // The distinction the field exists to keep, and the case that actually
+    // separates the two candidate comparisons. `snapshot.instruction` is
+    // patched by the chooser and by a degrade, but **not** by a plain viewer
+    // mode change — so after the viewer switches, the report still names the
+    // mode the chooser picked at start. Comparing the performed mode against
+    // *that* calls every viewer mode change a server substitution. Comparing
+    // it against the node's own echo of what it was asked for does not.
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const startedOn = session({
+      sessionId: 's1', mode: 'transcode',
+      preferences: { ...remuxPreferences(), mode: 'transcode' },
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    });
+    const switchedTo = session({
+      sessionId: 's1', mode: 'remux', preferences: remuxPreferences(),
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      source: { ...startedOn.source, mode: 'remux', url: '/generation-remux.m3u8' },
+    });
+    const api = resolver(startedOn, async () => switchedTo);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.mode).toBe('transcode');
+
+    coordinator.update({ preferences: { mode: 'remux' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('remux'));
+
+    // The node did exactly what the viewer asked. Nothing was substituted.
+    expect(coordinator.getSnapshot().instruction?.performedMode).toBe('remux');
+    expect(coordinator.getSnapshot().instruction?.modeHonoured).toBe(true);
+    expect(substitutionReports()).toHaveLength(0);
+    await coordinator.close();
+  });
+
+  it('reports once per generation, not once per snapshot patch', async () => {
+    // `setSession` runs on every session change, and a diagnostics surface a
+    // viewer can see is on screen for the whole of a film on at least one
+    // client. A substitution that reported itself repeatedly would be noise.
+    clearClientDiagnostics();
+    const player = new FakePlayer();
+    const substituted = session({
+      sessionId: 's1', mode: 'transcode', preferences: remuxPreferences(),
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(substituted),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'remux' },
+    });
+    await coordinator.start();
+    expect(substitutionReports()).toHaveLength(1);
+
+    // A subtitle change re-runs `setSession` for the same generation — the
+    // cheapest path that patches the report twice without replacing it.
+    coordinator.update({ preferences: { subtitleStream: 2 } });
+    await vi.waitFor(() => expect(player.subtitleCalls.length).toBeGreaterThan(0));
+    await flush();
+
+    expect(substitutionReports()).toHaveLength(1);
     await coordinator.close();
   });
 });

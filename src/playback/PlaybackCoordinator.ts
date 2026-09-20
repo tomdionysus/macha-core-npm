@@ -93,6 +93,39 @@ export interface PlaybackInstructionReport {
    * line follows for the container itself.
    */
   containerHonoured?: boolean;
+  /**
+   * The mode the node actually performed, once a session exists.
+   *
+   * The server's own account, from the session's top-level `mode`, as against
+   * the `preferences.mode` it echoes back — which is what it was *asked* for.
+   * Those agree until the node substitutes.
+   */
+  performedMode?: PlaybackMode;
+  /**
+   * False when the node performed a mode other than the one it was asked for.
+   *
+   * **There is exactly one substitution the server does, and it is not silent
+   * — it is merely unexamined.** When a remux's keyframe index is unusable as
+   * a segment plan and the node allows the video-transcode fallback, it plans
+   * a transcode instead and says so: the top-level `mode` is what was
+   * performed while `preferences` still echoes what was asked for. Nothing in
+   * core compared the two until 2026-09-20, so a title whose keyframe index
+   * will never be usable was re-asked for a remux on every recovery, got
+   * substituted every time, and nothing anywhere said so.
+   *
+   * **This is deliberately not the same question as "did core get what it
+   * chose", and the difference is observable.** `snapshot.instruction` is
+   * patched by the chooser and by a step down, but **not** by a plain viewer
+   * mode change — so after a viewer switches from transcode to remux the
+   * report still names transcode. Comparing the performed mode against *that*
+   * calls every viewer mode change a server substitution. Comparing it against
+   * the node's own echo of what it was asked for does not, and does not depend
+   * on core keeping its own report in sync to stay correct.
+   *
+   * Undefined rather than true when either side is unknown, the same rule the
+   * container follows one field up.
+   */
+  modeHonoured?: boolean;
   /** The viewer chose this mode themselves; the chooser was not consulted. */
   chosenByViewer: boolean;
   /**
@@ -809,6 +842,7 @@ export class PlaybackCoordinator {
   private factsError?: unknown;
   private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
+  private substitutionReportedFor?: string;
 
   private facts(): Promise<PlaybackDecisionFacts | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
@@ -2018,12 +2052,34 @@ export class PlaybackCoordinator {
     if (!instruction) return undefined;
     const served = session.output.container?.trim().toLowerCase() || undefined;
     const requested = instruction.container;
+    const performedMode = session.mode;
+    // The node's echo of what it was asked for, which is the only thing the
+    // performed mode may be compared against — see `modeHonoured`.
+    const requestedMode = session.preferences?.mode;
+    const modeHonoured = requestedMode === undefined || performedMode === undefined
+      ? undefined
+      : performedMode === requestedMode;
+    // Once per generation, not once per snapshot patch: `setSession` runs on
+    // every session change and a substitution that reported itself repeatedly
+    // would be noise on a diagnostics surface a viewer can see.
+    if (modeHonoured === false && this.substitutionReportedFor !== session.sessionId) {
+      this.substitutionReportedFor = session.sessionId;
+      this.log.warn('generation-mode-substituted', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        mediaId: session.mediaId,
+        requestedMode,
+        performedMode,
+      });
+    }
     return {
       ...instruction,
       servedContainer: served,
       containerHonoured: requested === undefined || served === undefined
         ? undefined
         : served === requested,
+      performedMode,
+      modeHonoured,
     };
   }
 
