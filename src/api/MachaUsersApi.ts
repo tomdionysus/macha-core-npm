@@ -50,22 +50,25 @@ export class MachaUsersApiError extends Error {
 /**
  * The account list.
  *
- * The server wraps this collection under `users` — not `items`, which is what
- * every other collection in this API uses, and what this originally assumed.
- * Getting that wrong is silent: reading a key a payload does not have yields
- * `undefined`, which is not an error anywhere downstream, so the screen
- * rendered its heading and nothing else and looked broken rather than
- * reporting a bad answer.
+ * **`items` is the envelope.** It was `users` — this comment stated that as
+ * fact, and the server has since moved the list under `items` like every
+ * other collection in this API. `users` is kept because a node may be
+ * stranded on an older build, and mixed-version clusters are the ordinary
+ * case here; it is legacy, not an alternative spelling, and it goes when no
+ * reachable node still answers that way.
  *
- * The alternatives are accepted because single records come back bare while
- * collections come wrapped, and being generous about the envelope costs
- * nothing. An unrecognised shape throws, so the next time this is wrong it
- * says so instead of quietly showing an empty list.
+ * Being generous about the envelope is what made that change a non-event, and
+ * it is why the accepted shapes are listed rather than assumed: single records
+ * come back bare while collections come wrapped. Getting it wrong is silent —
+ * reading a key a payload does not have yields `undefined`, which is not an
+ * error anywhere downstream, so the screen renders its heading and nothing
+ * else and looks broken rather than reporting a bad answer. An unrecognised
+ * shape throws for exactly that reason.
  */
 function userList(response: unknown): MachaUser[] {
   if (Array.isArray(response)) return response as MachaUser[];
   const envelope = response as { users?: unknown; items?: unknown } | null;
-  for (const candidate of [envelope?.users, envelope?.items]) {
+  for (const candidate of [envelope?.items, envelope?.users]) {
     if (Array.isArray(candidate)) return candidate as MachaUser[];
   }
   throw new MachaUsersApiError('The server returned an unrecognised user list.', 502, 'invalid_user_list');

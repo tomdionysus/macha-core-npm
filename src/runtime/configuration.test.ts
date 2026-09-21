@@ -71,6 +71,52 @@ describe('client server endpoint persistence', () => {
     expect(configuration.bootstrapEndpoints()).toEqual(['http://typed-in']);
   });
 
+  it('treats clearing the configuration as unconfigured, not as configured with nothing', () => {
+    // `[]` is truthy, so a stored empty list answered `bootstrapEndpoints()`
+    // and the environment was never consulted again: a client that cleared
+    // its server URL stayed unconfigured for good, with the defaults it
+    // shipped with sitting right there.
+    const storage = memoryStorage();
+    const configuration = configured(storage, { environmentEndpoints: ['http://env-a/'] });
+    configuration.setBootstrapEndpoints(['http://typed-in']);
+
+    configuration.setBootstrapEndpoints([]);
+
+    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(configuration.bootstrapEndpoints()).toEqual(['http://env-a']);
+  });
+
+  it('recovers a client already carrying an empty stored list from an older build', () => {
+    // Written as absent is not enough on its own: the record exists in the
+    // field, so it has to read as absent too.
+    const storage = memoryStorage({
+      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: [] }),
+    });
+
+    expect(configured(storage, { environmentEndpoints: ['http://env-a'] }).bootstrapEndpoints()).toEqual(['http://env-a']);
+  });
+
+  it('keeps endpoints that read back fine when the tidy-up write is refused', () => {
+    // The self-healing rewrite sat inside the read's own `try`, and that
+    // `catch` removes the key — so a store refusing a write, a full television
+    // or a private-mode quota, deleted endpoints the read had just parsed
+    // successfully. The normalisation is optional; the value is not.
+    const readable = memoryStorage({
+      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://node-a/'] }),
+    });
+    const storage = {
+      getItem: (key: string) => readable.getItem(key),
+      removeItem: (key: string) => readable.removeItem(key),
+      setItem: () => { throw new Error('QuotaExceededError'); },
+    };
+
+    const configuration = configured(storage);
+
+    expect(configuration.bootstrapEndpoints()).toEqual(['http://node-a']);
+    // Still there for the next read, which will try to normalise it again.
+    expect(readable.getItem('macha-bootstrap-endpoints-v1')).not.toBeNull();
+  });
+
   it('lets a pinned build ignore stale stored configuration entirely', () => {
     const storage = memoryStorage({
       'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://stale-dev-install'] }),

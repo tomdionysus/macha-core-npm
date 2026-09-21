@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
+import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 
 const media: MediaSummary = { id: 'movie:test', kind: 'movie', title: 'Test', mediaIds: ['macha:media'] };
 const capabilities: PlaybackCapabilities = {
@@ -792,5 +793,204 @@ describe('asking whether a session still exists', () => {
     const { resolver, session } = await owned();
 
     await expect(resolver.sessionAlive(session.sessionId)).resolves.toBe(true);
+  });
+});
+
+describe('closing a generation that will not close', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('charges the node once for a teardown it refuses, and reports which node it was', async () => {
+    // `stop()` is the caller-facing close, unlike the fire-and-forget ladder
+    // that follows a failover. A DELETE that throws here is ordinary endpoint
+    // evidence and the caller has to be told which endpoint produced it, or a
+    // host's failure report names the cluster instead of the node.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') throw new TypeError('node a unreachable');
+      return new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const live = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await expect(resolver.stop(live.sessionId)).rejects.toThrow(/http:\/\/a/);
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+  });
+
+  it('does not charge again for a teardown the caller has already charged for', async () => {
+    // The seam that stops one outage walking the cooldown ladder. A caller
+    // that has already recorded the failure passes `endpointAlreadyCharged`,
+    // and the entry goes before the attempt rather than on success — so a
+    // throwing DELETE cannot leave a session behind for a later cleanup path
+    // to find and charge a third time.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') throw new TypeError('node a unreachable');
+      return new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const live = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await expect(resolver.stop(live.sessionId, { endpointAlreadyCharged: true })).rejects.toThrow(/http:\/\/a/);
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+
+    // Gone whether or not the node ever acknowledged it.
+    const deletesSoFar = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET').toUpperCase() === 'DELETE').length;
+    await expect(resolver.stop(live.sessionId, { endpointAlreadyCharged: true })).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET').toUpperCase() === 'DELETE').length).toBe(deletesSoFar);
+  });
+
+  it('gives up the abandoned session after a bounded ladder rather than retrying for ever', async () => {
+    // The ladder exists because the DELETE usually goes to a node that is
+    // already gone, so one attempt is not a policy. It is bounded because the
+    // node's own `session_idle` reclaims the lease after thirty minutes and
+    // this only has to cover a node that comes back sooner — roughly half a
+    // minute of it. Longer would be a timer nothing in this class can cancel.
+    vi.useFakeTimers();
+    try {
+      const deleteUrls: string[] = [];
+      const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+        if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') {
+          deleteUrls.push(String(url));
+          throw new TypeError('node a unreachable');
+        }
+        const id = String(url).startsWith('http://a') ? 'session-a' : 'session-b';
+        return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const resolver = new ClusterPlaybackResolver(registry);
+      const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+      await resolver.failover(primary, media, capabilities, 0, { mode: 'direct' });
+
+      // 1 s, 2 s, 4 s, 8 s between the five attempts, capped at 16 s.
+      for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+      expect(deleteUrls.length).toBe(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(deleteUrls.length).toBe(5);
+      expect(new Set(deleteUrls)).toEqual(new Set(['http://a/api/v1/playback/sessions/session-a']));
+
+      // And it stops. A ladder that kept climbing would hold a timer for the
+      // life of the process against a node nobody is waiting for.
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(deleteUrls.length).toBe(5);
+      // One observation, one record, however many attempts it took.
+      expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes a standby that came back as a different mode rather than offering it', async () => {
+    // A standby prepared as a rescue for a transcode is not a rescue if the
+    // node handed back Direct Play. Returning it would swap the viewer onto a
+    // different kind of generation mid-recovery; keeping it would hold a slot
+    // on a node for a session nothing will ever promote.
+    const transcoded = {
+      ...wireSession('session-a'),
+      mode: 'transcode',
+      preferences: { ...wireSession('session-a').preferences, mode: 'transcode' },
+      output: { container: 'fmp4' },
+      stream: { url: '/api/v1/playback/stream/session-a/index.m3u8', mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
+    };
+    const deletes: string[] = [];
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'DELETE') {
+        deletes.push(String(url));
+        return new Response(null, { status: 204 });
+      }
+      return String(url).startsWith('http://a')
+        ? new Response(JSON.stringify(transcoded), { status: 201, headers: { 'Content-Type': 'application/json' } })
+        // Node B ignores the requested mode and serves Direct Play.
+        : new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'transcode' });
+
+    const standby = await resolver.prepareAlternate(primary, media, capabilities, 0, { mode: 'transcode' });
+
+    expect(standby).toBeUndefined();
+    expect(deletes).toEqual(['http://b/api/v1/playback/sessions/session-b']);
+  });
+});
+
+describe('a regeneration whose close never comes back', () => {
+  // **The one unbounded wait on the recovery path, measured on hardware.**
+  // `releaseFailedSession` resolves when the first DELETE settles, and nothing
+  // bounds that DELETE - the attempt deadline wraps only the POST in
+  // `createOn`. Its own docblock says it must never be awaited, because "a
+  // slow node is exactly where failover fires"; `regenerate` awaits it anyway,
+  // because the node's transcode slot is held by the session being replaced.
+  //
+  // On the Android TV client on 2026-09-20 that hung a viewer indefinitely:
+  // the chrome sat on "Preparing new stream", the position froze at 5:00, and
+  // no failure screen ever arrived - because nothing threw, and a hang is not
+  // an error. Every bounded thing below was waiting on the one unbounded thing
+  // above it.
+
+  it('asks for the replacement anyway rather than waiting for ever', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      // A close that never comes back, which is what "no timeout anywhere"
+      // means in practice.
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Promise<Response>(() => {});
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 50);
+
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    const next = await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+
+    // The replacement exists. Before the bound, this line was never reached.
+    expect(next.sessionId).toContain('session-2');
+    expect(admissionCalls(fetchMock)).toHaveLength(2);
+  });
+
+  it('says the close timed out rather than letting it pass unrecorded', async () => {
+    // The node is now holding a transcode slot nothing has released, which is
+    // the operator-visible half of Law 4's discipline. It is a warn because
+    // the recovery continued; the leak is real and needs somewhere to be read.
+    clearClientDiagnostics();
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Promise<Response>(() => {});
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 50);
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+
+    expect(clientDiagnosticsSnapshot().filter((e) => e.event === 'failed-session-close-timeout')).toHaveLength(1);
+  });
+
+  it('does not wait out the bound when the close answers promptly', async () => {
+    // The ordinary path must not have acquired a delay. A 404 on the DELETE is
+    // the commonest case of all - the session was reaped, so there is nothing
+    // to close - and it has to stay fast.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 404 });
+      return new Response(JSON.stringify(wireSession('session-2')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 10_000);
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    const startedAt = Date.now();
+    await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });

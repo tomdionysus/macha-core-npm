@@ -93,6 +93,39 @@ export interface PlaybackInstructionReport {
    * line follows for the container itself.
    */
   containerHonoured?: boolean;
+  /**
+   * The mode the node actually performed, once a session exists.
+   *
+   * The server's own account, from the session's top-level `mode`, as against
+   * the `preferences.mode` it echoes back — which is what it was *asked* for.
+   * Those agree until the node substitutes.
+   */
+  performedMode?: PlaybackMode;
+  /**
+   * False when the node performed a mode other than the one it was asked for.
+   *
+   * **There is exactly one substitution the server does, and it is not silent
+   * — it is merely unexamined.** When a remux's keyframe index is unusable as
+   * a segment plan and the node allows the video-transcode fallback, it plans
+   * a transcode instead and says so: the top-level `mode` is what was
+   * performed while `preferences` still echoes what was asked for. Nothing in
+   * core compared the two until 2026-09-20, so a title whose keyframe index
+   * will never be usable was re-asked for a remux on every recovery, got
+   * substituted every time, and nothing anywhere said so.
+   *
+   * **This is deliberately not the same question as "did core get what it
+   * chose", and the difference is observable.** `snapshot.instruction` is
+   * patched by the chooser and by a step down, but **not** by a plain viewer
+   * mode change — so after a viewer switches from transcode to remux the
+   * report still names transcode. Comparing the performed mode against *that*
+   * calls every viewer mode change a server substitution. Comparing it against
+   * the node's own echo of what it was asked for does not, and does not depend
+   * on core keeping its own report in sync to stay correct.
+   *
+   * Undefined rather than true when either side is unknown, the same rule the
+   * container follows one field up.
+   */
+  modeHonoured?: boolean;
   /** The viewer chose this mode themselves; the chooser was not consulted. */
   chosenByViewer: boolean;
   /**
@@ -317,6 +350,33 @@ const UNCACHED_SEEK_DEBOUNCE_MS = 300;
  * means something has gone wrong rather than a buffer running low.
  */
 const PLAYER_SILENCE_GUARD_MS = 15_000;
+
+/**
+ * Head-room over the node's own budgets before the recovery as a whole is
+ * abandoned.
+ *
+ * **A supervising deadline exists because every limb of this recovery is
+ * bounded and the composition was not.** On 2026-09-20 a viewer sat frozen for
+ * minutes with `preparingSource` true, and the elimination afterwards closed
+ * every branch: the close settled, the create is bounded and can never compute
+ * a zero budget, `activateSession` is synchronous, nothing was disposed, one
+ * copy of core was in the bundle, and the absence of further log lines was
+ * read off three frames by eye rather than by a broken detector. **No named
+ * mechanism survives all of that, and the viewer was still frozen.**
+ *
+ * So this does not bound a suspect. It bounds *the work item* — "build a
+ * replacement" — which is what Law 4's discipline actually asks for: backoff,
+ * a failure budget, a parked state and an operator action, for the retried
+ * unit rather than for each of its limbs. It converts every unnamed mechanism,
+ * including ones nobody has thought of, from an indefinite freeze into a
+ * bounded wait followed by the failover that already exists.
+ *
+ * Deliberately generous: the close and the create may each legitimately spend
+ * the node's full attempt budget, so anything under twice that would abort
+ * recoveries that were going to succeed. A false positive here crosses to
+ * another node and loses the stream copy, which is worse than waiting.
+ */
+const RECOVERY_SUPERVISION_MARGIN_MS = 10_000;
 
 interface PendingMutation {
   update: PlaybackUpdate;
@@ -591,6 +651,53 @@ function withRestatedSegmentContainer(
   return { ...preferences, container: requestedContainer };
 }
 
+/**
+ * Restate the per-stream transforms on a generation being rebuilt.
+ *
+ * The same server rule as the container above, one field further in, and this
+ * side of it *does* need restating. From server 0.34.0 a request carrying
+ * `mode` restates the whole transform, so a recovery that names `transcode`
+ * and nothing else clears the `video: 'copy'` that made it a copy and the
+ * replacement node plans video from scratch. Measured on the Android TV client
+ * 2026-09-20: a generation passing HEVC 1920x1040 through untouched was reaped,
+ * and its replacement re-encoded that stream to H264 — taking the node's only
+ * `max_video_transcodes` slot to convert a picture the television was decoding
+ * natively. The node was asked for it. Nothing was wrong with the node.
+ *
+ * **Restated from the instruction, not from the session's echo.** The two
+ * differ after a server-side substitution, and `session.transform` is what the
+ * node did rather than what was asked for. Restating that makes one bad plan
+ * permanent — each recovery would rebuild from the last recovery's downgrade,
+ * and the copy would never come back. It is also the only source that can
+ * disagree with the `mode` sitting beside it: `mode` comes from the session's
+ * *confirmed preferences* overlaid with anything the viewer has changed since,
+ * so pairing it with the node's echo can state `remux` alongside a transcoded
+ * video — an instruction nobody chose and the server is entitled to refuse.
+ * `degradeInstruction` is the same coupling from the other side: giving up an
+ * audio copy forces `remux` to become `transcode`, because a remux that does
+ * not copy every stream is not a remux.
+ *
+ * So the mode and the transforms are restated from one place or not at all,
+ * which is why a report for a *different* mode is left alone entirely: it
+ * describes a transform that no longer applies, and pinning it to a mode it
+ * did not belong to is the failure this whole item is about, inverted.
+ *
+ * Fields already present win, so a viewer's in-flight change is never
+ * overwritten — the same precedence the container follows. `direct` copies
+ * every stream by definition and has no per-stream step, so it is skipped.
+ */
+function withRestatedTransforms(
+  preferences: PlaybackPreferencesUpdate,
+  instruction: PlaybackInstructionReport | undefined,
+): PlaybackPreferencesUpdate {
+  if (preferences.mode !== 'remux' && preferences.mode !== 'transcode') return preferences;
+  if (!instruction || instruction.mode !== preferences.mode) return preferences;
+  const restated = { ...preferences };
+  if (restated.video === undefined && instruction.video !== undefined) restated.video = instruction.video;
+  if (restated.audio === undefined && instruction.audio !== undefined) restated.audio = instruction.audio;
+  return restated;
+}
+
 export function equivalentDirectSources(primary: PlaybackSession, alternate: PlaybackSession): boolean {
   const primaryMime = (primary.source.mimeType ?? primary.mimeType).split(';', 1)[0]?.trim().toLowerCase();
   const alternateMime = (alternate.source.mimeType ?? alternate.mimeType).split(';', 1)[0]?.trim().toLowerCase();
@@ -692,6 +799,22 @@ export class PlaybackCoordinator {
   private pendingReplacement?: PlaybackSession;
   private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
 
+  /**
+   * When the last player event landed, on the duration clock.
+   *
+   * The runway is a *measurement with an age*, and every decision that spends
+   * it happens after at least one round trip. On the terminal path the player
+   * has by definition stopped sending events, so the age is unbounded there.
+   */
+  private lastPlayerEventAt?: number;
+  /**
+   * The last element cover a player event gave core reason to trust, and when.
+   *
+   * Kept so a tearing-down element reporting an empty buffer cannot erase a
+   * figure that was true a moment earlier. See `emptyBufferIsEvidence`.
+   */
+  private trustedElementRunway?: { ms: number; at: number };
+
   private snapshot: PlaybackCoordinatorSnapshot;
 
   constructor(private readonly options: PlaybackCoordinatorOptions) {
@@ -746,6 +869,8 @@ export class PlaybackCoordinator {
   private factsError?: unknown;
   private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
+  private substitutionReportedFor?: string;
+  private unclassifiedReportedFor?: string;
 
   private facts(): Promise<PlaybackDecisionFacts | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
@@ -883,29 +1008,118 @@ export class PlaybackCoordinator {
     positionMs: number,
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
-    const viewerChose = (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
     try {
       return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences);
     } catch (error) {
-      const instruction = this.chosenInstruction;
-      if (viewerChose || !instruction || !isExecutorRefusal(error)) throw error;
-      const degraded = degradeInstruction(instruction);
+      const degraded = this.degradedInstructionFor(error);
       if (!degraded) throw error;
-
-      this.log.warn('instruction-degraded', {
-        mediaId: this.options.media.id,
-        from: { video: instruction.video, audio: instruction.audio, mode: instruction.mode },
-        to: { video: degraded.video, audio: degraded.audio, mode: degraded.mode },
-        error,
-      });
-      this.chosenInstruction = degraded;
-      this.patchSnapshot({ notice: 'This node could not copy the original streams, so they are being converted.' });
+      this.applyDegradedInstruction(degraded, error);
       return await this.options.resolver.resolve(
         this.options.media,
         capabilities,
         positionMs,
         { ...preferences, ...instructionPreferences(degraded) },
       );
+    }
+  }
+
+  /** The viewer named the mode themselves, so nothing here may quietly change it. */
+  private get viewerChoseMode(): boolean {
+    return (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
+  }
+
+  /**
+   * The one step down this failure allows, or nothing.
+   *
+   * Narrow on purpose, and the narrowness is the point: only a 400 — the node
+   * saying it cannot perform this, as distinct from 429 capacity or 5xx health
+   * — only against an instruction the chooser produced, and never over a mode
+   * the viewer chose themselves.
+   */
+  private degradedInstructionFor(error: unknown): PlaybackInstruction | undefined {
+    const instruction = this.chosenInstruction;
+    if (this.viewerChoseMode || !instruction || !isExecutorRefusal(error)) return undefined;
+    return degradeInstruction(instruction);
+  }
+
+  /**
+   * Record a downgrade as the instruction this generation is now running on.
+   *
+   * The snapshot report is patched, not just the private field. It was not,
+   * and the gap mattered twice over: a host's diagnostics went on showing
+   * `video: 'copy'` for a generation the node had refused to copy, and — once
+   * recoveries began restating the transforms — the value a replacement would
+   * have been rebuilt from was the refused one, so every recovery re-asked for
+   * the copy the first attempt had already given up on.
+   */
+  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown): void {
+    const instruction = this.chosenInstruction;
+    this.log.warn('instruction-degraded', {
+      mediaId: this.options.media.id,
+      from: { video: instruction?.video, audio: instruction?.audio, mode: instruction?.mode },
+      to: { video: degraded.video, audio: degraded.audio, mode: degraded.mode },
+      error,
+    });
+    this.chosenInstruction = degraded;
+    this.patchSnapshot({
+      instruction: {
+        ...this.snapshot.instruction,
+        mode: degraded.mode,
+        video: degraded.video,
+        audio: degraded.audio,
+        container: degraded.container,
+        reasons: degraded.reasons,
+        assumed: degraded.assumed,
+        chosenByViewer: false,
+        withoutFacts: this.snapshot.instruction?.withoutFacts ?? false,
+      },
+      notice: 'This node could not copy the original streams, so they are being converted.',
+    });
+  }
+
+  /**
+   * Build a replacement from the current preferences, and give up the copies
+   * once if the node refuses them.
+   *
+   * Restating `video`/`audio` is what stops a recovery silently re-encoding a
+   * stream that was being passed through — but it also asks a node that has
+   * never agreed to that copy to perform it, and a 400 is **not** a retryable
+   * endpoint failure: `create` throws it rather than walking to the next
+   * candidate. Without this the fix would trade a silent full transcode for a
+   * terminal failure, which is the worse of the two by a distance.
+   *
+   * So the fallback is exactly as wide as the restatement that needs it. It
+   * fires only when this request actually asked a node to copy something; a
+   * 400 for any other reason is rethrown untouched, leaving the behaviour of
+   * every path that existed before this identical.
+   *
+   * **Standby preparation deliberately does not use it.** A downgrade here
+   * rewrites the instruction the *live* generation will be rebuilt from, and a
+   * weak node refusing a copy it was only ever offered speculatively must not
+   * decide that for the session the viewer is watching. A standby that cannot
+   * reproduce the generation is not a standby; it simply does not get made.
+   */
+  private async recoverWithPreferences<T>(
+    session: PlaybackSession,
+    run: (preferences: PlaybackPreferencesUpdate) => Promise<T>,
+  ): Promise<T> {
+    const preferences = this.currentPreferences(session);
+    try {
+      return await run(preferences);
+    } catch (error) {
+      if (preferences.video !== 'copy' && preferences.audio !== 'copy') throw error;
+      const degraded = this.degradedInstructionFor(error);
+      if (!degraded) throw error;
+      this.applyDegradedInstruction(degraded, error);
+      // The container is left as `currentPreferences` settled it. It was
+      // decided by rules that have already run over the pending preferences,
+      // and the instruction's copy of it is the older answer of the two.
+      return await run({
+        ...preferences,
+        mode: degraded.mode,
+        video: degraded.video,
+        audio: degraded.audio,
+      });
     }
   }
 
@@ -994,6 +1208,19 @@ export class PlaybackCoordinator {
     this.closePromise = (async () => {
       await this.startPromise?.catch(() => undefined);
       await this.mutationLoop?.catch(() => undefined);
+      // A recovery in flight is still negotiating a replacement session on
+      // another node, and that session is created *after* this point. Both
+      // paths stop what they built once they see `disposed`, so nothing is
+      // orphaned — but that stop is the last thing this coordinator owes the
+      // cluster, and without waiting for it `close()` resolves while it is
+      // still outstanding. A host that tears down auth on the strength of
+      // that resolution races its own `DELETE`.
+      //
+      // Nothing can start a new recovery from here: `close()` has already
+      // unsubscribed the failure channel, and every entry point re-checks
+      // `disposed` after each await, so these two promises are all there is.
+      await this.failoverPromise?.catch(() => undefined);
+      await this.regenerationPromise?.catch(() => undefined);
       await Promise.all([...this.alternatePreparations].map((preparation) => preparation.catch(() => undefined)));
       const session = this.serverSession ?? this.snapshot.session ?? ownedAtClose;
       if (session) {
@@ -1531,12 +1758,69 @@ export class PlaybackCoordinator {
    * confirmed. Both alternate preparation and failover must use this rather
    * than the bare session echo, or a preference change racing a node failure
    * would be silently dropped on recovery.
+   *
+   * The confirmed set does not carry everything a generation was created with.
+   * `container` and the per-stream transforms are named in the instruction and
+   * echoed nowhere a replacement can read them back, so both are restated from
+   * the instruction report before this leaves — see
+   * `withRestatedSegmentContainer` and `withRestatedTransforms` for why naming
+   * a `mode` without them is not a smaller request but a different one.
    */
   private currentPreferences(session: PlaybackSession): PlaybackPreferencesUpdate {
-    return withRestatedSegmentContainer(
-      { ...completePreferences(session), ...this.snapshot.pendingPreferences },
-      this.snapshot.instruction?.container,
+    const instruction = this.snapshot.instruction;
+    return withRestatedTransforms(
+      withRestatedSegmentContainer(
+        { ...completePreferences(session), ...this.snapshot.pendingPreferences },
+        instruction?.container,
+      ),
+      instruction,
     );
+  }
+
+  /**
+   * An adapter that reports a failure it never classified is charged for it,
+   * and the charge is invisible.
+   *
+   * `isEndpointRetryablePlaybackFailure` treats a bare `Error` and a
+   * `PlaybackSourceError` of kind `unknown` identically, because from core's
+   * side they are identical: no evidence about what failed. They are not the
+   * same event, though. One is a host that never wired classification, which
+   * the `Player` contract expressly permits. The other is a host whose
+   * classifier ran and could not tell -- or, as measured on the Android TV
+   * client on 2026-09-20, a host whose classifier was meant to run and
+   * silently did not: a reaped session arrived as `kind: 'unknown'` with
+   * `Response code: 404` sitting in the message. Core charged a node that had
+   * answered honestly, and walked a generation that `not-found` would have had
+   * regenerated in place on the node already holding it.
+   *
+   * Core cannot fix that from here and must not try. Reading a status out of
+   * an error message is the inference this repository keeps recording as a
+   * fault class, and the message is the host's to format. What core can do is
+   * stop the misattribution being silent -- the evidence was in the message,
+   * and a line naming it is the difference between a hardware run and a grep.
+   *
+   * `debug`, once per session, for the reason `seek-invariant-not-stated` is:
+   * an unclassified failure is permitted by the contract, so it is ordinary
+   * rather than a fault, and one client renders warnings onto the television
+   * for the whole of a film.
+   */
+  private noteUnclassifiedFailure(error: unknown, channel: 'degradation' | 'fatal'): void {
+    const kind = error instanceof PlaybackSourceError ? error.kind : undefined;
+    if (kind !== undefined && kind !== 'unknown') return;
+    const session = this.snapshot.session ?? this.serverSession;
+    const key = session?.sessionId ?? 'no-session';
+    if (this.unclassifiedReportedFor === key) return;
+    this.unclassifiedReportedFor = key;
+    this.log.debug('source-failure-unclassified', {
+      sessionId: session?.sessionId,
+      endpoint: session?.endpoint,
+      mediaId: session?.mediaId,
+      channel,
+      // Whether the host classified and could not tell, or never classified.
+      // The contract permits both; only the first is the host having tried.
+      classified: kind !== undefined,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private degrade(error: Error): void {
@@ -1578,6 +1862,7 @@ export class PlaybackCoordinator {
       return;
     }
     if (!isEndpointRetryablePlaybackFailure(error)) return;
+    this.noteUnclassifiedFailure(error, 'degradation');
     this.degradeOnEndpointEvidence(error);
   }
 
@@ -1685,7 +1970,7 @@ export class PlaybackCoordinator {
     // nothing to fall back to and no reason to hold the slot. Fire and
     // forget, exactly as the silent direct promotion does — retrying belongs
     // to the resolver, which is the layer every client passes through.
-    void this.options.resolver.stop(session.sessionId).catch((error) => {
+    void this.options.resolver.stop(session.sessionId, { endpointAlreadyCharged: true }).catch((error) => {
       this.log.warn('superseded-primary-close-failed', { sessionId: session.sessionId, error });
     });
   }
@@ -1807,7 +2092,7 @@ export class PlaybackCoordinator {
     // failover (for an unrelated cause) can still blindly pick this same
     // endpoint back up as an apparently-untried, apparently-healthy candidate.
     if (previous.endpoint) this.options.resolver.recordEndpointFailure?.(previous.endpoint.id);
-    void this.options.resolver.stop(previous.sessionId).catch((error) => {
+    void this.options.resolver.stop(previous.sessionId, { endpointAlreadyCharged: true }).catch((error) => {
       this.log.warn('superseded-primary-close-failed', { sessionId: previous.sessionId, error });
     });
   }
@@ -1842,17 +2127,42 @@ export class PlaybackCoordinator {
     if (!instruction) return undefined;
     const served = session.output.container?.trim().toLowerCase() || undefined;
     const requested = instruction.container;
+    const performedMode = session.mode;
+    // The node's echo of what it was asked for, which is the only thing the
+    // performed mode may be compared against — see `modeHonoured`.
+    const requestedMode = session.preferences?.mode;
+    const modeHonoured = requestedMode === undefined || performedMode === undefined
+      ? undefined
+      : performedMode === requestedMode;
+    // Once per generation, not once per snapshot patch: `setSession` runs on
+    // every session change and a substitution that reported itself repeatedly
+    // would be noise on a diagnostics surface a viewer can see.
+    if (modeHonoured === false && this.substitutionReportedFor !== session.sessionId) {
+      this.substitutionReportedFor = session.sessionId;
+      this.log.warn('generation-mode-substituted', {
+        sessionId: session.sessionId,
+        endpoint: session.endpoint,
+        mediaId: session.mediaId,
+        requestedMode,
+        performedMode,
+      });
+    }
     return {
       ...instruction,
       servedContainer: served,
       containerHonoured: requested === undefined || served === undefined
         ? undefined
         : served === requested,
+      performedMode,
+      modeHonoured,
     };
   }
 
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
+    // Stamped before any branch, because both paths out of here patch the
+    // snapshot and both figures are read long afterwards.
+    this.lastPlayerEventAt = machaHost().now();
     const session = this.snapshot.session;
     const reportedPositionMs = next.positionMs + (session?.mode === 'direct' ? 0 : this.streamOffsetMs);
     // A source being replaced goes on rendering, and must: the tail it has
@@ -1906,6 +2216,7 @@ export class PlaybackCoordinator {
         ? this.snapshot.intent
         : { ...this.snapshot.intent, positionMs: absolutePositionMs };
       this.patchSnapshot({ event: interrupted, intent });
+      this.noteElementRunway();
       this.log.warn('premature-source-end', {
         sessionId: session?.sessionId,
         positionMs: absolute.positionMs,
@@ -1988,6 +2299,7 @@ export class PlaybackCoordinator {
       ? this.snapshot.intent
       : { ...this.snapshot.intent, positionMs: absolutePositionMs };
     this.patchSnapshot({ event: absolute, intent });
+    this.noteElementRunway();
 
     // Read after the patch, so the decision is made on the runway the player
     // has just reported rather than the previous one.
@@ -2128,6 +2440,7 @@ export class PlaybackCoordinator {
     // reason to condemn the node.
     if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
+      this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);
       return;
     }
@@ -2305,6 +2618,48 @@ export class PlaybackCoordinator {
    * of the runway, and a failure to negotiate falls through to failover rather
    * than waiting.
    */
+  /**
+   * Bound a whole recovery, and let a late one clean up after itself.
+   *
+   * Never cancels the work: a cancelled create tells the node nothing about
+   * whether to keep the session, which is the same reason
+   * `awaitWithEndpointDeadline` observes rather than aborts. If the
+   * negotiation lands after this has given up, the session it produced is
+   * released rather than leaked — a success nobody is waiting for is a
+   * generation nobody will ever close, and on a node whose
+   * `max_video_transcodes` is 1 that is the next viewer's refusal.
+   *
+   * The late handlers are attached unconditionally so an abandoned rejection
+   * cannot surface as an unhandled one.
+   */
+  private superviseRecovery(build: Promise<PlaybackSession>, budgetMs: number): Promise<PlaybackSession> {
+    let supervised = true;
+    build.then(
+      (late) => {
+        if (supervised) return;
+        this.log.warn('replacement-arrived-after-supervision', {
+          sessionId: late.sessionId,
+          endpoint: late.endpoint,
+        });
+        void this.stopOnDisposal(late.sessionId);
+      },
+      () => undefined,
+    );
+    return new Promise<PlaybackSession>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        supervised = false;
+        reject(Object.assign(
+          new Error(`Replacement build exceeded ${budgetMs} ms with no result and no failure.`),
+          { status: 504, code: 'client_recovery_deadline' },
+        ));
+      }, budgetMs);
+      build.then(
+        (session) => { if (supervised) { clearTimeout(timer); resolve(session); } },
+        (error: unknown) => { if (supervised) { clearTimeout(timer); reject(error); } },
+      );
+    });
+  }
+
   private async buildReplacement(dead: PlaybackSession, reason: string, originating?: Error): Promise<void> {
     this.pendingReplacement = undefined;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
@@ -2330,30 +2685,35 @@ export class PlaybackCoordinator {
       reason,
     });
     this.patchSnapshot({ preparingSource: true, notice: undefined });
+    // Twice the node's own attempt budget plus head-room: the close and the
+    // create may each legitimately spend all of it, and aborting a recovery
+    // that was going to succeed costs the viewer a cross-node failover and the
+    // stream copy with it.
+    const attemptBudgetMs = dead.source.budgets?.deadlineMs ?? generationAttemptBudgetMs();
     try {
-      const capabilities = await this.options.capabilities();
-      if (this.disposed) return;
-      const next = await this.options.resolver.regenerate!(
-        dead,
-        this.options.media,
-        capabilities,
-        requestedPositionMs,
-        this.currentPreferences(dead),
-      );
+      const next = await this.superviseRecovery((async () => {
+        const capabilities = await this.options.capabilities();
+        return await this.recoverWithPreferences(dead, (preferences) => this.options.resolver.regenerate!(
+          dead,
+          this.options.media,
+          capabilities,
+          requestedPositionMs,
+          preferences,
+        ));
+      })(), attemptBudgetMs * 2 + RECOVERY_SUPERVISION_MARGIN_MS);
       if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        await this.stopOnDisposal(next.sessionId);
         return;
       }
-      this.log.info('session-regenerated', {
+      // `warn` rather than `info`: see `generation-regenerate`. This is the
+      // line that says the negotiation came back, and it was the only one
+      // missing from a capture of a recovery that hung.
+      this.log.warn('session-regenerated', {
         previousSessionId: dead.sessionId,
         sessionId: next.sessionId,
         endpoint: next.endpoint,
         positionMs: requestedPositionMs,
       });
-      if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
-        return;
-      }
       this.serverSession = next;
       // Starts paused when the viewer is paused, so a source swapped in under
       // a stopped player simply works when they press play.
@@ -2379,6 +2739,26 @@ export class PlaybackCoordinator {
 
 
 
+  /**
+   * Release a session built by a recovery that finished after `close()`.
+   *
+   * It carries the close options, and `keepalive` is the reason this is not
+   * an inline `stop()`. A page-unload teardown sets it because a `DELETE`
+   * issued as the document goes away is cancelled otherwise — and a session
+   * created during the unload is the one most likely to be cancelled, since
+   * it is negotiated at the last possible moment. Without the flag that node
+   * holds the transcode entitlement until `session_idle`, thirty minutes,
+   * with nothing pointing at the client responsible.
+   *
+   * Logged rather than swallowed: this is the one release nobody is waiting
+   * on a return value for, so a silent failure here is a leak with no trace.
+   */
+  private async stopOnDisposal(sessionId: string): Promise<void> {
+    await this.options.resolver.stop(sessionId, this.closeOptions).catch((error: unknown) => {
+      this.log.warn('recovered-session-close-failed', { sessionId, error });
+    });
+  }
+
   private async recoverFromSourceFailure(failedSession: PlaybackSession, error: Error): Promise<void> {
     const requestedPositionMs = this.snapshot.intent.positionMs;
     const requestedPositionRevision = this.positionRevision;
@@ -2398,16 +2778,16 @@ export class PlaybackCoordinator {
         ));
       const capabilities = await this.options.capabilities();
       if (this.disposed) return;
-      const next = await this.options.resolver.failover!(
+      const next = await this.recoverWithPreferences(failedSession, (preferences) => this.options.resolver.failover!(
         failedSession,
         this.options.media,
         capabilities,
         requestedPositionMs,
-        this.currentPreferences(failedSession),
+        preferences,
         preparedAlternate,
-      );
+      ));
       if (this.disposed) {
-        await this.options.resolver.stop(next.sessionId).catch(() => undefined);
+        await this.stopOnDisposal(next.sessionId);
         return;
       }
       this.serverSession = next;
@@ -2515,10 +2895,12 @@ export class PlaybackCoordinator {
       ? session.sourceInfo?.bitrate
       : session?.output?.bitrate ?? session?.sourceInfo?.bitrate;
     if (typeof bitrate !== 'number' || !Number.isFinite(bitrate) || bitrate <= 0) return 0;
-    return bytes * 8 / bitrate * 1_000;
+    // Aged like the element half: this cache drains against the same playhead.
+    return this.spentSince(bytes * 8 / bitrate * 1_000, this.lastPlayerEventAt);
   }
 
-  private elementRunwayMs(): number {
+  /** The element's own cover, exactly as the last event reported it. */
+  private reportedElementRunwayMs(): number {
     const { forwardBufferMs, bufferedRangesMs, positionMs } = this.snapshot.event;
     if (typeof forwardBufferMs === 'number' && Number.isFinite(forwardBufferMs)) {
       return Math.max(0, forwardBufferMs);
@@ -2531,6 +2913,69 @@ export class PlaybackCoordinator {
     );
     if (containing) return Math.max(0, containing.endMs - positionMs);
     return 0;
+  }
+
+  private noteElementRunway(): void {
+    const reported = this.reportedElementRunwayMs();
+    if (reported > 0) this.trustedElementRunway = { ms: reported, at: machaHost().now() };
+  }
+
+  /**
+   * What is left of a cover figure measured at `at`.
+   *
+   * **A buffer drains only while the viewer is playing**, which is why this is
+   * not simply elapsed time. The fault this whole path exists for begins with
+   * a pause long enough to have the session reaped, so the paused case is the
+   * common one rather than the corner — and charging a paused viewer for the
+   * probe would build a replacement against cover they still have. Measured
+   * once already, on the timer this replaced: a 63.3 s span covered 59.4 s of
+   * playback across one 3.9 s pause.
+   *
+   * A pause *between* the measurement and now is not tracked, so this
+   * under-counts in that case. It is the safe direction only because nothing
+   * decides on the runway while paused: the silence guard is disarmed and
+   * `startPendingReplacement` returns early.
+   */
+  private spentSince(ms: number, at: number | undefined): number {
+    if (at === undefined || this.snapshot.intent.paused) return Math.max(0, ms);
+    return Math.max(0, ms - Math.max(0, machaHost().now() - at));
+  }
+
+  /**
+   * Whether an empty buffer report is a fact about the media or about a player
+   * on its way down.
+   *
+   * `positionMs` already has a guard for this: an element tearing down can
+   * report zero, and `lastObservedPositionMs` keeps it forward-only so one
+   * reading from a source already given up on cannot send the viewer back to
+   * the start of the film. **`forwardBufferMs` rides through the same spread
+   * with no such guard**, and it feeds a decision that is not reversible — a
+   * spurious zero spends the cover the deferral exists to protect.
+   *
+   * The test is a contradiction rather than a heuristic: an element that is
+   * *playing*, not buffering and not ended, with no cover ahead of the viewer,
+   * is describing a state that cannot occur. `buffering` is the honest signal
+   * for real exhaustion and is handled on its own, so distrusting the zero
+   * here cannot hide a viewer who is actually waiting.
+   *
+   * Only while a recovery is in flight. Outside one there is nothing about to
+   * spend the figure, and believing the player is the right default.
+   */
+  private emptyBufferIsEvidence(): boolean {
+    const recovering = this.pendingReplacement !== undefined
+      || this.regenerationPromise !== undefined
+      || this.failoverPromise !== undefined;
+    if (!recovering) return true;
+    const { buffering, ended } = this.snapshot.event;
+    return Boolean(buffering) || Boolean(ended) || this.snapshot.intent.paused;
+  }
+
+  private elementRunwayMs(): number {
+    const reported = this.reportedElementRunwayMs();
+    if (reported > 0) return this.spentSince(reported, this.lastPlayerEventAt);
+    if (this.emptyBufferIsEvidence()) return 0;
+    const trusted = this.trustedElementRunway;
+    return trusted ? this.spentSince(trusted.ms, trusted.at) : 0;
   }
 
   /**

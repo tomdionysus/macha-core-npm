@@ -111,8 +111,14 @@ export class MachaClientConfiguration {
   bootstrapEndpoints(): string[] {
     if (this.pinned) return this.environment;
 
+    // An empty list is not a configuration. `[]` is truthy, so a stored empty
+    // list used to answer this question and the environment was never
+    // consulted again: a client that cleared its server URL was unconfigured
+    // for good, with the defaults it was shipped with sitting right there.
+    // Read as absent as well as written as absent, because a client may
+    // already be carrying one from a build that wrote it.
     const stored = this.readEndpointValue(BOOTSTRAP_ENDPOINTS_KEY);
-    if (stored) return stored;
+    if (stored && stored.length > 0) return stored;
 
     const interim = this.readEndpointValue(INTERIM_SERVER_ENDPOINTS_KEY);
     if (interim) {
@@ -137,7 +143,13 @@ export class MachaClientConfiguration {
   }
 
   setBootstrapEndpoints(urls: readonly string[]): void {
-    this.writeEndpointValue(normalizeUrls(urls), BOOTSTRAP_ENDPOINTS_KEY);
+    const normalized = normalizeUrls(urls);
+    // Clearing the configuration removes it, exactly as
+    // `setDiscoveredEndpoints` does — the two setters used to disagree about
+    // what an empty list means, and this one wrote a record that then read
+    // back as "configured with nothing".
+    if (normalized.length === 0) this.storage.removeItem(BOOTSTRAP_ENDPOINTS_KEY);
+    else this.writeEndpointValue(normalized, BOOTSTRAP_ENDPOINTS_KEY);
     this.storage.removeItem(SERVER_URL_KEY);
     this.storage.removeItem(INTERIM_SERVER_ENDPOINTS_KEY);
   }
@@ -174,11 +186,30 @@ export class MachaClientConfiguration {
         throw new Error('invalid endpoint state');
       }
       const normalized = normalizeUrls(record.urls);
-      if (JSON.stringify(record.urls) !== JSON.stringify(normalized)) this.writeEndpointValue(normalized, key);
+      if (JSON.stringify(record.urls) !== JSON.stringify(normalized)) this.healEndpointValue(normalized, key);
       return normalized;
     } catch {
       this.storage.removeItem(key);
       return undefined;
+    }
+  }
+
+  /**
+   * Rewrite a stored list that read back in a form we would not have written.
+   *
+   * Separate from the read's own `catch`, which removes the key: this write
+   * used to sit inside that `try`, so a store refusing a write — a full
+   * television, a private-mode quota — **deleted the endpoints the read had
+   * just successfully parsed**. The value was sound and the tidy-up was
+   * optional; the failure of the optional half destroyed the sound whole.
+   * Losing the normalisation until next time costs nothing.
+   */
+  private healEndpointValue(urls: string[], key: string): void {
+    try {
+      this.writeEndpointValue(urls, key);
+    } catch {
+      // Left as it was found. It parsed, and it will be normalised on read
+      // every time until a write succeeds.
     }
   }
 

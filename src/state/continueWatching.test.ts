@@ -32,6 +32,22 @@ describe('ContinueWatchingStore', () => {
     expect(store.list().map((entry) => entry.mediaId)).toEqual(['four', 'three', 'two']);
   });
 
+  it('drops one unusable entry rather than every entry behind it', () => {
+    // The only store that validated the array and not its contents: a single
+    // `null` in the list threw out of `isFinished` on every `list()`, so one
+    // bad write broke a viewer's whole Continue Watching row until somebody
+    // cleared their history. The rest of the history is still true.
+    const storage = new MemoryStorage();
+    storage.setItem('macha.continueWatching.v1.client', JSON.stringify([
+      null,
+      progress('good', 50_000, 100_000, 2),
+      { mediaId: 'half-written' },
+    ]));
+    const store = new ContinueWatchingStore('client', storage);
+
+    expect(store.list().map((entry) => entry.mediaId)).toEqual(['good']);
+  });
+
   it('does not clutter continue watching with accidental starts', () => {
     const store = new ContinueWatchingStore('client', new MemoryStorage());
     store.update(progress('one', 10_000));

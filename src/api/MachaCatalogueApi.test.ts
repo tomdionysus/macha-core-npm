@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from './MachaCatalogueApi.js';
 import { fixedBearerToken } from './SessionManager.js';
 import { configureMachaHost } from '../runtime/host.js';
+import { retryableEndpointFailure } from '../cluster/endpointFailure.js';
 
 function jsonResponse(value: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(value), {
@@ -46,6 +47,41 @@ describe('MachaCatalogueApi', () => {
       'http://node.test/api/v1/catalogue/items?type=season&parent=show%3Ablack-books',
       expect.objectContaining({ method: 'GET' }),
     );
+  });
+
+  it('names the server when a success body is not the envelope, and stays retryable', async () => {
+    // `response.items.map` on a 200 without `items` threw `TypeError` at the
+    // call site, and `retryableEndpointFailure` reads a bare `TypeError` as a
+    // transport failure — so a schema mismatch cooled the node down as though
+    // it had been unreachable, and the caller was told about `.map`.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ results: [item] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaCatalogueApi('http://node.test/');
+
+    const error = await api.list().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 502, code: 'invalid_response' });
+    expect((error as Error).message).toContain('items');
+    // 502 rather than a bare throw: in a mixed-version endpoint set the next
+    // node may answer a shape this build can read.
+    expect(retryableEndpointFailure(error)).toBe(true);
+  });
+
+  it('reports a 200 that is not JSON as the server failing, not as a parse accident', async () => {
+    // A captive portal or a proxy answering HTML used to surface as a raw
+    // `SyntaxError`, which carries no status, so the router read it as
+    // non-retryable and 'Unexpected token <' reached the viewer with no
+    // failover attempted.
+    const fetchMock = vi.fn().mockResolvedValue(new Response('<html>sign in</html>', {
+      status: 200, headers: { 'Content-Type': 'text/html' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaCatalogueApi('http://node.test/');
+
+    const error = await api.list().catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ status: 502, code: 'invalid_response' });
+    expect(retryableEndpointFailure(error)).toBe(true);
   });
 
   it('absolutizes a relative signed artwork capability URL against the node origin', async () => {

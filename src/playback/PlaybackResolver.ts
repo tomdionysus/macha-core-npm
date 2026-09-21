@@ -1,5 +1,5 @@
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
-import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS } from './streamProtocol.js';
+import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS, type PlaybackProduction } from './streamProtocol.js';
 
 export type PlaybackStreamType = 'video' | 'audio' | 'subtitle' | 'other';
 export type PlaybackTransform = 'copy' | 'transcode' | 'omit';
@@ -160,6 +160,24 @@ export interface PlaybackSession {
    */
   lookAheadMs?: number | null;
   /**
+   * How fast this generation is producing, from `stream.production`.
+   *
+   * **Absent means the node cannot say** — direct play, which has no
+   * pipeline, or a node older than server 0.47.0. Never read absence as zero
+   * and never substitute a default; the same convention `lookAheadMs` and the
+   * per-node budgets already use, which is what makes it safe in a
+   * mixed-version cluster.
+   *
+   * **Per generation, and it resets.** A PATCH that changes mode, quality,
+   * seek or media builds a new generation with a new segment store, so the
+   * block on that response is the first reading of a *different* pipeline,
+   * not a fresh reading of the same one. **A rate carried across a generation
+   * change is a rate for a pipeline that no longer exists** — discard it
+   * rather than decaying it. For a current reading on a running generation,
+   * re-read the session.
+   */
+  production?: PlaybackProduction;
+  /**
    * Where this generation's media begins on the title's timeline.
    *
    * **The baseline, not the position that was asked for.** A remux generation
@@ -236,6 +254,24 @@ export interface PlaybackUpdate {
 export interface PlaybackStopOptions {
   /** Keep the teardown request alive while the browser is navigating away. */
   keepalive?: boolean;
+  /**
+   * This node has already been charged for the outage that made this close
+   * necessary, so the close itself must not charge it again.
+   *
+   * A promotion records the endpoint's failure — nothing else would, because
+   * the node never refused anything, it stopped serving bytes — and then
+   * closes the session it was serving. That DELETE goes to the same node,
+   * which is by now unwell, so it frequently throws; without this the throw
+   * records a *second* failure for one observation, and a session closed on
+   * every retry walks the cooldown ladder (500 ms, 2 s, 10 s, 30 s) for a node
+   * that failed once. It is the same double-charge `releaseFailedSession`
+   * exists to avoid, reached from the layer above it.
+   *
+   * It also means the generation is abandoned: an implementation holding
+   * per-session provenance drops it whether or not the node ever acknowledges
+   * the close, so a later cleanup path cannot find it and charge a third time.
+   */
+  endpointAlreadyCharged?: boolean;
 }
 
 /**

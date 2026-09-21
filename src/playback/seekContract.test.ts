@@ -89,10 +89,18 @@ describe('the seek contract is read rather than re-derived', () => {
     expect(generationLocalPosition(mapped, mapped.seekRequestedMs!)).toBe(mapped.seekOffsetMs);
   });
 
-  it('stays silent on a node too old to state the invariant', async () => {
+  it('stays silent on a node too old to state the invariant, but says it could not check', async () => {
+    // Two different silences used to look identical in a capture: an invariant
+    // that held, and one that could never be tested. A client reading absence
+    // as the first when it was the second draws the wrong conclusion about the
+    // node's arithmetic, so the untestable case leaves its own record — at
+    // `debug`, because an old node in a mixed-version set is ordinary and must
+    // not reach a failure screen.
     clearClientDiagnostics();
     await resolveWith(wireSession({ seekMs: 715_560 }));
     expect(seekInvariantReports()).toHaveLength(0);
+    expect(clientDiagnosticsSnapshot().filter((entry) => entry.event === 'seek-invariant-not-stated'))
+      .toMatchObject([{ level: 'debug', data: { seekMs: 715_560, mode: 'remux' } }]);
   });
 
   it('reports a violated invariant without refusing the generation', async () => {

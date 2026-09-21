@@ -51,6 +51,27 @@ describe('ClusterPlaybackFactsApi', () => {
     expect(failures).not.toHaveBeenCalled();
   });
 
+  it('does not blame a node for one title it cannot read', async () => {
+    // `stream_failed` is a fact about that extent on that node. Cooling the
+    // endpoint down for it takes a healthy node out of rotation for every
+    // other title on it — the guard `ClusterPlaybackResolver.create` has had
+    // all along, and this call did not.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ error: { code: 'stream_failed', message: 'source unreadable' } }, 500))
+      .mockResolvedValueOnce(json(facts));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const failures = vi.spyOn(registry, 'recordFailure');
+
+    const result = await new ClusterPlaybackFactsApi(registry).facts({ itemId: 'movie:1' });
+
+    // It still moves on to the next node — this is about the node's health
+    // record, not about giving up on the read.
+    expect(result[0]?.profile.container).toBe('matroska');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(failures).not.toHaveBeenCalled();
+  });
+
   it('still reports a 404 when no node can answer', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ error: { code: 'not_found' } }, 404)));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));

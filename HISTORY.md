@@ -133,6 +133,9 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.11.1` | The storage registry admits to a key it owns; the cheap half of the coverage gap. |
 | `0.12.0` | What a host's storage owes core, said where it is read rather than only where it is listed. |
 | `0.13.0` | A 404 is about one session, not the node that answered it — and the replacement is built where the viewer will arrive. |
+| `0.13.1` | Four faults a seamless host made visible: `play()` resolving is not `play()` being called. |
+| `0.14.0` | Core reads the node's own deadlines instead of holding compiled-in guesses at them. |
+| `0.15.0` | A failure keeps the evidence it arrived with — and a recovery that cannot finish stops waiting for ever. |
 
 ## The pause that killed a healthy node
 
@@ -192,6 +195,55 @@ client's half measure nothing at all.
 `docs/principles-and-laws.md` arrives in this release for the first time. Six
 places in `src/` cited it, one of them a test name, and it had never existed
 here. Law 2 is why the shape is what it is.
+
+## The parallel server model, and what it cost by construction
+
+`0.14.0` is one idea: **core had been holding compiled-in guesses at server
+configuration and computing against them.** The shared principles forbid it in
+as many words — *the client must not infer cluster truth, invent a parallel
+server model* — and it was not an abstraction violation, it was costing viewers
+every time.
+
+`GENERATION_ATTEMPT_BUDGET_MS` was 12,000 against nodes entitled to 15,000. So
+core abandoned a working node three seconds inside its own entitlement, **by
+construction, on every slow generation**. Measured: a first fragment ready at
+11,672 ms, the generation `DELETE`d 1.4 s after it landed, and the identical 4K
+HEVC software encode started again on another node while the viewer got a
+failure screen instead of a wait. The cluster did the work twice and the viewer
+got neither. A budget chosen independently of the number it was bounding, which
+is the fault this repository keeps finding under different names.
+
+Server `0.46.2` reports `startup_timeout_ms` and `segment_timeout_ms` per node
+on the cluster status payload — which already arrives every ten seconds for
+discovery and capacity, and which describes nodes core has never talked to.
+That last part is what makes it usable: a failover target needs the figure
+*before* first contact, and this costs no new request to get.
+
+Three rules came out of it and they generalise past these two numbers. **The
+node's figure is law for that node, including when it asks for less.**
+**Absence never shortens a deadline** — a node too old to say gets the
+published default, because a missing field must not be read as a small one.
+And core adds exactly one term of its own, `ENDPOINT_TRANSPORT_ALLOWANCE_MS`,
+the distance between the two machines, which is the one quantity no node can
+report about itself; it is documented as a guess with its successor named.
+
+The figures travel on `PlaybackSource.budgets`, so they reach `play()` and
+`preflightSource()` without four adapters changing a signature, and they arrive
+attached to the thing they describe rather than as ambient configuration.
+
+**Two constants still hold private copies** — `ALTERNATE_RECOVERY_WINDOW_MS`
+and `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS`, both sized against
+`pipeline_idle_ms`, which the server reports and core does not read. The
+release ended the class for three budgets and not for five.
+
+The same release implemented the seek contract that had been specified in
+`macha/docs/streaming.md` throughout and never read: `seek_ms`,
+`seek_offset_ms`, `seek_requested_ms`, with `seek_ms + seek_offset_ms ==
+seek_requested_ms` exact. Core had been deriving its own origin and reporting
+every position in a remux generation early — measured at 18.12 s out, with the
+displayed playhead ahead of the picture, which is what a viewer reported as the
+timeline jumping about on its own. **A specification is cheaper to read than
+source, and was written so nobody had to infer the contract.**
 
 ## A gap in what npm holds
 

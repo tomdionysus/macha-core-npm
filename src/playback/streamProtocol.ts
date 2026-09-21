@@ -154,3 +154,110 @@ export function playbackFailureKindForStatus(status: number): PlaybackFailureKin
   if (status === BROKEN_GENERATION_STATUS) return 'stream';
   return 'unknown';
 }
+
+/**
+ * How fast a generation is producing, as the serving node reports it.
+ *
+ * **Absent on a `PlaybackSession` means the node cannot say** — direct play
+ * has no pipeline, and a node older than server 0.47.0 does not carry the
+ * field. Absence is never zero and never a default.
+ */
+export interface PlaybackProduction {
+  /**
+   * Media produced, in media time.
+   *
+   * **Also the production frontier**, so this is the `produced` term in a
+   * reachability calculation directly, with no conversion. One field, both
+   * jobs — stated that way by the server rather than inferred here.
+   */
+  producedMs: number;
+  /**
+   * Encoder time spent producing it.
+   *
+   * **Excludes time parked on the look-ahead gate and nothing else.** Demux,
+   * decode, filter, encode, mux, disk, a busy GPU and contention with another
+   * session's pipeline are all inside it, so the rate means *how fast this
+   * node will actually produce for this viewer* rather than an upper bound on
+   * the encoder. A node under contention reports a genuinely lower figure,
+   * which is the correct input to a reachability decision.
+   */
+  producingMs: number;
+  /**
+   * How long since the last fragment was published, **measured on the node**.
+   *
+   * An age rather than a timestamp deliberately: a `produced_at` would make a
+   * client's confidence decay depend on the two clocks agreeing, and they do
+   * not have to.
+   *
+   * **Meaningless alone.** A large age means either a wedged pipeline or one
+   * comfortably ahead and waiting for this viewer, and only `producerParked`
+   * separates them.
+   */
+  producedAgeMs: number;
+  /**
+   * Whether the producer is blocked on the look-ahead gate.
+   *
+   * **Parked and old is the normal resting state** of a generation nobody is
+   * pulling from. Not parked and old is the encoder mid-fragment or stuck.
+   */
+  producerParked: boolean;
+}
+
+/**
+ * The production rate, as a multiple of realtime: `producedMs / producingMs`.
+ *
+ * **Never reconstruct this from elapsed wall time, and this is the one line in
+ * this module that costs a viewer if it is ignored.** The producer runs to
+ * `max_ahead_segments` beyond demand and then parks, so a viewer watching at
+ * normal speed keeps it parked for most of a generation's life. Wall clock
+ * therefore measures the parking, not the encoding.
+ *
+ * Measured on es-1 on 2026-09-20, on one live 480p transcode left running
+ * with nobody pulling fragments: `producedMs` froze at 34,031 and
+ * `producingMs` at 10,832 while `producedAgeMs` climbed 15.9 s → 27.9 s →
+ * 39.9 s. Against roughly 45 s of wall clock that is **0.76x** — below
+ * realtime, so a handover would be refused — **on a node whose actual rate
+ * was 3.14x.** The wrong implementation needs no new field, looks like
+ * "re-derive rather than assert", and silently refuses exactly the handovers
+ * that would have worked.
+ *
+ * Returns `undefined` when there is no reading rather than a number that
+ * would be believed:
+ * - no `production` at all, so the node cannot say;
+ * - `producingMs` of zero, which is **"no fragment yet", not an infinite
+ *   rate** — the state every new generation starts in, and the one a PATCH
+ *   response almost always shows;
+ * - anything non-finite or negative, which no node should send and which
+ *   would otherwise propagate into a deadline.
+ *
+ * **The reading runs low early and settles.** Both fields cover the same
+ * fragments including the first, so pipeline start-up is charged to the rate
+ * — 2.59x on the first fragment against 3.14x settled, on that same es-1
+ * measurement. The server chose that over excluding the first fragment, which
+ * would time `n-1` fragments while counting the media of `n`: a 2x
+ * overstatement arriving exactly at the second fragment, which is when a
+ * handover call gets made. Understating defers a handover and costs a round
+ * trip; overstating stalls a viewer on a promise the node cannot keep. So a
+ * young generation's low reading must not be allowed to condemn a handover
+ * permanently — re-read it rather than remembering it.
+ */
+export function productionRate(production: PlaybackProduction | undefined): number | undefined {
+  if (!production) return undefined;
+  const { producedMs, producingMs } = production;
+  if (!Number.isFinite(producedMs) || !Number.isFinite(producingMs)) return undefined;
+  if (producingMs <= 0 || producedMs < 0) return undefined;
+  return producedMs / producingMs;
+}
+
+/**
+ * Is this generation keeping up with a viewer watching it?
+ *
+ * `false` only on a reading that exists and is at or below realtime. An
+ * absent reading answers `undefined`, because "the node cannot say" is not
+ * "the node cannot keep up" — collapsing those two refuses every handover on
+ * a direct-play source and on every node older than 0.47.0.
+ */
+export function outpacesPlayback(production: PlaybackProduction | undefined): boolean | undefined {
+  const rate = productionRate(production);
+  return rate === undefined ? undefined : rate > 1;
+}

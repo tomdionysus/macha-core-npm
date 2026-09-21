@@ -64,7 +64,11 @@ const services = createMachaServices({ endpointRegistry: registry, auth: session
 const health = new EndpointHealthMonitor({
   registry,
   clusterStatusApi: services.clusterStatusApi,
-  serverApi: services.serverApi,
+  // `auth` so the probe can use the liveness route on a node that gates it;
+  // no `configuration`, because this host persists nothing, so confirmed
+  // discoveries live as long as the process does. There is no `serverApi`
+  // option — this passed one for a while and it was simply ignored.
+  auth: sessionManager,
 });
 health.start();
 

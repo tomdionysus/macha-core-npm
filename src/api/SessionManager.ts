@@ -246,6 +246,18 @@ export class SessionManager implements AuthenticatedFetch {
   private cancelled = true;
   private settled = false;
   private inFlight: Promise<void> | undefined;
+  /**
+   * Which lifecycle the work in `inFlight` belongs to.
+   *
+   * `cancelled` cannot answer that question, because `start()` clears it: a
+   * bootstrap cancelled by the `stop()` inside `start()` sees `cancelled`
+   * false again by the time it lands, and adopts a session minted against a
+   * registry nobody is using any more. Every `stop()` moves this instead, and
+   * nothing moves it back, so abandoned work stays abandoned.
+   */
+  private generation = 0;
+  /** The generation `inFlight` belongs to, so an abandoned run cannot clear its successor's handle. */
+  private inFlightGeneration = 0;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   private registry: EndpointRegistry | undefined;
   /** Whether `start()` has ever run, so a teardown is distinguishable from a cold start. */
@@ -354,7 +366,15 @@ export class SessionManager implements AuthenticatedFetch {
     return () => this.listeners.delete(listener);
   }
 
-  /** (Re)starts the mint/refresh lifecycle against `registry`. Safe to call again if the registry changes. */
+  /**
+   * (Re)starts the mint/refresh lifecycle against `registry`.
+   *
+   * Safe to call again if the registry changes, and that is now true in the
+   * window it used to be false in: the `stop()` here moves the generation, so
+   * a bootstrap still in flight against the previous registry is disowned
+   * rather than adopted, and this call contacts the new one instead of
+   * returning the old one's promise.
+   */
   start(registry: EndpointRegistry): void {
     this.stop();
     this.cancelled = false;
@@ -373,6 +393,14 @@ export class SessionManager implements AuthenticatedFetch {
    * and retrying it on a timer would lock the account out on their behalf.
    * The previous session is simply replaced — it belonged to a different
    * user, so revoking it here would sign out whoever else was holding it.
+   *
+   * Playback must be stopped before calling this, for the same reason it must
+   * be stopped before `signOut`. Nothing connects a playback session to an
+   * identity, and once the token changes a session created under the old one
+   * can no longer be closed: the node holds its transcode entitlement until
+   * `session_idle`, thirty minutes, and on a one-slot node the next viewer
+   * gets `429 resource_limit` with nothing pointing at the client that caused
+   * it. Invisible from here, which is why it is said here.
    */
   async signIn(credentials: SessionCredentials): Promise<void> {
     // The same fault fetch() refuses for, and typed the same way: a login
@@ -382,7 +410,7 @@ export class SessionManager implements AuthenticatedFetch {
     if (!this.registry) throw new SessionNotStartedError(this.started ? 'stopped' : 'not-started');
     const session = await mintSessionAnyNode(this.registry, credentials);
     this.cacheSession(session);
-    this.adopt(session);
+    this.adopt(session, this.generation);
     // Deliberate, so not a change to report: the viewer just asked for this
     // identity. Cleared *after* `adopt`, which would otherwise record the very
     // transition the viewer performed and hand the application a "you were
@@ -455,9 +483,31 @@ export class SessionManager implements AuthenticatedFetch {
   /** Halts the lifecycle (pending timers, in-flight tracking) without clearing the current token. */
   stop(): void {
     this.cancelled = true;
+    // Whatever is in flight was started against a registry this manager no
+    // longer has. `cancelled` is not enough to disown it, because `start()`
+    // clears that flag on the way back in.
+    this.generation += 1;
     this.registry = undefined;
     if (this.refreshTimer !== undefined) clearTimeout(this.refreshTimer);
     this.refreshTimer = undefined;
+  }
+
+  /** Whether work started in `generation` still belongs to the current lifecycle. */
+  private abandoned(generation: number): boolean {
+    return this.cancelled || this.generation !== generation;
+  }
+
+  /**
+   * Replace the pending timer, clearing whatever was already there.
+   *
+   * Both assignment sites used to overwrite the handle, and `stop()` clears
+   * only the one it can see: a retry timer armed over a refresh timer left
+   * the earlier one running, a mint nobody could cancel, firing against a
+   * registry the manager may no longer have.
+   */
+  private armTimer(fire: () => void, delayMs: number): void {
+    if (this.refreshTimer !== undefined) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(fire, delayMs);
   }
 
   /**
@@ -465,9 +515,12 @@ export class SessionManager implements AuthenticatedFetch {
    *
    * Waits for a bootstrap already in flight, exactly as `fetch` does — a cold
    * start would otherwise hand a native player `undefined` and produce a 401
-   * inside a component that has no way to retry. Beyond that it cannot
-   * promise much: the token is a snapshot, and a caller holding it across a
-   * re-mint holds a dead one. Ask again per request rather than caching it.
+   * inside a component that has no way to retry. It waits across a reactive
+   * re-mint too, because `fetch` drops a token a node has rejected before
+   * asking for a new one — so there is no window in which this hands out a
+   * credential already known to be refused. Beyond that it cannot promise
+   * much: the token is a snapshot, and a caller holding it across a re-mint
+   * holds a dead one. Ask again per request rather than caching it.
    *
    * **Unlike `fetch`, this answers `undefined` rather than throwing when the
    * manager is not started.** It is a question about current state, and "there
@@ -511,7 +564,14 @@ export class SessionManager implements AuthenticatedFetch {
     const sent = this.token;
     const response = await this.send(url, init, sent);
     if (response.status !== 401 || sent === undefined) return response;
-    await (this.token === sent ? this.mint() : this.inFlight ?? Promise.resolve());
+    // A node has refused this token, so it has stopped being a credential.
+    // Dropped here rather than replaced when the mint lands, because
+    // `authorization()` answers from `this.token` and only waits when it is
+    // undefined: leaving it in place hands a native player, for the whole
+    // length of the re-mint, exactly the token that has just been rejected.
+    const rejectedIsCurrent = this.token === sent;
+    if (rejectedIsCurrent) this.token = undefined;
+    await (rejectedIsCurrent ? this.mint() : this.inFlight ?? Promise.resolve());
     const current = this.token;
     if (current === undefined || current === sent) return response;
     return this.send(url, init, current);
@@ -567,7 +627,7 @@ export class SessionManager implements AuthenticatedFetch {
     }
   }
 
-  private adopt(session: Session): void {
+  private adopt(session: Session, generation: number): void {
     // Ready is published *with* the session, never ahead of it.
     //
     // `settle()` used to run here, at the top, so the first notification a
@@ -577,7 +637,7 @@ export class SessionManager implements AuthenticatedFetch {
     // sees that window as a refusal, which is how a privileged viewer lands on
     // a login screen. The window always existed; a restored signed-in session
     // is what makes it matter rather than merely exist.
-    if (this.cancelled) {
+    if (this.abandoned(generation)) {
       this.settle();
       return;
     }
@@ -603,7 +663,7 @@ export class SessionManager implements AuthenticatedFetch {
     this.ready = true;
     this.notify();
     reportClusterReachable();
-    this.scheduleRefresh(session.expiresAtMs);
+    this.scheduleRefresh(session.expiresAtMs, generation);
   }
 
   /**
@@ -620,10 +680,13 @@ export class SessionManager implements AuthenticatedFetch {
    */
   private bootstrap(): Promise<void> {
     if (!this.registry) return Promise.resolve();
-    if (this.inFlight) return this.inFlight;
+    // Coalesced only within one lifecycle. A bootstrap from a previous
+    // registry is not this one's answer, however far along it is.
+    if (this.inFlight && this.inFlightGeneration === this.generation) return this.inFlight;
     const registry = this.registry;
+    const generation = this.generation;
     const cached = this.loadCachedSession();
-    this.inFlight = (async () => {
+    const run = (async () => {
       if (cached && cached.expiresAtMs > Date.now()) {
         let record: CurrentSession | undefined;
         try {
@@ -631,28 +694,30 @@ export class SessionManager implements AuthenticatedFetch {
         } catch {
           record = undefined;
         }
-        if (this.cancelled) return;
+        if (this.abandoned(generation)) return;
         if (record) {
           // The validation request is also the only request that states what
           // this session may do, so the warm path adopts the roles it already
           // paid for rather than asking again.
-          this.adopt({ ...cached, roles: record.roles });
+          this.adopt({ ...cached, roles: record.roles }, generation);
           return;
         }
       }
-      await this.mintNow(registry);
-    })().finally(() => { this.inFlight = undefined; });
-    return this.inFlight;
+      await this.mintNow(registry, generation);
+    })().finally(() => { if (this.inFlightGeneration === generation) this.inFlight = undefined; });
+    this.inFlight = run;
+    this.inFlightGeneration = generation;
+    return run;
   }
 
-  private async mintNow(registry: EndpointRegistry): Promise<void> {
+  private async mintNow(registry: EndpointRegistry, generation: number): Promise<void> {
     try {
       const session = await mintSessionAnyNode(registry);
       this.cacheSession(session);
-      this.adopt(session);
+      this.adopt(session, generation);
     } catch (error) {
       this.settle();
-      if (this.cancelled) return;
+      if (this.abandoned(generation)) return;
       this.token = undefined;
       // No token, nothing known about what it may do.
       this.sessionRoles = undefined;
@@ -666,27 +731,30 @@ export class SessionManager implements AuthenticatedFetch {
       // `isGatewayConnectionFailure`, one file over, draws this distinction
       // for every other request in the package.
       if (this.mintFailure.reason !== 'refused') reportClusterUnreachable();
-      this.refreshTimer = setTimeout(() => { void this.mint(); }, RETRY_AFTER_MINT_FAILURE_MS);
+      this.armTimer(() => { void this.mint(); }, RETRY_AFTER_MINT_FAILURE_MS);
     }
   }
 
   /** Reactive re-mint (401 from `fetch()`, or the failure-retry timer) — skips validation since the current token is already known bad. */
   private mint(): Promise<void> {
     if (!this.registry) return Promise.resolve();
-    if (this.inFlight) return this.inFlight;
+    if (this.inFlight && this.inFlightGeneration === this.generation) return this.inFlight;
     const registry = this.registry;
-    this.inFlight = this.mintNow(registry).finally(() => { this.inFlight = undefined; });
-    return this.inFlight;
+    const generation = this.generation;
+    const run = this.mintNow(registry, generation).finally(() => { if (this.inFlightGeneration === generation) this.inFlight = undefined; });
+    this.inFlight = run;
+    this.inFlightGeneration = generation;
+    return run;
   }
 
-  private scheduleRefresh(expiresAtMs: number): void {
-    if (this.cancelled) return;
+  private scheduleRefresh(expiresAtMs: number, generation: number): void {
+    if (this.abandoned(generation)) return;
     const remainingMs = expiresAtMs - Date.now() - REFRESH_SAFETY_MARGIN_MS;
     if (remainingMs <= 0) {
       void this.mint();
       return;
     }
-    this.refreshTimer = setTimeout(() => this.scheduleRefresh(expiresAtMs), Math.min(remainingMs, MAX_TIMER_DELAY_MS));
+    this.armTimer(() => this.scheduleRefresh(expiresAtMs, generation), Math.min(remainingMs, MAX_TIMER_DELAY_MS));
   }
 }
 

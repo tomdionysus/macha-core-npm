@@ -133,6 +133,22 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
 /**
  * Throughput evidence is only consulted once an endpoint has this many
  * transfers behind it. One large response is a data point, not a trend.
+ *
+ * **Two is not the low bar it reads as, and this is the part to know.** A
+ * sample is a body read of at least `MIN_SAMPLE_BYTES` (32 KB) that went
+ * through `readJsonBody` — a catalogue listing or a search big enough to
+ * qualify — or a media transfer a host fed in through
+ * `recordTransferByUrl`. **The health cycle produces none**: its probes and
+ * the ten-second status call are small, and a small transfer measures
+ * round-trip time and handler cost rather than throughput. So an endpoint can
+ * be probed every ten seconds for an hour and still have nothing here.
+ *
+ * And a *restored* record re-enters at one sample whatever history it holds
+ * (`EndpointBandwidth.restore`), deliberately, so that a stale reading cannot
+ * outvote a live link — which means a client that reloads before its second
+ * large read of the session is back to ranking without this axis. A client
+ * that browses little and streams through a host that does not call
+ * `recordTransferByUrl` may never reach two at all.
  */
 const THROUGHPUT_MIN_SAMPLES = 2;
 /** How much faster (or slower) a link must measure before throughput changes any decision. */
@@ -605,6 +621,14 @@ export class EndpointRegistry {
    * slowest node. A host with media-byte evidence calls this. It is the only
    * throughput wiring a host does, and it is additive: nothing else to build,
    * pass, install or match.
+   *
+   * **It is also the only thing that produces throughput samples on a client
+   * that mostly streams.** A sample needs 32 KB of body in one read; the
+   * health cycle's probes and status calls are far too small to make one, and
+   * a viewer who opens the app on the screen they left it on may make no
+   * qualifying catalogue read at all. Without this call that client ranks
+   * endpoints with the throughput axis permanently dark, and nothing says so
+   * beyond one `throughput-unavailable` line.
    */
   recordTransferByUrl(url: string, bytes: number, durationMs: number): void {
     if (!this.bandwidth) return;
@@ -860,7 +884,23 @@ export class EndpointRegistry {
     return result;
   }
 
+  /**
+   * Publish to listeners without letting one of them break the caller.
+   *
+   * A host listener that throws used to turn a `route()` that had *succeeded*
+   * into a rejection — the recording happens on the success path — and could
+   * take the health loop down with it. Presentation cannot be allowed to
+   * break routing: the same posture `publishConnectionState` has always
+   * taken, and for the same reason. Copied before iterating, since a listener
+   * may unsubscribe itself on delivery.
+   */
   private notify(): void {
-    for (const listener of this.listeners) listener();
+    for (const listener of [...this.listeners]) {
+      try {
+        listener();
+      } catch (error) {
+        this.log.warn('endpoint-listener-failed', { error });
+      }
+    }
   }
 }

@@ -12,6 +12,9 @@ import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistr
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { abortError } from '../errors.js';
+import { createClientLogger } from '../diagnostics/ClientLog.js';
+
+const log = createClientLogger('catalogue.cluster');
 
 type EndpointOperation<T> = (api: MachaCatalogueApi, endpoint: MachaEndpoint) => Promise<T>;
 
@@ -182,7 +185,27 @@ export class ClusterCatalogueApi implements CatalogueApi {
   private async readMediaProfile(mediaId: string, signal: AbortSignal): Promise<CatalogueMediaProfile | undefined> {
     // A temporary negative proves reachability but does not steal API
     // authority; another node may already have the immutable profile.
-    return this.router.find((endpoint) => this.api(endpoint).mediaProfile(mediaId, signal), signal);
+    return this.router.find((endpoint) => this.api(endpoint).mediaProfile(mediaId, signal), signal, {
+      // An absent profile is not a quiet outcome: the chooser falls back to
+      // transcoding everything on it. "No node has it yet" is that decision
+      // made on a complete answer; "no node has it and one of them was broken"
+      // is the same decision made on a partial one, and the two are
+      // indistinguishable in the return by design. Said here so a capture can
+      // tell them apart.
+      onAbsence: (absence) => {
+        if (absence.unanimous) {
+          log.debug('media-profile-absent', { mediaId, attempted: absence.attempted });
+          return;
+        }
+        log.warn('media-profile-absent-after-failure', {
+          mediaId,
+          attempted: absence.attempted,
+          absent: absence.absent,
+          failed: absence.failed,
+          detail: 'No node produced an immutable media profile and at least one failed, so playback will be chosen without one.',
+        });
+      },
+    });
   }
 
   private startMediaProfileRequest(mediaId: string): MediaProfileRequest {

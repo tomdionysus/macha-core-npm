@@ -431,6 +431,58 @@ describe('persisted endpoint memory across a reload', () => {
   });
 });
 
+describe('a discovery that lands after the monitor stopped', () => {
+  it('does not reshape the registry or notify hosts on behalf of a torn-down monitor', async () => {
+    // The cycle checks the signal either side of the probe walk; the status
+    // call sat above the first of those checks, so an advertisement arriving
+    // after `stop()` was still applied — and applying one fires every host
+    // listener for a monitor the host has already disposed.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const notified = vi.fn();
+    registry.subscribe(notified);
+    const controller = new AbortController();
+    let answer: (snapshot: ClusterStatusSnapshot) => void = () => undefined;
+    const clusterStatusApi: ClusterStatusApi = {
+      status: () => new Promise((resolve) => { answer = resolve; }),
+      node: async () => { throw new Error('not implemented'); },
+      checkConnectivity: async () => { throw new Error('not implemented'); },
+    };
+
+    const discovering = discoverClusterEndpoints(registry, clusterStatusApi, controller.signal);
+    controller.abort();
+    answer({ nodes: [
+      { id: 'peer', state: 'online', api_endpoint: 'http://peer.example' } as unknown as ClusterNodeStatus,
+    ] } as ClusterStatusSnapshot);
+    await discovering;
+
+    expect(registry.snapshot().map(({ endpoint }) => endpoint.baseUrl)).toEqual(['http://a']);
+    expect(notified).not.toHaveBeenCalled();
+  });
+});
+
+describe('seeding a registry the way the README says to', () => {
+  it('keeps a remembered discovery across a restart instead of persisting it away', () => {
+    // Seeding everything through the default source labels remembered
+    // discoveries `bootstrap`, and `persistConfirmedEndpoints` only ever
+    // persists what is labelled `discovered` — so the next cycle wrote the
+    // remembered set back as empty and the history was gone on every second
+    // start. The registry was right and the seed was lying to it.
+    const storage = memoryStorage();
+    const configuration = new MachaClientConfiguration({ storage });
+    configuration.setDiscoveredEndpoints(['http://10.44.1.51:7438']);
+
+    const registry = new EndpointRegistry([
+      ...bootstrapEndpoints(configuration.bootstrapEndpoints()),
+      ...bootstrapEndpoints(configuration.discoveredEndpoints(), 'discovered'),
+    ]);
+    // What a cycle does once that node answers.
+    registry.recordSuccess('http://10.44.1.51:7438');
+    persistConfirmedEndpoints(registry, configuration);
+
+    expect(configuration.discoveredEndpoints()).toEqual(['http://10.44.1.51:7438']);
+  });
+});
+
 describe('EndpointHealthMonitor lifecycle', () => {
   it('runs a cycle on start, publishes reachability, and reschedules itself', async () => {
     vi.useFakeTimers();
@@ -449,6 +501,49 @@ describe('EndpointHealthMonitor lifecycle', () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
     expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
+
+    monitor.stop();
+    vi.useRealTimers();
+  });
+
+  it('keeps probing when the store it remembers discoveries in refuses the write', async () => {
+    // A television with a full store throws `QuotaExceededError` out of
+    // `setItem`. That used to reject the cycle, the `void` on the caller
+    // swallowed it, no reschedule ran, and `running` stayed `true`: a health
+    // loop dead with nothing said, which is the indefinite-wait failure the
+    // contract says must never be silent.
+    vi.useFakeTimers();
+    const readable = memoryStorage();
+    const storage = {
+      getItem: (key: string) => readable.getItem(key),
+      removeItem: (key: string) => readable.removeItem(key),
+      setItem: () => { throw new Error('QuotaExceededError'); },
+    };
+    const configuration = new MachaClientConfiguration({ storage });
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    const monitor = new EndpointHealthMonitor({
+      registry,
+      clusterStatusApi: fakeClusterStatusApi([
+        { id: 'node-51', state: 'online', host: '10.44.1.51', port: 7437, api_endpoint: 'http://10.44.1.51:7438' } as ClusterNodeStatus,
+      ]),
+      auth: fixedBearerToken(undefined, fetchImpl),
+      configuration,
+      intervalMs: 10_000,
+    });
+
+    monitor.start();
+    await vi.waitFor(() => expect(calls()).toBeGreaterThan(0));
+    const afterFirstCycle = calls();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(calls()).toBeGreaterThan(afterFirstCycle);
+    expect(monitor.running).toBe(true);
+    // And it is not silent, which is the other half: a client that never
+    // remembers a discovery again can be told why.
+    expect(clientDiagnosticsSnapshot().some((entry) => entry.event === 'discovered-endpoints-not-persisted')).toBe(true);
 
     monitor.stop();
     vi.useRealTimers();

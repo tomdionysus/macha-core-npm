@@ -1,4 +1,4 @@
-import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, queryString, readJsonBody, readResponseBody } from './httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, envelopeArray, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, queryString, readJsonBody, readResponseBody } from './httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
@@ -59,7 +59,7 @@ export class MachaCatalogueApi implements CatalogueApi {
     const query = queryString([['type', kind], ['parent', parent]]);
     const suffix = query ? `?${query}` : '';
     const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/items${suffix}`, signal);
-    return response.items.map((item) => this.withAbsoluteArtworkUrls(item));
+    return this.items(response).map((item) => this.withAbsoluteArtworkUrls(item));
   }
 
   async get(id: string, signal?: AbortSignal): Promise<CatalogueItem> {
@@ -125,7 +125,7 @@ export class MachaCatalogueApi implements CatalogueApi {
   async search(query: string, limit = 50, signal?: AbortSignal): Promise<CatalogueItem[]> {
     const params = queryString([['q', query], ['limit', String(limit)]]);
     const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/search?${params}`, signal);
-    return response.items.map((item) => this.withAbsoluteArtworkUrls(item));
+    return this.items(response).map((item) => this.withAbsoluteArtworkUrls(item));
   }
 
   async putArtwork(itemId: string, role: string, mimeType: string, data: Blob): Promise<CatalogueArtwork> {
@@ -184,6 +184,12 @@ export class MachaCatalogueApi implements CatalogueApi {
     };
   }
 
+  private items(response: unknown): CatalogueItem[] {
+    return envelopeArray<CatalogueItem>(response, 'items', (message) => (
+      new MachaApiError(message, 502, 'invalid_response')
+    ));
+  }
+
   private getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     return this.request(path, { method: 'GET', signal });
   }
@@ -198,6 +204,13 @@ export class MachaCatalogueApi implements CatalogueApi {
       // `202 Accepted` with Retry-After may intentionally have no body while
       // the immutable profile is being generated.
       if (response.status === 202) return undefined as T;
+      // A 200 that is not JSON at all — a captive portal or a proxy answering
+      // with HTML — used to surface as a raw `SyntaxError`, which carries no
+      // status, so the router read it as non-retryable and "Unexpected token
+      // <" reached the viewer with no failover attempted.
+      if (error instanceof SyntaxError) {
+        throw new MachaApiError('Macha catalogue answered with a body that is not JSON.', 502, 'invalid_response');
+      }
       throw error;
     }
   }

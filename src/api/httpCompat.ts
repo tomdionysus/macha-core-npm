@@ -115,6 +115,34 @@ export async function readResponseBody(response: Response): Promise<ParsedRespon
 }
 
 /**
+ * The array a collection envelope is supposed to carry.
+ *
+ * A success body was taken for the envelope everywhere: `response.items.map`
+ * on a 200 that has no `items` throws `TypeError` at the call site, and
+ * `retryableEndpointFailure` reads a bare `TypeError` as a *transport*
+ * failure — so a schema mismatch cooled the node down as if it had been
+ * unreachable, and the message a caller saw was about `.map` rather than
+ * about the server. Checked here so every family says the same thing.
+ *
+ * The typed failure carries `502`, which stays retryable on purpose: in a
+ * mixed-version endpoint set the next node may well answer a shape this build
+ * can read, and that is the situation being generous about envelopes exists
+ * for. `invalid_media_profile` has taken the same position since it was
+ * written.
+ */
+export function envelopeArray<T>(
+  body: unknown,
+  key: string,
+  fail: (message: string) => Error,
+): T[] {
+  if (body && typeof body === 'object') {
+    const value = (body as Record<string, unknown>)[key];
+    if (Array.isArray(value)) return value as T[];
+  }
+  throw fail(`Macha returned a success body with no \`${key}\` array in it.`);
+}
+
+/**
  * Parse a JSON response body, timing the read.
  *
  * The single place every API family reads a success body, so that throughput

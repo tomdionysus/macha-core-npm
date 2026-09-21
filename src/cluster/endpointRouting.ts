@@ -16,6 +16,30 @@ export class MachaClusterRouteError extends Error {
 }
 
 /**
+ * How a `find` walk that produced nothing ended.
+ *
+ * `find` answers `undefined` both when every node said "not here yet" and when
+ * some said that while another failed — deliberately, so optional metadata
+ * cannot be blocked by an unrelated node failure. For some callers those are
+ * different answers: an absent media profile makes the chooser transcode
+ * everything, silently, and "nobody has it" and "the node that might have had
+ * it was broken" deserve different handling and at minimum different logs.
+ *
+ * Reported through a callback rather than in the return, so the callers that
+ * do not care are unchanged.
+ */
+export interface FindAbsence {
+  /** Every node asked, in the order they were asked. */
+  attempted: readonly string[];
+  /** Nodes that answered, and said the thing is not there yet. */
+  absent: readonly string[];
+  /** Nodes whose attempt failed in a way the walk tolerated and moved past. */
+  failed: readonly string[];
+  /** True when every node asked answered absence and none failed. */
+  unanimous: boolean;
+}
+
+/**
  * One routing authority shared by every client API family.
  *
  * Real successful work makes that endpoint authoritative through
@@ -33,9 +57,22 @@ export class ClusterEndpointRouter {
    * every remaining candidate before the result is discarded. Cancellation is
    * client intent and never endpoint evidence, so an abort records no failure
    * against any node.
+   *
+   * `advisory` is for a read whose outcome is health evidence but which is not
+   * a claim on API authority — the ten-second cluster status call is the case
+   * it exists for. Control work must not reshuffle the endpoint the viewer's
+   * media is flowing through: a status timeout would otherwise un-stick the
+   * preferred node, and a status success elsewhere would steal preference from
+   * it, both on a schedule nobody asked for.
+   *
+   * **Stronger than `find`'s advisory, deliberately.** There an advisory hit
+   * records probe success but a failure is still recorded as a failure,
+   * because artwork is a real request a viewer is waiting on and a node that
+   * cannot serve it has failed real work. Nothing routed here is waited on by
+   * anyone, so both directions use the probe variants.
    */
-  request<T>(operation: EndpointOperation<T>, signal?: AbortSignal): Promise<T> {
-    return this.route(operation, signal);
+  request<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean }): Promise<T> {
+    return this.route(operation, signal, options);
   }
 
   mutation<T>(operation: EndpointOperation<T>): Promise<T> {
@@ -99,12 +136,14 @@ export class ClusterEndpointRouter {
   async find<T>(
     operation: EndpointOperation<T | undefined>,
     signal?: AbortSignal,
-    options?: { advisory?: boolean },
+    options?: { advisory?: boolean; onAbsence?: (absence: FindAbsence) => void },
   ): Promise<T | undefined> {
     let lastError: unknown;
     let observedTemporaryAbsence = false;
     let allUnreachable = true;
     const attempted: string[] = [];
+    const absent: string[] = [];
+    const failed: string[] = [];
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('find-attempt', { endpointId: endpoint.id, order: attempted.length, advisory: Boolean(options?.advisory) });
@@ -122,11 +161,13 @@ export class ClusterEndpointRouter {
         reportClusterReachable();
         log.debug('find-temporary-absence', { endpointId: endpoint.id });
         observedTemporaryAbsence = true;
+        absent.push(endpoint.id);
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         this.registry.recordFailure(endpoint.id);
+        failed.push(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
         log.debug('find-endpoint-failed', { endpointId: endpoint.id, unreachable: unreachableEndpointFailure(error) });
       }
@@ -138,20 +179,31 @@ export class ClusterEndpointRouter {
       log.warn('find-exhausted', { attempted, allUnreachable });
       throw new MachaClusterRouteError(attempted, allUnreachable, lastError);
     }
+    // Only on the way to answering `undefined`: a caller asks for this to tell
+    // "nobody has it" from "the node that might have had it was broken", and
+    // that question does not arise when the walk found the thing.
+    options?.onAbsence?.({
+      attempted,
+      absent,
+      failed,
+      unanimous: failed.length === 0 && absent.length === attempted.length && attempted.length > 0,
+    });
     return undefined;
   }
 
-  private async route<T>(operation: EndpointOperation<T>, signal?: AbortSignal): Promise<T> {
+  private async route<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean }): Promise<T> {
     let lastError: unknown;
     const attempted: string[] = [];
     let allUnreachable = true;
+    const advisory = Boolean(options?.advisory);
     for (const { endpoint } of this.registry.candidates()) {
       attempted.push(endpoint.id);
-      log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length });
+      log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length, advisory });
       if (signal?.aborted) throw signal.reason ?? abortError();
       try {
         const result = await operation(endpoint);
-        this.registry.recordSuccess(endpoint.id);
+        if (advisory) this.registry.recordProbeSuccess(endpoint.id);
+        else this.registry.recordSuccess(endpoint.id);
         reportClusterReachable();
         log.debug('route-success', { endpointId: endpoint.id });
         return result;
@@ -159,7 +211,8 @@ export class ClusterEndpointRouter {
         if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
-        this.registry.recordFailure(endpoint.id);
+        if (advisory) this.registry.recordProbeFailure(endpoint.id);
+        else this.registry.recordFailure(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
         log.debug('route-endpoint-failed', { endpointId: endpoint.id, unreachable: unreachableEndpointFailure(error) });
       }

@@ -187,9 +187,16 @@ export function persistConfirmedEndpoints(
 export async function discoverClusterEndpoints(
   registry: EndpointRegistry,
   clusterStatusApi: ClusterStatusApi,
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
     const { nodes } = await clusterStatusApi.status();
+    // `stop()` may have run while that was in flight. Applying an
+    // advertisement after it reshapes the registry and fires every host
+    // listener on behalf of a monitor the host has already torn down — the
+    // same rule the cycle applies either side of the probe walk, which this
+    // call sat above rather than inside.
+    if (signal?.aborted) return;
     // `host`/`port` is the node's internal RPC bind address, not its HTTP API —
     // using it here would guess at a port that is frequently wrong, and at a
     // scheme that TLS offload makes unguessable. `api_endpoint` is the whole
@@ -375,18 +382,41 @@ export class EndpointHealthMonitor {
 
   private async runCycle(controller: AbortController): Promise<void> {
     const { registry, clusterStatusApi, configuration } = this.options;
-    await discoverClusterEndpoints(registry, clusterStatusApi);
-    if (controller.signal.aborted) return;
-    const reachable = await probeKnownEndpoints(registry, this.auth, controller.signal);
-    if (controller.signal.aborted) return;
-    if (registry.snapshot().length > 0) {
-      if (reachable > 0) reportClusterReachable(); else reportClusterUnreachable();
+    try {
+      await discoverClusterEndpoints(registry, clusterStatusApi, controller.signal);
+      if (controller.signal.aborted) return;
+      const reachable = await probeKnownEndpoints(registry, this.auth, controller.signal);
+      if (controller.signal.aborted) return;
+      if (registry.snapshot().length > 0) {
+        if (reachable > 0) reportClusterReachable(); else reportClusterUnreachable();
+      }
+      // Remembering where the cluster was is a convenience for the next start.
+      // A television with a full store throwing `QuotaExceededError` out of
+      // `setItem` used to reject this cycle, and the `void` on the caller
+      // swallowed it: no reschedule ever ran, `running` stayed `true`, and the
+      // health loop was dead with nothing said. `EndpointBandwidth.write()`
+      // has caught for exactly this reason since it was written — two copies
+      // of one rule, and only one of them was true.
+      if (configuration) {
+        try {
+          persistConfirmedEndpoints(registry, configuration);
+        } catch (error) {
+          log.warn('discovered-endpoints-not-persisted', { error });
+        }
+      }
+    } finally {
+      // In a `finally`, because the loop surviving must not depend on the body
+      // having succeeded. A failure here is a cycle lost; a failure that also
+      // stops the rescheduling is every future cycle lost, which is the
+      // indefinite-wait failure the contract says must never be silent.
+      //
+      // Scheduling here rather than in `cycle` is what re-bases the interval:
+      // an off-cycle probe clears the pending timer and this sets the next one
+      // from the moment this probe finished, so `probeNow()` does not leave a
+      // short remainder behind it.
+      if (!controller.signal.aborted) {
+        this.timer = setTimeout(() => void this.cycle(controller), this.intervalMs);
+      }
     }
-    if (configuration) persistConfirmedEndpoints(registry, configuration);
-    // Scheduling here rather than in `cycle` is what re-bases the interval: an
-    // off-cycle probe clears the pending timer and this sets the next one from
-    // the moment this probe finished, so `probeNow()` does not leave a short
-    // remainder behind it.
-    this.timer = setTimeout(() => void this.cycle(controller), this.intervalMs);
   }
 }
