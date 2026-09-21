@@ -358,6 +358,12 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 3. **A refused standby is no longer silent.** **Done** — see below; this is the one that decides whether a bad cap number is findable.
 4. **Read the published limit and count, and decline to prepare a standby that would be refused.** **Blocked on the server shipping the field.** Core holds no cap number and will not.
 
+**Considered and REJECTED, recorded so nobody optimises it later: skipping failover after a cap-refused regeneration.** When the cap refuses a `regenerate`, `buildReplacement`'s catch falls through to `beginSourceFailover`, which creates another session and will be refused identically — the cap is account-scoped, so every node answers the same. That looks like guaranteed-futile work on the viewer's critical path, which is the exact argument that made a cap refusal non-walking in the first place, and the symmetry is tempting.
+
+**It is the wrong call, and the asymmetry is why.** Cost of attempting: one round trip before a terminal screen the viewer was getting anyway. Cost of skipping: a viewer who *could* have kept watching does not, because the cap cleared in that instant — another device on the account stopped, which is not exotic in a household. **Optimistic on the viewer's path, pessimistic on the speculative one** is already the rule written here for the cap, and this is the viewer's path. The standby case is the speculative one and is where the pessimism belongs, which is what `standby-preparation-refused` serves.
+
+**So the walk stops at the cap and the recovery does not.** Those look inconsistent and are not: a walk tries *other nodes* for an answer only the account can change, while a failover retries *the same question* after time has passed. Do not converge them.
+
 ### ~~A refused standby was swallowed whole, so the cap could disable seamless failover in silence~~ — BUILT on `develop` 2026-09-21
 
 **Found while checking what a cap refusal does on the speculative path, which nobody had asked.** `prepareAlternate` ended in a bare `catch { return undefined; }`. Three very different states — *nothing suitable was available*, *the node refused*, *this threw* — collapsed into one silent `undefined`.
