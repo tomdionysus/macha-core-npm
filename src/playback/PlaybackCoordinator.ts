@@ -213,7 +213,32 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` below, which is the constraint that
  * turned out to be real.
  */
-const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
+/**
+ * **The server's validated floor, not its default — and that is the whole
+ * point.** `streaming.pipeline_idle_ms` is configurable and **not on the
+ * wire**: `status_api.cpp` states only `startup_timeout_ms` and
+ * `segment_timeout_ms`, and the idle figures are read from configuration and
+ * never serialised. So core cannot ask, and this was `30_000` — the default —
+ * which is the exact fault `look_ahead_ms` produced when a client believed one.
+ *
+ * **Core cannot read it, so core takes the number the server guarantees.**
+ * `config_base.cpp:359` refuses to start a node with `pipeline_idle` under ten
+ * seconds, so **10,000 ms is true of every node that is running at all**,
+ * whatever its configuration. A standby held inside that window cannot outlive
+ * a pipeline the node has torn down.
+ *
+ * **Wasteful in the cheap direction, deliberately.** On a node configured
+ * generously this discards a standby that would still have been good, costing
+ * a preparation that has to happen again. Holding one *past* teardown costs a
+ * promotion of something that cannot serve — on the viewer's critical path, at
+ * the moment recovery is already running, on the mechanism whose entire job is
+ * to be invisible. **A lost standby is cheaper than a dead one.**
+ *
+ * Replace this with the node's stated figure the moment it reaches the wire;
+ * the server has it queued behind one `NodeTelemetry` change together with
+ * `session_idle_ms` and the per-account cap.
+ */
+const ALTERNATE_RECOVERY_WINDOW_MS = 10_000;
 /**
  * How long a standby against a **transcode** session is held.
  *
@@ -243,6 +268,12 @@ const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
  *
  * Remux and direct standbys keep the full window — they are entitled to no
  * transcode slot and cost the node nothing but a session record.
+ */
+/**
+ * **Safe against the same floor by construction**, which is worth stating so
+ * nobody "corrects" it upward later: eight seconds is below the ten the server
+ * refuses to start beneath, so a transcode standby is always discarded before
+ * a node could tear its pipeline down, on every node that is running.
  */
 const ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS = 8_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;
