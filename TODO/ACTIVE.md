@@ -101,35 +101,31 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 ---
 
-## Open threads as of the end of 2026-09-20 — who is waiting on whom
+## Open threads — state of play at the cutover, 2026-09-21
 
-**Written because four sessions were in flight at once and none of this is derivable from the code.** Each line says what is owed and by whom. Nothing here blocks core except where it says so.
+**The order of work is above.** This section is who is waiting on whom *right now*, because five sessions moved fast today and none of it is derivable from the code.
 
-**Core owes a reply to nobody right now** — every peer message received has been answered. What core owes is *work*, listed below.
+**BLOCKED ON TOM — and these are the only two things holding the cutover:**
+1. **The web bundle deploy.** Every node still serves `index-BGrNH6KR.js`, which has **no `410` in 614,717 bytes**, so it reads a superseded generation as evidence against the endpoint. A replacement is built and verified *in the shipped JS*. **The `ssh`/`rsync` was denied by that session's own permission classifier** — it correctly did not route around it and correctly did not ask core to run it. Tom grants the permission or runs the two commands. **"The web client is ready" and "the bundle is on the nodes" are different claims and only the first is true.**
+2. **The cap's number.** Core cannot pick it and will not hold it. See the measurements above.
 
-**Waiting on the Android TV client (television, `macha-client-rn-androidtv`):**
-- **Re-run done 2026-09-21: recovered in 1.2 s, bound not exercised, cause unconfirmed.** The next reap is the one that matters, with its `info` trail on. **If it freezes again the trail names the last line before the silence** — that is the highest-priority signal outstanding anywhere, and the entry stays open until it arrives.
-- Whether `isFallbackAvailable` can be true against what Macha nodes actually serve. The whole `425` decision turns on it.
-- It is fixing its own `kindForTerminalError` gap and has added `terminal-failure-unclassified` to its trail.
+**Waiting on the server:** the cutover itself, on all three nodes at once; the cap's number; and where the limit and count live with what freshness, which is the last thing core needs to decline a standby *before* being refused rather than after.
 
-**Waiting on the phone client (`macha-client-rn`, a SEPARATE codebase):**
-- It is **not** building its `sessionAlive` probe until it settles a generation-attribution guard, because `expo-video` errors name no session. Correct call; see the resolver-contract entry.
-- It has offered to run the **live `425` experiment** on the A85 and needs Tom's word for a node. **Taking that offer is the cheapest route to closing `425`.**
-- Its 2026-09-13 measurement and its own bytecode reading contradict each other; it has asked that nobody move the server on its reading alone.
+**Core: cap work COMPLETE except what the server gates.** Classification, three accessors, `standby-preparation-refused`, and the proof that the reason survives to a host. **HEAD `42d92fb`, clean, `dist` unchanged since `28d6b70`** — the last commits are records only, so client measurements against `28d6b70`'s `dist` still hold.
 
-**Waiting on the web client (`macha-client`):**
-- Nothing outstanding. It withdrew its `look_ahead_ms` mechanism itself and its hls.js reading stands.
+**Client readiness, each verified in its own artefact rather than its source:**
+- **Web** — 410 in three call paths including the Samsung native preflight; `isSourceGoneStatus` delegating to `playbackFailureKindForStatus` so it holds no status list; cap notice built; two tests asserting it composes no path. Bundle rebuilt against `28d6b70`. **Cannot deploy.**
+- **Phone** — route work done; cap on both create *and* failover after finding a refusal was spending failover budget; three accessors adopted. Rebuilding deliberately rather than shipping a tree it cannot describe.
+- **Android TV** — cap sentence on create and failover, code string spelled nowhere, verified through Metro from a linked tree. **Rebuilding at the sitting rather than running `f849f445…`**, because `standby-preparation-refused` is the discriminator between a cap-caused freeze and the unexplained one.
 
-**Waiting on the server:**
-- The `look_ahead_ms` / `MediaSegmentStore` P1 — Tom decides scheduling. **Core's narrow fix is gated on that decision**, because if the server reports from the store the adopt becomes correct and core's fix becomes wrong.
-- The three-valued `scope` on error context, which it took back to Tom rather than building past.
-- All three nodes are on `0.47.0`. gbni-2 has been defunct for months and is not in the deploy — **check core is not offering it as a failover candidate.**
+**The test, once the nodes move:** **a node killed under a playing transcode, failover across moved nodes.** Not a single-node check — Tom vetoed that and was right. It is the only test that exercises the routes, `410` on the path that produces it, and the cap against a standby, in the configuration a viewer is really in.
 
-**Waiting on Tom — the only things genuinely blocked:**
-1. **The arrival-point estimator.** Measured round trip (an EWMA from the `elapsedMs` core already logs) versus the node-stated `budgets.deadlineMs` ceiling. Core recommends the measured estimate. **This is the largest live viewer-visible defect outstanding and the only one deliberately not started.**
-2. Whether this repo owns the three-repository encoder-speed coordination, and on what schedule.
-3. A release, which now carries a hang fix.
-4. Whether the phone client gets a node for the `425` experiment.
+**Still open and NOT part of this cutover:**
+- **The Android TV freeze: cause unconfirmed.** The 48 s supervision bounds it; nothing explains it. A post-cutover freeze now has a discriminator it did not have this morning.
+- **The arrival-point estimator** — largest live viewer-visible defect, deliberately not started, waiting on Tom.
+- **The control-lane walk revisiting a known-dead endpoint at order 1 every call** — core's, its own before-and-after, web client's captures.
+- **Two registry entries can be one node** (`ramaroja` fronting) — needs a node to state its own identity; with the server.
+- **The A85 plays Direct Play with no audio at all** — no AC-3 decoder, client claims one. **Predates everything. If a post-cutover smoke test says "plays, no sound", the silence is the old fault.**
 
 ---
 
