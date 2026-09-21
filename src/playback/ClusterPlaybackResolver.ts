@@ -1,5 +1,12 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
-import { endpointFailure, isPerTitleFailure, retryableEndpointFailure } from '../cluster/endpointFailure.js';
+import {
+  endpointFailure,
+  isAccountSessionLimit,
+  isPerTitleFailure,
+  playbackFailureCode,
+  playbackFailureStatus,
+  retryableEndpointFailure,
+} from '../cluster/endpointFailure.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
@@ -616,9 +623,33 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       if (alternate.mode === activeSession.mode) return alternate;
       await this.stop(alternate.sessionId).catch(() => undefined);
       return undefined;
-    } catch {
+    } catch (error) {
       // Standby preparation is opportunistic and must never become a viewer
-      // failure or alter the already-playing primary generation.
+      // failure or alter the already-playing primary generation. **But
+      // swallowing it whole made core unable to tell "no standby was
+      // available" from "the node refused one" from "this threw" — three very
+      // different states behind one silent `undefined`.**
+      //
+      // That gap becomes acute with the per-account session cap. A standby is
+      // the *first* thing an account at its limit will be refused, because it
+      // is the speculative request rather than the one a viewer is waiting on
+      // — so the mechanism most likely to meet the cap first was the one that
+      // could not report having met it. Seamless failover would simply stop
+      // happening, with nothing on any trail saying why, and the first
+      // evidence would be a viewer watching a stall.
+      //
+      // `warn` because a standby that cannot be built is a degraded state the
+      // contract says must be visible and actionable, and `isAccountSessionLimit`
+      // is called out by name because it is the one cause a host can turn into
+      // a sentence a person can act on.
+      this.log.warn('standby-preparation-refused', {
+        endpointId: activeSession.endpoint.id,
+        mediaId: media.id,
+        accountAtSessionLimit: isAccountSessionLimit(error),
+        code: playbackFailureCode(error),
+        status: playbackFailureStatus(error),
+        error,
+      });
       return undefined;
     }
   }

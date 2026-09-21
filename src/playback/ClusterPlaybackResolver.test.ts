@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
+import type { PlaybackSession } from './PlaybackResolver.js';
 import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 
@@ -1067,5 +1068,78 @@ describe('a close the ladder gave up on', () => {
     const startedAt = Date.now();
     await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
     expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+});
+
+describe('a standby the node would not build', () => {
+  // `prepareAlternate` swallowed every failure into a bare `undefined`, so
+  // core could not tell "nothing suitable was available" from "the node
+  // refused" from "this threw". Three states, one silence.
+  //
+  // The per-account session cap makes that acute rather than untidy. A standby
+  // is the FIRST thing an account at its limit gets refused, because it is the
+  // speculative request rather than the one a viewer is waiting on - so the
+  // mechanism most likely to meet the cap first was the one that could not
+  // report meeting it. Seamless failover would stop happening with nothing on
+  // any trail, and the first evidence would be a viewer watching a stall.
+
+  function refusals(): Array<Record<string, unknown>> {
+    return clientDiagnosticsSnapshot()
+      .filter((entry) => entry.event === 'standby-preparation-refused')
+      .map((entry) => ((entry.data as { detail?: unknown })?.detail ?? entry.data ?? {}) as Record<string, unknown>);
+  }
+
+  function refusingCluster(status: number, code: string) {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return new Response(JSON.stringify({ code, message: 'refused' }), {
+          status, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    return fetchMock;
+  }
+
+  it('says the account was at its session limit rather than going quiet', async () => {
+    clearClientDiagnostics();
+    vi.stubGlobal('fetch', refusingCluster(429, 'account_session_limit'));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 5_000);
+    const active = { ...wireSession('s1') } as unknown as PlaybackSession;
+
+    const standby = await resolver.prepareAlternate(
+      { sessionId: 's1', mediaId: 'macha:media', mode: 'transcode', endpoint: { id: 'http://a', baseUrl: 'http://a' },
+        source: { mediaId: 'macha:media', url: 'http://a/s.m3u8', mimeType: 'application/vnd.apple.mpegurl', isManifest: true, mode: 'transcode', durationMs: 1 },
+      } as unknown as PlaybackSession,
+      media, capabilities, 0, { mode: 'transcode' },
+    );
+
+    expect(standby).toBeUndefined();
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0].accountAtSessionLimit).toBe(true);
+    expect(refusals()[0].code).toBe('account_session_limit');
+    expect(active).toBeTruthy();
+  });
+
+  it('does not call an ordinary refusal an account limit', async () => {
+    // A node genuinely full is a different state and must read as one, or the
+    // sentence a host shows a viewer is wrong in the most confusing direction.
+    clearClientDiagnostics();
+    vi.stubGlobal('fetch', refusingCluster(429, 'resource_limit'));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 5_000);
+
+    await resolver.prepareAlternate(
+      { sessionId: 's1', mediaId: 'macha:media', mode: 'transcode', endpoint: { id: 'http://a', baseUrl: 'http://a' },
+        source: { mediaId: 'macha:media', url: 'http://a/s.m3u8', mimeType: 'application/vnd.apple.mpegurl', isManifest: true, mode: 'transcode', durationMs: 1 },
+      } as unknown as PlaybackSession,
+      media, capabilities, 0, { mode: 'transcode' },
+    );
+
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0].accountAtSessionLimit).toBe(false);
+    expect(refusals()[0].code).toBe('resource_limit');
   });
 });

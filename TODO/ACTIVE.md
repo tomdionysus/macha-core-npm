@@ -342,6 +342,28 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 ---
 
+## The agreed order of work, Tom 2026-09-21 — READ THIS BEFORE PLANNING ANYTHING
+
+**Everyone does the cap work now → server cutover → testing → fixing → npm publish → clients fix up to the published package → client releases.**
+
+**Nothing is a GO until the state of play is one where the tests are likely to pass** — core, the nodes and the clients all carrying the change at once. Tom: *"We need a state, on core, with the new servers, and clients using core, where all tests are likely to work. It's not a GO until we reach that state."* Getting there is the work; the cutover is not a thing to be argued into, it is a thing to be made ready for.
+
+**All three clients answered NO-GO on the cap moving with the routes and were overruled, deliberately:** *"it's not a good idea to wait — move the cap too. We'll test everything when the servers have cut over."* So the mitigation is no longer sequencing. It is **the cap's number**, and **making the cap's effects visible** so that a bad number is diagnosable rather than silent. That second half is core's and is what core built for it.
+
+**Core's cap work, and its state:**
+1. **`429 account_session_limit` classified account-scoped** — neither walked nor charged. **Done.**
+2. **`playbackFailureCode`, `playbackFailureStatus`, `isAccountSessionLimit` exported** so no client parses a message or re-walks a cause chain. **Done**, adopted by all three clients.
+3. **A refused standby is no longer silent.** **Done** — see below; this is the one that decides whether a bad cap number is findable.
+4. **Read the published limit and count, and decline to prepare a standby that would be refused.** **Blocked on the server shipping the field.** Core holds no cap number and will not.
+
+### ~~A refused standby was swallowed whole, so the cap could disable seamless failover in silence~~ — BUILT on `develop` 2026-09-21
+
+**Found while checking what a cap refusal does on the speculative path, which nobody had asked.** `prepareAlternate` ended in a bare `catch { return undefined; }`. Three very different states — *nothing suitable was available*, *the node refused*, *this threw* — collapsed into one silent `undefined`.
+
+**The cap makes that acute rather than untidy. A standby is the *first* thing an account at its limit is refused**, because it is the speculative request rather than the one a viewer is waiting on. So the mechanism most likely to meet the cap first was the one that could not report meeting it: **seamless failover would simply stop happening, with nothing on any trail saying why, and the first evidence would be a viewer watching a stall.** A cap number set too low would have been indistinguishable from the unexplained freeze the Android TV session is still hunting, on the same instrument, in the same week.
+
+`standby-preparation-refused` at **warn**, carrying the endpoint, the media, the code, the status and **`accountAtSessionLimit`** by name — because that is the one cause a host can turn into a sentence a person can act on. Two tests, both verified red: one against the reporting itself, one against the account/node distinction, since calling a node genuinely full an account limit is wrong in the most confusing direction.
+
 ## The route break: playback sessions become a REST resource — CORE OWNS THE TRANSITION
 
 **Tom, 2026-09-21: *"We are changing the route structure for sessions and streams"* and *"You will manage this transition with the clients."*** That closes the coordination question that sat in *Waiting on Tom*: **core is the integration point for this one, by instruction.** The server's plan is committed at `macha/TODO/2026-09-21-playback-sessions-as-a-resource-plan.md` and is agreed with the operator but **not yet implemented**.
