@@ -7,3 +7,6 @@ dist.previous/
 *.tsbuildinfo
 .DS_Store
 coverage/
+
+# Personal agent rules (basemind block lives here); never committed.
+*.local.md
