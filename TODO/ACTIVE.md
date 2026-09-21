@@ -8,9 +8,11 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** **`0.15.0` is the baseline — tagged on `main` and pushed on 2026-09-21. It is NOT on npm**, and nothing goes to npm without Tom's explicit word; `npm view @machafoundation/core versions` remains the only honest answer to "what can a client have". `0.14.0` before it carried the per-node playback budgets, the seek contract and the failure chain reaching hosts intact.
+**Where things stand.** **`0.16.0` is the baseline — tagged on `main` and PUBLISHED to npm on 2026-09-21**, the first publish since `0.14.0`. `0.15.0` was tagged the same morning and **deliberately never published**: rather than spend two version numbers and make three clients adopt twice, the `410` tolerance was rolled in and one release cut. `npm view @machafoundation/core versions` is still the only honest answer to "what can a client have", and it now says `0.16.0`.
 
-**What `0.15.0` is about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
+**`0.16.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. The order is: clients pin `^0.16.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
+
+**What `0.15.0`/`0.16.0` are about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
 1. **`hlsWalkTargets` now throws `HlsManifestUnavailableError` instead of returning `[]`** on a playlist that answered with a status. **This is the one breaking change** — a host calling that exported primitive directly must catch it. `preflightHlsSource` and `probeHlsReadiness` are unaffected in shape; the latter now reports `unavailable` with a status where it used to say `unassessable / empty-manifest`.
 2. **A reaped session is classifiable again.** The `404` on a master playlist reaches the host, so `playbackFailureKindForStatus` can answer `not-found` rather than `unknown` — which is what stops core charging a node that answered honestly.
 3. **The whole recovery is bounded** (`superviseRecovery`), at twice the node's stated attempt budget plus head-room, ending in the ordinary failover with `client_recovery_deadline`.
@@ -21,9 +23,9 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Two things a release note must carry rather than let a client discover**, both predating this release and still true: `FakePlayer.detach()` now stops (it ships on the `./testing` export), and `PlaybackEvent.forwardBufferMs` gained a contract both RN clients have been told about and checked themselves against.
 
-**The one entry `0.15.0` does not close.** The Android TV freeze's **cause is still unconfirmed** — see its entry in *P1*. `0.15.0` bounds it rather than explaining it, which is the honest claim and the one the entry makes.
+**The one entry this release does not close.** The Android TV freeze's **cause is still unconfirmed** — see its entry in *P1*. The release bounds it rather than explaining it, which is the honest claim and the one the entry makes.
 
-**`develop` and `main` are level as of the release.** Everything previously marked *BUILT on `develop`, unreleased* is now shipped in `0.15.0`; those entries have not yet been migrated to [COMPLETED.md](COMPLETED.md), which is bookkeeping this file owes and which should happen before the next release rather than accumulating.
+**`develop` and `main` are level as of the release.** Everything previously marked *BUILT on `develop`, unreleased* is now shipped in `0.16.0`; those entries have not yet been migrated to [COMPLETED.md](COMPLETED.md), which is bookkeeping this file owes and which should happen before the next release rather than accumulating.
 
 **`dist` is another repository's input.** The phone client is on a `file:` link to this tree's `develop`, so a change here reaches it as soon as `dist` is rebuilt, with no publish in between. Build before ending a session that touched `src`.
 
@@ -322,6 +324,44 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 ---
 
+## The route break: playback sessions become a REST resource — CORE OWNS THE TRANSITION
+
+**Tom, 2026-09-21: *"We are changing the route structure for sessions and streams"* and *"You will manage this transition with the clients."*** That closes the coordination question that sat in *Waiting on Tom*: **core is the integration point for this one, by instruction.** The server's plan is committed at `macha/TODO/2026-09-21-playback-sessions-as-a-resource-plan.md` and is agreed with the operator but **not yet implemented**.
+
+**The shape.** `GET /api/v1/playback/sessions` is added (the caller's live sessions, under `items`); the stream becomes a subresource, `GET /api/v1/playback/sessions/{id}/stream/{token}/{generation}/{name}` and `.../stream/{token}/direct`; **`/api/v1/playback/stream/{id}/...` is removed outright, with no dual-serve window and no deprecation period.** A second `POST` stops superseding. A per-account cap ships in the same change.
+
+**All four repositories have now grepped, and the route move composes nothing anywhere.** Not core, not the web client (four hits, all test fixtures), not the phone client (only relative module imports; its one composed URL uses core's own `LIVENESS_PATH`), not the Android TV client (two comments, no code, including its Kotlin engine and its scripts). **So the URL half of this break costs the whole fleet test-fixture edits and nothing else** — which is worth recording because "every client rebuilds its stream URLs" was the assumption the plan was written against.
+
+**One conditional core must honour, named by the phone client and correct.** This is free *provided `source.url` stays absolute and server-supplied*. Every consumer downstream — `expo-video`, `FileSystem.downloadAsync`, `recordTransferByUrl`, a Service Worker proxy carrying it opaquely as a query parameter — feeds a native player or a downloader rather than a `fetch`, **so a relative URL would break all of them at once and silently.** `streamUrl()` absolutises today and must go on doing so through the route change; that is core's commitment, not an incidental.
+
+**One thing the Android TV client flagged to fix on the day: its `PlayerScreen.tsx:367` comment justifies showing the session id on screen with *"`GET /api/v1/playback/sessions` is not a route"*.** That sentence becomes false when the collection ships.
+
+**Core's answer to "do you build stream URLs?": no, and this is verifiable rather than remembered.** `grep -rn "playback/stream" src` returns **nothing but the barrel export line**. The only place a stream URL is touched is `MachaPlaybackResolver.streamUrl()` (`:566`), which **absolutises whatever the server handed back** and never composes a path; `hlsWalk` resolves playlist-relative references against that URL, which is ordinary HLS and follows the server too. **So item 1 of the server's client list is a no-op for core and for every client that takes `source.url` from core.**
+
+**Core does not rely on supersession either.** `regenerate` already releases before it creates — `DELETE` then create, which is exactly the pattern the plan prescribes — and `failover`/`prepareAlternate` create on a *different* node. The old entry *"A playback session is keyed on the bearer token, so a second POST supersedes"* recorded that core survived by three incidental facts; **this change removes the exposure rather than creating one.** Items 2 and 3 are no-ops here.
+
+**Item 4 is not a no-op, and it is the one core has to get right.** Two findings, both from core's own tree:
+
+1. **The cap must not be classified as a node failure, and core cannot classify it correctly today.** A cap refusal is **account-scoped** — every node in the cluster will refuse it identically. If it arrives as a 4xx, `retryableEndpointFailure` stops the walk, which is right by accident. If it ever arrives as a 5xx, core **walks the whole cluster collecting identical refusals and charges every healthy node on the way** via `recordEndpointFailure`. Core's classification has buckets for *node* and *per-title* and **none for account**. This is the concrete forcing case for the three-valued `scope` core has been arguing for, and it now has a date attached to it.
+2. **Core routinely holds more than one session per account, by design, and the cap has to be sized for it.** `alternateSessions` is a `Map` (`PlaybackCoordinator.ts:756`): core holds the live generation **plus one or more standbys**, and during a failover it can briefly hold **three** — the dying one, the standby, and the new one. **A cap of 2 would break core's standby discipline silently**, turning the seamless-failover machinery into cap refusals at the worst moment. The server must choose the number knowing this, and core should probably learn the cap rather than assume it.
+
+**The cap evidence is now much stronger than core's first estimate, and two clients moved it.**
+- **A dead node's session cannot be deleted, by construction.** The web client measured it driving a real failover with a node killed at the socket: `session-stop` → `DELETE` → `session-stop-failed: TypeError: Failed to fetch` → the close ladder retrying into a void. **The session being abandoned lives on the node that just died**, so it stays live from the cluster's point of view until it expires. **A cap that counts those refuses the create the failover depends on, during an outage, which is the worst moment and the hardest case to reproduce.** And a cascade goes further than one hop — one twenty-minute run put sessions on fi-1, es-1, gbni-1 and via ramaroja.
+- **Core's "2 live, 3 transient" is the coordinator's shape, not every client's.** The phone client holds **1, transiently 2** — no standby, both warm-standby attempts tried and reverted. So a cap justified as "core needs 3" must not be set *at* 3 on the assumption that is anyone's ceiling. **And a client adopting a session through the new listing while holding its own is 2 for a client that looks like it holds 1.**
+- **A cap per *account* is a cap on a household.** The Android TV client's seat: two televisions, a phone, and whoever is on the web client, **is four viewers before a single standby exists**. It reads as tight under 8 and would rather the limit were per-viewer-session than per-account.
+
+**So core's ask of the server is now three things, not one:** a 4xx with a distinct code; a limit core can *read* rather than discover by refusal; and **either don't count sessions on endpoints the cluster itself cannot reach, or expire them fast enough that a failover cascade cannot exhaust the cap.**
+
+**The `410` tolerance spans two repositories, not one.** The web client found that **a `410` on a segment never reaches core as a status**: hls.js raises it, and its own classifier sorts it before core hears anything — `isHlsSegmentHold` is `500`, `isHlsSourceNotFound` is `404`, and everything else falls to `isHlsNetworkDegradation`, reported as `stream`, **which is evidence against the endpoint.** Same failure mode as core's, one layer lower. It needs a `410` branch beside its `404` one, classified `not-found`, landing in the same window. **Core's sequencing did not cover that and now does.**
+
+**What core must ship BEFORE any node moves**, and this is the standing rule *"core ships tolerance first, nodes move second"*:
+- ~~**`410` tolerance**~~ **BUILT on `develop` 2026-09-21, unreleased.** `SOURCE_SUPERSEDED_STATUS = 410`, mapped to **`not-found`** rather than to a seventh kind — the required action is identical (the object is gone, the node is fine, ask the session route), and `not-found` already carries the `Player.subscribeFailure` obligation not to tear the presentation down. **A new kind would put that obligation behind a value every existing host meets as `default`**, so an un-updated host would read `410` as unhandled and condemn a node: the exact failure this tolerance exists to stop, arriving through the fix for it. Three tests, two verified red against the branch; the third guards that `418` and `451` still answer `unknown`, because tolerance is not a licence to invent meanings.
+- Whatever status the **cap refusal** uses, core must not walk or charge on it.
+
+**Open questions core has put to the server** (see the message log): whether the collection `GET` is **node-local or cluster-wide** — core's sessions are keyed `${endpoint.id}::${nodeSessionId}` and are node-local, so a client adopting "the account's sessions" must either fan out across nodes or be told the listing is per-node; and whether an adopted session arrives **with its endpoint**, because every core recovery path needs provenance and throws `has no endpoint provenance` without it.
+
+**Sequencing core proposes:** core ships tolerance (`410`, cap status, adoption provenance) in a release the clients take **first**; the server moves the routes **second**; the clients need nothing for the URL move because they follow `source.url`. **Nothing here is started.**
+
 ## Waiting on Tom
 
 - ~~**The package alias split.**~~ Decided 2026-09-15: `@machafoundation/core`, because `@macha` is an unclaimed scope and `@machafoundation/core` is already published and owned. See *Moving the clients onto public npm* above.
@@ -359,9 +399,18 @@ Core raised that `docs/principles-and-laws.md` numbers the laws control/viewer/l
 
 **Tom ruled 2026-09-20, unprompted, for the macha-client pair: direct linking to core's tree during development is fine** — *"the projects need to work together"* — **and the gate is before `main`, not before the link.** Switch `package.json` back to a published `^x.y.z`, `npm install`, and only then merge and push, because `main` has people looking at it and must work at all times. That client has written it up as a procedure rather than a principle, *because the principle is what failed last time*, and the step worth copying is the second:
 
-1. `package.json` back to a published `^x.y.z` and `npm install` — **not a lockfile edit**.
-2. **`test -L node_modules/@machafoundation/core` must fail.** A version string agrees while a stale link is still in place; that check cannot lie.
-3. `typecheck` and the suite green **against the registry copy**, not against the tree the link pointed at.
+1. **`npm install @machafoundation/core@^x.y.z`, explicitly and by name.** **Not** a lockfile edit, and **not** a bare `package.json` spec change followed by `npm install`. *Established 2026-09-21 by two clients across two machines, after **both** of their causal explanations were falsified — including the one this file adopted for an hour.*
+
+   **The unlink is a check, not a step, and that is the whole finding.** The explicit ranged install is the only action that rewrote the lockfile entry **every time on both machines**. Everything else disagreed:
+   - *"A bare spec change keeps the link, because the installed version satisfies the range."* Core recorded this from the Android TV client's morning run. **That client re-ran the identical step on the identical tree six hours later and got a real directory** — same command, opposite answer.
+   - *"The lockfile entry survives a delete and npm restores the link from it."* The phone client measured exactly that and core adopted it, because it explained both observations and the first account could not. **The Android TV client's afternoon run falsifies it too**: directory deleted, plain `npm install`, lockfile untouched — real directory.
+
+   **Neither session has isolated what npm is keying on, and neither is guessing in a durable file.** Same npm 11.9.0, same node 24.14.0, same lockfile v3. **Recorded as unresolved in all three repositories rather than settled by core picking a winner** — core has now been wrong about the cause twice in one afternoon, in both directions, which is the argument for writing down the check instead of the theory.
+
+   **What survives, and it is enough:** the explicit ranged install always worked, and the verification below cannot be fooled. The `0.7.0`-against-`0.11.1` incident still belongs here, and the moral has narrowed to **verify the artifact** — which is the rule the Android TV repo already had for APKs and is now applying to its own dependencies.
+
+2. **`test -L node_modules/@machafoundation/core` must fail.** **`package.json`, the installed `version` string and a green typecheck all agreed with the link every single time, on both machines.** Those three cannot tell you anything; this one cannot lie.
+3. **Read `resolved` in the lockfile** — it must be a registry tarball URL. Not `package.json`, and never the version string, which agreed with the range through all three of the phone client's attempts. Then `typecheck` and the suite green **against the registry copy** rather than the tree the link pointed at.
 4. Then merge and push.
 
 Plus the Vite trap, now part of that gate rather than folklore: `node_modules/.vite/deps` survives a symlink swap, so `rm -rf node_modules/.vite` and `--force`, or the verification is of the copy you think you just replaced.

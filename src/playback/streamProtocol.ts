@@ -102,6 +102,17 @@ export const SERVER_STARTUP_TIMEOUT_MS = 15_000;
 export const SEGMENT_NOT_READY_STATUS = 500;
 export const BROKEN_GENERATION_STATUS = 503;
 export const SOURCE_NOT_FOUND_STATUS = 404;
+/**
+ * A generation this node has superseded.
+ *
+ * **Tolerated before any node emits it, which is the whole point of the
+ * constant existing now.** The server holds `410 generation_superseded`
+ * pending exactly this, because an unrecognised status falls to `unknown`,
+ * `unknown` is endpoint evidence, and a node moving ahead of its clients would
+ * therefore **charge itself for answering honestly** and have a standby built
+ * somewhere that cannot help. Core ships tolerance first; nodes move second.
+ */
+export const SOURCE_SUPERSEDED_STATUS = 410;
 
 /**
  * What an HTTP status on a fragment or manifest request means about the source.
@@ -128,6 +139,13 @@ export const SOURCE_NOT_FOUND_STATUS = 404;
  *   sequential, so asking for a distant index does not skip the fragments
  *   before it — it authorises them and then waits while each one encodes.
  *   `PlaybackSession.lookAheadMs` is where that boundary is.
+ * - **`410` — a generation this node has superseded.** Reported as `not-found`,
+ *   for the same reason and with the same recovery: the object is gone, the
+ *   node is fine, and the session route says whether anything is left to
+ *   rebuild. Usually core's own doing — a PATCH that changes mode, quality,
+ *   seek or media builds a new generation — in which case the late failure
+ *   naming the old source is already dropped by the superseded-source guards
+ *   before it reaches classification at all.
  * - **`503` — a broken generation.** Terminal for this source.
  * - **`404` — this node did not serve it.** Either the session is gone or the
  *   fragment is past the end of the plan, and **the status cannot tell you
@@ -151,6 +169,16 @@ export const SOURCE_NOT_FOUND_STATUS = 404;
 export function playbackFailureKindForStatus(status: number): PlaybackFailureKind {
   if (status === SEGMENT_NOT_READY_STATUS) return 'not-ready';
   if (status === SOURCE_NOT_FOUND_STATUS) return 'not-found';
+  // A superseded generation is `not-found` rather than a kind of its own, and
+  // that is a decision rather than a shortcut. What a caller must do is
+  // identical — the object is gone, the node is fine, ask the session route
+  // which case it is — and `not-found` already carries the obligation on
+  // `Player.subscribeFailure` that an adapter must not tear the presentation
+  // down. A seventh kind would put that obligation behind a value every
+  // existing host would meet as `default`, which is the expensive direction:
+  // a host that has not been updated would read `410` as unhandled and
+  // condemn a node, which is the exact failure this tolerance exists to stop.
+  if (status === SOURCE_SUPERSEDED_STATUS) return 'not-found';
   if (status === BROKEN_GENERATION_STATUS) return 'stream';
   return 'unknown';
 }

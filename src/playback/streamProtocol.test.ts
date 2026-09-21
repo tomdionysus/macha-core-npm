@@ -7,8 +7,7 @@ import {
   SERVER_SEGMENT_HOLD_MS,
   SERVER_SESSION_IDLE_MS,
   SERVER_STARTUP_TIMEOUT_MS,
-  SOURCE_NOT_FOUND_STATUS,
-} from './streamProtocol.js';
+  SOURCE_NOT_FOUND_STATUS, SOURCE_SUPERSEDED_STATUS, } from './streamProtocol.js';
 
 describe('what a status on a fragment request means', () => {
   it('calls a 500 a hold rather than a failure', () => {
@@ -93,5 +92,34 @@ describe('the stall budget against the server hold', () => {
     // This is the requirement. The figure is a consequence of it, and both
     // have moved before: a five-second budget once sat *under* the hold.
     expect(MEDIA_STALL_TIMEOUT_MS).toBeGreaterThan(SERVER_SEGMENT_HOLD_MS);
+  });
+});
+
+describe('tolerating a status before any node sends it', () => {
+  // **The migration hazard, and the reason this lands before the server
+  // moves.** An unrecognised status falls to `unknown`, `unknown` is endpoint
+  // evidence, so a node that moved ahead of its clients would be charged for
+  // answering honestly and a standby would be built somewhere that cannot
+  // help. The server is holding `410 generation_superseded` pending exactly
+  // this test existing.
+
+  it('reads a superseded generation as gone rather than as a bad node', () => {
+    expect(playbackFailureKindForStatus(SOURCE_SUPERSEDED_STATUS)).toBe('not-found');
+    expect(playbackFailureKindForStatus(410)).not.toBe('unknown');
+  });
+
+  it('gives it the same kind as a missing one, so no host needs a new branch', () => {
+    // A seventh kind would put the do-not-tear-down obligation behind a value
+    // every existing host meets as `default` - which is the failure this
+    // tolerance exists to stop, arriving through the fix for it.
+    expect(playbackFailureKindForStatus(SOURCE_SUPERSEDED_STATUS))
+      .toBe(playbackFailureKindForStatus(SOURCE_NOT_FOUND_STATUS));
+  });
+
+  it('still refuses to guess at a status the protocol has no rule for', () => {
+    // Tolerance is not a licence to invent meanings. 418 has no rule and must
+    // stay `unknown`, or the conservative default stops being conservative.
+    expect(playbackFailureKindForStatus(418)).toBe('unknown');
+    expect(playbackFailureKindForStatus(451)).toBe('unknown');
   });
 });

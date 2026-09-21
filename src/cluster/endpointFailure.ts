@@ -65,6 +65,14 @@ export function retryableEndpointFailure(error: unknown): boolean {
   // impose a genuine endpoint deadline must surface a typed timeout instead.
   if (error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError') return false;
   if (error && typeof error === 'object' && (error as { code?: unknown }).code === 'profile_pending') return true;
+  // **Account-scoped before status, because the status says the opposite.**
+  // A cap on the account answers `429`, and `429` is the one 4xx this function
+  // treats as worth another node. For a node-scoped limit that is right; for
+  // an account-scoped one every node refuses identically, so the walk is
+  // guaranteed-futile work on the viewer's critical path — and because the
+  // charge is gated on this answer, walking would also record a failure
+  // against every healthy node it visited on the way.
+  if (isAccountScopedFailure(error)) return false;
   const status = errorStatus(error);
   // A server-side failure can be node-local (for example this node cannot read
   // a media extent). Safe reads and idempotent playback admission must exhaust
@@ -84,6 +92,34 @@ export function retryableEndpointFailure(error: unknown): boolean {
  * empty the candidate list. Trying the next node for the same title is still
  * right; recording the node as unhealthy is not.
  */
+/**
+ * Server error codes that describe the **account**, not the node and not the
+ * title.
+ *
+ * A third scope, and core had only two. Server `0.48.0` adds a per-account
+ * session cap, because once one bearer token can hold several playback
+ * sessions nothing else bounds one account — the cap is the admission control
+ * that replaces one-session-per-bearer. It answers `429 account_session_limit`
+ * with the limit and the current count in the body.
+ *
+ * **Tolerated here before the server ships it**, for the same reason as
+ * `SOURCE_SUPERSEDED_STATUS`: the failure mode of arriving unprepared is that
+ * core walks the whole cluster collecting identical refusals and charges every
+ * healthy node it touches. `resource_limit`, which this replaces for the
+ * account case, is deliberately *not* listed — it is shared by the node-wide
+ * session limit and both transcode limits, where walking and charging are
+ * correct because the node really is full.
+ */
+const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
+  'account_session_limit',
+]);
+
+function isAccountScopedFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && ACCOUNT_SCOPED_FAILURE_CODES.has(code);
+}
+
 const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
   'playback_pipeline_start_failed',
   'stream_failed',
