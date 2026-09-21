@@ -215,11 +215,12 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  */
 /**
  * **The server's validated floor, not its default — and that is the whole
- * point.** `streaming.pipeline_idle_ms` is configurable and **not on the
- * wire**: `status_api.cpp` states only `startup_timeout_ms` and
- * `segment_timeout_ms`, and the idle figures are read from configuration and
- * never serialised. So core cannot ask, and this was `30_000` — the default —
- * which is the exact fault `look_ahead_ms` produced when a client believed one.
+ * point.** `streaming.pipeline_idle_ms` is configurable, and until server
+ * 0.48.0 it was **not on the wire**: `status_api.cpp` stated only
+ * `startup_timeout_ms` and `segment_timeout_ms`, and the idle figures were
+ * read from configuration and never serialised. So core could not ask, and
+ * this was `30_000` — the default — which is the exact fault `look_ahead_ms`
+ * produced when a client believed one.
  *
  * **Core cannot read it, so core takes the number the server guarantees.**
  * `config_base.cpp:359` refuses to start a node with `pipeline_idle` under ten
@@ -234,9 +235,17 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * the moment recovery is already running, on the mechanism whose entire job is
  * to be invisible. **A lost standby is cheaper than a dead one.**
  *
- * Replace this with the node's stated figure the moment it reaches the wire;
- * the server has it queued behind one `NodeTelemetry` change together with
- * `session_idle_ms` and the per-account cap.
+ * **It has since reached the wire, and this constant is still what runs.**
+ * Server 0.48.0 states `pipeline_idle_ms` in the per-node playback block of
+ * `/api/v1/status`, beside `session_idle_ms` and `max_sessions_per_account`
+ * (`status_api.cpp:367-372`) — the `NodeTelemetry` change this paragraph used
+ * to be waiting on. Reading it is not done here yet, and the floor is not
+ * merely a stopgap until it is: every field in that block is emitted only when
+ * the node has a figure, no node older than 0.48.0 sends any of them, and at
+ * the time of writing no deployed node is that new. **So absence is the
+ * ordinary case and must stay handled** — take the node's figure where one
+ * arrives, and keep this floor wherever one does not, rather than replacing
+ * the floor with a reader that has nothing to read.
  */
 const ALTERNATE_RECOVERY_WINDOW_MS = 10_000;
 /**

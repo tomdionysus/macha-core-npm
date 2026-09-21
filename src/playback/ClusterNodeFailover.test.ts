@@ -37,7 +37,7 @@ describe('Cluster node failover integration', () => {
 
     await coordinator.start();
 
-    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b');
+    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/direct');
     expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('http://node-b');
     expect(cluster.calls.map((call) => call.url.split('?')[0])).toEqual([
       'http://node-a/api/v1/playback/sessions',
@@ -59,7 +59,7 @@ describe('Cluster node failover integration', () => {
 
     await coordinator.start();
 
-    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b/index.m3u8');
+    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/1/index.m3u8');
     expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('http://node-b');
     expect(cluster.calls.map((call) => call.url.split('?')[0])).toEqual([
       'http://node-a/api/v1/playback/sessions',
@@ -82,7 +82,7 @@ describe('Cluster node failover integration', () => {
     player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
     player.fail(new Error('node A stream failed'));
 
-    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b'));
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/direct'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
 
     // Closed as it is abandoned, inside failover(), with no buffered evidence
@@ -119,7 +119,7 @@ describe('Cluster node failover integration', () => {
     // runs out and the element says it finished.
     player.emit({ positionMs: 4_500, durationMs: 600_000, paused: false, ended: true });
 
-    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b'));
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/direct'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
     await coordinator.close();
   });
@@ -133,14 +133,14 @@ describe('Cluster node failover integration', () => {
       media, player, resolver: cluster.resolver, capabilities: async () => capabilities, initialPositionMs: 0,
     });
     await coordinator.start();
-    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-a/api/v1/playback/stream/session-a/index.m3u8');
+    expect(player.playCalls.at(-1)?.source.url).toBe('http://node-a/api/v1/playback/sessions/session-a/stream/fixture-capability-token/1/index.m3u8');
 
     player.degrade(new PlaybackSourceError('primary HLS network degraded', 'stream'));
-    await vi.waitFor(() => expect(player.preflightCalls.at(-1)?.url).toBe('http://node-b/api/v1/playback/stream/session-b/index.m3u8'));
+    await vi.waitFor(() => expect(player.preflightCalls.at(-1)?.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/1/index.m3u8'));
 
     player.fail(new PlaybackSourceError('primary HLS network exhausted', 'stream'));
 
-    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/stream/session-b/index.m3u8'));
+    await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://node-b/api/v1/playback/sessions/session-b/stream/fixture-capability-token/1/index.m3u8'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
     // The standby was already admitted during preparation; promotion must not
     // negotiate a third session.

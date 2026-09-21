@@ -17,7 +17,18 @@ export interface WireSessionOverrides {
  * server contract `MachaPlaybackResolver` parses. Transformed modes get an
  * `.m3u8` stream URL so a queued session can also stand in for HLS manifest
  * admission.
+ *
+ * **The stream URL is fixture data, never a path this package composes.** Core
+ * takes `stream.url` off the session and does not build it, which is why the
+ * server's route move costs core nothing — but a fixture still has to look
+ * like what a node answers, or a test proves a shape no node serves. Server
+ * 0.48.0 removed `/api/v1/playback/stream/...` outright and the stream now
+ * hangs off the session resource, carrying a capability token and, on a
+ * transformed mode, the generation it belongs to.
  */
+/** A stand-in for the node's per-session capability token. Opaque to core. */
+const STREAM_TOKEN = 'fixture-capability-token';
+
 export function wireSession(id: string, overrides: WireSessionOverrides = {}): unknown {
   const mode = overrides.mode ?? 'direct';
   const transformed = mode !== 'direct';
@@ -37,7 +48,9 @@ export function wireSession(id: string, overrides: WireSessionOverrides = {}): u
     source: { path: '/movie', format: transformed ? 'matroska' : 'mp4', size: 1_000_000, bitrate: 1_000_000, streams: [] },
     output: {},
     stream: {
-      url: transformed ? `/api/v1/playback/stream/${id}/index.m3u8` : `/api/v1/playback/stream/${id}`,
+      url: transformed
+        ? `/api/v1/playback/sessions/${id}/stream/${STREAM_TOKEN}/1/index.m3u8`
+        : `/api/v1/playback/sessions/${id}/stream/${STREAM_TOKEN}/direct`,
       mime_type: transformed ? 'application/vnd.apple.mpegurl' : 'video/mp4',
       subtitle_url: null,
     },
