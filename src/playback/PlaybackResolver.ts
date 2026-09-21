@@ -401,6 +401,33 @@ export interface PlaybackResolver {
     seekMs: number,
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession>;
+  /**
+   * Build a generation on a named node, for a viewer who chose it.
+   *
+   * Optional because it is the one operation that is not a recovery: every
+   * other route into another node is entered on failure, which is why "serve
+   * this from that node instead" had no expression until it existed. A
+   * resolver that cannot target a node simply omits it, and
+   * `PlaybackCoordinator.moveTo` answers `false`.
+   *
+   * **Never stops the outgoing generation.** The caller still has a viewer
+   * watching it, and the account cap is counted per node, so holding both
+   * across the swap is free. Releasing the old one is the caller's, after it
+   * has promoted the new one — unlike `failover`, which releases what it
+   * abandons because nothing is watching it by then.
+   *
+   * Resolves `undefined` when the target is already serving, is not a known
+   * candidate, or would come back in a different mode: a viewer asking for a
+   * different node has not asked for a different transform.
+   */
+  prepareOn?(
+    endpointId: string,
+    activeSession: PlaybackSession,
+    media: MediaSummary,
+    capabilities: PlaybackCapabilities,
+    seekMs: number,
+    preferences: PlaybackPreferencesUpdate,
+  ): Promise<PlaybackSession | undefined>;
   /** Prepare one bounded standby generation without delaying active playback. */
   prepareAlternate?(
     activeSession: PlaybackSession,

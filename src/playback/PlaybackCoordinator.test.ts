@@ -499,6 +499,52 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     expect(equivalentDirectSources(primary, { ...matching, source: { ...matching.source, sizeBytes: 99 } })).toBe(false);
   });
 
+  it('moves to a chosen node, promotes it, and only then releases the old one', async () => {
+    // A move is a failover that nothing failed, so the ordering is the whole
+    // point: the outgoing generation keeps presenting until the replacement is
+    // live. Closing first is the 13.2 s gap this exists to remove, and the cap
+    // being counted per node is what makes holding both free.
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const moved = session({
+      sessionId: 'moved',
+      mediaId: 'macha:one',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...primary.source, mediaId: 'macha:one', url: 'http://b/direct' },
+    });
+    const order: string[] = [];
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareOn: ReturnType<typeof vi.fn> };
+    api.prepareOn = vi.fn(async () => { order.push('prepared'); return moved; });
+    const stop = api.stop as ReturnType<typeof vi.fn>;
+    stop.mockImplementation(async (sessionId: string) => { order.push(`stopped:${sessionId}`); });
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+
+    await coordinator.start();
+    const playsBefore = player.playCalls.length;
+
+    await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+
+    expect(api.prepareOn).toHaveBeenCalledTimes(1);
+    expect(api.prepareOn.mock.calls[0]?.[0]).toBe('node-b');
+    expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b');
+    // The player was pointed at the replacement, and the old session was
+    // released after that rather than before it.
+    expect(player.playCalls.length).toBeGreaterThan(playsBefore);
+    expect(order).toEqual(['prepared', 'stopped:primary']);
+  });
+
+  it('declines a move to the node already serving, without asking anyone', async () => {
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareOn: ReturnType<typeof vi.fn> };
+    api.prepareOn = vi.fn();
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+
+    await coordinator.start();
+    await expect(coordinator.moveTo('node-a')).resolves.toBe(false);
+    expect(api.prepareOn).not.toHaveBeenCalled();
+  });
+
   it('creates no standby until degradation evidence, then registers and silently promotes it', async () => {
     const player = new FakePlayer();
     const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });

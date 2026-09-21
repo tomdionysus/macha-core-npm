@@ -1102,6 +1102,105 @@ describe('a standby the node would not build', () => {
     return fetchMock;
   }
 
+  it('deletes a session whose provenance it no longer holds, because the id carries it', async () => {
+    // **Why every client leaked sessions all day.** `stop()` looked the id up
+    // in an in-memory map and returned silently when it was missing — no
+    // request, no log, a resolved promise. A caller could close every session
+    // it had and produce zero DELETEs on the node while believing it had
+    // cleaned up. Measured on fi-1: 57 creates and 0 deletes since 13:00.
+    //
+    // The map does not survive a reload, and a re-resolution deletes the entry
+    // for the id a host is still holding, so "provenance missing" is the
+    // ordinary case rather than the exotic one. It never needed the map: core
+    // mints `${endpoint.id}::${nodeSessionId}` itself, so the id states which
+    // node holds it.
+    const deleted: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') {
+        deleted.push(String(url));
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    }));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+
+    // An id from a previous process: never created through this instance.
+    await resolver.stop('http://b::orphaned-session');
+
+    expect(deleted).toHaveLength(1);
+    expect(deleted[0]).toContain('http://b/api/v1/playback/sessions/orphaned-session');
+  });
+
+  it('builds on the node it is told to, not the one ranked first', async () => {
+    // The whole point of the verb. Every other route into another node takes
+    // whichever candidate ranks highest; this one takes an instruction. `a` is
+    // first in configured order and would win any ranked walk.
+    let moving = false;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      // `a` serves the original session, then must never be asked again.
+      if (moving && target.startsWith('http://a')) throw new Error('fakeCluster: a must not be asked');
+      return new Response(JSON.stringify(wireSession(moving ? 'session-c' : 'session-a')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
+    const resolver = new ClusterPlaybackResolver(registry);
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    fetchMock.mockClear();
+    moving = true;
+
+    const moved = await resolver.prepareOn('http://c', active, media, capabilities, 5_000, { mode: 'direct' });
+
+    expect(moved?.endpoint?.id).toBe('http://c');
+    // And exactly one node was asked. A move that quietly walks is a failover
+    // wearing a viewer's instruction.
+    const asked = new Set(fetchMock.mock.calls
+      .filter(([, init]) => ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'POST')
+      .map(([target]) => String(target).split('/api')[0]));
+    expect([...asked]).toEqual(['http://c']);
+  });
+
+  it('leaves the outgoing generation alone, because someone is watching it', async () => {
+    // Acquire before release. The cap is counted per node, so holding both is
+    // free — and closing first is exactly the 13.2 s gap this exists to remove.
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(wireSession('session-b')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    fetchMock.mockClear();
+
+    await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+
+    const deletes = fetchMock.mock.calls
+      .filter(([, init]) => ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'DELETE');
+    expect(deletes).toHaveLength(0);
+  });
+
+  it('declines a node that is already serving, and one it has never heard of', async () => {
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(wireSession('session-a')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await expect(resolver.prepareOn(active.endpoint!.id, active, media, capabilities, 0, { mode: 'direct' }))
+      .resolves.toBeUndefined();
+    await expect(resolver.prepareOn('http://nowhere', active, media, capabilities, 0, { mode: 'direct' }))
+      .resolves.toBeUndefined();
+  });
+
   it('walks to a node with room when the account is at its limit on this one', async () => {
     // **The defect this exists for.** The cap is counted per node -- the
     // server's `sessions_held_by_locked` iterates that node's own session map

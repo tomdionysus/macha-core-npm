@@ -1461,6 +1461,105 @@ export class PlaybackCoordinator {
   }
 
   /**
+   * Serve this title from a node the viewer chose, without stopping first.
+   *
+   * **Structurally a failover that nothing failed.** It is not an `update`:
+   * `PlaybackUpdate` is `{preferences, seekMs, mediaId}` and a node is none of
+   * those, and `resolver.update` is pinned to the node holding the generation
+   * precisely because a session cannot move. The server settled that — the
+   * session map is in-process and node-local, there is no replication and no
+   * control-call forwarding, and a session owns node-local resources — so the
+   * only possible shape is create there, promote, release here.
+   *
+   * **Acquire before release, which costs nothing.** `max_sessions_per_account`
+   * is counted per node, so holding both generations across the swap does not
+   * spend an account slot twice. A client that closed first and started after
+   * measured a 13.2 s gap between fi-1 and gbni-1; this keeps the outgoing
+   * generation presenting until the replacement is ready, which is what the
+   * standby machinery was built for and could not be asked for deliberately.
+   *
+   * **The release cannot be skipped and is not the resolver's here.**
+   * `resolver.failover()` releases the session it abandons, which is why the
+   * failover path above closes nothing; `prepareOn` deliberately does not,
+   * because the whole point is that the old generation is still serving. So
+   * this owns the close, and it happens after activation rather than before —
+   * a node left holding an abandoned transcode holds its slot for
+   * `session_idle`, which is thirty minutes on the deployed cluster.
+   *
+   * Returns whether the move happened. `false` is an ordinary answer: already
+   * on that node, no session yet, the endpoint unknown, or the node unwilling
+   * to build an equivalent generation.
+   */
+  async moveTo(endpointId: string): Promise<boolean> {
+    if (this.disposed) return false;
+    const session = this.snapshot.session;
+    if (!session) {
+      this.patchSnapshot({ notice: 'Playback is still loading.' });
+      return false;
+    }
+    if (session.endpoint?.id === endpointId) return false;
+    if (!this.options.resolver.prepareOn) return false;
+
+    const movingFrom = session.sessionId;
+    const requestedPositionMs = this.snapshot.intent.positionMs;
+    this.log.info('source-move-start', {
+      fromEndpoint: session.endpoint,
+      toEndpointId: endpointId,
+      sessionId: movingFrom,
+      positionMs: requestedPositionMs,
+    });
+    this.patchSnapshot({ preparingSource: true, notice: undefined });
+    try {
+      const capabilities = await this.options.capabilities();
+      // Everything below re-checks the world it was started against. A move is
+      // a viewer's deliberate act and slower than one: they can seek, switch
+      // mode or stop while the replacement is being built, and promoting onto
+      // a session that is no longer the one being moved would swap the picture
+      // for a generation of something else.
+      if (this.disposed || this.snapshot.session?.sessionId !== movingFrom) return false;
+      const moved = await this.options.resolver.prepareOn(
+        endpointId,
+        session,
+        this.options.media,
+        capabilities,
+        requestedPositionMs,
+        this.currentPreferences(session),
+      );
+      if (!moved) {
+        this.patchSnapshot({ preparingSource: false });
+        return false;
+      }
+      if (this.disposed || this.snapshot.session?.sessionId !== movingFrom) {
+        await this.options.resolver.stop(moved.sessionId, this.closeOptions).catch(() => undefined);
+        return false;
+      }
+
+      this.serverSession = moved;
+      this.activateSession(moved, this.snapshot.intent.positionMs, 'continue');
+      this.log.info('source-move-ready', {
+        oldSessionId: movingFrom,
+        newSessionId: moved.sessionId,
+        endpoint: moved.endpoint,
+        positionMs: this.snapshot.intent.positionMs,
+      });
+      // Released after the swap, and its failure is not the viewer's problem:
+      // the picture is already on the new node. A node that will not answer
+      // reaps the session on its own clock.
+      await this.options.resolver.stop(movingFrom, this.closeOptions).catch((error) => {
+        this.log.warn('moved-from-session-close-failed', { sessionId: movingFrom, error });
+      });
+      this.patchSnapshot({ preparingSource: false, notice: undefined });
+      return true;
+    } catch (error) {
+      // The outgoing generation was never touched, so there is nothing to
+      // recover: the viewer is still watching what they were watching.
+      this.log.warn('source-move-failed', { toEndpointId: endpointId, sessionId: movingFrom, error });
+      this.patchSnapshot({ preparingSource: false });
+      return false;
+    }
+  }
+
+  /**
    * Re-run the chooser with the same facts and policy as at creation, then
    * apply the result as an ordinary mutation. Re-entering `update` is
    * deliberate and cannot recurse: the resolved preferences carry a concrete
