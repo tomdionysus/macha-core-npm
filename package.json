@@ -49,6 +49,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "dist:check": "node scripts/dist-check.mjs",
+    "dist:hash": "node -e \"const{execSync}=require('node:child_process');process.stdout.write(execSync('find . -type f | sort | xargs shasum | shasum',{cwd:'dist'}).toString().slice(0,12)+'\\n')\"",
     "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
