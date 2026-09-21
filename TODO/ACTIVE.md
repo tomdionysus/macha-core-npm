@@ -8,9 +8,11 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** **`0.16.0` is the baseline — tagged on `main` and PUBLISHED to npm on 2026-09-21**, the first publish since `0.14.0`. `0.15.0` was tagged the same morning and **deliberately never published**: rather than spend two version numbers and make three clients adopt twice, the `410` tolerance was rolled in and one release cut. `npm view @machafoundation/core versions` is still the only honest answer to "what can a client have", and it now says `0.16.0`.
+**Where things stand.** **`0.17.0` is the release the fleet pins for the route break.** `0.15.0` and `0.16.0` were both tagged and **deliberately never published** — `0.15.0` because the `410` tolerance was rolled in rather than making three clients adopt twice, and `0.16.0` because two clients asked for a host-facing accessor within the hour of it being tagged. **Naming the version once matters more than the number**: three clients are pinning it and two are writing it into their own files, so a version that moves under them is worse than a number spent.
 
-**`0.16.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. The order is: clients pin `^0.16.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
+**The publish is gated on `npm login` on this machine**, not on anything technical: `npm whoami` answers 401. Tom approved the publish; the tarball is built and dry-run clean at 155 files.
+
+**`0.17.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. It carries the `410` tolerance, the `429 account_session_limit` tolerance, and `playbackFailureCode`/`isAccountSessionLimit`. The order is: clients pin `^0.17.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
 
 **What `0.15.0`/`0.16.0` are about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
 1. **`hlsWalkTargets` now throws `HlsManifestUnavailableError` instead of returning `[]`** on a playlist that answered with a status. **This is the one breaking change** — a host calling that exported primitive directly must catch it. `preflightHlsSource` and `probeHlsReadiness` are unaffected in shape; the latter now reports `unavailable` with a status where it used to say `unassessable / empty-manifest`.

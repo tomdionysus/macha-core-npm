@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFailure, isPerTitleFailure, retryableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, retryableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
   it('does not treat one title’s pipeline failure as node health evidence', () => {
@@ -100,5 +100,47 @@ describe('a refusal about the account, not the node', () => {
 
   it('leaves a bare 429 alone, because an unlabelled one says nothing about scope', () => {
     expect(retryableEndpointFailure(Object.assign(new Error('slow down'), { status: 429 }))).toBe(true);
+  });
+});
+
+describe('reading the machine code a host is meant to act on', () => {
+  // By the time a create failure reaches PlaybackCoordinatorSnapshot.fatalError
+  // the code is two or three links down the cause chain. A host asked what it
+  // could render for a cap refusal and the only answers were "the message" or
+  // "walk the chain yourself". Both are wrong for the most actionable failure
+  // in the system.
+
+  const wrapped = () => {
+    const wire = Object.assign(new Error('account at its session limit'), {
+      status: 429, code: 'account_session_limit',
+    });
+    return endpointFailure('node-a', 'http://a', wire);
+  };
+
+  it('finds the code through the layers a real failure acquires', () => {
+    expect(playbackFailureCode(wrapped())).toBe('account_session_limit');
+    expect(isAccountSessionLimit(wrapped())).toBe(true);
+  });
+
+  it('survives a chain something upstream made cyclic', () => {
+    // A viewer waiting on a hung failure report is strictly worse than one
+    // told slightly less - the same rule terminalRecoveryError follows.
+    const a = new Error('a') as Error & { cause?: unknown };
+    const b = new Error('b') as Error & { cause?: unknown };
+    a.cause = b; b.cause = a;
+    expect(playbackFailureCode(a)).toBeUndefined();
+  });
+
+  it('says nothing rather than something when no layer stated a code', () => {
+    expect(playbackFailureCode(new Error('no code here'))).toBeUndefined();
+    expect(playbackFailureCode(undefined)).toBeUndefined();
+    expect(isAccountSessionLimit(new Error('Playback failed'))).toBe(false);
+  });
+
+  it('does not mistake a node at capacity for the account being capped', () => {
+    const nodeFull = endpointFailure('node-a', 'http://a',
+      Object.assign(new Error('resource limit'), { status: 429, code: 'resource_limit' }));
+    expect(isAccountSessionLimit(nodeFull)).toBe(false);
+    expect(playbackFailureCode(nodeFull)).toBe('resource_limit');
   });
 });

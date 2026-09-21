@@ -136,6 +136,54 @@ export function isPerTitleFailure(error: unknown): boolean {
   return typeof code === 'string' && PER_TITLE_FAILURE_CODES.has(code);
 }
 
+/**
+ * The server's machine code for a failure, wherever it ended up in the chain.
+ *
+ * **A host should never parse a message and should never walk `cause` itself,
+ * and until this existed it had no third option.** By the time a create
+ * failure reaches `PlaybackCoordinatorSnapshot.fatalError` it is a bare
+ * `Error` whose code sits two or three links down — `MachaPlaybackError`
+ * wrapped by `endpointFailure`, then chained by `terminalRecoveryError`. The
+ * Android TV client asked what it could render for a per-account cap refusal
+ * and the honest answer was "the message, or a chain walk you write yourself".
+ * Neither is acceptable for the most actionable failure in the system: a
+ * viewer on a television told *"Playback failed: account_session_limit"* has
+ * no address bar to go and close the other session in, and a host that
+ * string-matches is one server rewording away from silence.
+ *
+ * Cycle-safe by the same rule as `terminalRecoveryError`: a viewer waiting on
+ * a hung failure report is strictly worse than one told slightly less.
+ *
+ * Returns the **first** code found, outermost first, because the outermost
+ * layer is the one that classified the failure. `undefined` means no layer
+ * stated one, which is not the same as the failure having no cause.
+ */
+export function playbackFailureCode(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && code.length > 0) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
+ * Is this the account's own session cap refusing, rather than anything about
+ * the node or the title?
+ *
+ * Named because it is the one failure a host can give a viewer a genuinely
+ * useful sentence for — *"another screen on this account is playing"* — and
+ * because the alternative is four clients each matching on a code string that
+ * is core's to track, not theirs.
+ */
+export function isAccountSessionLimit(error: unknown): boolean {
+  const code = playbackFailureCode(error);
+  return code !== undefined && ACCOUNT_SCOPED_FAILURE_CODES.has(code);
+}
+
 export function unreachableEndpointFailure(error: unknown): boolean {
   if (error instanceof MachaConnectionError) return true;
   if (error instanceof MachaEndpointError) return error.kind === 'transport';
