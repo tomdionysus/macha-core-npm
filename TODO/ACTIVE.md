@@ -8,9 +8,11 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** **`0.15.0` is the baseline — tagged on `main` and pushed on 2026-09-21. It is NOT on npm**, and nothing goes to npm without Tom's explicit word; `npm view @machafoundation/core versions` remains the only honest answer to "what can a client have". `0.14.0` before it carried the per-node playback budgets, the seek contract and the failure chain reaching hosts intact.
+**Where things stand.** **`0.16.0` is the baseline — tagged on `main` and PUBLISHED to npm on 2026-09-21**, the first publish since `0.14.0`. `0.15.0` was tagged the same morning and **deliberately never published**: rather than spend two version numbers and make three clients adopt twice, the `410` tolerance was rolled in and one release cut. `npm view @machafoundation/core versions` is still the only honest answer to "what can a client have", and it now says `0.16.0`.
 
-**What `0.15.0` is about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
+**`0.16.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. The order is: clients pin `^0.16.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
+
+**What `0.15.0`/`0.16.0` are about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
 1. **`hlsWalkTargets` now throws `HlsManifestUnavailableError` instead of returning `[]`** on a playlist that answered with a status. **This is the one breaking change** — a host calling that exported primitive directly must catch it. `preflightHlsSource` and `probeHlsReadiness` are unaffected in shape; the latter now reports `unavailable` with a status where it used to say `unassessable / empty-manifest`.
 2. **A reaped session is classifiable again.** The `404` on a master playlist reaches the host, so `playbackFailureKindForStatus` can answer `not-found` rather than `unknown` — which is what stops core charging a node that answered honestly.
 3. **The whole recovery is bounded** (`superviseRecovery`), at twice the node's stated attempt budget plus head-room, ending in the ordinary failover with `client_recovery_deadline`.
@@ -21,9 +23,9 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 **Two things a release note must carry rather than let a client discover**, both predating this release and still true: `FakePlayer.detach()` now stops (it ships on the `./testing` export), and `PlaybackEvent.forwardBufferMs` gained a contract both RN clients have been told about and checked themselves against.
 
-**The one entry `0.15.0` does not close.** The Android TV freeze's **cause is still unconfirmed** — see its entry in *P1*. `0.15.0` bounds it rather than explaining it, which is the honest claim and the one the entry makes.
+**The one entry this release does not close.** The Android TV freeze's **cause is still unconfirmed** — see its entry in *P1*. The release bounds it rather than explaining it, which is the honest claim and the one the entry makes.
 
-**`develop` and `main` are level as of the release.** Everything previously marked *BUILT on `develop`, unreleased* is now shipped in `0.15.0`; those entries have not yet been migrated to [COMPLETED.md](COMPLETED.md), which is bookkeeping this file owes and which should happen before the next release rather than accumulating.
+**`develop` and `main` are level as of the release.** Everything previously marked *BUILT on `develop`, unreleased* is now shipped in `0.16.0`; those entries have not yet been migrated to [COMPLETED.md](COMPLETED.md), which is bookkeeping this file owes and which should happen before the next release rather than accumulating.
 
 **`dist` is another repository's input.** The phone client is on a `file:` link to this tree's `develop`, so a change here reaches it as soon as `dist` is rebuilt, with no publish in between. Build before ending a session that touched `src`.
 
@@ -397,15 +399,17 @@ Core raised that `docs/principles-and-laws.md` numbers the laws control/viewer/l
 
 **Tom ruled 2026-09-20, unprompted, for the macha-client pair: direct linking to core's tree during development is fine** — *"the projects need to work together"* — **and the gate is before `main`, not before the link.** Switch `package.json` back to a published `^x.y.z`, `npm install`, and only then merge and push, because `main` has people looking at it and must work at all times. That client has written it up as a procedure rather than a principle, *because the principle is what failed last time*, and the step worth copying is the second:
 
-1. **`npm install @machafoundation/core@^x.y.z`, explicitly and by name.** **Not** a lockfile edit, and **not** a bare `package.json` spec change followed by `npm install` — that keeps the symlink. *Established 2026-09-21 by two clients independently, who agree on the symptom and the cure and disagree about the cause; both are recorded because the disagreement is the useful part.*
+1. **`npm install @machafoundation/core@^x.y.z`, explicitly and by name.** **Not** a lockfile edit, and **not** a bare `package.json` spec change followed by `npm install`. *Established 2026-09-21 by two clients across two machines, after **both** of their causal explanations were falsified — including the one this file adopted for an hour.*
 
-   **What both measured:** editing `package.json` to a published range and running `npm install` leaves the link in place, the lockfile still reading `"resolved": "../macha-ts", "link": true`, while `require('@machafoundation/core/package.json').version` agrees with the range — because core's `develop` carries that version too. **That is the `0.7.0`-against-`0.11.1` incident in a new coat.**
+   **The unlink is a check, not a step, and that is the whole finding.** The explicit ranged install is the only action that rewrote the lockfile entry **every time on both machines**. Everything else disagreed:
+   - *"A bare spec change keeps the link, because the installed version satisfies the range."* Core recorded this from the Android TV client's morning run. **That client re-ran the identical step on the identical tree six hours later and got a real directory** — same command, opposite answer.
+   - *"The lockfile entry survives a delete and npm restores the link from it."* The phone client measured exactly that and core adopted it, because it explained both observations and the first account could not. **The Android TV client's afternoon run falsifies it too**: directory deleted, plain `npm install`, lockfile untouched — real directory.
 
-   **Where they differ, and the phone client's account is the better one.** Core first recorded the cause as *"the linked checkout's version satisfies the range, so npm does nothing"*, from the Android TV client's report. The phone client then measured on npm 11.9.0 / node 24.14.0 that **`rm -rf node_modules/@machafoundation` followed by `npm install` recreates the link** — and **a satisfied version range cannot explain npm rebuilding something that is not there.** The lockfile entry survives the delete and is what npm restores from. **The explicit ranged install is the step that actually rewrites that entry**, and it was sufficient on its own there; `npm uninstall` was not needed. Core's earlier causal claim is withdrawn.
+   **Neither session has isolated what npm is keying on, and neither is guessing in a durable file.** Same npm 11.9.0, same node 24.14.0, same lockfile v3. **Recorded as unresolved in all three repositories rather than settled by core picking a winner** — core has now been wrong about the cause twice in one afternoon, in both directions, which is the argument for writing down the check instead of the theory.
 
-   **Not resolved:** whether removing the directory ever helps. One machine, one npm version, one direction; the Android TV procedure includes it and the phone client measured it as ineffective. Harmless either way, and both procedures end in the same explicit install, which is why this is safe to act on while the cause stays open. **Do not flatten it** — if one of them can run the other's exact sequence, that settles it.
+   **What survives, and it is enough:** the explicit ranged install always worked, and the verification below cannot be fooled. The `0.7.0`-against-`0.11.1` incident still belongs here, and the moral has narrowed to **verify the artifact** — which is the rule the Android TV repo already had for APKs and is now applying to its own dependencies.
 
-2. **`test -L node_modules/@machafoundation/core` must fail.** A version string agrees while a stale link is still in place; that check cannot lie.
+2. **`test -L node_modules/@machafoundation/core` must fail.** **`package.json`, the installed `version` string and a green typecheck all agreed with the link every single time, on both machines.** Those three cannot tell you anything; this one cannot lie.
 3. **Read `resolved` in the lockfile** — it must be a registry tarball URL. Not `package.json`, and never the version string, which agreed with the range through all three of the phone client's attempts. Then `typecheck` and the suite green **against the registry copy** rather than the tree the link pointed at.
 4. Then merge and push.
 

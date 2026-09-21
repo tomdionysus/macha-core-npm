@@ -136,6 +136,7 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.13.1` | Four faults a seamless host made visible: `play()` resolving is not `play()` being called. |
 | `0.14.0` | Core reads the node's own deadlines instead of holding compiled-in guesses at them. |
 | `0.15.0` | A failure keeps the evidence it arrived with — and a recovery that cannot finish stops waiting for ever. |
+| `0.16.0` | The same, published — plus tolerance for a status no node sends yet, so the nodes can move. |
 
 ## The pause that killed a healthy node
 

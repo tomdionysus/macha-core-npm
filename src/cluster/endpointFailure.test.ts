@@ -57,3 +57,48 @@ describe('per-title failure classification', () => {
     expect(isPerTitleFailure(Object.assign(new Error('x'), { code: 'profile_pending' }))).toBe(false);
   });
 });
+
+describe('a refusal about the account, not the node', () => {
+  // **A third scope, and core had two.** Server 0.48.0 adds a per-account
+  // session cap, because once one bearer can hold several playback sessions
+  // nothing else bounds one account. It answers `429 account_session_limit`.
+  //
+  // `429` is the one 4xx core treats as worth another node, which is right for
+  // a node-scoped limit and exactly wrong for an account-scoped one: every
+  // node refuses identically, so the walk is guaranteed-futile work on the
+  // viewer's critical path - and because the charge is gated on the same
+  // answer, core would record a failure against every healthy node it visited.
+  //
+  // Tolerated before the server ships it, for the same reason as the 410.
+
+  const capRefusal = () => Object.assign(new Error('Macha playback request failed: account at its session limit'), {
+    status: 429,
+    code: 'account_session_limit',
+  });
+
+  it('does not walk the cluster for a refusal every node will repeat', () => {
+    expect(retryableEndpointFailure(capRefusal())).toBe(false);
+  });
+
+  it('does not charge a healthy node for the account being at its limit', () => {
+    // The charge site is `retryableEndpointFailure(e) && !isPerTitleFailure(e)`,
+    // so declining to walk is also what declines to charge. Asserted through
+    // the predicate that actually gates it rather than assumed from the shape.
+    const error = capRefusal();
+    expect(retryableEndpointFailure(error) && !isPerTitleFailure(error)).toBe(false);
+  });
+
+  it('still walks and charges for a node genuinely at capacity', () => {
+    // `resource_limit` is shared by the node-wide session limit and both
+    // transcode limits, where the node really is full: walking to the next
+    // node is correct and so is recording it. Keeping these apart is the whole
+    // point of the new code existing.
+    const nodeFull = Object.assign(new Error('resource limit'), { status: 429, code: 'resource_limit' });
+    expect(retryableEndpointFailure(nodeFull)).toBe(true);
+    expect(isPerTitleFailure(nodeFull)).toBe(false);
+  });
+
+  it('leaves a bare 429 alone, because an unlabelled one says nothing about scope', () => {
+    expect(retryableEndpointFailure(Object.assign(new Error('slow down'), { status: 429 }))).toBe(true);
+  });
+});
