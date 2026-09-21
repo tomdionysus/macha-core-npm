@@ -678,6 +678,43 @@ export class EndpointRegistry {
     this.recordHealthy(endpointIdValue, true);
   }
 
+  /**
+   * Route to this endpoint by preference, without claiming anything happened.
+   *
+   * **The third case, and core had two.** `recordSuccess` sets the sticky
+   * endpoint *and* writes a successful round trip; `recordProbeSuccess` writes
+   * the round trip and leaves the sticky endpoint alone. There was no way to
+   * express the remaining combination — move the preference, assert nothing —
+   * so a caller wanting it reached for `recordSuccess`, which zeroes
+   * `consecutiveFailures` and dates a `lastSuccessAt` that never occurred.
+   * That reaches a Status screen as evidence, and it is fabricated.
+   *
+   * **A viewer choosing a node is not evidence about the node.** This is the
+   * case that found it: a node selector in the web client had no other public
+   * door, and subclassed the registry rather than lie through this one. The
+   * asymmetry was already half-noticed — the comment on `recordProbeSuccess`
+   * has been saying "health probes must not reshuffle the sticky endpoint"
+   * since it was written, which is this same distinction seen from the other
+   * side.
+   *
+   * **Preference does not outrank readiness**, and deliberately: `absoluteKey`
+   * sorts on availability first and preference second, so a chosen endpoint
+   * that is cooling down still ranks below a ready one and failover still
+   * walks away from it. A choice is a tie-break among nodes that can serve,
+   * never an instruction to use one that cannot.
+   *
+   * Unknown ids are ignored rather than stored. `replace` already drops a
+   * preference for an endpoint that has gone, and accepting one for an
+   * endpoint that never existed would hold a routing instruction that can
+   * never match and never expire.
+   */
+  prefer(endpointIdValue: string): void {
+    if (!this.endpoints.some((endpoint) => endpoint.id === endpointIdValue)) return;
+    if (this.preferredId === endpointIdValue) return;
+    this.preferredId = endpointIdValue;
+    this.notify();
+  }
+
   /** Health probes must not reshuffle the sticky endpoint used by real work. */
   recordProbeSuccess(endpointIdValue: string): void {
     this.recordHealthy(endpointIdValue, false);

@@ -591,3 +591,58 @@ describe('throughput: attaching, recording and abstaining', () => {
     expect(clientDiagnosticsSnapshot().filter((entry) => entry.event === 'throughput-unavailable')).toHaveLength(1);
   });
 });
+
+describe('preference without evidence', () => {
+  // A viewer choosing a node is a routing instruction, not a round trip. The
+  // only public door used to be `recordSuccess`, which writes both -- so the
+  // choice arrived on the Status screen as a `lastSuccessAt` that never
+  // happened and a failure count reset that nothing earned.
+
+  it('moves the sticky endpoint without touching the health record', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.recordFailure('http://b');
+    expect(registry.snapshot().find((e) => e.endpoint.id === 'http://b')?.health.consecutiveFailures).toBe(1);
+
+    registry.prefer('http://b');
+
+    const b = registry.snapshot().find((e) => e.endpoint.id === 'http://b');
+    expect(b?.health.consecutiveFailures).toBe(1);
+    expect(b?.health.lastSuccessAt).toBeUndefined();
+  });
+
+  it('actually moves the chosen endpoint to the front of the candidate list', () => {
+    // Asserted through `candidates()`, which is the ranked list routing reads.
+    // `snapshot()` is not ranked -- it reports health in configured order, and
+    // asserting preference through it passes whatever the preference is.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    expect(registry.candidates().map((e) => e.endpoint.id)).toEqual(['http://a', 'http://b']);
+
+    registry.prefer('http://b');
+
+    expect(registry.candidates().map((e) => e.endpoint.id)).toEqual(['http://b', 'http://a']);
+  });
+
+  it('does not let a choice outrank readiness', () => {
+    // The chosen node is cooling down, so it must still rank below one that
+    // can serve. A preference is a tie-break among usable nodes, never an
+    // instruction to use an unusable one -- otherwise picking a node in a UI
+    // would defeat the failover that exists to route around it.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.recordFailure('http://b');
+    registry.prefer('http://b');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://a');
+  });
+
+  it('ignores an endpoint it has never heard of, keeping the choice it has', () => {
+    // Weaker forms of this pass for the wrong reason. The assertion is that
+    // the existing preference survives: a routing instruction for an endpoint
+    // that never existed can never match and never expire, so storing it would
+    // silently discard a real choice.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.prefer('http://b');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://b');
+
+    registry.prefer('http://nowhere');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://b');
+  });
+});
