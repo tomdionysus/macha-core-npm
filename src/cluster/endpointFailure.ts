@@ -15,6 +15,37 @@ export class MachaEndpointError extends Error {
   }
 }
 
+/**
+ * The HTTP status for a failure, wherever it ended up in the chain.
+ *
+ * **The companion to `playbackFailureCode`, and it exists because leaving it
+ * private cost a client a real bug.** `endpointFailure()` wraps the original
+ * in a `MachaEndpointError` that carries **neither `status` nor `code` of its
+ * own**, so a caller reading `error.status` off the object it caught finds
+ * nothing and classifies every wrapped refusal as fatal. The phone client hit
+ * exactly that on 2026-09-21, in a classifier it had written an hour earlier
+ * to fix the neighbouring bug — it had corrected *"the error I catch is the
+ * error I raise"* and immediately assumed *"the fields are on the error I
+ * catch"*. Its degrade path had then been dead twice in one day.
+ *
+ * **Core walks this chain in three places; a client that has to re-walk it is
+ * a mirror that only one side will update.** Exported for the same reason the
+ * code accessor is, and stated as the rule rather than the exception: **what
+ * survives a layer boundary is fields, never identity and never position** —
+ * duck-type on `status` and `code`, and read them through these accessors.
+ */
+export function playbackFailureStatus(error: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const status = (current as { status?: unknown }).status;
+    if (typeof status === 'number' && Number.isFinite(status)) return status;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 function errorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const status = (error as { status?: unknown }).status;

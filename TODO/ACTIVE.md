@@ -8,9 +8,13 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** **`0.17.0` is the release the fleet pins for the route break.** `0.15.0` and `0.16.0` were both tagged and **deliberately never published** — `0.15.0` because the `410` tolerance was rolled in rather than making three clients adopt twice, and `0.16.0` because two clients asked for a host-facing accessor within the hour of it being tagged. **Naming the version once matters more than the number**: three clients are pinning it and two are writing it into their own files, so a version that moves under them is worse than a number spent.
+**Where things stand.** **Nothing is published, and nothing is going to be published yet.** Tom, 2026-09-21: *"We're nowhere near ready to publish npm... you're not done, no publishing to an immutable repo — obviously."* `0.15.0`, `0.16.0` and `0.17.0` are all tagged on `main` and **none is on npm**; `npm view @machafoundation/core versions` still ends at `0.14.0`. **A publish is permanent and cannot be undone, so it happens when the work is proven on hardware, not when it compiles.**
 
-**The publish is gated on `npm login` on this machine**, not on anything technical: `npm whoami` answers 401. Tom approved the publish; the tarball is built and dry-run clean at 155 files.
+**How the fleet tests it meanwhile: hotlink.** Tom, same ruling: *"they should hotlink for now so we can actually test this works."* All four clients may and should point at this tree during development — the mechanism is settled under *How an unreleased core change reaches a client*. **This is the whole reason that ruling exists**, and it is what makes "do not publish until proven" a workable position rather than a blocker.
+
+**What that costs, said plainly so nobody discovers it at a bad moment: a client on the link cannot cut a release.** `main` pins published versions, and every client's `develop` now depends on symbols that exist in no published version. **Nobody tags anything until the publish lands.** The phone client recorded this itself, unprompted, before core said it.
+
+**And the gate on the route move changes shape.** It was *"nodes move after the clients are on a published core with the tolerance"*. It is now *"nodes move after the tolerance is proven through the links, and then published."* The ordering is unchanged; the evidence required before the publish is higher.
 
 **`0.17.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. It carries the `410` tolerance, the `429 account_session_limit` tolerance, and `playbackFailureCode`/`isAccountSessionLimit`. The order is: clients pin `^0.17.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
 

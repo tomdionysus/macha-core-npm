@@ -9,6 +9,8 @@ import {
   generationAttemptBudgetMs,
   segmentHoldMs,
 } from './PlaybackResolver.js';
+import { machaHost } from '../runtime/host.js';
+import { SERVER_SESSION_IDLE_MS } from './streamProtocol.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -27,6 +29,8 @@ import type {
  * minute of it. Longer would be a timer nothing in this class can cancel.
  */
 const FAILED_SESSION_CLOSE_ATTEMPTS = 5;
+/** Per endpoint, because a node down for an hour would otherwise accumulate one per failover. */
+const MAX_ABANDONED_RELEASES_PER_ENDPOINT = 8;
 const FAILED_SESSION_CLOSE_BASE_DELAY_MS = 1_000;
 const FAILED_SESSION_CLOSE_MAX_DELAY_MS = 16_000;
 
@@ -456,6 +460,81 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     }
   }
 
+  /**
+   * Closes the ladder gave up on, kept for the next time that node answers.
+   *
+   * **The ladder gives up after about 31 seconds; the node holds the slot for
+   * thirty minutes.** Between those two numbers sits a session nothing will
+   * release, and core is the only party that can close it — the server cannot,
+   * because the node enforcing the cap is the node holding the session and it
+   * considers itself perfectly reachable. It never saw a failed connection; it
+   * saw requests stop arriving.
+   *
+   * **Measured by the web client on 2026-09-21, and it is the long strand
+   * rather than the short one.** Its failover isolated the node *inside the
+   * client* — page-context `fetch` and `XMLHttpRequest` rewritten to a closed
+   * local port — so the process never died and the session map stayed intact.
+   * A process kill would have cleared the map and ended the strand; this
+   * leaves a session that **was playing**, so the node's 120-second
+   * unused-idle never applies and it holds one of `max_sessions` (8 on es-1,
+   * node-wide across every account) for the full `session_idle_ms`.
+   *
+   * **Opportunistic on purpose: no timer, no polling, no subscription.** The
+   * retry rides on the next successful admission against that endpoint, which
+   * is free and cannot itself fail a viewer. A node core never returns to
+   * keeps its strand until the server expires it — exactly what happens today,
+   * so this is strictly better and never worse.
+   */
+  private rememberAbandonedRelease(endpointId: string, nodeSessionId: string, resolver: MachaPlaybackResolver): void {
+    const pending = this.abandonedReleases.get(endpointId) ?? [];
+    // Bounded, because an endpoint that is down for an hour would otherwise
+    // accumulate one entry per failover for ever. Oldest first: a strand the
+    // node has already expired is worth less than a fresh one.
+    if (pending.length >= MAX_ABANDONED_RELEASES_PER_ENDPOINT) pending.shift();
+    pending.push({ nodeSessionId, abandonedAt: machaHost().now(), resolver });
+    this.abandonedReleases.set(endpointId, pending);
+  }
+
+  /**
+   * That node just answered, so try the closes it stopped answering for.
+   *
+   * Fire-and-forget and never awaited: this rides on a viewer's admission and
+   * must not delay it by a millisecond. A `DELETE` for an id the node no
+   * longer holds answers `404`, which the node resolver already treats as
+   * success, so a strand the server has expired in the meantime clears itself
+   * on the first attempt rather than erroring.
+   *
+   * Entries past `SERVER_SESSION_IDLE_MS` are dropped unattempted: the node
+   * has expired them itself by then and the request would be pure noise
+   * against a node that has just come back.
+   */
+  private drainAbandonedReleases(endpointId: string): void {
+    const pending = this.abandonedReleases.get(endpointId);
+    if (!pending || pending.length === 0) return;
+    this.abandonedReleases.delete(endpointId);
+    const now = machaHost().now();
+    for (const entry of pending) {
+      if (now - entry.abandonedAt >= SERVER_SESSION_IDLE_MS) {
+        this.log.debug('abandoned-release-expired', { endpointId, sessionId: entry.nodeSessionId });
+        continue;
+      }
+      void entry.resolver.stop(entry.nodeSessionId).then(() => {
+        this.log.info('abandoned-release-completed', {
+          endpointId,
+          sessionId: entry.nodeSessionId,
+          strandedMs: Math.round(machaHost().now() - entry.abandonedAt),
+        });
+      }).catch((error: unknown) => {
+        // One attempt per recovery, not a second ladder. The node answered
+        // once; if this still fails it will be tried again next time.
+        this.log.debug('abandoned-release-failed', { endpointId, sessionId: entry.nodeSessionId, error });
+        this.rememberAbandonedRelease(endpointId, entry.nodeSessionId, entry.resolver);
+      });
+    }
+  }
+
+  private readonly abandonedReleases = new Map<string, Array<{ nodeSessionId: string; abandonedAt: number; resolver: MachaPlaybackResolver }>>();
+
   private releaseFailedSession(failedSession: PlaybackSession): Promise<void> {
     const owned = this.sessions.get(failedSession.sessionId);
     if (!owned) return Promise.resolve();
@@ -490,6 +569,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
             attempts,
             error,
           });
+          this.rememberAbandonedRelease(owned.endpoint.id, owned.nodeSessionId, owned.resolver);
           return;
         }
         const delayMs = Math.min(
@@ -648,6 +728,10 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
     if (preferOnSuccess) this.registry.recordSuccess(endpoint.id);
     else this.registry.recordProbeSuccess(endpoint.id);
+    // This node is answering again. Anything its close ladder gave up on is
+    // still holding a slot there, and this is the cheapest moment core will
+    // ever get to clear it.
+    this.drainAbandonedReleases(endpoint.id);
     return session;
   }
 

@@ -994,3 +994,78 @@ describe('a regeneration whose close never comes back', () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 });
+
+describe('a close the ladder gave up on', () => {
+  // The ladder gives up after ~31 s; the node holds the slot for thirty
+  // minutes. Between those sits a session nothing will release, and only core
+  // can close it - the node enforcing the cap is the node holding the session
+  // and it considers itself perfectly reachable. It never saw a failed
+  // connection; it saw requests stop arriving.
+  //
+  // Measured by the web client 2026-09-21 and it is the LONG strand: it
+  // isolated the node inside the browser, so the process never died and the
+  // session map stayed intact. The session had been playing, so the node's
+  // 120-second unused-idle never applies and it holds one of max_sessions
+  // (8 on es-1, node-wide across every account) for the full session_idle_ms.
+
+  function deleteFailingFetch(sessionBody: (id: string) => string) {
+    const deletes: string[] = [];
+    let deletesFail = true;
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') {
+        deletes.push(String(url));
+        if (deletesFail) throw new TypeError('Failed to fetch');
+        return new Response(null, { status: 404 });
+      }
+      return new Response(sessionBody(`s${deletes.length}`), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    return { fetchMock, deletes, reachable: () => { deletesFail = false; } };
+  }
+
+  it('retries the close when that node next answers, rather than stranding it', async () => {
+    vi.useFakeTimers();
+    try {
+      const { fetchMock, deletes, reachable } = deleteFailingFetch((id) => JSON.stringify(wireSession(id)));
+      vi.stubGlobal('fetch', fetchMock);
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+      const resolver = new ClusterPlaybackResolver(registry, undefined, 5_000);
+
+      const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+      await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+
+      // The ladder is five attempts over ~31 s. Nothing is remembered until it
+      // has actually given up - before that it is still trying, and a second
+      // mechanism racing the first is how a close gets sent twice.
+      await vi.advanceTimersByTimeAsync(40_000);
+      const afterLadder = deletes.length;
+      expect(afterLadder).toBe(5);
+
+      // The node comes back and core admits a generation on it again.
+      reachable();
+      await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(deletes.length).toBeGreaterThan(afterLadder);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not delay the admission it rides on', async () => {
+    // Fire-and-forget deliberately: this runs on a viewer's critical path and
+    // must not cost them a millisecond. A DELETE for an id the node no longer
+    // holds answers 404, which is already treated as success.
+    const { fetchMock, reachable } = deleteFailingFetch((id) => JSON.stringify(wireSession(id)));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const resolver = new ClusterPlaybackResolver(registry, undefined, 5_000);
+    const dead = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    await resolver.regenerate(dead, media, capabilities, 30_000, { mode: 'direct' });
+    reachable();
+
+    const startedAt = Date.now();
+    await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+});
