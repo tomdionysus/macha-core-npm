@@ -51,11 +51,9 @@ is the coordinator's logic, and choosing badly has a measured cost: a node that
 reaps a paused session answers `404`, and a host that treats that as the node
 failing charges a healthy node and walks away from it.
 
-Classify with the exported accessors rather than by hand — `playbackFailureCode`,
-`playbackFailureStatus`, `isAccountSessionLimit` for the refusal a viewer can act
-on, and `playbackFailureDetail` for the sentence to show them. `.message` is a
-log line: by the time a failure has crossed `endpointFailure` it names a node
-address, which is not something a viewer should read.
+Classify with the exported accessors rather than by hand; the package README's
+*Telling a viewer what went wrong* covers them, and none of it is special to
+this entry point.
 
 **Standbys and promotion.** `prepareAlternate` builds one and
 `alternateRecoveryWindowMs` says how long it is worth holding. Promoting it —
