@@ -114,6 +114,36 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'account_session_limit',
 ]);
 
+/**
+ * **Core holds the refusal, never the limit. Do not add a number here.**
+ *
+ * What is above is a *code the server owns and stated*. The cap's value is a
+ * node's configuration, it is the operator's to set, and core has no standing
+ * to hold a copy of it — not as a constant, not as a default, not as a
+ * fallback for a node that has not said. Core attempts, and handles the
+ * refusal it gets.
+ *
+ * **This is the fault class this repository keeps re-recording, and it has a
+ * measured cost each time.** A client sized itself against `look_ahead_ms`'s
+ * default of 8 segments when the node was configured for 4, believed it had
+ * 32 s of authorised production against a real 16, and sat refused at the
+ * frontier for the difference — a 12.7 s viewer freeze on 2026-09-17. Two
+ * standby windows in `PlaybackCoordinator` are still literals sized against a
+ * configurable `pipeline_idle_ms`, and they are open items for the same
+ * reason. **A default is not a contract**, and the whole of `0.14.0` was spent
+ * deleting core's private copies of server numbers.
+ *
+ * The server has agreed to publish the limit and the current count somewhere
+ * core can read *before* it plans, rather than only on the refusal — so core
+ * can decline to prepare a standby it knows will be refused instead of
+ * discovering the cap at the moment failover needs it. **When that lands, read
+ * it per response and treat absence as "the node cannot say"**, the same
+ * convention `lookAheadMs` and `PlaybackSource.budgets` already use. Until
+ * then core plans as though there were no cap, which is correct: an attempt
+ * that is refused costs one round trip, and a guessed limit costs a standby
+ * that was never built.
+ */
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
