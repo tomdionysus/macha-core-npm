@@ -322,6 +322,29 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 ---
 
+## The route break: playback sessions become a REST resource — CORE OWNS THE TRANSITION
+
+**Tom, 2026-09-21: *"We are changing the route structure for sessions and streams"* and *"You will manage this transition with the clients."*** That closes the coordination question that sat in *Waiting on Tom*: **core is the integration point for this one, by instruction.** The server's plan is committed at `macha/TODO/2026-09-21-playback-sessions-as-a-resource-plan.md` and is agreed with the operator but **not yet implemented**.
+
+**The shape.** `GET /api/v1/playback/sessions` is added (the caller's live sessions, under `items`); the stream becomes a subresource, `GET /api/v1/playback/sessions/{id}/stream/{token}/{generation}/{name}` and `.../stream/{token}/direct`; **`/api/v1/playback/stream/{id}/...` is removed outright, with no dual-serve window and no deprecation period.** A second `POST` stops superseding. A per-account cap ships in the same change.
+
+**Core's answer to "do you build stream URLs?": no, and this is verifiable rather than remembered.** `grep -rn "playback/stream" src` returns **nothing but the barrel export line**. The only place a stream URL is touched is `MachaPlaybackResolver.streamUrl()` (`:566`), which **absolutises whatever the server handed back** and never composes a path; `hlsWalk` resolves playlist-relative references against that URL, which is ordinary HLS and follows the server too. **So item 1 of the server's client list is a no-op for core and for every client that takes `source.url` from core.**
+
+**Core does not rely on supersession either.** `regenerate` already releases before it creates — `DELETE` then create, which is exactly the pattern the plan prescribes — and `failover`/`prepareAlternate` create on a *different* node. The old entry *"A playback session is keyed on the bearer token, so a second POST supersedes"* recorded that core survived by three incidental facts; **this change removes the exposure rather than creating one.** Items 2 and 3 are no-ops here.
+
+**Item 4 is not a no-op, and it is the one core has to get right.** Two findings, both from core's own tree:
+
+1. **The cap must not be classified as a node failure, and core cannot classify it correctly today.** A cap refusal is **account-scoped** — every node in the cluster will refuse it identically. If it arrives as a 4xx, `retryableEndpointFailure` stops the walk, which is right by accident. If it ever arrives as a 5xx, core **walks the whole cluster collecting identical refusals and charges every healthy node on the way** via `recordEndpointFailure`. Core's classification has buckets for *node* and *per-title* and **none for account**. This is the concrete forcing case for the three-valued `scope` core has been arguing for, and it now has a date attached to it.
+2. **Core routinely holds more than one session per account, by design, and the cap has to be sized for it.** `alternateSessions` is a `Map` (`PlaybackCoordinator.ts:756`): core holds the live generation **plus one or more standbys**, and during a failover it can briefly hold **three** — the dying one, the standby, and the new one. **A cap of 2 would break core's standby discipline silently**, turning the seamless-failover machinery into cap refusals at the worst moment. The server must choose the number knowing this, and core should probably learn the cap rather than assume it.
+
+**What core must ship BEFORE any node moves**, and this is the standing rule *"core ships tolerance first, nodes move second"*:
+- **`410` tolerance is still not shipped.** `playbackFailureKindForStatus` sends it to `unknown` → endpoint evidence → a healthy node charged. `0.15.0` did **not** include it. The plan lists `410 generation_superseded` as *"still held pending core's tolerance"*, which is accurate, and a coordinated route break is the right release to bundle it into.
+- Whatever status the **cap refusal** uses, core must not walk or charge on it.
+
+**Open questions core has put to the server** (see the message log): whether the collection `GET` is **node-local or cluster-wide** — core's sessions are keyed `${endpoint.id}::${nodeSessionId}` and are node-local, so a client adopting "the account's sessions" must either fan out across nodes or be told the listing is per-node; and whether an adopted session arrives **with its endpoint**, because every core recovery path needs provenance and throws `has no endpoint provenance` without it.
+
+**Sequencing core proposes:** core ships tolerance (`410`, cap status, adoption provenance) in a release the clients take **first**; the server moves the routes **second**; the clients need nothing for the URL move because they follow `source.url`. **Nothing here is started.**
+
 ## Waiting on Tom
 
 - ~~**The package alias split.**~~ Decided 2026-09-15: `@machafoundation/core`, because `@macha` is an unclaimed scope and `@machafoundation/core` is already published and owned. See *Moving the clients onto public npm* above.
