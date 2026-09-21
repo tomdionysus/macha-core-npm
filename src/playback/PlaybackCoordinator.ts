@@ -213,7 +213,41 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` below, which is the constraint that
  * turned out to be real.
  */
-const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
+/**
+ * **The server's validated floor, not its default — and that is the whole
+ * point.** `streaming.pipeline_idle_ms` is configurable, and until server
+ * 0.48.0 it was **not on the wire**: `status_api.cpp` stated only
+ * `startup_timeout_ms` and `segment_timeout_ms`, and the idle figures were
+ * read from configuration and never serialised. So core could not ask, and
+ * this was `30_000` — the default — which is the exact fault `look_ahead_ms`
+ * produced when a client believed one.
+ *
+ * **Core cannot read it, so core takes the number the server guarantees.**
+ * `config_base.cpp:359` refuses to start a node with `pipeline_idle` under ten
+ * seconds, so **10,000 ms is true of every node that is running at all**,
+ * whatever its configuration. A standby held inside that window cannot outlive
+ * a pipeline the node has torn down.
+ *
+ * **Wasteful in the cheap direction, deliberately.** On a node configured
+ * generously this discards a standby that would still have been good, costing
+ * a preparation that has to happen again. Holding one *past* teardown costs a
+ * promotion of something that cannot serve — on the viewer's critical path, at
+ * the moment recovery is already running, on the mechanism whose entire job is
+ * to be invisible. **A lost standby is cheaper than a dead one.**
+ *
+ * **It has since reached the wire, and this constant is still what runs.**
+ * Server 0.48.0 states `pipeline_idle_ms` in the per-node playback block of
+ * `/api/v1/status`, beside `session_idle_ms` and `max_sessions_per_account`
+ * (`status_api.cpp:367-372`) — the `NodeTelemetry` change this paragraph used
+ * to be waiting on. Reading it is not done here yet, and the floor is not
+ * merely a stopgap until it is: every field in that block is emitted only when
+ * the node has a figure, no node older than 0.48.0 sends any of them, and at
+ * the time of writing no deployed node is that new. **So absence is the
+ * ordinary case and must stay handled** — take the node's figure where one
+ * arrives, and keep this floor wherever one does not, rather than replacing
+ * the floor with a reader that has nothing to read.
+ */
+const ALTERNATE_RECOVERY_WINDOW_MS = 10_000;
 /**
  * How long a standby against a **transcode** session is held.
  *
@@ -243,6 +277,12 @@ const ALTERNATE_RECOVERY_WINDOW_MS = 30_000;
  *
  * Remux and direct standbys keep the full window — they are entitled to no
  * transcode slot and cost the node nothing but a session record.
+ */
+/**
+ * **Safe against the same floor by construction**, which is worth stating so
+ * nobody "corrects" it upward later: eight seconds is below the ten the server
+ * refuses to start beneath, so a transcode standby is always discarded before
+ * a node could tear its pipeline down, on every node that is running.
  */
 const ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS = 8_000;
 const PLAYBACK_END_TOLERANCE_MS = 5_000;

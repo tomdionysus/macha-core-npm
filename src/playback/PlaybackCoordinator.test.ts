@@ -4,6 +4,7 @@ import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource 
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
+import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -3327,5 +3328,84 @@ describe('a recovery that never comes back and never fails', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the cap refusal a host has to turn into a sentence', () => {
+  // **All three clients build a viewer-facing sentence on
+  // `isAccountSessionLimit(snapshot.fatalError)`, and nothing verified the
+  // code survives the journey to get there.**
+  //
+  // It is a long journey: MachaPlaybackError from the node resolver, wrapped
+  // by endpointFailure into a MachaEndpointError that carries neither status
+  // nor code of its own, then chained by terminalRecoveryError behind the
+  // originating player failure, then set as a bare Error on the snapshot. If
+  // the code does not survive that, three clients' sentences are dead and the
+  // failure reads as "Macha playback request failed" on a television - which
+  // is a breakage when the node is behaving exactly as designed.
+  //
+  // The phone client named this risk in its own tree: a branch that has never
+  // executed for real. This is core's version of the same check.
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+
+  const capRefusal = () => Object.assign(
+    new Error('Macha playback request failed: account is at its session limit'),
+    { status: 429, code: 'account_session_limit' },
+  );
+
+  it('reaches the host through the whole chain, not just out of the resolver', async () => {
+    const player = new FakePlayer();
+    const api = {
+      available: true,
+      resolve: vi.fn(async () => onNodeA()),
+      update: vi.fn(async () => onNodeA()),
+      stop: vi.fn(async () => undefined),
+      // The node refuses the replacement because the account is at its limit.
+      failover: vi.fn(async () => { throw endpointFailure('node-b', 'http://b', capRefusal()); }),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+
+    const fatal = coordinator.getSnapshot().fatalError;
+    // The three predicates every client is about to depend on.
+    expect(isAccountSessionLimit(fatal)).toBe(true);
+    expect(playbackFailureCode(fatal)).toBe('account_session_limit');
+    expect(playbackFailureStatus(fatal)).toBe(429);
+    await coordinator.close();
+  });
+
+  it('still leads with the failure that started the recovery', async () => {
+    // The cap explains why recovery could not finish; it is not what went
+    // wrong. A host showing only the cap would tell a viewer their account is
+    // busy when the actual event was a node dying under them.
+    const player = new FakePlayer();
+    const api = {
+      available: true,
+      resolve: vi.fn(async () => onNodeA()),
+      update: vi.fn(async () => onNodeA()),
+      stop: vi.fn(async () => undefined),
+      failover: vi.fn(async () => { throw endpointFailure('node-b', 'http://b', capRefusal()); }),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false });
+    player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+
+    expect(coordinator.getSnapshot().fatalError?.message).toContain('node A stream failed');
+    await coordinator.close();
   });
 });

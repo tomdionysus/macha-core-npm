@@ -15,6 +15,37 @@ export class MachaEndpointError extends Error {
   }
 }
 
+/**
+ * The HTTP status for a failure, wherever it ended up in the chain.
+ *
+ * **The companion to `playbackFailureCode`, and it exists because leaving it
+ * private cost a client a real bug.** `endpointFailure()` wraps the original
+ * in a `MachaEndpointError` that carries **neither `status` nor `code` of its
+ * own**, so a caller reading `error.status` off the object it caught finds
+ * nothing and classifies every wrapped refusal as fatal. The phone client hit
+ * exactly that on 2026-09-21, in a classifier it had written an hour earlier
+ * to fix the neighbouring bug — it had corrected *"the error I catch is the
+ * error I raise"* and immediately assumed *"the fields are on the error I
+ * catch"*. Its degrade path had then been dead twice in one day.
+ *
+ * **Core walks this chain in three places; a client that has to re-walk it is
+ * a mirror that only one side will update.** Exported for the same reason the
+ * code accessor is, and stated as the rule rather than the exception: **what
+ * survives a layer boundary is fields, never identity and never position** —
+ * duck-type on `status` and `code`, and read them through these accessors.
+ */
+export function playbackFailureStatus(error: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const status = (current as { status?: unknown }).status;
+    if (typeof status === 'number' && Number.isFinite(status)) return status;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
 function errorStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const status = (error as { status?: unknown }).status;
@@ -114,6 +145,36 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'account_session_limit',
 ]);
 
+/**
+ * **Core holds the refusal, never the limit. Do not add a number here.**
+ *
+ * What is above is a *code the server owns and stated*. The cap's value is a
+ * node's configuration, it is the operator's to set, and core has no standing
+ * to hold a copy of it — not as a constant, not as a default, not as a
+ * fallback for a node that has not said. Core attempts, and handles the
+ * refusal it gets.
+ *
+ * **This is the fault class this repository keeps re-recording, and it has a
+ * measured cost each time.** A client sized itself against `look_ahead_ms`'s
+ * default of 8 segments when the node was configured for 4, believed it had
+ * 32 s of authorised production against a real 16, and sat refused at the
+ * frontier for the difference — a 12.7 s viewer freeze on 2026-09-17. Two
+ * standby windows in `PlaybackCoordinator` are still literals sized against a
+ * configurable `pipeline_idle_ms`, and they are open items for the same
+ * reason. **A default is not a contract**, and the whole of `0.14.0` was spent
+ * deleting core's private copies of server numbers.
+ *
+ * The server has agreed to publish the limit and the current count somewhere
+ * core can read *before* it plans, rather than only on the refusal — so core
+ * can decline to prepare a standby it knows will be refused instead of
+ * discovering the cap at the moment failover needs it. **When that lands, read
+ * it per response and treat absence as "the node cannot say"**, the same
+ * convention `lookAheadMs` and `PlaybackSource.budgets` already use. Until
+ * then core plans as though there were no cap, which is correct: an attempt
+ * that is refused costs one round trip, and a guessed limit costs a standby
+ * that was never built.
+ */
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -157,6 +218,15 @@ export function isPerTitleFailure(error: unknown): boolean {
  * Returns the **first** code found, outermost first, because the outermost
  * layer is the one that classified the failure. `undefined` means no layer
  * stated one, which is not the same as the failure having no cause.
+ *
+ * **The name is narrower than the behaviour, deliberately.** This walks any
+ * error chain and is correct for auth, catalogue and transfer failures too --
+ * every family in this package wraps the same way. Use it there rather than
+ * writing a second walk: the web client found a `signInComplaint` reading
+ * `.status` one level off `cause`, which degrades to a generic message the
+ * moment anything wraps a `401` in something carrying no status of its own.
+ * **A hand-rolled walk is the mirror these accessors exist to retire**, and a
+ * domain-flavoured name should not be what talks somebody into writing one.
  */
 export function playbackFailureCode(error: unknown): string | undefined {
   const seen = new Set<unknown>();

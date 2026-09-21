@@ -8,13 +8,35 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-**Where things stand.** **`0.17.0` is the release the fleet pins for the route break.** `0.15.0` and `0.16.0` were both tagged and **deliberately never published** — `0.15.0` because the `410` tolerance was rolled in rather than making three clients adopt twice, and `0.16.0` because two clients asked for a host-facing accessor within the hour of it being tagged. **Naming the version once matters more than the number**: three clients are pinning it and two are writing it into their own files, so a version that moves under them is worse than a number spent.
+**Where things stand. Core is building `0.17.0` right now.** It is not released, not published, and its contents are still moving — **`npm view @machafoundation/core versions` ends at `0.14.0`, and the rest of the world has seen nothing since.** Tom, 2026-09-21: *"It's 0.17.0 because the rest of the world hasn't seen that yet."*
 
-**The publish is gated on `npm login` on this machine**, not on anything technical: `npm whoami` answers 401. Tom approved the publish; the tarball is built and dry-run clean at 155 files.
+**A version number is only immutable once it is published.** Until then it is the name of the thing being built, and `0.17.0` will go on accumulating work under that name until it is proven and published. **The `0.15.0` and `0.16.0` tags are waypoints from earlier today and mean nothing to anybody** — do not offer them to a client, do not treat them as releases, and do not reason about what is "in" them.
 
-**`0.17.0` is what the fleet pins for the route break.** It carries everything `0.15.0` did, plus `410` tolerance — which is the thing the nodes are blocked on. It carries the `410` tolerance, the `429 account_session_limit` tolerance, and `playbackFailureCode`/`isAccountSessionLimit`. The order is: clients pin `^0.17.0`, the web client lands its own `410` branch in the same window, **then** the nodes move.
+**Core proposed a `-dev` prerelease scheme to stop the version string equalling a stale tag, and Tom rejected it:** *"NO. Do not do this. We're a development private cluster."* He is right and it was ceremony — nothing is published, every consumer is hotlinked, and the honest identifier for a moving tree is a SHA. **Where a client needs to say what it measured against, it records core's SHA and a hash of `dist`**, as the phone client already does; its detail is worth keeping, that the hash must be taken from *inside* `dist`, because `shasum` includes the path it is given and two runs from different directories disagree about identical bytes.
 
-**What `0.15.0`/`0.16.0` are about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
+**A build system may not notice core changed at all, which is the sharpest edge of the link.** *Found 2026-09-21 by the phone client.* Core is consumed through a symlink, and **nothing says Gradle tracks a tree outside the project as a task input** — so an "up to date" bundle can ship **stale core while every version string agrees**. That client deleted the generated JS bundle by hand before rebuilding and proved the difference: the bundle sha moved from `a94c2e0e65fa9851` to `e44394668997211c`. **A client taking a core change through a link must verify the artefact moved, not that the build ran.**
+
+**And the best post-install check anyone has produced is behavioural, not a version.** That client confirmed core `0.17.0` was genuinely on the device by observing routing lines carrying **both `advisory: true` and `advisory: false`**, which no published core emits. **Find a behaviour only the new code produces and watch for it** — a version string, a commit and a green build all agreed throughout, and none of them was evidence.
+
+**Build cost, so nobody budgets the wrong number:** cold `assembleRelease` **20m 11s**; incremental after a JS-only change **1m 31s** (60 tasks executed, 677 cached). **Taking a core change onto a device costs ninety seconds plus an install, not twenty minutes**, once that client has built once.
+
+**A link resolves core's WORKING TREE, not a commit — so while clients are linked, an uncommitted edit here is their dependency.** *Found 2026-09-21 by the web client, which measured before believing core's own message about itself.* For about an hour, *"core's `develop` reads `0.18.0-dev`"* and *"the tree this client compiles against reads `0.17.0`"* were **both true**: `package.json` was modified in core's working copy against HEAD `938501d`, and `dist` had been built three minutes after that commit. **A SHA alone does not identify what a linked client is building against.** The identity is **SHA + dirty state + `dist` hash**, which is what that client now records.
+
+**And the rule cuts both ways, which the web client sharpened after core stated it: core's tree being clean when core writes a message is not the same as clean when a client compiles.** Its `dist` hash moved from `f662293ec1c0` to `8351d54d21b4` between two of its own messages, so a *"402 tests green"* it had already reported was green against a tree no longer on disk. It re-measures rather than carrying a result across one of core's commits, which is right — **but the churn is core's to reduce, not the client's to absorb.**
+
+**The asymmetry, in the web client's words, and it is the half a client owns:** core saying *"quiescent, identity attached"* makes a result trustworthy for longer than one message; **a client's result is only ever evidence about a *measured* tree state, so record what you measured against, not when you measured.** A timestamped green is worthless across a rebuild; a green carrying SHA + dirty state + `dist` hash can be re-confirmed in one command instead of a full gate, which is how that client answered core's last message without re-running anything. **Both of us measured `db8d5a2` by different hash methods and agreed it was unchanged — two methods agreeing on "unchanged" is worth more than either number.**
+
+**So: do not rebuild `dist` for a record-only commit.** Core has been running the whole gate reflexively on `TODO`/docs changes, which moves `dist` under four linked clients for no reason. The existing rule already says *build when the commit touched `src`*; the missing half is that a commit which did **not** touch `src` must leave `dist` alone. Batch source commits while a client is mid-verification, and when core is quiescent, say so with the full identity so a client can trust a result for longer than one message.
+
+**The operational rule this implies is core's, and it is stronger than the one already here.** *Build before ending a session that touched `src`* is not enough: **do not leave the tree dirty while anyone is linked**, because somebody is compiling against it now rather than at a moment of core's choosing. Check `git status` is clean and `dist:check` passes before saying anything to a client about what core contains — core described its own tree wrongly once today by reading its intent rather than its disk.
+
+**How the fleet works meanwhile: every client hotlinks this tree.** Tom: *"they should hotlink for now so we can actually test this works."* That ruling and the linking one earlier the same day are the same policy — all four clients point at core during development. **A publish happens when the work is proven on hardware, not when it compiles**, because a registry entry is permanent and cannot be withdrawn.
+
+**The one consequence to state rather than discover: a linked client cannot cut a release.** `main` pins published versions, and every client's `develop` now depends on symbols that exist in no published version. **Nobody tags a client release until core `0.17.0` is published.** The phone client recorded this itself before core said it, and its `version:check` enforces the mechanical half.
+
+**The gate on the route move, in its final shape:** core and the web client ship tolerance → **proven through the links, on hardware** → core `0.17.0` published → clients pin and release → **then** the nodes move.
+
+**What `0.17.0` is about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
 1. **`hlsWalkTargets` now throws `HlsManifestUnavailableError` instead of returning `[]`** on a playlist that answered with a status. **This is the one breaking change** — a host calling that exported primitive directly must catch it. `preflightHlsSource` and `probeHlsReadiness` are unaffected in shape; the latter now reports `unavailable` with a status where it used to say `unassessable / empty-manifest`.
 2. **A reaped session is classifiable again.** The `404` on a master playlist reaches the host, so `playbackFailureKindForStatus` can answer `not-found` rather than `unknown` — which is what stops core charging a node that answered honestly.
 3. **The whole recovery is bounded** (`superviseRecovery`), at twice the node's stated attempt budget plus head-room, ending in the ordinary failover with `client_recovery_deadline`.
@@ -85,35 +107,33 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 ---
 
-## Open threads as of the end of 2026-09-20 — who is waiting on whom
+## Open threads — state of play at the cutover, 2026-09-21
 
-**Written because four sessions were in flight at once and none of this is derivable from the code.** Each line says what is owed and by whom. Nothing here blocks core except where it says so.
+**The order of work is above.** This section is who is waiting on whom *right now*, because five sessions moved fast today and none of it is derivable from the code.
 
-**Core owes a reply to nobody right now** — every peer message received has been answered. What core owes is *work*, listed below.
+**BLOCKED ON TOM — and these are the only two things holding the cutover:**
+1. **The web bundle deploy.** Every node still serves `index-BGrNH6KR.js`, which has **no `410` in 614,717 bytes**, so it reads a superseded generation as evidence against the endpoint. A replacement is built and verified *in the shipped JS*. **The `ssh`/`rsync` was denied by that session's own permission classifier** — it correctly did not route around it and correctly did not ask core to run it. Tom grants the permission or runs the two commands. **"The web client is ready" and "the bundle is on the nodes" are different claims and only the first is true.**
+2. **The cap's number.** Core cannot pick it and will not hold it. See the measurements above.
 
-**Waiting on the Android TV client (television, `macha-client-rn-androidtv`):**
-- **Re-run done 2026-09-21: recovered in 1.2 s, bound not exercised, cause unconfirmed.** The next reap is the one that matters, with its `info` trail on. **If it freezes again the trail names the last line before the silence** — that is the highest-priority signal outstanding anywhere, and the entry stays open until it arrives.
-- Whether `isFallbackAvailable` can be true against what Macha nodes actually serve. The whole `425` decision turns on it.
-- It is fixing its own `kindForTerminalError` gap and has added `terminal-failure-unclassified` to its trail.
+**Waiting on the server:** the cutover itself, on all three nodes at once; the cap's number; and where the limit and count live with what freshness, which is the last thing core needs to decline a standby *before* being refused rather than after.
 
-**Waiting on the phone client (`macha-client-rn`, a SEPARATE codebase):**
-- It is **not** building its `sessionAlive` probe until it settles a generation-attribution guard, because `expo-video` errors name no session. Correct call; see the resolver-contract entry.
-- It has offered to run the **live `425` experiment** on the A85 and needs Tom's word for a node. **Taking that offer is the cheapest route to closing `425`.**
-- Its 2026-09-13 measurement and its own bytecode reading contradict each other; it has asked that nobody move the server on its reading alone.
+**Core: cap work COMPLETE except what the server gates.** Classification, three accessors, `standby-preparation-refused`, and the proof that the reason survives to a host. **HEAD `42d92fb`, clean, `dist` unchanged since `28d6b70`** — the last commits are records only, so client measurements against `28d6b70`'s `dist` still hold.
 
-**Waiting on the web client (`macha-client`):**
-- Nothing outstanding. It withdrew its `look_ahead_ms` mechanism itself and its hls.js reading stands.
+**Client readiness, each verified in its own artefact rather than its source:**
+- **Web** — 410 in three call paths including the Samsung native preflight; `isSourceGoneStatus` delegating to `playbackFailureKindForStatus` so it holds no status list; cap notice built; two tests asserting it composes no path. Bundle rebuilt against `28d6b70`. **Cannot deploy.**
+- **Phone** — route work done; cap on both create *and* failover after finding a refusal was spending failover budget; three accessors adopted. Rebuilding deliberately rather than shipping a tree it cannot describe.
+- **Android TV** — cap sentence on create and failover, code string spelled nowhere, verified through Metro from a linked tree. **Rebuilding at the sitting rather than running `f849f445…`**, because `standby-preparation-refused` is the discriminator between a cap-caused freeze and the unexplained one.
 
-**Waiting on the server:**
-- The `look_ahead_ms` / `MediaSegmentStore` P1 — Tom decides scheduling. **Core's narrow fix is gated on that decision**, because if the server reports from the store the adopt becomes correct and core's fix becomes wrong.
-- The three-valued `scope` on error context, which it took back to Tom rather than building past.
-- All three nodes are on `0.47.0`. gbni-2 has been defunct for months and is not in the deploy — **check core is not offering it as a failover candidate.**
+**WHAT TO WATCH FOR ON THE FIRST CUTOVER RUN, and it is not a failure.** The web client's framing, and it is the sharpest thing said about the cap: **`standby-preparation-refused` firing with `accountAtSessionLimit: true` while no viewer sees anything wrong.** That is the cap working exactly as designed *and* seamless failover silently getting worse at the same time — no stall, no error, nothing on a screen, just standbys quietly not being built. **It is the state that looks like nothing at all from the outside**, and it is the one a number set slightly too low produces. A viewer-visible cap refusal is the loud case and will be reported by whoever is watching; this is the quiet one and only the trail shows it. **Grep for that event before concluding the cap's number is fine.**
 
-**Waiting on Tom — the only things genuinely blocked:**
-1. **The arrival-point estimator.** Measured round trip (an EWMA from the `elapsedMs` core already logs) versus the node-stated `budgets.deadlineMs` ceiling. Core recommends the measured estimate. **This is the largest live viewer-visible defect outstanding and the only one deliberately not started.**
-2. Whether this repo owns the three-repository encoder-speed coordination, and on what schedule.
-3. A release, which now carries a hang fix.
-4. Whether the phone client gets a node for the `425` experiment.
+**The test, once the nodes move:** **a node killed under a playing transcode, failover across moved nodes.** Not a single-node check — Tom vetoed that and was right. It is the only test that exercises the routes, `410` on the path that produces it, and the cap against a standby, in the configuration a viewer is really in.
+
+**Still open and NOT part of this cutover:**
+- **The Android TV freeze: cause unconfirmed.** The 48 s supervision bounds it; nothing explains it. A post-cutover freeze now has a discriminator it did not have this morning.
+- **The arrival-point estimator** — largest live viewer-visible defect, deliberately not started, waiting on Tom.
+- **The control-lane walk revisiting a known-dead endpoint at order 1 every call** — core's, its own before-and-after, web client's captures.
+- **Two registry entries can be one node** (`ramaroja` fronting) — needs a node to state its own identity; with the server.
+- **The A85 plays Direct Play with no audio at all** — no AC-3 decoder, client claims one. **Predates everything. If a post-cutover smoke test says "plays, no sound", the silence is the old fault.**
 
 ---
 
@@ -326,6 +346,36 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 ---
 
+## The agreed order of work, Tom 2026-09-21 — READ THIS BEFORE PLANNING ANYTHING
+
+**Everyone does the cap work now → server cutover → testing → fixing → npm publish → clients fix up to the published package → client releases.**
+
+**Nothing is a GO until the state of play is one where the tests are likely to pass** — core, the nodes and the clients all carrying the change at once. Tom: *"We need a state, on core, with the new servers, and clients using core, where all tests are likely to work. It's not a GO until we reach that state."* Getting there is the work; the cutover is not a thing to be argued into, it is a thing to be made ready for.
+
+**And the test is cluster-wide or it is not worth running. Tom vetoed a staged single-node cutover**, which the web client had proposed and core was carrying: *"Nope. Pointless. Macha's valueprop is resilience, cluster, failover. A test against a single server is pointless."* **All three nodes move at once.** A client pointed at one node watching one generation measures the one thing this product is not; the observation worth having is **a node killed under a playing transcode with failover across moved nodes** — which exercises the routes, `410 generation_superseded` on the path that actually produces it, and the cap's interaction with a standby, in the configuration a viewer is really in. The web client withdrew its own proposal on the same reasoning.
+
+**All three clients answered NO-GO on the cap moving with the routes and were overruled, deliberately:** *"it's not a good idea to wait — move the cap too. We'll test everything when the servers have cut over."* So the mitigation is no longer sequencing. It is **the cap's number**, and **making the cap's effects visible** so that a bad number is diagnosable rather than silent. That second half is core's and is what core built for it.
+
+**Core's cap work, and its state:**
+1. **`429 account_session_limit` classified account-scoped** — neither walked nor charged. **Done.**
+2. **`playbackFailureCode`, `playbackFailureStatus`, `isAccountSessionLimit` exported** so no client parses a message or re-walks a cause chain. **Done**, adopted by all three clients.
+3. **A refused standby is no longer silent.** **Done** — see below; this is the one that decides whether a bad cap number is findable.
+4. **Read the published limit and count, and decline to prepare a standby that would be refused.** **Blocked on the server shipping the field.** Core holds no cap number and will not.
+
+**Considered and REJECTED, recorded so nobody optimises it later: skipping failover after a cap-refused regeneration.** When the cap refuses a `regenerate`, `buildReplacement`'s catch falls through to `beginSourceFailover`, which creates another session and will be refused identically — the cap is account-scoped, so every node answers the same. That looks like guaranteed-futile work on the viewer's critical path, which is the exact argument that made a cap refusal non-walking in the first place, and the symmetry is tempting.
+
+**It is the wrong call, and the asymmetry is why.** Cost of attempting: one round trip before a terminal screen the viewer was getting anyway. Cost of skipping: a viewer who *could* have kept watching does not, because the cap cleared in that instant — another device on the account stopped, which is not exotic in a household. **Optimistic on the viewer's path, pessimistic on the speculative one** is already the rule written here for the cap, and this is the viewer's path. The standby case is the speculative one and is where the pessimism belongs, which is what `standby-preparation-refused` serves.
+
+**So the walk stops at the cap and the recovery does not.** Those look inconsistent and are not: a walk tries *other nodes* for an answer only the account can change, while a failover retries *the same question* after time has passed. Do not converge them.
+
+### ~~A refused standby was swallowed whole, so the cap could disable seamless failover in silence~~ — BUILT on `develop` 2026-09-21
+
+**Found while checking what a cap refusal does on the speculative path, which nobody had asked.** `prepareAlternate` ended in a bare `catch { return undefined; }`. Three very different states — *nothing suitable was available*, *the node refused*, *this threw* — collapsed into one silent `undefined`.
+
+**The cap makes that acute rather than untidy. A standby is the *first* thing an account at its limit is refused**, because it is the speculative request rather than the one a viewer is waiting on. So the mechanism most likely to meet the cap first was the one that could not report meeting it: **seamless failover would simply stop happening, with nothing on any trail saying why, and the first evidence would be a viewer watching a stall.** A cap number set too low would have been indistinguishable from the unexplained freeze the Android TV session is still hunting, on the same instrument, in the same week.
+
+`standby-preparation-refused` at **warn**, carrying the endpoint, the media, the code, the status and **`accountAtSessionLimit`** by name — because that is the one cause a host can turn into a sentence a person can act on. Two tests, both verified red: one against the reporting itself, one against the account/node distinction, since calling a node genuinely full an account limit is wrong in the most confusing direction.
+
 ## The route break: playback sessions become a REST resource — CORE OWNS THE TRANSITION
 
 **Tom, 2026-09-21: *"We are changing the route structure for sessions and streams"* and *"You will manage this transition with the clients."*** That closes the coordination question that sat in *Waiting on Tom*: **core is the integration point for this one, by instruction.** The server's plan is committed at `macha/TODO/2026-09-21-playback-sessions-as-a-resource-plan.md` and is agreed with the operator but **not yet implemented**.
@@ -351,6 +401,31 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 - **A dead node's session cannot be deleted, by construction.** The web client measured it driving a real failover with a node killed at the socket: `session-stop` → `DELETE` → `session-stop-failed: TypeError: Failed to fetch` → the close ladder retrying into a void. **The session being abandoned lives on the node that just died**, so it stays live from the cluster's point of view until it expires. **A cap that counts those refuses the create the failover depends on, during an outage, which is the worst moment and the hardest case to reproduce.** And a cascade goes further than one hop — one twenty-minute run put sessions on fi-1, es-1, gbni-1 and via ramaroja.
 - **Core's "2 live, 3 transient" is the coordinator's shape, not every client's.** The phone client holds **1, transiently 2** — no standby, both warm-standby attempts tried and reverted. So a cap justified as "core needs 3" must not be set *at* 3 on the assumption that is anyone's ceiling. **And a client adopting a session through the new listing while holding its own is 2 for a client that looks like it holds 1.**
 - **A cap per *account* is a cap on a household.** The Android TV client's seat: two televisions, a phone, and whoever is on the web client, **is four viewers before a single standby exists**. It reads as tight under 8 and would rather the limit were per-viewer-session than per-account.
+
+**The server has agreed to publish the limit and the count** — *"I will put the limit and current count somewhere you can read before you plan, not only on the refusal"* — **but has not said where, and that is not a detail.** Core has asked, with a preference: the **limit** on `/api/v1/playback/status`, which core already reads per node on a cycle and already caches per-node budgets from, because it is configuration and changes on reload; the **count** on the session payload, because it is state. **The count must carry an age**, not a bare integer — it is the most perishable number in the system, changing whenever anyone on the account starts or stops anything from a device core cannot see, and the server's own reasoning for `produced_age_ms` being an age rather than a timestamp applies unchanged. **Absence means the node cannot say.**
+
+**What core will do with it, decided now so it cannot drift:** decline to prepare a **standby** when the account is at or near the limit, and name the reason. **Never** use it to decide whether to attempt a generation the viewer is waiting on — a refused attempt costs one round trip, a guessed refusal costs a viewer their film. **Optimistic on the viewer's path, pessimistic on the speculative one.**
+
+**Two answers core needs before it writes a sentence for four clients:** whether the count is per node (the listing and the cap are, so probably) — because *"account at its limit"* reads as global and a client will render it globally, and if it is per node the sentence has to say so; and whether the node can distinguish a standby from a live session, which matters only if the cap is tight.
+
+**BOTH OF TOM'S TWO ASSUMPTIONS ARE NOW FIXED, and neither needed the wire field.** He asked for the standby windows and the deferred release to stop guessing at server numbers and read them. **Neither number is on the wire** — confirmed by the server against its current tree, not inferred from a stale checkout — so both were fixed by removing the need for the number instead.
+
+1. **`session_idle_ms`: the dependency is deleted.** `drainAbandonedReleases` no longer expires anything. A `DELETE` for a session the node has already dropped answers `404`, which is treated as success, so the expiry check was an optimisation masquerading as a boundary. **Core's constant was `1_800_000` against a server-validated minimum of `30_000` — up to sixty times over**, and on a node configured near the floor core would have abandoned strands it could have cleared.
+2. **`pipeline_idle_ms`: core takes the floor the server guarantees rather than the default it assumed.** `config_base.cpp:359` **refuses to start a node** with `pipeline_idle` under ten seconds, so **10,000 ms is true of every node that is running at all**. `ALTERNATE_RECOVERY_WINDOW_MS` was `30_000` — the default — and is now `10_000`. **`ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` at `8_000` was already safe by construction**, being below that floor, and is commented so nobody raises it.
+
+**Wasteful in the cheap direction, deliberately.** On a generously configured node core now discards a standby that would still have been good, costing a preparation that must happen again. Holding one *past* teardown costs promoting something that cannot serve — on the viewer's critical path, during a recovery, on the mechanism whose whole job is to be invisible. **A lost standby is cheaper than a dead one.**
+
+**Core now holds no un-derived copy of server configuration on either path.** Replace the floor with the node's stated figure the moment it reaches the wire.
+
+**THE CAP IS 32 per node, `streaming.max_sessions_per_account`, zero disables.** Arithmetic in the server's config comment rather than anyone's head: four viewers before any standby (two televisions, a phone, a browser) x two per viewer steady and three transiently in a failover = twelve, **plus a cascade's worth of strands each holding a slot for the whole of `session_idle`**, more than one possible on a single node because an haproxy front appears twice in a registry. Chosen for the worst day rather than the average one. **Core accepts it and has no reason to argue** — core holds at most a handful per node and 32 clears the disturbance case with room.
+
+**The server also withdrew its own supporting claim, unprompted:** it had said a cascade strands at most one session per node, so a cap would bite only on a client returning to a node it had abandoned. **Wrong, because two registry entries can be one node behind `ramaroja` and no client can tell.** The cap's number never rested on it.
+
+**Where the limit and count live — answered, and the count answer is better than what core asked for.** The **limit** is configuration and rides the status surface core already caches. The **count** appears *only* on surfaces computed live at the instant of the response — creation payload, collection listing, refusal — and is **deliberately absent from anything cacheable**. Core had asked for an age on the count; the server's answer is that an age measured at emission is always zero, because the count is computed under the lock in the same breath as the response. **What ages is core's copy, and core knows that better than the node does.** So rather than ship a field that always reads zero, it made a stale count impossible to receive. That is the right call and core withdraws the request.
+
+**One gap core's question exposed in what the server had already built**, surfaced by them rather than found by core: `max_sessions_per_account` went onto `GET /api/v1/playback/status`, which is **node-local** — it answers *"what may I hold here"* and not *"where should I put a standby"*. Core needs the limit for every node it might fail over **to**, which is the argument the telemetry block's own comment already makes. **So `pipeline_idle_ms`, `session_idle_ms` and the cap limit are one `NodeTelemetry` change rather than three separate ones** — a wire change across all three nodes, not an afternoon's field wiring. **Tom's call; neither core nor the server acts on it.**
+
+**Core holds no cap number, and must never hold one.** *Checked at Tom's prompting 2026-09-21: `grep` finds no session-cap constant anywhere in `src`.* What core has is the **refusal** — `account_session_limit`, a code the server owns and stated — classified account-scoped so core neither walks nor charges. **The limit's value is a node's configuration and the operator's to set**; a copy here would be the `look_ahead_ms` fault again, which cost a 12.7 s viewer freeze, and the two standby-window literals below are open items for the same reason. **A default is not a contract.** When the server publishes the limit and the current count, read it per response and treat absence as *"the node cannot say"* — never as a number. Until then core plans as though uncapped, which is right: a refused attempt costs one round trip, a guessed limit costs a standby that was never built. Written into `endpointFailure.ts` beside the code set so the next reader meets the prohibition where the temptation is.
 
 **So core's ask of the server is now three things, not one:** a 4xx with a distinct code; a limit core can *read* rather than discover by refusal; and **either don't count sessions on endpoints the cluster itself cannot reach, or expire them fast enough that a failover cascade cannot exhaust the cap.**
 

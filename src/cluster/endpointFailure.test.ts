@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFailure, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, retryableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
   it('does not treat one title’s pipeline failure as node health evidence', () => {
@@ -142,5 +142,34 @@ describe('reading the machine code a host is meant to act on', () => {
       Object.assign(new Error('resource limit'), { status: 429, code: 'resource_limit' }));
     expect(isAccountSessionLimit(nodeFull)).toBe(false);
     expect(playbackFailureCode(nodeFull)).toBe('resource_limit');
+  });
+});
+
+describe('reading the status a host is meant to branch on', () => {
+  // `endpointFailure()` wraps the original in a MachaEndpointError carrying
+  // neither status nor code of its own, so a caller reading `error.status` off
+  // what it caught finds nothing and calls every wrapped refusal fatal. A
+  // client hit exactly that, in a classifier written an hour earlier to fix
+  // the neighbouring assumption.
+
+  it('finds the status through the wrapper that does not carry one', () => {
+    const wrapped = endpointFailure('node-a', 'http://a',
+      Object.assign(new Error('bad request'), { status: 400, code: 'bad_playback_request' }));
+    // The shape of the bug: the outermost object has neither field.
+    expect((wrapped as unknown as { status?: number }).status).toBeUndefined();
+    expect(playbackFailureStatus(wrapped)).toBe(400);
+    expect(playbackFailureCode(wrapped)).toBe('bad_playback_request');
+  });
+
+  it('survives a cyclic chain rather than hanging the failure path', () => {
+    const a = new Error('a') as Error & { cause?: unknown };
+    const b = new Error('b') as Error & { cause?: unknown };
+    a.cause = b; b.cause = a;
+    expect(playbackFailureStatus(a)).toBeUndefined();
+  });
+
+  it('says nothing when no layer stated a status', () => {
+    expect(playbackFailureStatus(new Error('no status'))).toBeUndefined();
+    expect(playbackFailureStatus(undefined)).toBeUndefined();
   });
 });
