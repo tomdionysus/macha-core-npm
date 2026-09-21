@@ -118,6 +118,8 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 - **Phone** — route work done; cap on both create *and* failover after finding a refusal was spending failover budget; three accessors adopted. Rebuilding deliberately rather than shipping a tree it cannot describe.
 - **Android TV** — cap sentence on create and failover, code string spelled nowhere, verified through Metro from a linked tree. **Rebuilding at the sitting rather than running `f849f445…`**, because `standby-preparation-refused` is the discriminator between a cap-caused freeze and the unexplained one.
 
+**WHAT TO WATCH FOR ON THE FIRST CUTOVER RUN, and it is not a failure.** The web client's framing, and it is the sharpest thing said about the cap: **`standby-preparation-refused` firing with `accountAtSessionLimit: true` while no viewer sees anything wrong.** That is the cap working exactly as designed *and* seamless failover silently getting worse at the same time — no stall, no error, nothing on a screen, just standbys quietly not being built. **It is the state that looks like nothing at all from the outside**, and it is the one a number set slightly too low produces. A viewer-visible cap refusal is the loud case and will be reported by whoever is watching; this is the quiet one and only the trail shows it. **Grep for that event before concluding the cap's number is fine.**
+
 **The test, once the nodes move:** **a node killed under a playing transcode, failover across moved nodes.** Not a single-node check — Tom vetoed that and was right. It is the only test that exercises the routes, `410` on the path that produces it, and the cap against a standby, in the configuration a viewer is really in.
 
 **Still open and NOT part of this cutover:**
