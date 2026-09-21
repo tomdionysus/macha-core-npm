@@ -382,9 +382,9 @@ Core raised that `docs/principles-and-laws.md` numbers the laws control/viewer/l
 
 **Tom ruled 2026-09-20, unprompted, for the macha-client pair: direct linking to core's tree during development is fine** — *"the projects need to work together"* — **and the gate is before `main`, not before the link.** Switch `package.json` back to a published `^x.y.z`, `npm install`, and only then merge and push, because `main` has people looking at it and must work at all times. That client has written it up as a procedure rather than a principle, *because the principle is what failed last time*, and the step worth copying is the second:
 
-1. `package.json` back to a published `^x.y.z` and `npm install` — **not a lockfile edit**.
+1. **Remove the directory, `npm uninstall`, then `npm install @machafoundation/core@^x.y.z`** — **not a lockfile edit, and not a bare spec change.** *Corrected 2026-09-21 by the Android TV client, which hit it on its own release gate.* Editing `package.json` to `^0.14.0` and running `npm install` **keeps the symlink**: the linked checkout reports a version that satisfies the range, so npm sees nothing to do, the lockfile still says `"link": true`, and typecheck passes against the link while `package.json` claims the registry. **That is the `0.7.0`-against-`0.11.1` incident in a new coat.** Step 2 below catches it, but a repair step that does not repair is not a procedure — it just makes the assertion do the work.
 2. **`test -L node_modules/@machafoundation/core` must fail.** A version string agrees while a stale link is still in place; that check cannot lie.
-3. `typecheck` and the suite green **against the registry copy**, not against the tree the link pointed at.
+3. **Read `resolved` in the lockfile**, not `package.json` and not the version string, then `typecheck` and the suite green **against the registry copy** rather than the tree the link pointed at.
 4. Then merge and push.
 
 Plus the Vite trap, now part of that gate rather than folklore: `node_modules/.vite/deps` survives a symlink swap, so `rm -rf node_modules/.vite` and `--force`, or the verification is of the copy you think you just replaced.
