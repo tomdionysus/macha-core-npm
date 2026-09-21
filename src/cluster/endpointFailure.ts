@@ -218,6 +218,15 @@ export function isPerTitleFailure(error: unknown): boolean {
  * Returns the **first** code found, outermost first, because the outermost
  * layer is the one that classified the failure. `undefined` means no layer
  * stated one, which is not the same as the failure having no cause.
+ *
+ * **The name is narrower than the behaviour, deliberately.** This walks any
+ * error chain and is correct for auth, catalogue and transfer failures too --
+ * every family in this package wraps the same way. Use it there rather than
+ * writing a second walk: the web client found a `signInComplaint` reading
+ * `.status` one level off `cause`, which degrades to a generic message the
+ * moment anything wraps a `401` in something carrying no status of its own.
+ * **A hand-rolled walk is the mirror these accessors exist to retire**, and a
+ * domain-flavoured name should not be what talks somebody into writing one.
  */
 export function playbackFailureCode(error: unknown): string | undefined {
   const seen = new Set<unknown>();
