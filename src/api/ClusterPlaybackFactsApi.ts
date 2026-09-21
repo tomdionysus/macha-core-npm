@@ -1,6 +1,6 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
-import { isPerTitleFailure, retryableEndpointFailure } from '../cluster/endpointFailure.js';
+import { failureBlamesEndpoint, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { MachaPlaybackFactsApi } from './MachaPlaybackFactsApi.js';
 import type { PlaybackFactsApi, PlaybackMediaFacts } from './PlaybackFactsApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
@@ -66,7 +66,7 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
         // One unreadable extent is a fact about the title, not about the node
         // — the same guard `ClusterPlaybackResolver.create` has. Without it a
         // single bad file demoted the node for every other title on it.
-        if (status !== 404 && !isPerTitleFailure(error)) this.router.registry.recordFailure(endpoint.id);
+        if (status !== 404 && failureBlamesEndpoint(error)) this.router.registry.recordFailure(endpoint.id);
         lastError = error;
       }
     }

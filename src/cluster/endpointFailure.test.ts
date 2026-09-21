@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFailure, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
   it('does not treat one title’s pipeline failure as node health evidence', () => {
@@ -63,29 +63,39 @@ describe('a refusal about the account, not the node', () => {
   // session cap, because once one bearer can hold several playback sessions
   // nothing else bounds one account. It answers `429 account_session_limit`.
   //
-  // `429` is the one 4xx core treats as worth another node, which is right for
-  // a node-scoped limit and exactly wrong for an account-scoped one: every
-  // node refuses identically, so the walk is guaranteed-futile work on the
-  // viewer's critical path - and because the charge is gated on the same
-  // answer, core would record a failure against every healthy node it visited.
+  // **The cap is counted per node.** `sessions_held_by_locked` iterates that
+  // node's own session map; there is no replication and no cluster-wide total.
+  // So a refusal from one node says nothing about the next, and the walk is
+  // how a viewer on a cluster with room gets served.
   //
-  // Tolerated before the server ships it, for the same reason as the 410.
+  // Core believed the opposite for a release, because the server's own comment
+  // beside the refusal said an account cap "is identical on every node in the
+  // cluster" - about a hundred lines from the loop that disproves it. These
+  // tests asserted the wrong behaviour confidently, which is why they are
+  // written against the two questions separately now.
 
   const capRefusal = () => Object.assign(new Error('Macha playback request failed: account at its session limit'), {
     status: 429,
     code: 'account_session_limit',
   });
 
-  it('does not walk the cluster for a refusal every node will repeat', () => {
-    expect(retryableEndpointFailure(capRefusal())).toBe(false);
+  it('walks the cluster, because the next node counts from its own zero', () => {
+    expect(retryableEndpointFailure(capRefusal())).toBe(true);
   });
 
-  it('does not charge a healthy node for the account being at its limit', () => {
-    // The charge site is `retryableEndpointFailure(e) && !isPerTitleFailure(e)`,
-    // so declining to walk is also what declines to charge. Asserted through
-    // the predicate that actually gates it rather than assumed from the shape.
+  it('charges nobody on the way, because a full account is not a sick node', () => {
+    // The two questions are asserted apart on purpose: walking and charging
+    // were one decision, and correcting the walk would otherwise have dragged
+    // the charge onto every healthy node in the cluster.
     const error = capRefusal();
-    expect(retryableEndpointFailure(error) && !isPerTitleFailure(error)).toBe(false);
+    expect(failureBlamesEndpoint(error)).toBe(false);
+    expect(retryableEndpointFailure(error) && failureBlamesEndpoint(error)).toBe(false);
+  });
+
+  it('still tells a host what to say to the viewer', () => {
+    // Routing changed; the host-facing classification did not. The sentence a
+    // viewer can act on is the reason this code is named at all.
+    expect(isAccountSessionLimit(capRefusal())).toBe(true);
   });
 
   it('still walks and charges for a node genuinely at capacity', () => {
@@ -95,7 +105,7 @@ describe('a refusal about the account, not the node', () => {
     // point of the new code existing.
     const nodeFull = Object.assign(new Error('resource limit'), { status: 429, code: 'resource_limit' });
     expect(retryableEndpointFailure(nodeFull)).toBe(true);
-    expect(isPerTitleFailure(nodeFull)).toBe(false);
+    expect(failureBlamesEndpoint(nodeFull)).toBe(true);
   });
 
   it('leaves a bare 429 alone, because an unlabelled one says nothing about scope', () => {

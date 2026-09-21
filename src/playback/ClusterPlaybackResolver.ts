@@ -2,7 +2,7 @@ import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistr
 import {
   endpointFailure,
   isAccountSessionLimit,
-  isPerTitleFailure,
+  failureBlamesEndpoint,
   playbackFailureCode,
   playbackFailureStatus,
   retryableEndpointFailure,
@@ -349,7 +349,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         mediaId: media.id,
         error,
       });
-      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
+      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
       throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
     }
   }
@@ -702,7 +702,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
           standby: !preferOnSuccess,
           error,
         });
-        if (!isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
+        if (failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
       }
     }
@@ -789,7 +789,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       // Superseded client intent is not evidence that the owning node failed.
       if (signal?.aborted) throw signal.reason ?? error;
-      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
@@ -829,7 +829,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       if (!options?.endpointAlreadyCharged
         && retryableEndpointFailure(error)
-        && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+        && failureBlamesEndpoint(error)) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }

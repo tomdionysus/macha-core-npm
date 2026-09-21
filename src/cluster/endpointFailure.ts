@@ -96,14 +96,12 @@ export function retryableEndpointFailure(error: unknown): boolean {
   // impose a genuine endpoint deadline must surface a typed timeout instead.
   if (error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError') return false;
   if (error && typeof error === 'object' && (error as { code?: unknown }).code === 'profile_pending') return true;
-  // **Account-scoped before status, because the status says the opposite.**
-  // A cap on the account answers `429`, and `429` is the one 4xx this function
-  // treats as worth another node. For a node-scoped limit that is right; for
-  // an account-scoped one every node refuses identically, so the walk is
-  // guaranteed-futile work on the viewer's critical path — and because the
-  // charge is gated on this answer, walking would also record a failure
-  // against every healthy node it visited on the way.
-  if (isAccountScopedFailure(error)) return false;
+  // An account-scoped refusal used to return `false` here, on the belief that
+  // every node would repeat it. **It does not, and the belief was wrong at the
+  // source.** See `ACCOUNT_SCOPED_FAILURE_CODES`: the cap is counted per node,
+  // so a refusal from one node says nothing about the next. It walks like any
+  // other `429`, and what it must not do — charge the node — is handled by
+  // `failureBlamesEndpoint` rather than by refusing to walk.
   const status = errorStatus(error);
   // A server-side failure can be node-local (for example this node cannot read
   // a media extent). Safe reads and idempotent playback admission must exhaust
@@ -133,13 +131,34 @@ export function retryableEndpointFailure(error: unknown): boolean {
  * that replaces one-session-per-bearer. It answers `429 account_session_limit`
  * with the limit and the current count in the body.
  *
- * **Tolerated here before the server ships it**, for the same reason as
- * `SOURCE_SUPERSEDED_STATUS`: the failure mode of arriving unprepared is that
- * core walks the whole cluster collecting identical refusals and charges every
- * healthy node it touches. `resource_limit`, which this replaces for the
- * account case, is deliberately *not* listed — it is shared by the node-wide
- * session limit and both transcode limits, where walking and charging are
- * correct because the node really is full.
+ * **The cap is counted per node, and core spent a release believing it was
+ * counted per cluster.** `playback.cpp`'s `sessions_held_by_locked` iterates
+ * that node's own in-process session map: there is no replication, no gossip
+ * of account counts, and no cluster-wide total anywhere in the server. So
+ * `account_session_limit` from one node means *that node* holds the account's
+ * limit, and the next node counts from its own zero.
+ *
+ * **What this set is for, and what it is not for.** It is not a routing
+ * decision. A refusal listed here is still worth trying elsewhere — the walk
+ * is how a viewer gets served by a node that has room — and it is listed here
+ * so that the walk happens *without charging anyone*: an account at its limit
+ * on one node is not evidence that the node is unwell. Routing asks
+ * `retryableEndpointFailure`; blame asks `failureBlamesEndpoint`; a host
+ * asking what to tell a viewer asks `isAccountSessionLimit`. Three questions,
+ * three answers, and conflating the first two is what produced the defect
+ * above.
+ *
+ * **How the wrong premise got in, because it will try to come back.** The
+ * server's own source said it: a comment beside the refusal reasoned that
+ * "an account cap is identical on every node in the cluster", about a hundred
+ * lines from the loop that disproves it. Core adopted the sentence rather than
+ * the code, three clients adopted core, and the result was a viewer refused
+ * outright on a cluster where two nodes had capacity. **Read the loop, not the
+ * comment beside it.**
+ *
+ * `resource_limit` is deliberately *not* listed — it is shared by the
+ * node-wide session limit and both transcode limits, where the node really is
+ * full and the charge is earned.
  */
 const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'account_session_limit',
@@ -185,6 +204,23 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
   'playback_pipeline_start_failed',
   'stream_failed',
 ]);
+
+/**
+ * Does this failure say anything about the endpoint's health?
+ *
+ * **The charge gate, and the only one.** Every site that records a failure
+ * against the registry asks this, because the two reasons not to charge are
+ * siblings and were previously spelled differently: a per-title failure is
+ * about the file, an account-scoped one is about the account, and neither is
+ * about the node. `isPerTitleFailure` alone was the gate, which left the
+ * account case relying on `retryableEndpointFailure` returning `false` — so
+ * the moment the walk was corrected, the charge would have followed it onto
+ * every healthy node in the cluster. Naming the question separately is what
+ * keeps routing and blame from being one decision again.
+ */
+export function failureBlamesEndpoint(error: unknown): boolean {
+  return !isPerTitleFailure(error) && !isAccountScopedFailure(error);
+}
 
 export function isPerTitleFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;

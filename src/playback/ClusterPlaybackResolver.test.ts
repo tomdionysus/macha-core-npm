@@ -1102,6 +1102,39 @@ describe('a standby the node would not build', () => {
     return fetchMock;
   }
 
+  it('walks to a node with room when the account is at its limit on this one', async () => {
+    // **The defect this exists for.** The cap is counted per node -- the
+    // server's `sessions_held_by_locked` iterates that node's own session map
+    // -- so a refusal from `a` says nothing about `b`. Core used to read the
+    // refusal as cluster-wide and give up on the spot, which refused a viewer
+    // outright while a node with capacity sat idle beside it. The realistic
+    // way to arrive here is orphaned sessions accumulating on whichever node a
+    // client keeps using, which is exactly what was measured on a television.
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      if (target.startsWith('http://a')) {
+        return new Response(JSON.stringify({ code: 'account_session_limit', message: 'account at its session limit' }), {
+          status: 429, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify(wireSession('session-b')), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const resolver = new ClusterPlaybackResolver(registry);
+
+    const session = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    expect(session.endpoint?.id).toBe('http://b');
+    // And nobody is charged for it on the way past. `a` is not unwell: it is
+    // holding this account's limit and serving everyone else perfectly.
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://b')?.health.consecutiveFailures).toBe(0);
+  });
+
   it('says the account was at its session limit rather than going quiet', async () => {
     clearClientDiagnostics();
     vi.stubGlobal('fetch', refusingCluster(429, 'account_session_limit'));
