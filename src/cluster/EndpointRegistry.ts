@@ -336,10 +336,12 @@ export function bootstrapEndpoints(urls: readonly string[], source: EndpointSour
  */
 function endpointAuthority(baseUrl: string): string | undefined {
   try {
-    const url = new URL(baseUrl);
-    const port = url.port || (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '');
-    if (!url.hostname) return undefined;
-    return `${url.protocol}//${url.hostname.toLowerCase()}:${port}`;
+    // `origin` already is this: it drops a default port, lowercases the host
+    // and keeps the scheme. Spelling it out by hand was both more code and
+    // less portable — `protocol` and `hostname` are DOM-only, and this package
+    // is typechecked a second time against a runtime that has neither.
+    const origin = new URL(baseUrl).origin;
+    return origin && origin !== 'null' ? origin : undefined;
   } catch {
     return undefined;
   }
