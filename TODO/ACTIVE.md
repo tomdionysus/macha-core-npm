@@ -348,6 +348,8 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 **Nothing is a GO until the state of play is one where the tests are likely to pass** — core, the nodes and the clients all carrying the change at once. Tom: *"We need a state, on core, with the new servers, and clients using core, where all tests are likely to work. It's not a GO until we reach that state."* Getting there is the work; the cutover is not a thing to be argued into, it is a thing to be made ready for.
 
+**And the test is cluster-wide or it is not worth running. Tom vetoed a staged single-node cutover**, which the web client had proposed and core was carrying: *"Nope. Pointless. Macha's valueprop is resilience, cluster, failover. A test against a single server is pointless."* **All three nodes move at once.** A client pointed at one node watching one generation measures the one thing this product is not; the observation worth having is **a node killed under a playing transcode with failover across moved nodes** — which exercises the routes, `410 generation_superseded` on the path that actually produces it, and the cap's interaction with a standby, in the configuration a viewer is really in. The web client withdrew its own proposal on the same reasoning.
+
 **All three clients answered NO-GO on the cap moving with the routes and were overruled, deliberately:** *"it's not a good idea to wait — move the cap too. We'll test everything when the servers have cut over."* So the mitigation is no longer sequencing. It is **the cap's number**, and **making the cap's effects visible** so that a bad number is diagnosable rather than silent. That second half is core's and is what core built for it.
 
 **Core's cap work, and its state:**
