@@ -8,6 +8,34 @@ Anything reverted or retracted stays here, marked, because knowing what was trie
 
 ---
 
+## 2026-09-21 — five things believed, and disproved the same day
+
+Nothing shipped on 2026-09-21 either; `0.14.0` remains the whole answer to "what is released". What belongs here is the other half this file exists for: **findings investigated and dismissed.** Five were relayed between sessions as established and were not, and each was caught only because somebody opened the file rather than taking the summary. Recording them so nobody rediscovers them at the same price.
+
+**`delay_moov` does not cause the AC-3 remux stall. It is the fix for it.** Relayed by core to three clients as the mechanism: the flag is set on every fMP4 output, an AC-3 copy never parses a packet, so `moov` is never written. The comments it cited say the opposite — *"delaying it until the first packets are seen is what makes an AC-3 or E-AC-3 stream copyable into fMP4 at all"*, and *"without it the header write fails Invalid argument (the 503s of 2026-09-07)"*. The inconsistency was visible without running anything: if a copy never parsed, the 2026-09-07 fix could not have worked, because it works by waiting for exactly that packet. **Then disproved by experiment** on es-1 against the same libavformat: AC-3 copy with the flag works, 2.3 MB out; without it, *"Cannot write moov atom before AC3 packets."* In macha's own configuration both codecs write zero bytes at header time identically and both produce a first fragment on the first flush. The stall is real and its cause is not known.
+
+**`max_sessions: 8` was never true of these nodes.** Relayed as live configuration and used to declare a cap test blocked. It is the *compiled default* — `config.hpp:502` — while all three nodes set `64` explicitly, read from `/etc/macha/macha.yaml` over ssh with file size, md5 and line numbers printed beside the values, and the service confirmed to have loaded that file two minutes after it was written. `account_session_limit` was reachable the whole time.
+
+**A fresh sign-in does not yield an anonymous session.** Reported by the television, reproduced twice, retracted the same evening. The screen taken for a post-sign-in locked state is `LockedSettings`, which the login screen's own *Server settings* button opens — and an anonymous role-less session is precisely what exists **before** signing in, so the symptom is equally consistent with the sign-in never having happened. `adb input text` had been dropping fields. **A symptom identical to the default state costs nothing to produce and proves nothing.**
+
+**The read-ahead Service Worker answers an open-ended range perfectly well.** Reported by the web client as never answering `Range: bytes=0-`, relayed to the server. The probe had awaited `arrayBuffer()` on a 1.76 GB body and aborted at ten seconds. Read properly from the stream: 206 in 46 ms.
+
+**Core was never `0.18.0`.** Tagged, merged to `main` and pushed on a reading of "get this out the door"; Tom: *"We're still 0.17.0 — it's not complete, we were testing it."* Tag deleted locally and on the remote, both branches returned, nothing published at any point.
+
+**The shape they share, and it is the lesson rather than any instance:** each arrived as a summary of something somebody else had read, and each was accepted because it fitted the symptom. The dist-hash disagreement is the same failure wearing different clothes — two sessions exchanged numbers all day that could never have matched, because one hashed every file and the other only `*.js`, and a number does not look like something that needs verifying. It is now `npm run dist:hash`, a command rather than a convention.
+
+---
+
+## 2026-09-21 — a defect introduced and caught the same evening
+
+**Identity was announced as membership, and deleted the cluster.** `identifyUnclaimedEndpoints` reported what it learned through `applyAdvertisement`, which states the *whole* of membership and drops whatever it is not told about. Handed one identified address it deleted every discovered endpoint beside it: three nodes collapsing to one on the cycle after discovery.
+
+Found from a symptom, not from the code — a television signed itself out across an upgrade it had no reason to, and named `nodeId` population as the only change capable of causing it while explicitly not claiming the mechanism. Reproduced in three lines. Fixed in `76d94ba` with `claimNodeId`, which attaches an id and changes nothing else, and a test that pins the distinction by asserting what the membership call would have done instead.
+
+Kept here because the code is correct now and the reasoning is the part worth not rediscovering: **learning that one address is `gbni-1` says nothing about whether the other nodes still exist, so it cannot be expressed as a membership statement.**
+
+---
+
 ## Nothing arrived here on 2026-09-20, and that is the point
 
 Twelve commits landed on `develop` that day and **none of them shipped**, so none of them belongs here yet: this file records what a client could have, and a client can only have what npm holds. `0.14.0` is still the whole answer to "what is released".
