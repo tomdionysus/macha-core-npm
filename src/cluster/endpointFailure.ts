@@ -312,6 +312,46 @@ export function playbackFailureCode(error: unknown): string | undefined {
  * because the alternative is four clients each matching on a code string that
  * is core's to track, not theirs.
  */
+/**
+ * The sentence a viewer can be shown, wherever it ended up in the chain.
+ *
+ * **The third accessor, and it exists for the same reason as the other two.**
+ * `playbackFailureCode` and `playbackFailureStatus` were added because hosts
+ * were parsing messages and walking `cause` themselves. This is the rest of
+ * that job: what a host actually renders. Without it a host shows `.message`,
+ * which by the time a playback failure has crossed `endpointFailure` reads
+ * *"Macha endpoint http://10.35.1.50:7438 failed: Macha playback request
+ * failed: timed out waiting for first fragmented-MP4 segment"* — two of core's
+ * own envelopes and a node address, in front of a viewer. Three clients
+ * displayed exactly that today and one had written a loop to strip prefixes
+ * until none remained.
+ *
+ * **Carried rather than reconstructed.** Stripping core's prefixes means a
+ * client matching on core's wording, which goes silent the first time one is
+ * reworded — the same fault `playbackFailureCode` retired for codes. The
+ * server's sentence is kept on the error at the moment it is parsed.
+ *
+ * Returns the **innermost** stated detail, which is the opposite of
+ * `playbackFailureCode`: the outermost layer is the one that classified the
+ * failure, but the innermost is the one that knows what happened. `undefined`
+ * means no layer stated a viewer-facing sentence, and a host should then say
+ * something of its own rather than fall back to `.message`.
+ *
+ * Cycle-safe by the same rule as its neighbours.
+ */
+export function playbackFailureDetail(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  let innermost: string | undefined;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const detail = (current as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.length > 0) innermost = detail;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return innermost;
+}
+
 export function isAccountSessionLimit(error: unknown): boolean {
   const code = playbackFailureCode(error);
   return code !== undefined && ACCOUNT_SCOPED_FAILURE_CODES.has(code);

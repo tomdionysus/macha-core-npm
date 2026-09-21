@@ -235,19 +235,48 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * the moment recovery is already running, on the mechanism whose entire job is
  * to be invisible. **A lost standby is cheaper than a dead one.**
  *
- * **It has since reached the wire, and this constant is still what runs.**
- * Server 0.48.0 states `pipeline_idle_ms` in the per-node playback block of
- * `/api/v1/status`, beside `session_idle_ms` and `max_sessions_per_account`
- * (`status_api.cpp:367-372`) — the `NodeTelemetry` change this paragraph used
- * to be waiting on. Reading it is not done here yet, and the floor is not
- * merely a stopgap until it is: every field in that block is emitted only when
- * the node has a figure, no node older than 0.48.0 sends any of them, and at
- * the time of writing no deployed node is that new. **So absence is the
- * ordinary case and must stay handled** — take the node's figure where one
- * arrives, and keep this floor wherever one does not, rather than replacing
- * the floor with a reader that has nothing to read.
+ * **This is now the floor rather than the answer.** Server 0.48.0 states
+ * `pipeline_idle_ms` per node on `/api/v1/status`, and all three deployed
+ * nodes serve 60,000 — six times this. `alternateRecoveryWindowMs` below
+ * reads it where a node states one and falls back here where none does, which
+ * is every node older than 0.48.0 and any node that has not been heard from.
+ * **Absence stays the ordinary case**, and absence is never zero.
  */
 const ALTERNATE_RECOVERY_WINDOW_MS = 10_000;
+
+/**
+ * What a standby is worth holding for, and it is not simply what the node
+ * allows.
+ *
+ * Two different numbers meet here and neither alone is the answer. The node's
+ * `pipeline_idle_ms` is a **ceiling**: hold a standby past it and the
+ * promotion lands on a live session whose engine has been reclaimed, which
+ * costs a cold start. What the window is actually *for* is narrower — the case
+ * where a node produces one degradation and then recovers, so the rescue is
+ * there if a second failure follows and released if none does. That was
+ * measured as worth about thirty seconds, and a standby held longer than that
+ * is holding a session record nobody is going to use.
+ *
+ * So: the lesser of what is useful and what the node guarantees. On the
+ * deployed cluster that restores the full thirty seconds — the figure this
+ * had before it was cut to the guaranteed floor — rather than stretching to
+ * the node's sixty, which would buy nothing and hold a session for a minute
+ * to do it.
+ *
+ * **A node that says nothing keeps the floor**, which is the conservative
+ * direction on purpose: discarding a standby early costs a preparation that
+ * happens again, while holding one past teardown costs a promotion onto
+ * something that cannot serve, on the viewer's critical path. A lost standby
+ * is cheaper than a dead one.
+ */
+const ALTERNATE_RECOVERY_WINDOW_TARGET_MS = 30_000;
+
+export function alternateRecoveryWindowMs(session: PlaybackSession): number {
+  if (session.mode === 'transcode') return ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS;
+  const stated = session.source.budgets?.pipelineIdleMs;
+  if (stated === undefined || !Number.isFinite(stated) || stated <= 0) return ALTERNATE_RECOVERY_WINDOW_MS;
+  return Math.max(ALTERNATE_RECOVERY_WINDOW_MS, Math.min(ALTERNATE_RECOVERY_WINDOW_TARGET_MS, stated));
+}
 /**
  * How long a standby against a **transcode** session is held.
  *
@@ -2186,9 +2215,7 @@ export class PlaybackCoordinator {
           void this.options.resolver.stop(alternate!.sessionId).catch((error) => {
             this.log.warn('expired-alternate-close-failed', { sessionId: alternate!.sessionId, error });
           });
-        }, alternate.mode === 'transcode'
-          ? ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS
-          : ALTERNATE_RECOVERY_WINDOW_MS);
+        }, alternateRecoveryWindowMs(alternate));
         this.alternateExpiryTimers.set(alternate.sessionId, expiry);
         this.log.info('alternate-ready', {
           primarySessionId: session.sessionId,

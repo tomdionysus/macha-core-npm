@@ -5,10 +5,44 @@ import type { EndpointBandwidth } from './EndpointBandwidth.js';
 export type EndpointSource = 'bootstrap' | 'environment' | 'discovered';
 
 export interface MachaEndpoint {
-  /** Provisional identity until the server advertises a durable node ID. */
+  /**
+   * How this endpoint is addressed, and what everything here keys on.
+   *
+   * **An address, not a machine.** It is derived from the base URL an operator
+   * configured or a node advertised, so one node reached two ways has two of
+   * these. Health, cooldown, latency, capacity and session provenance are all
+   * per address, correctly — a LAN path and a WAN path to the same box really
+   * do have different round trips and can fail independently.
+   *
+   * Group by `nodeId` when the question is about the machine.
+   */
   id: string;
   baseUrl: string;
   source: EndpointSource;
+  /**
+   * Which node this address reaches, as the node itself states it.
+   *
+   * **The answer to "are these two entries the same box?", and the only
+   * reliable one.** `id` cannot answer it: `http://10.44.1.50:7438` and
+   * `https://macnessa.macha.network` are one machine and share nothing a
+   * client could match on. Before this was populated the registry held that
+   * node twice — counted twice in any per-node total, offered twice in a node
+   * selector, and a failover could "move" to the box it had just left.
+   *
+   * Anything a host presents or totals *per node* groups on this and not on
+   * `id`. Anything about a path — health, latency, which door to dial — stays
+   * on `id`.
+   *
+   * Learned two ways, both from the node: the membership advertisement, which
+   * matches a node's own `api_endpoint`, and `identifyUnclaimedEndpoints`,
+   * which asks an endpoint that matched nothing which node it is. Never
+   * inferred from the address, because two addresses that look unrelated may
+   * be one node and guessing merges two that are not.
+   *
+   * `undefined` means not yet learned — an endpoint configured this instant,
+   * or one that has not answered. It is never a claim that the endpoint has no
+   * node.
+   */
   nodeId?: string;
 }
 
@@ -69,6 +103,12 @@ export interface EndpointPlaybackBudgets {
   startupTimeoutMs?: number;
   /** The node's `segment_timeout_ms`: how long it holds a fragment it has not produced. */
   segmentTimeoutMs?: number;
+  /**
+   * The node's `pipeline_idle_ms`: how long it keeps an idle transcode engine
+   * before reclaiming it. Bounds how long a standby prepared here is worth
+   * holding — see `ALTERNATE_RECOVERY_WINDOW_MS`.
+   */
+  pipelineIdleMs?: number;
   observedAt: number;
 }
 
@@ -280,6 +320,32 @@ export function bootstrapEndpoints(urls: readonly string[], source: EndpointSour
 }
 
 /**
+ * `scheme://host:port` for a base URL, with the scheme's default port filled
+ * in and the host lowercased — the thing two spellings of one address agree
+ * about.
+ *
+ * Used for matching advertisements to configured endpoints, never for
+ * identity: `MachaEndpoint.id` stays the configured string, because that is
+ * what an operator typed and what every log, health record and session id
+ * already keys on. Two addresses that share an authority are the same door to
+ * the same node; two that do not may still be the same node, and nothing in a
+ * status payload says so — see the note on `nodeId`.
+ *
+ * Returns `undefined` for anything unparseable rather than guessing, so a
+ * malformed entry simply matches nothing.
+ */
+function endpointAuthority(baseUrl: string): string | undefined {
+  try {
+    const url = new URL(baseUrl);
+    const port = url.port || (url.protocol === 'https:' ? '443' : url.protocol === 'http:' ? '80' : '');
+    if (!url.hostname) return undefined;
+    return `${url.protocol}//${url.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Endpoint ordering from real request and active-probe evidence. The registry
  * owns no timer itself; callers feed it outcomes and ask for candidates.
  */
@@ -310,6 +376,33 @@ export class EndpointRegistry {
 
   constructor(
     endpoints: readonly MachaEndpoint[],
+    /**
+     * **Epoch milliseconds, and a wall clock rather than a duration clock.**
+     *
+     * `lastSuccessAt`, `lastFailureAt` and `observedAt` are read beside a
+     * node's own journal and are persisted across restarts, so they have to
+     * mean the same thing to two machines. A host that passes
+     * `performance.now` — an arbitrary origin that resets each run — gets
+     * health readings that render as 1970 and comparisons that silently
+     * compare a duration against an instant. `MachaHost.now()` is that clock
+     * and is not this one.
+     *
+     * **Epoch across every boundary, and formatting only at the edge.** Macha
+     * spans sites in different timezones — three nodes in three zones on this
+     * cluster — and epoch milliseconds are what make a client reading and a
+     * node reading agree at all, because they carry no zone to get wrong.
+     * Nothing in this package turns one into a wall-clock string.
+     *
+     * A host that does has two cases and they take different formats.
+     * **Presentation** — a person asking when a node was last seen — is their
+     * own zone, **labelled with it**: `21 Sep 2026, 18:51:52 GMT+3`. A viewer
+     * should not have to convert their own clock, and the label is what stops
+     * it being read as the node's time. **Interchange** — a log line, anything
+     * handed to another machine, anything that will be read beside a node's
+     * journal — is Zulu, because that is where an unlabelled local time turns
+     * into an hour that silently disappears. Timezones are a presentation
+     * problem; the data is never in one.
+     */
     private readonly now: () => number = Date.now,
   ) {
     this.endpoints = this.deduplicate(endpoints);
@@ -358,19 +451,45 @@ export class EndpointRegistry {
    */
   applyAdvertisement(advertisements: readonly EndpointAdvertisement[]): void {
     const advertisedByUrl = new Map<string, string | undefined>();
+    // A second index, by authority rather than by string. `normalizeBaseUrl`
+    // only trims trailing slashes, so `https://node` and `https://node:443`
+    // are two different keys for one address and an endpoint configured as
+    // either misses an advertisement written as the other — it then keeps no
+    // `nodeId` at all, and anything grouping by node counts one machine twice.
+    //
+    // **Matching only, never minting.** This changes which *configured*
+    // endpoint an advertisement attaches to; it does not add a URL. An
+    // unmatched advertisement still becomes a discovered endpoint by its own
+    // advertised string, so nothing here can invent a plaintext address for a
+    // node someone deliberately put behind TLS — which is the reason the
+    // monitor advertises one URL per node in the first place.
+    const advertisedByAuthority = new Map<string, string | undefined>();
     for (const advertisement of advertisements) {
       for (const value of advertisement.apiBaseUrls) {
         const baseUrl = normalizeBaseUrl(value);
         if (!baseUrl) continue;
         if (!advertisedByUrl.has(baseUrl)) advertisedByUrl.set(baseUrl, advertisement.nodeId);
+        const authority = endpointAuthority(baseUrl);
+        if (authority && !advertisedByAuthority.has(authority)) {
+          advertisedByAuthority.set(authority, advertisement.nodeId);
+        }
       }
     }
 
     const retained = this.endpoints
       .filter((endpoint) => endpoint.source !== 'discovered')
       .map((endpoint) => {
-        const nodeId = advertisedByUrl.get(endpoint.baseUrl);
+        const authority = endpointAuthority(endpoint.baseUrl);
+        const nodeId = advertisedByUrl.get(endpoint.baseUrl)
+          ?? (authority ? advertisedByAuthority.get(authority) : undefined);
         advertisedByUrl.delete(endpoint.baseUrl);
+        // Claimed by authority as well, so a URL that matched this way is not
+        // then also minted as a discovered endpoint under its other spelling.
+        if (authority) {
+          for (const [url, id] of [...advertisedByUrl]) {
+            if (id === nodeId && endpointAuthority(url) === authority) advertisedByUrl.delete(url);
+          }
+        }
         return nodeId ? { ...endpoint, nodeId } : endpoint;
       });
     const discovered = [...advertisedByUrl].map(([baseUrl, nodeId]) => ({

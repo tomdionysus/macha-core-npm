@@ -194,6 +194,23 @@ export class MachaPlaybackError extends Error {
     public readonly retryAfterMs?: number,
     /** Server-stated source failure reason; see `ParsedErrorEnvelope.reason`. */
     public readonly reason?: string,
+    /**
+     * The server's own sentence, without core's prefix.
+     *
+     * `message` is for a log: it says which layer is speaking, and by the time
+     * a failure has crossed `endpointFailure` it says which node too. That is
+     * the right shape for a trail and the wrong shape for a viewer, who gets
+     * "Macha endpoint http://10.35.1.50:7438 failed: Macha playback request
+     * failed: timed out waiting for first fragmented-MP4 segment" — two of
+     * core's envelopes and an address. Three clients showed exactly that to
+     * someone today, and one had written its own loop to strip prefixes until
+     * none remained.
+     *
+     * Kept rather than reconstructed, because reconstructing means a client
+     * matching on core's prefixes and going silent the next time one is
+     * reworded. Read it through `playbackFailureDetail`.
+     */
+    public readonly detail?: string,
   ) {
     super(message);
   }
@@ -778,6 +795,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       parsed.code,
       retryAfterMs(response.headers.get('retry-after')),
       parsed.reason,
+      parsed.message,
     );
   }
 }

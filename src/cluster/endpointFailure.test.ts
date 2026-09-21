@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { endpointFailure, failureBlamesEndpoint, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
+import { MachaPlaybackError } from '../playback/MachaPlaybackResolver.js';
+import { endpointFailure, failureBlamesEndpoint, playbackFailureDetail, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
   it('does not treat one title’s pipeline failure as node health evidence', () => {
@@ -210,5 +211,46 @@ describe('a charge nobody can act on', () => {
     // generation is real health evidence and must survive.
     const broken = Object.assign(new Error('boom'), { status: 503 });
     expect(failureBlamesEndpoint(broken, { pinned: true })).toBe(true);
+  });
+});
+
+describe('the sentence a viewer can be shown', () => {
+  // A playback failure crossing `endpointFailure` produces a `.message` that
+  // reads "Macha endpoint http://10.35.1.50:7438 failed: Macha playback
+  // request failed: timed out waiting for first fragmented-MP4 segment" --
+  // two of core's own envelopes and a node address. Three clients showed
+  // exactly that to a viewer today; one had written a loop stripping prefixes
+  // until none remained, which is a client matching on core's wording.
+
+  const served = () => new MachaPlaybackError(
+    'Macha playback request failed: timed out waiting for first fragmented-MP4 segment',
+    503, 'playback_pipeline_start_failed', undefined, undefined,
+    'timed out waiting for first fragmented-MP4 segment',
+  );
+
+  it('returns the server sentence from under both envelopes', () => {
+    const wrapped = endpointFailure('http://10.35.1.50:7438', 'http://10.35.1.50:7438', served());
+    expect(wrapped.message).toContain('Macha endpoint');
+    expect(wrapped.message).toContain('Macha playback request failed');
+    expect(playbackFailureDetail(wrapped)).toBe('timed out waiting for first fragmented-MP4 segment');
+  });
+
+  it('carries no node address, which is what a viewer must not be shown', () => {
+    const wrapped = endpointFailure('http://10.35.1.50:7438', 'http://10.35.1.50:7438', served());
+    expect(playbackFailureDetail(wrapped)).not.toContain('10.35.1.50');
+    expect(playbackFailureDetail(wrapped)).not.toContain('Macha');
+  });
+
+  it('says nothing rather than handing back a log line', () => {
+    // `undefined` means no layer stated a viewer-facing sentence. A host must
+    // then write its own, not fall back to `.message`.
+    expect(playbackFailureDetail(new Error('boom'))).toBeUndefined();
+    expect(playbackFailureDetail(undefined)).toBeUndefined();
+  });
+
+  it('survives a cycle in the cause chain', () => {
+    const outer = new Error('outer') as Error & { cause?: unknown };
+    outer.cause = outer;
+    expect(playbackFailureDetail(outer)).toBeUndefined();
   });
 });

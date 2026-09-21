@@ -1,14 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
-import { discoverClusterEndpoints, EndpointHealthMonitor, persistConfirmedEndpoints, probeKnownEndpoints } from './EndpointHealthMonitor.js';
+import { discoverClusterEndpoints, EndpointHealthMonitor, persistConfirmedEndpoints, probeKnownEndpoints, identifyUnclaimedEndpoints} from './EndpointHealthMonitor.js';
 import { MachaClientConfiguration } from '../runtime/configuration.js';
 import { configureMachaHost, memoryStorage, resetMachaHost } from '../runtime/host.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 import type { ClusterNodeStatus, ClusterStatusApi, ClusterStatusSnapshot } from '../api/ClusterStatusApi.js';
 
+/**
+ * Liveness probes only.
+ *
+ * The monitor also asks an unidentified endpoint which node it is, on
+ * `/api/v1/status`. That is one call per endpoint for the life of the monitor
+ * and has nothing to do with probe cadence, so counting it would make every
+ * interval assertion below depend on whether identity happened to be resolved
+ * yet.
+ */
+function probeCalls(fetchImpl: unknown): number {
+  return (fetchImpl as ReturnType<typeof vi.fn>).mock.calls
+    .filter(([url]) => !String(url).includes('/api/v1/status')).length;
+}
+
 function fakeClusterStatusApi(nodes: readonly ClusterNodeStatus[]): ClusterStatusApi {
-  const snapshot = { nodes: [...nodes] } as ClusterStatusSnapshot;
+  // `node_id` is stated by every node, so a fake without one is not a node.
+  const snapshot = { node_id: 'answering-node', nodes: [...nodes] } as ClusterStatusSnapshot;
   return {
     status: async () => snapshot,
     node: async () => { throw new Error('not implemented'); },
@@ -522,7 +537,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     const configuration = new MachaClientConfiguration({ storage });
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
     const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-    const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    const calls = () => probeCalls(fetchImpl);
     const monitor = new EndpointHealthMonitor({
       registry,
       clusterStatusApi: fakeClusterStatusApi([
@@ -563,7 +578,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     monitor.start();
     monitor.start();
     await vi.waitFor(() => expect(registry.snapshot()[0]?.health.lastSuccessAt).toBeDefined());
-    const afterFirstCycle = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+    const afterFirstCycle = probeCalls(fetchImpl);
     expect(afterFirstCycle).toBe(1);
 
     monitor.stop();
@@ -571,7 +586,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     expect(monitor.running).toBe(false);
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(afterFirstCycle);
+    expect(probeCalls(fetchImpl)).toBe(afterFirstCycle);
     vi.useRealTimers();
   });
 
@@ -617,7 +632,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     it('probes immediately instead of waiting out the interval', async () => {
       vi.useFakeTimers();
       const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const calls = () => probeCalls(fetchImpl);
       const { monitor } = monitorWith(fetchImpl);
 
       monitor.start();
@@ -633,7 +648,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     it('re-bases the interval from the off-cycle probe rather than leaving a short remainder', async () => {
       vi.useFakeTimers();
       const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const calls = () => probeCalls(fetchImpl);
       const { monitor } = monitorWith(fetchImpl);
 
       monitor.start();
@@ -659,7 +674,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
     it('keeps the loop alive, unlike the stop/start it replaces', async () => {
       vi.useFakeTimers();
       const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const calls = () => probeCalls(fetchImpl);
       const { monitor } = monitorWith(fetchImpl);
 
       monitor.start();
@@ -679,7 +694,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
         await gate;
         return new Response(null, { status: 200 });
       }) as unknown as typeof fetch;
-      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const calls = () => probeCalls(fetchImpl);
       const { monitor } = monitorWith(fetchImpl);
 
       monitor.start();
@@ -701,7 +716,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
 
     it('does not resurrect a monitor that was deliberately stopped', async () => {
       const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-      const calls = () => (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length;
+      const calls = () => probeCalls(fetchImpl);
       const { monitor } = monitorWith(fetchImpl);
 
       // Otherwise teardown becomes conditional on nobody holding a reference,
@@ -712,3 +727,53 @@ describe('EndpointHealthMonitor lifecycle', () => {
     });
   });
 });
+
+describe('learning which node an address actually is', () => {
+  // The membership advertisement is built from each node's `api_endpoint` --
+  // the name it advertises -- so an endpoint reached by any other address
+  // matches nothing and keeps no nodeId. A LAN address beside a DNS name for
+  // one machine is then two nodes: counted twice, offered twice in a selector,
+  // and a failover that "moves" to the box it just left. The node states
+  // `node_id` on its status root so the question can be asked of the address
+  // itself.
+
+  const statusOf = (nodeId: string) => vi.fn(async () => new Response(
+    JSON.stringify({ node_id: nodeId, cluster: {}, nodes: [], generated_at_unix_ms: 0 }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  ));
+
+  it('claims the address it actually reached', async () => {
+    const fetchSpy = statusOf('gbni-1');
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+
+    await identifyUnclaimedEndpoints(registry, fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch), new Set());
+
+    expect(registry.snapshot()[0].endpoint.nodeId).toBe('gbni-1');
+  });
+
+  it('asks a given endpoint once, not once per cycle', async () => {
+    // An endpoint that will not answer must not be re-asked for ever.
+    const fetchSpy = vi.fn(async () => new Response('{}', { status: 500 }));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+    const asked = new Set<string>();
+    const auth = fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch);
+
+    await identifyUnclaimedEndpoints(registry, auth, asked);
+    const afterFirst = fetchSpy.mock.calls.length;
+    await identifyUnclaimedEndpoints(registry, auth, asked);
+
+    expect(afterFirst).toBeGreaterThan(0);
+    expect(fetchSpy.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('leaves an endpoint that already knows its node alone', async () => {
+    const fetchSpy = statusOf('gbni-1');
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network'] }]);
+
+    await identifyUnclaimedEndpoints(registry, fixedBearerToken(undefined, fetchSpy as unknown as typeof fetch), new Set());
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+

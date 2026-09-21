@@ -322,6 +322,20 @@ export interface PlaybackSourceBudgets {
    * core cannot see from where it sits.
    */
   segmentHoldMs: number;
+  /**
+   * How long the node serving this source keeps an idle transcode engine
+   * before reclaiming it — its `streaming.pipeline_idle_ms`.
+   *
+   * **A ceiling on how long a standby prepared here is worth holding**, not a
+   * target. A standby held inside it still has a warm engine to promote onto;
+   * one held past it promotes onto a live session whose pipeline the node has
+   * torn down, which costs a cold start.
+   *
+   * Absent means the node did not say — every node older than server 0.48.0 —
+   * and absence is never zero. Core then keeps the floor the server
+   * guarantees rather than a figure it invented.
+   */
+  pipelineIdleMs?: number;
 }
 
 export interface PlaybackSource {

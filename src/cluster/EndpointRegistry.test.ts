@@ -646,3 +646,48 @@ describe('preference without evidence', () => {
     expect(registry.candidates()[0].endpoint.id).toBe('http://b');
   });
 });
+
+describe('one node reached by two spellings of one address', () => {
+  // `normalizeBaseUrl` only trims trailing slashes, so `https://node` and
+  // `https://node:443` are two keys for one address. An endpoint configured as
+  // one and advertised as the other kept no `nodeId` at all, and anything
+  // grouping by node counted one machine twice.
+
+  it('attaches a node id across an implicit default port', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network:443'] }]);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+  });
+
+  it('attaches it the other way round, and on a differing host case', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://Node-A:80']));
+    registry.applyAdvertisement([{ nodeId: 'fi-1', apiBaseUrls: ['http://node-a'] }]);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('fi-1');
+  });
+
+  it('mints nothing for the spelling it matched by', () => {
+    // The dangerous half. A matched advertisement must not also arrive as a
+    // discovered endpoint under its other spelling -- that is how a client
+    // ends up holding a plaintext address for a node behind TLS.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network:443'] }]);
+    expect(registry.candidates()).toHaveLength(1);
+  });
+
+  it('still discovers a genuinely different address', () => {
+    // Authority matching must not swallow a real second node.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'es-1', apiBaseUrls: ['https://ramaroja.macha.network'] }]);
+    expect(registry.candidates()).toHaveLength(2);
+  });
+
+  it('does not claim two different hosts are one node', () => {
+    // The case core cannot solve: a LAN address and a DNS name for the same
+    // machine share no authority, and nothing in a status payload says which
+    // node answered it. Guessing here would merge two real nodes.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network'] }]);
+    const lan = registry.candidates().find((entry) => entry.endpoint.baseUrl === 'http://10.44.1.50:7438');
+    expect(lan?.endpoint.nodeId).toBeUndefined();
+  });
+});

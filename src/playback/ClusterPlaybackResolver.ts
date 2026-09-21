@@ -10,7 +10,7 @@ import {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
-import { MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
+import { MachaPlaybackError, MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import {
   generationAttemptBudgetMs,
@@ -130,6 +130,36 @@ function withServedSegmentContainer(
   const served = servingSession.output?.container?.trim().toLowerCase();
   if (served !== 'fmp4' && served !== 'mpegts') return preferences;
   return { ...preferences, container: served };
+}
+
+/**
+ * A generation this resolver has no record of.
+ *
+ * **Typed because the bare `Error` it replaces reached a television screen.**
+ * It was thrown as prose — *"Playback generation 72baee93… has no endpoint
+ * provenance."* — carrying no code and no status, so `playbackFailureCode` and
+ * `playbackFailureStatus` both answered `undefined` and a host had nothing to
+ * classify it by. It rendered verbatim, which is a sentence about core's
+ * internal bookkeeping shown to somebody trying to watch a film.
+ *
+ * The condition itself is real and worth raising: the caller is holding a
+ * generation id this resolver cannot act on, which after a re-resolution means
+ * a handle that has been superseded. Acting on it would PATCH a generation the
+ * viewer has already moved off. `stop` and `sessionAlive` recover the node
+ * from the id instead, because closing or asking about a session is safe
+ * whatever its state — mutating one is not.
+ *
+ * `detail` is what a host should show; `code` is what it should branch on.
+ */
+function unknownGeneration(sessionId: string): MachaPlaybackError {
+  return new MachaPlaybackError(
+    `Playback generation ${sessionId} has no endpoint provenance.`,
+    undefined,
+    'session_provenance_unknown',
+    undefined,
+    undefined,
+    'This stream is no longer available. Start it again.',
+  );
 }
 
 /**
@@ -835,6 +865,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       budgets: {
         deadlineMs: deadlineMs ?? generationAttemptBudgetMs(stated),
         segmentHoldMs: segmentHoldMs(stated),
+        ...(stated?.pipelineIdleMs !== undefined ? { pipelineIdleMs: stated.pipelineIdleMs } : {}),
       },
     };
     session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
@@ -852,7 +883,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
 
   async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
     const owned = this.sessions.get(sessionId);
-    if (!owned) throw new Error(`Playback generation ${sessionId} has no endpoint provenance.`);
+    if (!owned) throw unknownGeneration(sessionId);
     try {
       const session = await owned.resolver.update(owned.nodeSessionId, update, signal);
       const nodeSessionId = session.sessionId;
@@ -884,8 +915,13 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * fault it was meant to diagnose.
    */
   async sessionAlive(sessionId: string): Promise<boolean> {
-    const owned = this.sessions.get(sessionId);
-    if (!owned) throw new Error(`Playback generation ${sessionId} has no endpoint provenance.`);
+    // Recovered from the id when the map has no entry, for the same reason
+    // `stop` does: this is pinned to the owning node, and the id names it. A
+    // host asking whether an orphan from a previous run is still alive — which
+    // is exactly what a reclaim does before closing one — had no way to be
+    // answered, because the map died with the process that created it.
+    const owned = this.sessions.get(sessionId) ?? this.provenanceFromId(sessionId);
+    if (!owned) throw unknownGeneration(sessionId);
     return owned.resolver.sessionAlive(owned.nodeSessionId);
   }
 
