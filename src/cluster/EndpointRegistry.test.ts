@@ -691,3 +691,49 @@ describe('one node reached by two spellings of one address', () => {
     expect(lan?.endpoint.nodeId).toBeUndefined();
   });
 });
+
+describe('learning an identity must not restate membership', () => {
+  // `applyAdvertisement` states the whole of membership and drops whatever it
+  // is not told about, which is right for a fresh cluster view and catastrophic
+  // for a partial one. Announcing a single identified address through it
+  // deleted every discovered endpoint beside it -- a three-node cluster
+  // collapsing to one, and anything keyed to the endpoints that vanished going
+  // with them.
+
+  const threeNodes = () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    registry.applyAdvertisement([
+      { nodeId: 'n-a', apiBaseUrls: ['http://a'] },
+      { nodeId: 'n-b', apiBaseUrls: ['http://b'] },
+      { nodeId: 'n-c', apiBaseUrls: ['http://c'] },
+    ]);
+    return registry;
+  };
+
+  it('keeps every other endpoint when one names itself', () => {
+    const registry = threeNodes();
+    expect(registry.candidates()).toHaveLength(3);
+
+    registry.claimNodeId('http://b', 'gbni-1');
+
+    expect(registry.candidates().map((e) => e.endpoint.id).sort()).toEqual(['http://a', 'http://b', 'http://c']);
+    expect(registry.candidates().find((e) => e.endpoint.id === 'http://b')?.endpoint.nodeId).toBe('gbni-1');
+  });
+
+  it('is the difference: the membership call would have dropped them', () => {
+    // Pinned so the two are never confused again.
+    const registry = threeNodes();
+    registry.applyAdvertisement([{ nodeId: 'n-a', apiBaseUrls: ['http://a'] }]);
+    expect(registry.candidates()).toHaveLength(1);
+  });
+
+  it('claims by authority, and does nothing for an address it does not hold', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.claimNodeId('https://macnessa.macha.network:443', 'gbni-1');
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+
+    registry.claimNodeId('http://nowhere', 'ghost');
+    expect(registry.candidates()).toHaveLength(1);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+  });
+});

@@ -224,7 +224,6 @@ export async function identifyUnclaimedEndpoints(
   const unclaimed = registry.snapshot()
     .filter(({ endpoint }) => endpoint.nodeId === undefined && !asked.has(endpoint.baseUrl))
     .slice(0, IDENTITY_RESOLUTIONS_PER_CYCLE);
-  const resolved: { nodeId: string; apiBaseUrls: string[] }[] = [];
   for (const { endpoint } of unclaimed) {
     if (signal?.aborted) return;
     // Once per endpoint, whatever the answer. A node that answers is claimed
@@ -233,18 +232,18 @@ export async function identifyUnclaimedEndpoints(
     // cycle for the life of the client.
     asked.add(endpoint.baseUrl);
     try {
-      const snapshot = await new MachaClusterStatusApi(endpoint.baseUrl, auth).status();
-      const nodeId = snapshot.node_id;
-      if (typeof nodeId === 'string' && nodeId.length > 0) {
-        resolved.push({ nodeId, apiBaseUrls: [endpoint.baseUrl] });
-      }
+      const { node_id: nodeId } = await new MachaClusterStatusApi(endpoint.baseUrl, auth).status();
+      // `claimNodeId`, never `applyAdvertisement`. The latter states the whole
+      // of membership and drops whatever it is not told about, so announcing
+      // one identified address would delete every discovered endpoint beside
+      // it. Identity is not membership.
+      if (typeof nodeId === 'string' && nodeId.length > 0) registry.claimNodeId(endpoint.baseUrl, nodeId);
     } catch {
       // Unreachable or refusing the route. Neither is a health signal — this
       // is a question about identity, and an endpoint that cannot answer it is
       // simply not identified.
     }
   }
-  if (resolved.length > 0 && !signal?.aborted) registry.applyAdvertisement(resolved);
 }
 
 /**

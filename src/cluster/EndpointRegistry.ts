@@ -503,6 +503,38 @@ export class EndpointRegistry {
     this.replace([...retained, ...discovered]);
   }
 
+  /**
+   * Record which node an endpoint already in the registry reaches.
+   *
+   * **Not `applyAdvertisement`, and the difference is not cosmetic.** That one
+   * states the whole of membership: whatever it is not told about is dropped,
+   * because a node missing from a fresh cluster view has genuinely gone. Call
+   * it with a partial list and every discovered endpoint outside that list
+   * disappears — a three-node cluster collapsing to one, sessions keyed to the
+   * endpoints that vanished going with it.
+   *
+   * Identity is not membership. Learning that one address is `gbni-1` says
+   * nothing about whether the other nodes still exist, so it cannot be
+   * expressed as a membership statement. This attaches the id and changes
+   * nothing else: no endpoint added, none removed, none reordered.
+   *
+   * A no-op when the endpoint is unknown or already carries this id.
+   */
+  claimNodeId(baseUrl: string, nodeId: string): void {
+    const target = normalizeBaseUrl(baseUrl);
+    const authority = endpointAuthority(target);
+    let changed = false;
+    const next = this.endpoints.map((endpoint) => {
+      const matches = endpoint.baseUrl === target
+        || (authority !== undefined && endpointAuthority(endpoint.baseUrl) === authority);
+      if (!matches || endpoint.nodeId === nodeId) return endpoint;
+      changed = true;
+      return { ...endpoint, nodeId };
+    });
+    if (!changed) return;
+    this.replace(next);
+  }
+
   candidates(excludedIds: ReadonlySet<string> = new Set()): EndpointCandidate[] {
     const now = this.now();
     const entries = this.endpoints
