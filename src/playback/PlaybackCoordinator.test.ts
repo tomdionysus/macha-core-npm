@@ -5,7 +5,9 @@ import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, 
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode } from './PlaybackCoordinator.js';
+import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
+  alternateRecoveryWindowMs,
+} from './PlaybackCoordinator.js';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -497,6 +499,52 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     expect(equivalentDirectSources(primary, { ...matching, mediaId: 'macha:other' })).toBe(false);
     expect(equivalentDirectSources({ ...primary, mediaId: 'path:/movie' }, { ...matching, mediaId: 'path:/movie' })).toBe(false);
     expect(equivalentDirectSources(primary, { ...matching, source: { ...matching.source, sizeBytes: 99 } })).toBe(false);
+  });
+
+  it('moves to a chosen node, promotes it, and only then releases the old one', async () => {
+    // A move is a failover that nothing failed, so the ordering is the whole
+    // point: the outgoing generation keeps presenting until the replacement is
+    // live. Closing first is the 13.2 s gap this exists to remove, and the cap
+    // being counted per node is what makes holding both free.
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const moved = session({
+      sessionId: 'moved',
+      mediaId: 'macha:one',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...primary.source, mediaId: 'macha:one', url: 'http://b/direct' },
+    });
+    const order: string[] = [];
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareOn: ReturnType<typeof vi.fn> };
+    api.prepareOn = vi.fn(async () => { order.push('prepared'); return moved; });
+    const stop = api.stop as ReturnType<typeof vi.fn>;
+    stop.mockImplementation(async (sessionId: string) => { order.push(`stopped:${sessionId}`); });
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+
+    await coordinator.start();
+    const playsBefore = player.playCalls.length;
+
+    await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+
+    expect(api.prepareOn).toHaveBeenCalledTimes(1);
+    expect(api.prepareOn.mock.calls[0]?.[0]).toBe('node-b');
+    expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b');
+    // The player was pointed at the replacement, and the old session was
+    // released after that rather than before it.
+    expect(player.playCalls.length).toBeGreaterThan(playsBefore);
+    expect(order).toEqual(['prepared', 'stopped:primary']);
+  });
+
+  it('declines a move to the node already serving, without asking anyone', async () => {
+    const player = new FakePlayer();
+    const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const api = resolver(primary) as ReturnType<typeof resolver> & { prepareOn: ReturnType<typeof vi.fn> };
+    api.prepareOn = vi.fn();
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+
+    await coordinator.start();
+    await expect(coordinator.moveTo('node-a')).resolves.toBe(false);
+    expect(api.prepareOn).not.toHaveBeenCalled();
   });
 
   it('creates no standby until degradation evidence, then registers and silently promotes it', async () => {
@@ -3407,5 +3455,44 @@ describe('the cap refusal a host has to turn into a sentence', () => {
 
     expect(coordinator.getSnapshot().fatalError?.message).toContain('node A stream failed');
     await coordinator.close();
+  });
+});
+
+describe('how long a standby is worth holding', () => {
+  const sourced = (mode: string, pipelineIdleMs?: number) => ({
+    mode,
+    source: { budgets: { deadlineMs: 1, segmentHoldMs: 1, ...(pipelineIdleMs !== undefined ? { pipelineIdleMs } : {}) } },
+  } as unknown as PlaybackSession);
+
+  it('keeps the guaranteed floor when the node has not said', () => {
+    // Every node older than server 0.48.0 states nothing, and absence is not
+    // zero. `config_base.cpp:359` refuses to start a node under ten seconds,
+    // so this is true of any node that is running at all.
+    expect(alternateRecoveryWindowMs(sourced('remux'))).toBe(10_000);
+  });
+
+  it('takes the node figure, bounded by what the window is actually for', () => {
+    // The deployed cluster serves 60,000. Holding a standby for a minute buys
+    // nothing: what the window exists for is a node that degrades once and
+    // recovers, measured at about thirty seconds. The node's number is a
+    // ceiling, not a target.
+    expect(alternateRecoveryWindowMs(sourced('remux', 60_000))).toBe(30_000);
+  });
+
+  it('never exceeds a node that reclaims sooner than the floor would assume', () => {
+    // A node configured tighter than the useful window governs: holding past
+    // its reclaim promotes onto a session whose engine is gone.
+    expect(alternateRecoveryWindowMs(sourced('remux', 12_000))).toBe(12_000);
+  });
+
+  it('ignores a figure no node should send rather than shortening on it', () => {
+    expect(alternateRecoveryWindowMs(sourced('remux', 0))).toBe(10_000);
+    expect(alternateRecoveryWindowMs(sourced('remux', Number.NaN))).toBe(10_000);
+  });
+
+  it('leaves a transcode standby on its own shorter window', () => {
+    // A transcode standby holds the node's only video slot, so it is bounded
+    // by contention rather than by engine reclamation.
+    expect(alternateRecoveryWindowMs(sourced('transcode', 60_000))).toBe(8_000);
   });
 });

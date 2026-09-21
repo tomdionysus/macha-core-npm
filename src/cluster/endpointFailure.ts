@@ -96,14 +96,12 @@ export function retryableEndpointFailure(error: unknown): boolean {
   // impose a genuine endpoint deadline must surface a typed timeout instead.
   if (error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError') return false;
   if (error && typeof error === 'object' && (error as { code?: unknown }).code === 'profile_pending') return true;
-  // **Account-scoped before status, because the status says the opposite.**
-  // A cap on the account answers `429`, and `429` is the one 4xx this function
-  // treats as worth another node. For a node-scoped limit that is right; for
-  // an account-scoped one every node refuses identically, so the walk is
-  // guaranteed-futile work on the viewer's critical path — and because the
-  // charge is gated on this answer, walking would also record a failure
-  // against every healthy node it visited on the way.
-  if (isAccountScopedFailure(error)) return false;
+  // An account-scoped refusal used to return `false` here, on the belief that
+  // every node would repeat it. **It does not, and the belief was wrong at the
+  // source.** See `ACCOUNT_SCOPED_FAILURE_CODES`: the cap is counted per node,
+  // so a refusal from one node says nothing about the next. It walks like any
+  // other `429`, and what it must not do — charge the node — is handled by
+  // `failureBlamesEndpoint` rather than by refusing to walk.
   const status = errorStatus(error);
   // A server-side failure can be node-local (for example this node cannot read
   // a media extent). Safe reads and idempotent playback admission must exhaust
@@ -133,13 +131,34 @@ export function retryableEndpointFailure(error: unknown): boolean {
  * that replaces one-session-per-bearer. It answers `429 account_session_limit`
  * with the limit and the current count in the body.
  *
- * **Tolerated here before the server ships it**, for the same reason as
- * `SOURCE_SUPERSEDED_STATUS`: the failure mode of arriving unprepared is that
- * core walks the whole cluster collecting identical refusals and charges every
- * healthy node it touches. `resource_limit`, which this replaces for the
- * account case, is deliberately *not* listed — it is shared by the node-wide
- * session limit and both transcode limits, where walking and charging are
- * correct because the node really is full.
+ * **The cap is counted per node, and core spent a release believing it was
+ * counted per cluster.** `playback.cpp`'s `sessions_held_by_locked` iterates
+ * that node's own in-process session map: there is no replication, no gossip
+ * of account counts, and no cluster-wide total anywhere in the server. So
+ * `account_session_limit` from one node means *that node* holds the account's
+ * limit, and the next node counts from its own zero.
+ *
+ * **What this set is for, and what it is not for.** It is not a routing
+ * decision. A refusal listed here is still worth trying elsewhere — the walk
+ * is how a viewer gets served by a node that has room — and it is listed here
+ * so that the walk happens *without charging anyone*: an account at its limit
+ * on one node is not evidence that the node is unwell. Routing asks
+ * `retryableEndpointFailure`; blame asks `failureBlamesEndpoint`; a host
+ * asking what to tell a viewer asks `isAccountSessionLimit`. Three questions,
+ * three answers, and conflating the first two is what produced the defect
+ * above.
+ *
+ * **How the wrong premise got in, because it will try to come back.** The
+ * server's own source said it: a comment beside the refusal reasoned that
+ * "an account cap is identical on every node in the cluster", about a hundred
+ * lines from the loop that disproves it. Core adopted the sentence rather than
+ * the code, three clients adopted core, and the result was a viewer refused
+ * outright on a cluster where two nodes had capacity. **Read the loop, not the
+ * comment beside it.**
+ *
+ * `resource_limit` is deliberately *not* listed — it is shared by the
+ * node-wide session limit and both transcode limits, where the node really is
+ * full and the charge is earned.
  */
 const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
   'account_session_limit',
@@ -185,6 +204,50 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
   'playback_pipeline_start_failed',
   'stream_failed',
 ]);
+
+/**
+ * Does this failure say anything about the endpoint's health?
+ *
+ * **The charge gate, and the only one.** Every site that records a failure
+ * against the registry asks this, and a site that cannot walk says so with
+ * `pinned`. The reasons not to charge are siblings and were previously spelled
+ * differently, or not at all: a per-title failure is
+ * about the file, an account-scoped one is about the account, and neither is
+ * about the node. `isPerTitleFailure` alone was the gate, which left the
+ * account case relying on `retryableEndpointFailure` returning `false` — so
+ * the moment the walk was corrected, the charge would have followed it onto
+ * every healthy node in the cluster. Naming the question separately is what
+ * keeps routing and blame from being one decision again.
+ */
+export function failureBlamesEndpoint(
+  error: unknown,
+  options?: { readonly pinned?: boolean },
+): boolean {
+  if (isPerTitleFailure(error)) return false;
+  if (isAccountScopedFailure(error)) return false;
+  // A capacity refusal on a pinned path. The node is **full, not unwell**, and
+  // the caller cannot act on the charge: `update` and `stop` are pinned to the
+  // node that holds the generation, so there is no walk for the charge to
+  // inform. All it does is apply an escalating cooldown to a node that is
+  // working perfectly and will have room again shortly.
+  //
+  // On a walking path the same refusal is charged, and that is not an
+  // inconsistency: there the charge biases the *next* attempt away from a node
+  // that just said it was full, which saves a round trip. The difference is
+  // whether anything can use the answer.
+  //
+  // The server states this distinction directly from 0.48.0's successor:
+  // `resource_limit` on create carries scope=node with
+  // alternative_may_succeed, while on update it carries scope=request —
+  // the session lives here and is still serving, so the remedy is a different
+  // instruction against this node, a remux instead of a transcode or a lower
+  // height, not a different node. Core keys on the status rather than those
+  // axes for now, deliberately: they are committed on the server but not
+  // pushed and not deployed, and every node in the field today sends
+  // `resource_limit` with no axes at all.
+  if (options?.pinned === true && errorStatus(error) === 429) return false;
+  return true;
+}
 
 export function isPerTitleFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -249,6 +312,46 @@ export function playbackFailureCode(error: unknown): string | undefined {
  * because the alternative is four clients each matching on a code string that
  * is core's to track, not theirs.
  */
+/**
+ * The sentence a viewer can be shown, wherever it ended up in the chain.
+ *
+ * **The third accessor, and it exists for the same reason as the other two.**
+ * `playbackFailureCode` and `playbackFailureStatus` were added because hosts
+ * were parsing messages and walking `cause` themselves. This is the rest of
+ * that job: what a host actually renders. Without it a host shows `.message`,
+ * which by the time a playback failure has crossed `endpointFailure` reads
+ * *"Macha endpoint http://10.35.1.50:7438 failed: Macha playback request
+ * failed: timed out waiting for first fragmented-MP4 segment"* — two of core's
+ * own envelopes and a node address, in front of a viewer. Three clients
+ * displayed exactly that today and one had written a loop to strip prefixes
+ * until none remained.
+ *
+ * **Carried rather than reconstructed.** Stripping core's prefixes means a
+ * client matching on core's wording, which goes silent the first time one is
+ * reworded — the same fault `playbackFailureCode` retired for codes. The
+ * server's sentence is kept on the error at the moment it is parsed.
+ *
+ * Returns the **innermost** stated detail, which is the opposite of
+ * `playbackFailureCode`: the outermost layer is the one that classified the
+ * failure, but the innermost is the one that knows what happened. `undefined`
+ * means no layer stated a viewer-facing sentence, and a host should then say
+ * something of its own rather than fall back to `.message`.
+ *
+ * Cycle-safe by the same rule as its neighbours.
+ */
+export function playbackFailureDetail(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  let innermost: string | undefined;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const detail = (current as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.length > 0) innermost = detail;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return innermost;
+}
+
 export function isAccountSessionLimit(error: unknown): boolean {
   const code = playbackFailureCode(error);
   return code !== undefined && ACCOUNT_SCOPED_FAILURE_CODES.has(code);

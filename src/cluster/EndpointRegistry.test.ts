@@ -591,3 +591,149 @@ describe('throughput: attaching, recording and abstaining', () => {
     expect(clientDiagnosticsSnapshot().filter((entry) => entry.event === 'throughput-unavailable')).toHaveLength(1);
   });
 });
+
+describe('preference without evidence', () => {
+  // A viewer choosing a node is a routing instruction, not a round trip. The
+  // only public door used to be `recordSuccess`, which writes both -- so the
+  // choice arrived on the Status screen as a `lastSuccessAt` that never
+  // happened and a failure count reset that nothing earned.
+
+  it('moves the sticky endpoint without touching the health record', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.recordFailure('http://b');
+    expect(registry.snapshot().find((e) => e.endpoint.id === 'http://b')?.health.consecutiveFailures).toBe(1);
+
+    registry.prefer('http://b');
+
+    const b = registry.snapshot().find((e) => e.endpoint.id === 'http://b');
+    expect(b?.health.consecutiveFailures).toBe(1);
+    expect(b?.health.lastSuccessAt).toBeUndefined();
+  });
+
+  it('actually moves the chosen endpoint to the front of the candidate list', () => {
+    // Asserted through `candidates()`, which is the ranked list routing reads.
+    // `snapshot()` is not ranked -- it reports health in configured order, and
+    // asserting preference through it passes whatever the preference is.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    expect(registry.candidates().map((e) => e.endpoint.id)).toEqual(['http://a', 'http://b']);
+
+    registry.prefer('http://b');
+
+    expect(registry.candidates().map((e) => e.endpoint.id)).toEqual(['http://b', 'http://a']);
+  });
+
+  it('does not let a choice outrank readiness', () => {
+    // The chosen node is cooling down, so it must still rank below one that
+    // can serve. A preference is a tie-break among usable nodes, never an
+    // instruction to use an unusable one -- otherwise picking a node in a UI
+    // would defeat the failover that exists to route around it.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.recordFailure('http://b');
+    registry.prefer('http://b');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://a');
+  });
+
+  it('ignores an endpoint it has never heard of, keeping the choice it has', () => {
+    // Weaker forms of this pass for the wrong reason. The assertion is that
+    // the existing preference survives: a routing instruction for an endpoint
+    // that never existed can never match and never expire, so storing it would
+    // silently discard a real choice.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.prefer('http://b');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://b');
+
+    registry.prefer('http://nowhere');
+    expect(registry.candidates()[0].endpoint.id).toBe('http://b');
+  });
+});
+
+describe('one node reached by two spellings of one address', () => {
+  // `normalizeBaseUrl` only trims trailing slashes, so `https://node` and
+  // `https://node:443` are two keys for one address. An endpoint configured as
+  // one and advertised as the other kept no `nodeId` at all, and anything
+  // grouping by node counted one machine twice.
+
+  it('attaches a node id across an implicit default port', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network:443'] }]);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+  });
+
+  it('attaches it the other way round, and on a differing host case', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://Node-A:80']));
+    registry.applyAdvertisement([{ nodeId: 'fi-1', apiBaseUrls: ['http://node-a'] }]);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('fi-1');
+  });
+
+  it('mints nothing for the spelling it matched by', () => {
+    // The dangerous half. A matched advertisement must not also arrive as a
+    // discovered endpoint under its other spelling -- that is how a client
+    // ends up holding a plaintext address for a node behind TLS.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network:443'] }]);
+    expect(registry.candidates()).toHaveLength(1);
+  });
+
+  it('still discovers a genuinely different address', () => {
+    // Authority matching must not swallow a real second node.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.applyAdvertisement([{ nodeId: 'es-1', apiBaseUrls: ['https://ramaroja.macha.network'] }]);
+    expect(registry.candidates()).toHaveLength(2);
+  });
+
+  it('does not claim two different hosts are one node', () => {
+    // The case core cannot solve: a LAN address and a DNS name for the same
+    // machine share no authority, and nothing in a status payload says which
+    // node answered it. Guessing here would merge two real nodes.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.44.1.50:7438']));
+    registry.applyAdvertisement([{ nodeId: 'gbni-1', apiBaseUrls: ['https://macnessa.macha.network'] }]);
+    const lan = registry.candidates().find((entry) => entry.endpoint.baseUrl === 'http://10.44.1.50:7438');
+    expect(lan?.endpoint.nodeId).toBeUndefined();
+  });
+});
+
+describe('learning an identity must not restate membership', () => {
+  // `applyAdvertisement` states the whole of membership and drops whatever it
+  // is not told about, which is right for a fresh cluster view and catastrophic
+  // for a partial one. Announcing a single identified address through it
+  // deleted every discovered endpoint beside it -- a three-node cluster
+  // collapsing to one, and anything keyed to the endpoints that vanished going
+  // with them.
+
+  const threeNodes = () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    registry.applyAdvertisement([
+      { nodeId: 'n-a', apiBaseUrls: ['http://a'] },
+      { nodeId: 'n-b', apiBaseUrls: ['http://b'] },
+      { nodeId: 'n-c', apiBaseUrls: ['http://c'] },
+    ]);
+    return registry;
+  };
+
+  it('keeps every other endpoint when one names itself', () => {
+    const registry = threeNodes();
+    expect(registry.candidates()).toHaveLength(3);
+
+    registry.claimNodeId('http://b', 'gbni-1');
+
+    expect(registry.candidates().map((e) => e.endpoint.id).sort()).toEqual(['http://a', 'http://b', 'http://c']);
+    expect(registry.candidates().find((e) => e.endpoint.id === 'http://b')?.endpoint.nodeId).toBe('gbni-1');
+  });
+
+  it('is the difference: the membership call would have dropped them', () => {
+    // Pinned so the two are never confused again.
+    const registry = threeNodes();
+    registry.applyAdvertisement([{ nodeId: 'n-a', apiBaseUrls: ['http://a'] }]);
+    expect(registry.candidates()).toHaveLength(1);
+  });
+
+  it('claims by authority, and does nothing for an address it does not hold', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['https://macnessa.macha.network']));
+    registry.claimNodeId('https://macnessa.macha.network:443', 'gbni-1');
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+
+    registry.claimNodeId('http://nowhere', 'ghost');
+    expect(registry.candidates()).toHaveLength(1);
+    expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
+  });
+});

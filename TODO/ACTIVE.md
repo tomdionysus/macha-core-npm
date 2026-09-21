@@ -8,6 +8,30 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
+### State of play, end of 2026-09-21
+
+**Core is `76d94ba` on `develop`, `dist` hash `ff5d065c5da7`, 1020 tests green, and nothing is pushed.** `package.json` reads `0.17.0` and npm still ends at `0.14.0`.
+
+**The last artefact anyone but core validated is `5077468` / `04554181bfba`.** All three clients ran their suites against it — web 461, phone 204, television 240 — and the television additionally smoke-tested it on `10.35.1.133`, all three modes playing and three sessions created and closed. **Two commits sit on top of that and nobody has tested them:** `03d941e`, documentation only, and `76d94ba`, a real fix to a real defect.
+
+**Nothing built today has been exercised against a node, with that one exception.** Not the session-leak fix, not `moveTo`, not the standby window, not identity resolution. Three green suites prove these changes break nothing; they prove nothing about whether they work. **Treat "green" as "does not break the client", never as validation**, and say which you mean when reporting one.
+
+**And today's field evidence was taken against a cluster with no DELETEs reaching it at all** — 57 creates and zero closes on fi-1 since 13:00. Tom's judgement, and it is the right one: *"No DELETE on session smashes all the results."* Anything measured against a node today carries that caveat, the AC-3 remux split most of all. The server has independently reached the same conclusion about its own orphan theory.
+
+**What to do first, when this resumes:** clear every node of leftover sessions, get the clients onto a build everyone agrees on, and re-run the things that matter against a clean cluster. In particular re-run the AAC-versus-AC-3 comparison before anyone goes into libav, because retry count and codec are perfectly confounded in the evidence that produced it.
+
+### The three P0s of 2026-09-21, and where each stands
+
+1. **Nothing was ever closed — core's fault, fixed, untested in the field.** `ClusterPlaybackResolver.stop()` looked a session id up in an in-process map and **returned silently when it was missing**: no request, no log, a resolved promise. Every client's cleanup was thrown away one layer below it. A missing entry is the ordinary case — the map dies with the process, a failover replaces it — and it was caching what the id already states, since core mints `${endpoint.id}::${nodeSessionId}`. Fixed in `61e4d74`. **Nobody has yet watched a DELETE arrive on a node.**
+2. **The per-account cap is counted per node, and core refused to walk on it.** `sessions_held_by_locked` iterates that node's own session map; there is no cluster-wide total. A viewer was refused outright while a node with room sat beside it. Fixed in `7b4548a`. The premise came from the server's own comment, about a hundred lines from the loop that disproves it — **read the loop, not the comment beside it.**
+3. **AC-3 audio-copy remux stalls** — measured by three clients on one node within minutes, and the only P0 still open. The mechanism is **not** `delay_moov`; that was disproved by experiment. Server-side, and see the retraction in COMPLETED.
+
+### Open, and waiting
+
+- **The orphan reclaim seam.** The television has built its half — `orphanedSessions()` / `forgetSessions(closed)`, inert, nine tests. Core's `stop()` and `sessionAlive()` both recover provenance from an id now, so it will work. **Waiting on Tom** to say wire it.
+- **`moveTo` has no caller.** The web client will switch `selectNode` to it the first time live runs are allowed; it declined to write that under a suite-only instruction, correctly, since the whole point is what happens on a real cluster.
+- **A clean-cluster re-run of everything above.**
+
 **Where things stand. Core is building `0.17.0` right now.** It is not released, not published, and its contents are still moving — **`npm view @machafoundation/core versions` ends at `0.14.0`, and the rest of the world has seen nothing since.** Tom, 2026-09-21: *"It's 0.17.0 because the rest of the world hasn't seen that yet."*
 
 **A version number is only immutable once it is published.** Until then it is the name of the thing being built, and `0.17.0` will go on accumulating work under that name until it is proven and published. **The `0.15.0` and `0.16.0` tags are waypoints from earlier today and mean nothing to anybody** — do not offer them to a client, do not treat them as releases, and do not reason about what is "in" them.

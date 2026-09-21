@@ -78,6 +78,34 @@ function normalise(value: unknown, depth = 0): unknown {
   return String(value);
 }
 
+/**
+ * The instant, as `15:51:52.123Z`, for a console line.
+ *
+ * **`elapsedMs` alone cannot be correlated with anything.** It is milliseconds
+ * since this page or process booted, which is the right axis for "how long did
+ * this take" and meaningless outside the tab that produced it. Reading a
+ * client trace against a node's journal meant someone taking wall-clock times
+ * off a separate console probe and the server mapping them by hand — an hour
+ * out, because the two machines were in different zones and one of them had
+ * assumed they matched.
+ *
+ * The structured entry has carried a full `toISOString()` all along and
+ * `clientDiagnosticsText` serialises it, so an exported trail was always
+ * correlatable; it was only the printed line that was not. Both are kept
+ * because they answer different questions.
+ *
+ * **Zulu, and the `Z` is load-bearing.** Macha spans sites in different
+ * timezones — three nodes in three zones on this cluster — so an unlabelled
+ * `15:51:52` is precisely the ambiguity being removed. Time of day rather
+ * than the full instant because the date is in the record and rarely changes
+ * inside one session; anything comparing across days should read the entry,
+ * not the console.
+ */
+function zuluTimeOfDay(timestamp: string): string {
+  const time = timestamp.slice(11, 23);
+  return time.length === 12 ? `${time}Z` : timestamp;
+}
+
 function emit(level: ClientLogLevel, scope: string, event: string, data?: unknown): void {
   if (levels[level] < levels[config.level]) return;
   const entry: ClientLogEntry = {
@@ -93,7 +121,7 @@ function emit(level: ClientLogLevel, scope: string, event: string, data?: unknow
   if (entries.length > config.maxEntries) entries.splice(0, entries.length - config.maxEntries);
 
   if (!config.console || typeof console === 'undefined') return;
-  const prefix = `[macha ${entry.elapsedMs.toFixed(1)}ms] [${scope}] ${event}`;
+  const prefix = `[macha ${zuluTimeOfDay(entry.timestamp)} ${entry.elapsedMs.toFixed(1)}ms] [${scope}] ${event}`;
   if (level === 'error') console.error(prefix, entry.data ?? '');
   else if (level === 'warn') console.warn(prefix, entry.data ?? '');
   else if (level === 'info') console.info(prefix, entry.data ?? '');

@@ -17,10 +17,16 @@ import type { PlaybackFailureKind } from '../platform/Platform.js';
  * shipped three times, each time because two numbers were chosen independently
  * and each was defensible alone.
  *
- * **It is the server's default, not a negotiated value.** A node may be
- * configured otherwise and does not report this on any status endpoint today,
- * so a client cannot read the real figure at runtime. Treat it as a floor to
- * stay above rather than a number to match exactly, and keep a margin.
+ * **It is the server's default, and the node now states its own.**
+ * `segment_timeout_ms` is in the per-node playback block of `/api/v1/status`,
+ * and `EndpointRegistry.playbackBudgets` carries it for every node the health
+ * monitor has heard from — including one this client has never created a
+ * session on, which is the case that matters before a failover. Read that
+ * where there is one.
+ *
+ * This constant is what remains when there is not: a node not yet heard from,
+ * or a figure it declines to state. Treat it as a floor to stay above rather
+ * than a number to match exactly, and keep a margin.
  */
 export const SERVER_SEGMENT_HOLD_MS = 6_000;
 
@@ -46,10 +52,13 @@ export const SERVER_SEGMENT_HOLD_MS = 6_000;
  * `max_video_transcodes` is 1 — for as long as the tab is open. The reaping is
  * correct behaviour. What a client owes is to notice on the way back.
  *
- * **It is the server's default, not a negotiated value**, and no status
- * endpoint reports the real figure, so a client cannot read it at runtime. Same
- * rule as the segment hold, in the other direction: treat it as a ceiling to
- * stay well under rather than a number to match, and never let correctness
+ * **It is the server's default, and the node states its own** as
+ * `session_idle_ms` on `/api/v1/status`. Core does not read it, deliberately:
+ * nothing here should be timing against a session's erasure, and the
+ * dependency that did was deleted rather than re-pointed at the wire.
+ *
+ * Same rule as the segment hold, in the other direction: treat it as a ceiling
+ * to stay well under rather than a number to match, and never let correctness
  * depend on it. Anything derived from this is a latency optimisation; the
  * handling of a `404` on a playback route is what has to be right when this
  * number is wrong.
@@ -77,9 +86,10 @@ export const SERVER_SESSION_IDLE_MS = 1_800_000;
  * budget.
  *
  * **Derive from this rather than from a measurement.** 9.0 s is one node on
- * one day; this is the contract. The same caveat as its neighbours applies —
- * it is a default, no status endpoint reports the real figure, and a client
- * cannot read it at runtime.
+ * one day; this is the contract. And the same rule as its neighbours: the node
+ * states `startup_timeout_ms` on `/api/v1/status` and
+ * `EndpointRegistry.playbackBudgets` carries it, so this is the answer for a
+ * node that has not said, not the answer in general.
  */
 export const SERVER_STARTUP_TIMEOUT_MS = 15_000;
 

@@ -81,6 +81,16 @@ The core drives a `Player` the host implements, and never touches a media elemen
 
 `PlaybackResolver` is an interface, and every consumer takes the interface rather than a concrete class, so a resolver can be composed in front of another to answer what it can and delegate the rest.
 
+### Telling a viewer what went wrong
+
+Four accessors, and a host should need nothing else. `playbackFailureCode` and `playbackFailureStatus` walk the cause chain for what the server said; `isAccountSessionLimit` names the one refusal a viewer can genuinely act on; and `playbackFailureDetail` returns the sentence to show them.
+
+**Do not render `.message`.** It is a log line, and by the time a playback failure has crossed `endpointFailure` it reads *"Macha endpoint https://node.example failed: Macha playback request failed: …"* — two of core's envelopes and a node address, in front of someone trying to watch a film. Three clients displayed exactly that before these existed.
+
+Do not reconstruct it either. Stripping core's prefixes means matching on core's wording, which goes quiet the first time one is reworded; the server's sentence is carried on the error from the moment it is parsed. `playbackFailureDetail` returning `undefined` means no layer stated one — write your own rather than falling back.
+
+And a host must still decide what to *say*. A session holding no roles is reported faithfully by `sessionLockedOut`, but the remedy is the actionable half: it usually means signing in again, not finding an administrator, and only the host knows which of those its viewer can do.
+
 ## What a host supplies
 
 Presentation, navigation, React, the web `hls.js` player and any Service Worker read-ahead stay with the host. Beyond implementing `Player`, a host provides:
@@ -89,9 +99,14 @@ Presentation, navigation, React, the web `hls.js` player and any Service Worker 
 - its own `PlatformTarget`, applied once at start;
 - `facts` and `policyOverrides` to `PlaybackRuntime`, so the chooser knows what the media is, what the node can do with it, and what this device gets wrong about itself;
 - lifecycle binding for `EndpointHealthMonitor`, and memoization for `createMachaServices`;
-- a call to `PlaybackRuntime.terminateForPageExit()` when the host is going away.
+- a call to `PlaybackRuntime.terminateForPageExit()` when the host is going away;
+- somewhere durable to keep the session ids core hands it, if the host wants its own leftovers closed after a crash.
 
-That last one cannot be decided here and is invisible when wrong: a node holds a session's transcode entitlement for 30 minutes, so on a one-slot node the *next* viewer gets a 429 and nothing points at the client responsible. `pagehide` is right for a browser tab and useless on a television, which suspends without firing it. The closing `DELETE` rides on `keepalive`, which is browser-only, so on native hosts this is best-effort in a way no client can fully close.
+The last two cannot be decided here and are invisible when wrong. A session nobody closed goes on counting against the node's per-account cap until `session_idle` reaps it, half an hour later, and on a one-slot node an abandoned transcode is felt by the *next* viewer as a `429` with nothing pointing at the client responsible. Server 0.48.1 releases the transcode entitlement after a few minutes of no stream activity, which bounds that half of it; the session record is not bounded, and closing it is the host's.
+
+`pagehide` is right for a browser tab and useless on a television, which suspends without firing it, so a clean exit cannot be the only mechanism. What makes the rest recoverable is that a session id states its own node — core mints `${endpoint.id}::${nodeSessionId}` — so `stop()` acts on an id this process never created, and `sessionAlive()` will say whether it is worth closing. A host that persists the ids it was handed can reconcile them at start; one that does not is relying on the node's timers.
+
+The closing `DELETE` rides on `keepalive`, which is browser-only, so on a native host the exit path alone is best-effort. Reconciliation at start is what closes that gap rather than a better exit hook.
 
 ## Documentation
 
@@ -99,6 +114,7 @@ That last one cannot be decided here and is invisible when wrong: a node holds a
 | --- | --- |
 | [Choosing how to play something](docs/choosing-playback.md) | Always, if you touch playback. |
 | [Writing a player](docs/writing-a-player.md) | You are bringing the core to a new platform. |
+| [Driving the resolver directly](docs/resolver-direct.md) | You are using `ClusterPlaybackResolver` without a `PlaybackCoordinator`. Several rules elsewhere assume the coordinator is there. |
 | [A headless Macha client](docs/headless-client.md) | You want the whole core working with no UI, or a server smoke test. |
 | [Async storage on a synchronous interface](docs/async-storage.md) | Your platform's storage returns promises and `StorageLike` does not. |
 | [Principles and laws](docs/principles-and-laws.md) | You are changing scheduling, priority or ownership. Shared with the server. |

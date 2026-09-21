@@ -2,7 +2,7 @@ import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistr
 import {
   endpointFailure,
   isAccountSessionLimit,
-  isPerTitleFailure,
+  failureBlamesEndpoint,
   playbackFailureCode,
   playbackFailureStatus,
   retryableEndpointFailure,
@@ -10,7 +10,7 @@ import {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
-import { MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
+import { MachaPlaybackError, MachaPlaybackResolver, newPlaybackIdempotencyKey } from './MachaPlaybackResolver.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import {
   generationAttemptBudgetMs,
@@ -130,6 +130,36 @@ function withServedSegmentContainer(
   const served = servingSession.output?.container?.trim().toLowerCase();
   if (served !== 'fmp4' && served !== 'mpegts') return preferences;
   return { ...preferences, container: served };
+}
+
+/**
+ * A generation this resolver has no record of.
+ *
+ * **Typed because the bare `Error` it replaces reached a television screen.**
+ * It was thrown as prose — *"Playback generation 72baee93… has no endpoint
+ * provenance."* — carrying no code and no status, so `playbackFailureCode` and
+ * `playbackFailureStatus` both answered `undefined` and a host had nothing to
+ * classify it by. It rendered verbatim, which is a sentence about core's
+ * internal bookkeeping shown to somebody trying to watch a film.
+ *
+ * The condition itself is real and worth raising: the caller is holding a
+ * generation id this resolver cannot act on, which after a re-resolution means
+ * a handle that has been superseded. Acting on it would PATCH a generation the
+ * viewer has already moved off. `stop` and `sessionAlive` recover the node
+ * from the id instead, because closing or asking about a session is safe
+ * whatever its state — mutating one is not.
+ *
+ * `detail` is what a host should show; `code` is what it should branch on.
+ */
+function unknownGeneration(sessionId: string): MachaPlaybackError {
+  return new MachaPlaybackError(
+    `Playback generation ${sessionId} has no endpoint provenance.`,
+    undefined,
+    'session_provenance_unknown',
+    undefined,
+    undefined,
+    'This stream is no longer available. Start it again.',
+  );
 }
 
 /**
@@ -349,7 +379,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         mediaId: media.id,
         error,
       });
-      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
+      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
       throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
     }
   }
@@ -499,6 +529,81 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     if (pending.length >= MAX_ABANDONED_RELEASES_PER_ENDPOINT) pending.shift();
     pending.push({ nodeSessionId, abandonedAt: machaHost().now(), resolver });
     this.abandonedReleases.set(endpointId, pending);
+  }
+
+  /**
+   * Build a generation on a node the viewer chose, rather than on whichever
+   * node ranks first.
+   *
+   * **The verb core did not have.** `PlaybackUpdate` is
+   * `{preferences, seekMs, mediaId}` and every other way into another node is
+   * entered on failure, so "serve this from that node instead" had no
+   * expression at all. A client that wanted it had to close the generation and
+   * start a new one, which is a visible gap — 13.2 s measured on a web client
+   * moving between fi-1 and gbni-1, against machinery built to be invisible.
+   *
+   * **Acquire before release, and it costs nothing to do so.** The server
+   * counts `max_sessions_per_account` per node — `sessions_held_by_locked`
+   * iterates that node's own session map — so holding the old generation while
+   * the new one comes up does not spend an account slot twice. The one case
+   * that does is moving to a node where this account already holds sessions,
+   * which a caller can check first because the listing is per node too. This
+   * therefore never stops the outgoing generation: it returns the replacement
+   * and leaves the swap and the release to the caller, exactly as
+   * `prepareAlternate` does.
+   *
+   * **A move is not a re-plan.** `withServedSegmentContainer` restates the
+   * container the player is already consuming, and a replacement that comes
+   * back in a different mode is stopped and refused rather than returned —
+   * a viewer asking for a different *node* has not asked for a different
+   * *transform*, and silently delivering one is how a deliberate action turns
+   * into a surprise.
+   *
+   * Returns `undefined` when the target is the node already serving, when it
+   * is not a candidate this registry knows, or when the node would not build
+   * an equivalent generation. Unlike `prepareAlternate` this is not
+   * opportunistic — it is a viewer's instruction — so the error from a node
+   * that refuses is allowed to propagate rather than being swallowed.
+   */
+  async prepareOn(
+    endpointId: string,
+    activeSession: PlaybackSession,
+    media: MediaSummary,
+    capabilities: PlaybackCapabilities,
+    seekMs: number,
+    preferences: PlaybackPreferencesUpdate,
+  ): Promise<PlaybackSession | undefined> {
+    if (activeSession.endpoint?.id === endpointId) return undefined;
+    const known = this.registry.candidates().some((candidate) => candidate.endpoint.id === endpointId);
+    if (!known) {
+      this.log.info('move-declined', { reason: 'unknown-endpoint', endpointId });
+      return undefined;
+    }
+    // Everything but the chosen node. `create` walks `candidates(excluded)`,
+    // so excluding the rest is what turns a ranked walk into an instruction —
+    // and it keeps the attempt budget, the logging and the close ladder that
+    // the walk already owns rather than growing a second copy of them.
+    const excluded = new Set(
+      this.registry.candidates()
+        .map((candidate) => candidate.endpoint.id)
+        .filter((id) => id !== endpointId),
+    );
+    const moved = await this.create(
+      media,
+      capabilities,
+      seekMs,
+      withServedSegmentContainer(
+        { ...preferences, mode: activeSession.mode === 'direct' ? 'direct' : preferences.mode },
+        activeSession,
+      ),
+      excluded,
+      true,
+      this.generationAttemptTimeoutMs,
+    );
+    if (moved.mode === activeSession.mode) return moved;
+    this.log.info('move-declined', { reason: 'mode-changed', endpointId, from: activeSession.mode, to: moved.mode });
+    await this.stop(moved.sessionId).catch(() => undefined);
+    return undefined;
   }
 
   /**
@@ -702,7 +807,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
           standby: !preferOnSuccess,
           error,
         });
-        if (!isPerTitleFailure(error)) this.registry.recordFailure(endpoint.id);
+        if (failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
       }
     }
@@ -760,6 +865,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       budgets: {
         deadlineMs: deadlineMs ?? generationAttemptBudgetMs(stated),
         segmentHoldMs: segmentHoldMs(stated),
+        ...(stated?.pipelineIdleMs !== undefined ? { pipelineIdleMs: stated.pipelineIdleMs } : {}),
       },
     };
     session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
@@ -777,7 +883,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
 
   async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
     const owned = this.sessions.get(sessionId);
-    if (!owned) throw new Error(`Playback generation ${sessionId} has no endpoint provenance.`);
+    if (!owned) throw unknownGeneration(sessionId);
     try {
       const session = await owned.resolver.update(owned.nodeSessionId, update, signal);
       const nodeSessionId = session.sessionId;
@@ -789,7 +895,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       // Superseded client intent is not evidence that the owning node failed.
       if (signal?.aborted) throw signal.reason ?? error;
-      if (retryableEndpointFailure(error) && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error, { pinned: true })) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
@@ -809,14 +915,19 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * fault it was meant to diagnose.
    */
   async sessionAlive(sessionId: string): Promise<boolean> {
-    const owned = this.sessions.get(sessionId);
-    if (!owned) throw new Error(`Playback generation ${sessionId} has no endpoint provenance.`);
+    // Recovered from the id when the map has no entry, for the same reason
+    // `stop` does: this is pinned to the owning node, and the id names it. A
+    // host asking whether an orphan from a previous run is still alive — which
+    // is exactly what a reclaim does before closing one — had no way to be
+    // answered, because the map died with the process that created it.
+    const owned = this.sessions.get(sessionId) ?? this.provenanceFromId(sessionId);
+    if (!owned) throw unknownGeneration(sessionId);
     return owned.resolver.sessionAlive(owned.nodeSessionId);
   }
 
   async stop(sessionId: string, options?: PlaybackStopOptions): Promise<void> {
     const owned = this.sessions.get(sessionId);
-    if (!owned) return;
+    if (!owned) return this.stopByIdAlone(sessionId, options);
     // Abandoned before the attempt when the caller has already charged the
     // node: the generation is not coming back either way, and an entry left
     // behind by a throwing DELETE is what a later cleanup path finds and
@@ -829,7 +940,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       if (!options?.endpointAlreadyCharged
         && retryableEndpointFailure(error)
-        && !isPerTitleFailure(error)) this.registry.recordFailure(owned.endpoint.id);
+        && failureBlamesEndpoint(error, { pinned: true })) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
@@ -873,6 +984,85 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   recordEndpointFailure(endpointId: string): void {
     this.failedGenerationEndpoints.add(endpointId);
     this.registry.recordFailure(endpointId);
+  }
+
+  /**
+   * Close a session this instance has no record of, on the strength of its id.
+   *
+   * **Best effort, and deliberately weaker than the tracked path.** A tracked
+   * close knows the session was live and treats a failure as evidence about
+   * the node. This one knows nothing: the id may name a session that was
+   * abandoned an hour ago by a failover that already charged for the outage,
+   * or one left behind by a process that died, and the two are
+   * indistinguishable from here. So it never charges, never throws, and
+   * reports what happened to the trail instead of to the caller.
+   *
+   * **That distinction is load-bearing and was nearly lost.** Dropping the map
+   * entry is how a released session is marked as dealt with — `failover`
+   * abandons and charges once, and the missing entry is what stops every later
+   * cleanup path charging the same outage again, walking a healthy node up the
+   * 500 ms / 2 s / 10 s / 30 s cooldown ladder for one failure. Recovering
+   * provenance from the id removes that protection unless the recovered path
+   * also declines to charge, which is why it does.
+   */
+  private async stopByIdAlone(sessionId: string, options?: PlaybackStopOptions): Promise<void> {
+    // `endpointAlreadyCharged` is the caller stating that it owns this
+    // teardown and has already accounted for it — the seam that keeps one
+    // outage from walking the cooldown ladder. It is also the only thing that
+    // tells a session deliberately abandoned moments ago from one left behind
+    // by a process that died, because both are simply absent from the map. So
+    // an untracked close under that flag does nothing: the caller has said it
+    // is handled, and re-attempting would re-open the case it closed.
+    if (options?.endpointAlreadyCharged) return;
+    const recovered = this.provenanceFromId(sessionId);
+    if (!recovered) return;
+    try {
+      await recovered.resolver.stop(recovered.nodeSessionId, options);
+      this.log.info('untracked-session-closed', { sessionId, endpointId: recovered.endpoint.id });
+    } catch (error) {
+      // Not raised and not charged. The caller asked core to tidy up after
+      // something it cannot describe; a node that will not answer reaps the
+      // session on its own clock.
+      this.log.info('untracked-session-close-failed', { sessionId, endpointId: recovered.endpoint.id, error });
+    }
+  }
+
+  /**
+   * Recover which node holds a session from the session id alone.
+   *
+   * **This is why every client leaked sessions.** `stop()` looked the id up in
+   * `this.sessions` and returned silently when it was missing — no request, no
+   * log, a resolved promise — so a host could close everything it had and
+   * produce no `DELETE` at all while believing it had cleaned up. Measured on
+   * fi-1: 57 creates and zero deletes since 13:00, across four clients that
+   * each leak by a different route.
+   *
+   * **And "provenance missing" is the ordinary case, not the exotic one.**
+   * That map is in-process, so nothing survives a reload, a relaunch or a
+   * crash; `releaseFailedSession` deletes the entry for the id a host may
+   * still be holding; and a `moveTo` or a failover replaces it. The map is a
+   * cache of something the id already states.
+   *
+   * It states it because core mints it: `${endpoint.id}::${nodeSessionId}`,
+   * with the node part URI-encoded. `encodeURIComponent` escapes `:` as
+   * `%3A`, so the encoded half contains no colon and the **last** `::` is
+   * always the separator — which is what keeps an IPv6 endpoint id like
+   * `http://[::1]:7438` from being split in the middle of its own address.
+   *
+   * Returns `undefined` for an id this core did not mint or an endpoint the
+   * registry no longer configures, which keeps `stop()` a no-op for genuine
+   * nonsense while making it act on everything it can.
+   */
+  private provenanceFromId(sessionId: string): { endpoint: MachaEndpoint; resolver: MachaPlaybackResolver; nodeSessionId: string } | undefined {
+    const separator = sessionId.lastIndexOf('::');
+    if (separator <= 0) return undefined;
+    const endpointId = sessionId.slice(0, separator);
+    const nodeSessionId = decodeURIComponent(sessionId.slice(separator + 2));
+    if (!nodeSessionId) return undefined;
+    const endpoint = this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
+    if (!endpoint) return undefined;
+    this.log.info('session-provenance-recovered', { sessionId, endpointId });
+    return { endpoint, resolver: this.resolver(endpoint), nodeSessionId };
   }
 
   private resolver(endpoint: MachaEndpoint): MachaPlaybackResolver {

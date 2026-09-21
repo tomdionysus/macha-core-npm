@@ -1,6 +1,6 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders } from '../api/httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
-import type { ClusterStatusApi } from '../api/ClusterStatusApi.js';
+import { MachaClusterStatusApi, type ClusterStatusApi } from '../api/ClusterStatusApi.js';
 import { endpointId, type EndpointRegistry, type MachaEndpoint } from './EndpointRegistry.js';
 import { reportClusterReachable, reportClusterUnreachable } from '../api/serverConnection.js';
 import type { MachaClientConfiguration } from '../runtime/configuration.js';
@@ -177,6 +177,76 @@ export function persistConfirmedEndpoints(
 }
 
 /**
+ * How many endpoints may be asked to name themselves in one cycle.
+ *
+ * Identity is stable, so this converges: an endpoint that answers is claimed
+ * and never asked again. The cap is only so that a first cycle against a large
+ * cluster of unidentified endpoints does not fan out into one status call per
+ * endpoint at once.
+ */
+const IDENTITY_RESOLUTIONS_PER_CYCLE = 2;
+
+/**
+ * Ask an endpoint which node it is, when nothing else can say.
+ *
+ * **The membership advertisement cannot answer this.** It is built from each
+ * node's `api_endpoint` — the name the node advertises — so an endpoint
+ * reached by any *other* address matches nothing and keeps no `nodeId` at all.
+ * A LAN address beside a DNS name for one machine is then two nodes to the
+ * registry: counted twice, offered twice in a selector, and a failover that
+ * "moves" to the box it just left. Live on this cluster.
+ *
+ * It cannot be inferred either. Two addresses that share an authority are the
+ * same door and are matched as such in `applyAdvertisement`; two that do not
+ * may still be one node, and guessing merges two genuinely different ones,
+ * which is worse than the miscount. So core declined to guess until the server
+ * stated it, and server 0.48.2 states it: `node_id` on the status root,
+ * matching an `id` in `nodes[]`.
+ *
+ * Asked of the endpoint directly rather than through the routed API, because
+ * the whole question is *which address this is* — a routed call answers from
+ * whichever node it picked and says nothing about the one being identified.
+ *
+ * **Only ever claims an address already in the registry.** It advertises
+ * endpoints that are already configured or discovered, so nothing here can
+ * mint a plaintext address for a node someone put behind TLS — the rule the
+ * membership advertisement is built around.
+ *
+ * An endpoint that will not answer is left unidentified and is not asked
+ * again; it is a question about identity, not a health signal.
+ */
+export async function identifyUnclaimedEndpoints(
+  registry: EndpointRegistry,
+  auth: AuthenticatedFetch,
+  asked: Set<string>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const unclaimed = registry.snapshot()
+    .filter(({ endpoint }) => endpoint.nodeId === undefined && !asked.has(endpoint.baseUrl))
+    .slice(0, IDENTITY_RESOLUTIONS_PER_CYCLE);
+  for (const { endpoint } of unclaimed) {
+    if (signal?.aborted) return;
+    // Once per endpoint, whatever the answer. A node that answers is claimed
+    // and never appears here again; one that will not answer — unreachable, or
+    // refusing the route to this session's roles — must not be re-asked every
+    // cycle for the life of the client.
+    asked.add(endpoint.baseUrl);
+    try {
+      const { node_id: nodeId } = await new MachaClusterStatusApi(endpoint.baseUrl, auth).status();
+      // `claimNodeId`, never `applyAdvertisement`. The latter states the whole
+      // of membership and drops whatever it is not told about, so announcing
+      // one identified address would delete every discovered endpoint beside
+      // it. Identity is not membership.
+      if (typeof nodeId === 'string' && nodeId.length > 0) registry.claimNodeId(endpoint.baseUrl, nodeId);
+    } catch {
+      // Unreachable or refusing the route. Neither is a health signal — this
+      // is a question about identity, and an endpoint that cannot answer it is
+      // simply not identified.
+    }
+  }
+}
+
+/**
  * Learn live cluster membership from whichever known endpoint answers and
  * merge it into the registry. This is how failover candidates reach beyond
  * the single endpoint a user happens to have typed in: the cluster already
@@ -243,6 +313,9 @@ export async function discoverClusterEndpoints(
         ...(node.playback?.segment_timeout_ms !== undefined
           ? { segmentTimeoutMs: node.playback.segment_timeout_ms }
           : {}),
+        ...(node.playback?.pipeline_idle_ms !== undefined
+          ? { pipelineIdleMs: node.playback.pipeline_idle_ms }
+          : {}),
         observedAt,
       });
     }
@@ -308,6 +381,8 @@ export interface EndpointHealthMonitorOptions {
  * more than once.
  */
 export class EndpointHealthMonitor {
+  /** Endpoints already asked to name themselves; see `identifyUnclaimedEndpoints`. */
+  private readonly identityAsked = new Set<string>();
   private controller?: AbortController;
   private timer?: ReturnType<typeof setTimeout>;
   private inFlight?: Promise<void>;
@@ -386,6 +461,11 @@ export class EndpointHealthMonitor {
       await discoverClusterEndpoints(registry, clusterStatusApi, controller.signal);
       if (controller.signal.aborted) return;
       const reachable = await probeKnownEndpoints(registry, this.auth, controller.signal);
+      if (controller.signal.aborted) return;
+      // After the probe walk, deliberately. Health is what this loop exists
+      // for; learning which node an address is can wait a cycle, and putting
+      // it first would let one slow identification delay every probe.
+      await identifyUnclaimedEndpoints(registry, this.auth, this.identityAsked, controller.signal);
       if (controller.signal.aborted) return;
       if (registry.snapshot().length > 0) {
         if (reachable > 0) reportClusterReachable(); else reportClusterUnreachable();

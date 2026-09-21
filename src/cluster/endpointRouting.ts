@@ -1,5 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
-import { endpointFailure, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { reportClusterReachable, SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
@@ -122,8 +122,9 @@ export class ClusterEndpointRouter {
     }, (error: unknown) => {
       const perTitle = isPerTitleFailure(error);
       const retryable = retryableEndpointFailure(error);
-      if (retryable && !perTitle) this.registry.recordFailure(endpoint.id);
-      log.warn('pinned-failed', { endpointId: endpoint.id, retryable, perTitle });
+      const blames = failureBlamesEndpoint(error, { pinned: true });
+      if (retryable && blames) this.registry.recordFailure(endpoint.id);
+      log.warn('pinned-failed', { endpointId: endpoint.id, retryable, perTitle, blames });
       throw error;
     });
   }

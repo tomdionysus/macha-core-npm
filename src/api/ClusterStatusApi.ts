@@ -105,6 +105,22 @@ export interface NodePlaybackBudgets {
    * expires inside one abandons a node that was about to answer.
    */
   segment_timeout_ms?: number;
+  /**
+   * How long this node keeps a transcode pipeline alive with nothing pulling
+   * from it before reclaiming the engine — its `streaming.pipeline_idle_ms`.
+   *
+   * **Not the session clock.** `pipeline_idle` reclaims the *engine* while
+   * `session_idle` erases the *session*, and they are half an hour apart. A
+   * standby held inside this window still has a warm engine to promote onto;
+   * one held past it promotes onto a live session with a cold pipeline, which
+   * costs a cold start rather than a failure.
+   *
+   * Absent on any node older than 0.48.0, and absent is not zero: core keeps
+   * the floor the server guarantees instead. `config_base.cpp:359` refuses to
+   * start a node with this under ten seconds, so 10,000 ms is true of every
+   * node that is running at all.
+   */
+  pipeline_idle_ms?: number;
 }
 
 export interface ClusterNodeStatus {
@@ -218,6 +234,23 @@ export interface PublicConnectivityStatus {
 }
 
 export interface ClusterStatusSnapshot {
+  /**
+   * Which node produced this response, matching an `id` in `nodes[]`.
+   *
+   * **The one thing a client cannot work out for itself.** Every node in
+   * `nodes[]` states an `api_endpoint`, but that is the name a node advertises
+   * — not necessarily the address the caller dialled. A client reaching a node
+   * by a LAN address while the node advertises a DNS name had no way to learn
+   * the two were one machine, so the registry held it as two nodes: counted
+   * twice, offered twice in a selector, and a failover could "move" to the box
+   * it had just left.
+   *
+   * Core never guesses this. Two addresses that share an authority are the
+   * same door and are matched as such; two that do not may still be one node,
+   * and merging them on a hunch merges two genuinely different ones, which is
+   * worse than the miscount. So the node states it.
+   */
+  node_id: string;
   cluster: ClusterSummaryStatus;
   startup?: ClusterStartupStatus;
   nodes: ClusterNodeStatus[];
