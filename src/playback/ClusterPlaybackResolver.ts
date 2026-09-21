@@ -17,7 +17,6 @@ import {
   segmentHoldMs,
 } from './PlaybackResolver.js';
 import { machaHost } from '../runtime/host.js';
-import { SERVER_SESSION_IDLE_MS } from './streamProtocol.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -511,20 +510,30 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * success, so a strand the server has expired in the meantime clears itself
    * on the first attempt rather than erroring.
    *
-   * Entries past `SERVER_SESSION_IDLE_MS` are dropped unattempted: the node
-   * has expired them itself by then and the request would be pure noise
-   * against a node that has just come back.
+   * **No expiry check, deliberately, and this is the second version.** The
+   * first dropped entries older than core's `SERVER_SESSION_IDLE_MS` constant
+   * on the reasoning that the node had expired them anyway. That made a
+   * server number core had assumed into a correctness boundary, and it is
+   * wrong in both directions: if a node's real `session_idle_ms` is shorter,
+   * core sends a request that harmlessly `404`s; if it is **longer** — and an
+   * operator may set it to anything above 30 s — core silently abandons
+   * strands the node is still holding, which is the leak this whole mechanism
+   * exists to close.
+   *
+   * So the check is gone rather than corrected. A `DELETE` for an id the node
+   * no longer holds answers `404`, which the node resolver already treats as
+   * success, so a strand the server expired in the meantime clears itself on
+   * the first attempt. The cost of being wrong is one request that succeeds
+   * trivially; the list is bounded per endpoint, so the worst case is a
+   * handful of `404`s once, against a node that has just come back.
+   *
+   * **Core now assumes nothing about the node's idle window on this path.**
    */
   private drainAbandonedReleases(endpointId: string): void {
     const pending = this.abandonedReleases.get(endpointId);
     if (!pending || pending.length === 0) return;
     this.abandonedReleases.delete(endpointId);
-    const now = machaHost().now();
     for (const entry of pending) {
-      if (now - entry.abandonedAt >= SERVER_SESSION_IDLE_MS) {
-        this.log.debug('abandoned-release-expired', { endpointId, sessionId: entry.nodeSessionId });
-        continue;
-      }
       void entry.resolver.stop(entry.nodeSessionId).then(() => {
         this.log.info('abandoned-release-completed', {
           endpointId,
