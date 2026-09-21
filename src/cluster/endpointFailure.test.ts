@@ -183,3 +183,32 @@ describe('reading the status a host is meant to branch on', () => {
     expect(playbackFailureStatus(undefined)).toBeUndefined();
   });
 });
+
+describe('a charge nobody can act on', () => {
+  // `update` and `stop` are pinned to the node holding the generation, so
+  // there is no walk for a charge to inform. A capacity refusal there is the
+  // node saying it is full, not unwell -- and charging it applies an
+  // escalating cooldown to a node that is working perfectly.
+
+  const full = () => Object.assign(new Error('video transcode limit reached'), {
+    status: 429, code: 'resource_limit',
+  });
+
+  it('does not charge a full node on a path that cannot walk away from it', () => {
+    expect(failureBlamesEndpoint(full(), { pinned: true })).toBe(false);
+  });
+
+  it('still charges the same refusal where a walk can use the answer', () => {
+    // Not an inconsistency: on a walking path the charge biases the next
+    // attempt away from a node that just said it was full, saving a round
+    // trip. The difference is whether anything can use the answer.
+    expect(failureBlamesEndpoint(full())).toBe(true);
+  });
+
+  it('still charges a pinned node that is actually unwell', () => {
+    // The exclusion is capacity, not pinning. A 5xx from the node holding the
+    // generation is real health evidence and must survive.
+    const broken = Object.assign(new Error('boom'), { status: 503 });
+    expect(failureBlamesEndpoint(broken, { pinned: true })).toBe(true);
+  });
+});

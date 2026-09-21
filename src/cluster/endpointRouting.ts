@@ -122,7 +122,7 @@ export class ClusterEndpointRouter {
     }, (error: unknown) => {
       const perTitle = isPerTitleFailure(error);
       const retryable = retryableEndpointFailure(error);
-      const blames = failureBlamesEndpoint(error);
+      const blames = failureBlamesEndpoint(error, { pinned: true });
       if (retryable && blames) this.registry.recordFailure(endpoint.id);
       log.warn('pinned-failed', { endpointId: endpoint.id, retryable, perTitle, blames });
       throw error;

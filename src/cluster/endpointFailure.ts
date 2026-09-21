@@ -209,8 +209,9 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
  * Does this failure say anything about the endpoint's health?
  *
  * **The charge gate, and the only one.** Every site that records a failure
- * against the registry asks this, because the two reasons not to charge are
- * siblings and were previously spelled differently: a per-title failure is
+ * against the registry asks this, and a site that cannot walk says so with
+ * `pinned`. The reasons not to charge are siblings and were previously spelled
+ * differently, or not at all: a per-title failure is
  * about the file, an account-scoped one is about the account, and neither is
  * about the node. `isPerTitleFailure` alone was the gate, which left the
  * account case relying on `retryableEndpointFailure` returning `false` — so
@@ -218,8 +219,34 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
  * every healthy node in the cluster. Naming the question separately is what
  * keeps routing and blame from being one decision again.
  */
-export function failureBlamesEndpoint(error: unknown): boolean {
-  return !isPerTitleFailure(error) && !isAccountScopedFailure(error);
+export function failureBlamesEndpoint(
+  error: unknown,
+  options?: { readonly pinned?: boolean },
+): boolean {
+  if (isPerTitleFailure(error)) return false;
+  if (isAccountScopedFailure(error)) return false;
+  // A capacity refusal on a pinned path. The node is **full, not unwell**, and
+  // the caller cannot act on the charge: `update` and `stop` are pinned to the
+  // node that holds the generation, so there is no walk for the charge to
+  // inform. All it does is apply an escalating cooldown to a node that is
+  // working perfectly and will have room again shortly.
+  //
+  // On a walking path the same refusal is charged, and that is not an
+  // inconsistency: there the charge biases the *next* attempt away from a node
+  // that just said it was full, which saves a round trip. The difference is
+  // whether anything can use the answer.
+  //
+  // The server states this distinction directly from 0.48.0's successor:
+  // `resource_limit` on create carries scope=node with
+  // alternative_may_succeed, while on update it carries scope=request —
+  // the session lives here and is still serving, so the remedy is a different
+  // instruction against this node, a remux instead of a transcode or a lower
+  // height, not a different node. Core keys on the status rather than those
+  // axes for now, deliberately: they are committed on the server but not
+  // pushed and not deployed, and every node in the field today sends
+  // `resource_limit` with no axes at all.
+  if (options?.pinned === true && errorStatus(error) === 429) return false;
+  return true;
 }
 
 export function isPerTitleFailure(error: unknown): boolean {

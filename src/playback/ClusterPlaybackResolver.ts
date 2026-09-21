@@ -789,7 +789,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       // Superseded client intent is not evidence that the owning node failed.
       if (signal?.aborted) throw signal.reason ?? error;
-      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error)) this.registry.recordFailure(owned.endpoint.id);
+      if (retryableEndpointFailure(error) && failureBlamesEndpoint(error, { pinned: true })) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
@@ -829,7 +829,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     } catch (error) {
       if (!options?.endpointAlreadyCharged
         && retryableEndpointFailure(error)
-        && failureBlamesEndpoint(error)) this.registry.recordFailure(owned.endpoint.id);
+        && failureBlamesEndpoint(error, { pinned: true })) this.registry.recordFailure(owned.endpoint.id);
       throw endpointFailure(owned.endpoint.id, owned.endpoint.baseUrl, error);
     }
   }
