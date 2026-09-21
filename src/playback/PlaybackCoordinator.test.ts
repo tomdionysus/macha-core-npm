@@ -3203,3 +3203,129 @@ describe('a failure the host never classified is still charged to a node', () =>
     await coordinator.close();
   });
 });
+
+describe('a recovery that never comes back and never fails', () => {
+  // **The shape no named mechanism explains, and the viewer was still frozen.**
+  // On 2026-09-20 a reap reached `session-reaped-regenerating` and then nothing
+  // for minutes, `preparingSource` true the whole time. Afterwards every branch
+  // was closed: the close settled, the create is bounded and cannot compute a
+  // zero budget, `activateSession` is synchronous, nothing was disposed, the
+  // bundle held one copy of core, and the silence was read off three frames by
+  // eye rather than by the detector that later turned out to be broken.
+  //
+  // So this does not pin a suspect. It pins the rule that the work item has a
+  // budget even when its limbs each have one - which is what turns every
+  // unnamed mechanism, including ones nobody has thought of, from an indefinite
+  // freeze into a bounded wait and the failover that already exists.
+
+  const onNodeA = () => session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+  const onNodeB = () => session({
+    sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+    source: {
+      mediaId: 'm1', url: 'http://b/replacement.m3u8', mimeType: 'application/vnd.apple.mpegurl',
+      isManifest: true, mode: 'transcode', durationMs: 600_000,
+    },
+  });
+
+  function stuckResolver(initial: PlaybackSession, regenerate: () => Promise<PlaybackSession>) {
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async () => false),
+      regenerate: vi.fn(regenerate),
+      failover: vi.fn(async () => onNodeB()),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  it('gives up on a regeneration that neither returns nor throws, and fails over', async () => {
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      // Neither resolves nor rejects: the observed shape exactly.
+      const api = stuckResolver(onNodeA(), () => new Promise<PlaybackSession>(() => {}));
+      const coordinator = new PlaybackCoordinator({
+        media: media(), player, resolver: api,
+        capabilities: async () => capabilities(), initialPositionMs: 0,
+      });
+      await coordinator.start();
+      player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0, buffering: true } as PlaybackEvent);
+
+      player.fail(new PlaybackSourceError('HTTP Error 404', 'not-found'));
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      expect(coordinator.getSnapshot().preparingSource).toBe(true);
+
+      // The node's stated budget is 19 s, so supervision lands at 48 s.
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(api.failover).toHaveBeenCalled();
+      expect(coordinator.getSnapshot().preparingSource).toBe(false);
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('releases a replacement that lands after supervision gave up', async () => {
+    // A success nobody is waiting for is a generation nobody will ever close,
+    // and on a node whose max_video_transcodes is 1 that is the next viewer's
+    // refusal. Never cancelled, because a cancelled create tells the node
+    // nothing about whether to keep the work.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      let admitLate!: (session: PlaybackSession) => void;
+      const api = stuckResolver(onNodeA(), () => new Promise<PlaybackSession>((resolve) => { admitLate = resolve; }));
+      const coordinator = new PlaybackCoordinator({
+        media: media(), player, resolver: api,
+        capabilities: async () => capabilities(), initialPositionMs: 0,
+      });
+      await coordinator.start();
+      player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0, buffering: true } as PlaybackEvent);
+      player.fail(new PlaybackSourceError('HTTP Error 404', 'not-found'));
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      api.stop.mockClear();
+
+      admitLate(session({ sessionId: 'late-1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } }));
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(api.stop).toHaveBeenCalledWith('late-1', expect.anything());
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not interrupt a recovery that is merely slow', async () => {
+    // A false positive crosses to another node and loses the stream copy, so
+    // the bound is deliberately above anything the limbs may legitimately
+    // spend - twice the node's own attempt budget plus head-room.
+    vi.useFakeTimers();
+    try {
+      const player = new FakePlayer();
+      const api = stuckResolver(onNodeA(), () => new Promise<PlaybackSession>((resolve) => {
+        setTimeout(() => resolve(onNodeB()), 30_000);
+      }));
+      const coordinator = new PlaybackCoordinator({
+        media: media(), player, resolver: api,
+        capabilities: async () => capabilities(), initialPositionMs: 0,
+      });
+      await coordinator.start();
+      player.emit({ positionMs: 30_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0, buffering: true } as PlaybackEvent);
+      player.fail(new PlaybackSourceError('HTTP Error 404', 'not-found'));
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      expect(api.failover).not.toHaveBeenCalled();
+      expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.m3u8');
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

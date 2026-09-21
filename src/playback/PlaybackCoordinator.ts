@@ -351,6 +351,33 @@ const UNCACHED_SEEK_DEBOUNCE_MS = 300;
  */
 const PLAYER_SILENCE_GUARD_MS = 15_000;
 
+/**
+ * Head-room over the node's own budgets before the recovery as a whole is
+ * abandoned.
+ *
+ * **A supervising deadline exists because every limb of this recovery is
+ * bounded and the composition was not.** On 2026-09-20 a viewer sat frozen for
+ * minutes with `preparingSource` true, and the elimination afterwards closed
+ * every branch: the close settled, the create is bounded and can never compute
+ * a zero budget, `activateSession` is synchronous, nothing was disposed, one
+ * copy of core was in the bundle, and the absence of further log lines was
+ * read off three frames by eye rather than by a broken detector. **No named
+ * mechanism survives all of that, and the viewer was still frozen.**
+ *
+ * So this does not bound a suspect. It bounds *the work item* — "build a
+ * replacement" — which is what Law 4's discipline actually asks for: backoff,
+ * a failure budget, a parked state and an operator action, for the retried
+ * unit rather than for each of its limbs. It converts every unnamed mechanism,
+ * including ones nobody has thought of, from an indefinite freeze into a
+ * bounded wait followed by the failover that already exists.
+ *
+ * Deliberately generous: the close and the create may each legitimately spend
+ * the node's full attempt budget, so anything under twice that would abort
+ * recoveries that were going to succeed. A false positive here crosses to
+ * another node and loses the stream copy, which is worse than waiting.
+ */
+const RECOVERY_SUPERVISION_MARGIN_MS = 10_000;
+
 interface PendingMutation {
   update: PlaybackUpdate;
   reason: 'seek' | 'representation' | 'subtitle';
@@ -2591,6 +2618,48 @@ export class PlaybackCoordinator {
    * of the runway, and a failure to negotiate falls through to failover rather
    * than waiting.
    */
+  /**
+   * Bound a whole recovery, and let a late one clean up after itself.
+   *
+   * Never cancels the work: a cancelled create tells the node nothing about
+   * whether to keep the session, which is the same reason
+   * `awaitWithEndpointDeadline` observes rather than aborts. If the
+   * negotiation lands after this has given up, the session it produced is
+   * released rather than leaked — a success nobody is waiting for is a
+   * generation nobody will ever close, and on a node whose
+   * `max_video_transcodes` is 1 that is the next viewer's refusal.
+   *
+   * The late handlers are attached unconditionally so an abandoned rejection
+   * cannot surface as an unhandled one.
+   */
+  private superviseRecovery(build: Promise<PlaybackSession>, budgetMs: number): Promise<PlaybackSession> {
+    let supervised = true;
+    build.then(
+      (late) => {
+        if (supervised) return;
+        this.log.warn('replacement-arrived-after-supervision', {
+          sessionId: late.sessionId,
+          endpoint: late.endpoint,
+        });
+        void this.stopOnDisposal(late.sessionId);
+      },
+      () => undefined,
+    );
+    return new Promise<PlaybackSession>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        supervised = false;
+        reject(Object.assign(
+          new Error(`Replacement build exceeded ${budgetMs} ms with no result and no failure.`),
+          { status: 504, code: 'client_recovery_deadline' },
+        ));
+      }, budgetMs);
+      build.then(
+        (session) => { if (supervised) { clearTimeout(timer); resolve(session); } },
+        (error: unknown) => { if (supervised) { clearTimeout(timer); reject(error); } },
+      );
+    });
+  }
+
   private async buildReplacement(dead: PlaybackSession, reason: string, originating?: Error): Promise<void> {
     this.pendingReplacement = undefined;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
@@ -2616,16 +2685,22 @@ export class PlaybackCoordinator {
       reason,
     });
     this.patchSnapshot({ preparingSource: true, notice: undefined });
+    // Twice the node's own attempt budget plus head-room: the close and the
+    // create may each legitimately spend all of it, and aborting a recovery
+    // that was going to succeed costs the viewer a cross-node failover and the
+    // stream copy with it.
+    const attemptBudgetMs = dead.source.budgets?.deadlineMs ?? generationAttemptBudgetMs();
     try {
-      const capabilities = await this.options.capabilities();
-      if (this.disposed) return;
-      const next = await this.recoverWithPreferences(dead, (preferences) => this.options.resolver.regenerate!(
-        dead,
-        this.options.media,
-        capabilities,
-        requestedPositionMs,
-        preferences,
-      ));
+      const next = await this.superviseRecovery((async () => {
+        const capabilities = await this.options.capabilities();
+        return await this.recoverWithPreferences(dead, (preferences) => this.options.resolver.regenerate!(
+          dead,
+          this.options.media,
+          capabilities,
+          requestedPositionMs,
+          preferences,
+        ));
+      })(), attemptBudgetMs * 2 + RECOVERY_SUPERVISION_MARGIN_MS);
       if (this.disposed) {
         await this.stopOnDisposal(next.sessionId);
         return;
