@@ -707,6 +707,44 @@ describe('what a host sees through the runtime', () => {
     await runtime.stop();
   });
 
+  it('forwards a node move to the live coordinator, the only thing that can perform one', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const prepareOn = vi.fn(async (_endpointId: string) => undefined);
+    api.prepareOn = prepareOn;
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    // The resolver declines, so no move happens. What is under test is that
+    // the request reached the coordinator at all -- a host holds a runtime and
+    // never a coordinator, so without this forwarder nothing could ask.
+    expect(await runtime.moveTo('node-b')).toBe(false);
+    expect(prepareOn).toHaveBeenCalledTimes(1);
+    expect(prepareOn.mock.calls[0]?.[0]).toBe('node-b');
+    await runtime.stop();
+  });
+
+  it('answers false to a move with no generation to move, idle or failed, and asks the resolver nothing', async () => {
+    const player = new FakePlayer();
+    const api = resolver();
+    const prepareOn = vi.fn(async (_endpointId: string) => undefined);
+    api.prepareOn = prepareOn;
+    const idle = new PlaybackRuntime(new FakePlatform(player), api);
+    expect(await idle.moveTo('node-b')).toBe(false);
+
+    // A failed generation is released; moving it is a retry on another node,
+    // which a host spells as prefer() then retry(). Not a move.
+    const runtime = new PlaybackRuntime(new FakePlatform(player), api);
+    runtime.attach(host());
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+    player.fail(new Error('Web HLS media recovery exhausted'));
+    await vi.waitFor(() => expect(runtime.getSnapshot().phase).toBe('failed'));
+    expect(await runtime.moveTo('node-b')).toBe(false);
+    expect(prepareOn).not.toHaveBeenCalled();
+    await runtime.stop();
+  });
+
   it('applies a volume to the player, and does not require a player to have one', () => {
     // The docblock on setVolume records two separate occasions when applying a
     // level was confused with persisting one. This pins the half core owns:

@@ -349,6 +349,21 @@ export class PlaybackRuntime {
     }
   }
 
+  /**
+   * Serve the current title from a node the viewer chose, without stopping.
+   *
+   * Forwarded because a host holds a runtime and never the coordinator, so
+   * `PlaybackCoordinator.moveTo` had no caller from any client. `false` when
+   * there is no generation to move — idle, or failed. A failed generation is
+   * already released, so moving it is a retry on another node, and a host
+   * spells that as `prefer(endpointId)` on the registry and then `retry()`;
+   * there is nothing here for a move to act on.
+   */
+  moveTo(endpointId: string): Promise<boolean> {
+    if (this.coordinator) return this.coordinator.moveTo(endpointId);
+    return Promise.resolve(false);
+  }
+
   retry(preferences?: PlaybackPreferencesUpdate): Promise<void> {
     if (this.disposed || this.lifecycle.phase !== 'failed' || !this.lifecycle.request) {
       return Promise.resolve();
