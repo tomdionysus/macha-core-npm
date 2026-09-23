@@ -21,6 +21,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
 - **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
 - **A move declines a node whose recent media throughput is below the served rate** (`9f33b75`). `recordTransferByUrl` gains an optional fourth argument, `kind`, defaulting to media. Not yet exercised.
+- **The media sort vocabulary** (`2816e5e`): `MediaSortKey`, `SEARCH_SORTS` / `DEFAULT_SEARCH_SORT` (relevance), `LIBRARY_SORTS` / `DEFAULT_LIBRARY_SORT` (title), `orderMedia`, `isMediaSortKey`, and the new `newestYearFirst`. Asked for by the web client on Tom's instruction, relayed. Additive.
 - **`progressWriteDue` and `nextWatermark`**, the Continue Watching write cadence, taken from the Android TV client's copy (`5061a03`, 2026-09-24). Additive. That client deletes its copy once this is published.
 - **Not additive for a host:** `Player` gains two optional members (`holdsThroughLead`, `needsProducedSource`), and `play()` may receive a negative position, but only by opt-in. `ClusterPlaybackResolver`'s constructor lost nothing and gained nothing. The only exported symbols added are the new functions and constants.
 
@@ -423,6 +424,13 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 **Sequencing, and where it stands:** core's tolerance (`410`, cap status, provenance recovered from a session id) **shipped in `0.18.0` and every client's `main` pins it** — the clients' half of "first" is done. The server moves the routes **second**, and the clients need nothing for the URL move because they follow `source.url`. **Whether the nodes have moved is not visible from this tree; ask the server session.**
 
 ## Waiting on Tom
+
+### Check the session route on a timer while the viewer is playing, so a reap is caught without player evidence
+**Proposed 2026-09-24. It reverses a documented rule, so it is Tom's call.** `sessionAlive()`'s docblock says *"Not a keepalive. It runs when something has already gone wrong, never on a timer."* The reason is real, and I read it in the server (`playback.cpp`, the reaper around line 3128): a GET on the session route resets `touched`, so polling a paused session would pin the node's transcode slot for as long as the tab stays open.
+
+**While the viewer is playing, that reason does not apply.** The player's own segment fetches already refresh `touched`, so a check then pins nothing that is not already pinned. With the check, core would notice a reap, a DELETE or a node restart within one interval, from any host, whether or not its player reports per-segment failures. Measured on the Android TV set 2026-09-23: 66 s passed between the DELETE and the fatal, and after it came 8 s without picture that regeneration inside the buffer would have hidden. The cost is one small GET per interval per playing viewer, and the interval is a guess to state as one.
+
+**The alternative is host-side:** each player reports its 404s on `subscribeDegradation`. The web client already does. The TV client has been told how, and it is building that regardless.
 
 - ~~**The package alias split.**~~ Decided 2026-09-15: `@machafoundation/core`, because `@macha` is an unclaimed scope and `@machafoundation/core` is already published and owned. See *Moving the clients onto public npm* above.
 - **Coverage.** Deferred 2026-09-13: *"not at this time, we'll update later."* Re-measured 2026-09-15 and the cheap half taken; see *Coverage: what is done and what is left* below for where it now stands and what the rest costs.
@@ -958,7 +966,10 @@ All three are defects in what core ships, not in client discipline:
 
 **By outcome, not by trail.** The trail was off, so core's `source-reaped` / `session-regenerated` lines were not seen. What was seen is the node session lists and the resumed position. A failover excludes the charged node, so a replacement on the same node with nothing elsewhere is the regeneration path. If a later trail ever shows `source-failover-start` on a reap, this reading was wrong.
 
-**Still open, and the client's:** 66 s passed between the DELETE and the fatal. expo-video reports no per-segment failure, so the degradation channel is never used on that set.
+**Still open: 66 s passed between the DELETE and the fatal.** expo-video reports no per-segment failure to JS, so the degradation channel is never used on that set. **This first read "and the client's", and Tom corrected it: core exists to support the clients.** Core already holds most of the answer, and sent it to that client 2026-09-24:
+- A `not-found` `PlaybackSourceError` on `subscribeDegradation`, built with `playbackFailureKindForStatus(404)`, regenerates within the buffer's cover, as the web client measured invisibly on 2026-09-17.
+- media3 reports each failed load natively, through `AnalyticsListener.onLoadError` with `InvalidResponseCodeException.responseCode`.
+- A core-side, playing-only check of the session route could catch a reap with no player evidence at all. That one waits on Tom, under *Waiting on Tom*.
 
 **Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. **Tried 2026-09-23 and not exercisable, for a reason that is the server's:** a direct session DELETEd with 204 (and listed on no node afterwards) went on streaming for 8 minutes, including after a seek two minutes past the buffered edge. No fatal ever reached the player, so there was nothing to classify. It is with the server, and matches the earlier report of a deleted macnessa session streaming for 2 min 28 s. Next try: a transcode session. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
 
