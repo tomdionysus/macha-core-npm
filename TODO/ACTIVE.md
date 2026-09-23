@@ -1239,6 +1239,17 @@ The cost is not local: a node holds a session's transcode entitlement for `sessi
 
 ## Verification outstanding — the `0.13.0` deferral has never reached a swap on a real node
 
+**It has now: verified live on 2026-09-23 by the web client, against core `0ac8f21`, fi-1 on server 0.53 with `session_idle` at 30 min, transcode HLS.** A 34.7-minute pause with 127 s buffered; nothing touched the session while paused.
+- **Resume:** the picture played on from the buffer at once. The first fragment 404 came 9.1 s later: `session-gone`, `source-reaped`, and a replacement deferred at `runwayMs 119892` against `leadTimeMs 26000`.
+- **The adapter's fatal 31 s later** was absorbed as `source-failure-superseded-by-replacement`. No failure screen.
+- **At `lead-time-reached`** (`runwayMs 25939`), core regenerated **on the same node**. The session was created in 1.6 s, the web handover completed in 1.28 s, and the cut went from 157.5 s on the old element to 2.8 s on the new, 100 ms apart, `readyState 4` throughout.
+- **No stall** in 1,257 visible samples.
+
+That closes *Re-verify the stall is gone* below. **Two caveats from the run:**
+- The tab was hidden from the resume click until 20:02:31, so the resume and the first 404 happened in a background tab; the rebuild and the cut were foregrounded.
+- At 19:40:31, mid-pause, routing logged `route-endpoint-failed` for fi-1 as unreachable, with no visible consequence. **Unexplained.** A throttled timer in a background tab expiring a request is one candidate, not a finding.
+
+
 **Core's half is complete and released in `0.13.0`, and the shipped account is in [COMPLETED.md](COMPLETED.md).** What is left here is verification nobody has been able to run and one cross-repo half: the web client's `fail-not-found` teardown change and the three-arm comparison. Neither is core's and neither blocks anyone else — see *Still to do* at the end of this section, which is the only part that is actually outstanding.
 
 **The account below is kept in full even though it is now duplicated**, because the shape changed three times and each change was forced by a measurement rather than an argument. COMPLETED.md has the release-shaped telling; this is the working one, and the open items reference it.
@@ -1351,7 +1362,7 @@ The client can supply it — `directPlayReadAheadMetrics` already carries `resid
 
 ### Still to do
 
-- **Re-verify the stall is gone.** Neither run reached a swap, so the 5.16 s is still only known to be fixed in a fake.
+- ~~**Re-verify the stall is gone.**~~ **Verified live 2026-09-23** — see the head of this section: in-place regeneration after a 34.7-minute pause, no stall in 1,257 samples.
 - The look-ahead question — whether a generation held for a minute is still being produced — remains unanswered for the same reason. Watch for `source-not-found-on-live-session` **after** `replacement-swapped-in`.
 - Nothing has met a node in the *node-unreachable* case. The client has a repro that collapses the thirty-minute wait — pause through the UI, `DELETE /api/v1/playback/sessions/<id>` on the owning node, resume — and verifies through a **temporary `file:` link to this tree**, then unlinks. Core's `dist` is built and current, so the link sees all of it today.
 - The web client's half is **written and proven live**, and its tree deliberately does not typecheck — four errors, all `SEGMENT_NOT_READY_STATUS` / `SOURCE_NOT_FOUND_STATUS` / `'not-found'` not existing in the registry copy of core. That is the honest state and it was waiting on a real version number, not on more work; `0.13.0` and `0.14.0` have both shipped since, so this is closed unless that tree says otherwise.
