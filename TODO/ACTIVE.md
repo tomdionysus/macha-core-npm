@@ -908,7 +908,15 @@ All three are defects in what core ships, not in client discipline:
 
 
 ### Core estimates what a generation start costs, and a move starts ahead of the viewer — BUILT on `develop` in `d58375a`, unreleased
-**Waiting on:** the web client to declare `holdsThroughLead` in its adapter and re-run a move against a node. **Nothing here has met a node yet.** **Ruled by Tom first-hand on 2026-09-23: core measures, a host may override.** Two peer sessions had relayed his earlier answer two different ways — the server as "core's job", the web client as "the client measures" — and core asked him rather than pick one.
+**The lead is verified live; core's own estimate is not.** Web client `1fcec95` against `d58375a`, 2026-09-23, fi-1 and gbni-1:
+- **Unled**, with no evidence on either side: the join lost the race and froze the picture for 15.3 s. gbni-1 measured 19.6 s to a first fragment.
+- **Led, host lead 24,614 ms:** the adapter received `-21959`, the lead less the 2.7 s the create took while the viewer played on. The first fragment arrived at +9.0 s, and the cut came at +24.9 s with 27 s buffered ahead of the join. Across 270 samples at 100 ms the shown element never paused, never dropped below readyState 3 and never stopped advancing. The old session was stopped at the cut, and every session answered 404 afterwards.
+- **Led the other way, host lead 6,419 ms:** complete 5.9 s after the click.
+- **Node CORS allows `Range`** (204 preflight, `Allow-Headers` includes it), so the probe is not blocked on web.
+
+**Not yet shown:** that core's readiness probe records samples, and that a move with no host lead uses them (`leadSource: estimate`). The host lead won every led move. The run that shows it is a second move to the same node with no `leadMs` passed.
+
+**Still open:** the first move to a node is unled on both sides, because neither has evidence yet. gbni-1's start varied 9.0 to 20.3 s for one title in one afternoon, which is the case for keeping the longest of the recent samples rather than an average. **Ruled by Tom first-hand on 2026-09-23: core measures, a host may override.** Two peer sessions had relayed his earlier answer two different ways — the server as "core's job", the web client as "the client measures" — and core asked him rather than pick one.
 
 **What was built, and it is a lead rather than a decline.** The web client's analysis, checked and adopted: declining up front only reaches the freeze sooner. The node produces sequentially from where it is asked, at no better than realtime on the slow boxes, so the fix is to ask for the viewer's position plus the start cost. The outgoing source then plays on until the viewer reaches the new generation, and the host cuts there. Core measures each create and relocating PATCH with a `bytes=0-0` readiness probe on the first fragment, keyed per node and per kind, and uses the longest of five samples from the last thirty minutes. `moveTo(endpointId, { leadMs })` takes the host's lead, or that estimate plus `MOVE_LEAD_MARGIN_MS`, but only for a player declaring `holdsThroughLead`. The activation hands such a player a negative position instead of PATCHing the lead away. The notes below are the design as it stood before the build, kept for its reasoning.
 
