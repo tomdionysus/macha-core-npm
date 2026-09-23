@@ -484,6 +484,14 @@ export function isPrematurePlaybackEnd(positionMs: number, durationMs: number): 
   return durationMs > 0 && positionMs + PLAYBACK_END_TOLERANCE_MS < durationMs;
 }
 
+/**
+ * No evidence about what failed: a bare `Error`, or a `PlaybackSourceError` of
+ * kind `unknown`. The same test `source-failure-unclassified` reports on.
+ */
+function isUnclassifiedPlaybackFailure(error: unknown): boolean {
+  return !(error instanceof PlaybackSourceError) || error.kind === 'unknown';
+}
+
 /** What a host may say about a move. See `PlaybackCoordinator.moveTo`. */
 export interface PlaybackMoveOptions {
   /**
@@ -2714,6 +2722,22 @@ export class PlaybackCoordinator {
     // before recovery finished. Same question, same answer, and still not a
     // reason to condemn the node.
     if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
+    // **An unclassified fatal asks the same question before it charges
+    // anyone.** A player that cannot see a status -- expo-video's terminal
+    // error carries only a message -- reports a reaped session as `unknown`,
+    // and until now that went straight to failover: measured on the Android TV
+    // set on 2026-09-23, two reaps each charged a healthy local node and moved
+    // the viewer across the internet. The session route can tell a reaped
+    // session from a failing node without anyone reading the message, so ask
+    // it. Gone: regenerate on the same node, uncharged. Alive, or no answer:
+    // the stream really failed, and failover and the charge go ahead as before.
+    if (failedSession
+      && isUnclassifiedPlaybackFailure(fatalError)
+      && isEndpointRetryablePlaybackFailure(fatalError)
+      && this.beginMissingSessionRecovery(fatalError, true)) {
+      this.noteUnclassifiedFailure(fatalError, 'fatal');
+      return;
+    }
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);
@@ -2858,7 +2882,10 @@ export class PlaybackCoordinator {
       // building a standby for it is the churn `not-found` exists to stop, so
       // the degradation path deliberately stops here. A fatal one still needs
       // somewhere to go.
-      this.log.warn('source-not-found-on-live-session', {
+      // Named for what arrived: a `not-found` against a live session is a miss
+      // in the plan, while an unclassified failure against one is the stream
+      // failing on a node whose session is fine -- the failover below charges it.
+      this.log.warn(isMissingSourceFailure(error) ? 'source-not-found-on-live-session' : 'unclassified-failure-on-live-session', {
         sessionId: session.sessionId,
         endpoint: session.endpoint,
         positionMs: this.snapshot.intent.positionMs,

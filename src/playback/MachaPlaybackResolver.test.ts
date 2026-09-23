@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from '../api/MachaCatalogueApi.js';
-import { MachaPlaybackResolver } from './MachaPlaybackResolver.js';
+import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS } from './MachaPlaybackResolver.js';
+import { MachaConnectionError } from '../api/serverConnection.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 
@@ -589,5 +590,34 @@ describe('quality caps and copy instructions', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { preferences: Record<string, unknown> };
     expect(body.preferences).toMatchObject({ mode: 'direct', video: 'copy', audio: 'copy' });
+  });
+});
+
+describe('asking a node whether a session is alive', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('gives up after its own bound on a node that never answers, as could-not-tell', async () => {
+    // It sits in front of a failover. Unbounded, a node that dropped off the
+    // network held the question for as long as the platform let the connection
+    // hang, and that wait was the viewer's.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    })));
+    const resolver = new MachaPlaybackResolver('http://node.test');
+
+    const asked = resolver.sessionAlive('s1');
+    const settled = expect(asked).rejects.toBeInstanceOf(MachaConnectionError);
+    await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_TIMEOUT_MS);
+    await settled;
+  });
+
+  it('answers gone on 404 and alive on 200, untouched by the bound', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'not_found', message: 'gone' } }), { status: 404, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    const resolver = new MachaPlaybackResolver('http://node.test');
+    expect(await resolver.sessionAlive('s1')).toBe(false);
+    expect(await resolver.sessionAlive('s1')).toBe(true);
   });
 });

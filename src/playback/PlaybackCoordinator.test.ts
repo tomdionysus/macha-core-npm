@@ -2023,6 +2023,72 @@ describe('a node that reaped the session it was serving', () => {
   });
   const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
 
+  describe('a fatal that says nothing about what failed', () => {
+    // Measured on the Android TV set 2026-09-23: expo-video's terminal error
+    // carries no status, so a reaped direct-play session arrived as `unknown`,
+    // and two reaps each charged a healthy local node and failed over across
+    // the internet. The session route can tell the two apart without anyone
+    // reading the message.
+    const unclassified = () => new PlaybackSourceError('Source error Response code: 404', 'unknown');
+
+    it('regenerates on the same node, uncharged, when the node says the session is gone', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).toHaveBeenCalledWith('s1');
+      expect(api.failover).not.toHaveBeenCalled();
+      expect(api.recordEndpointFailure).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('fails over and charges as before when the session is alive, because then the stream really failed', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      api.sessionAlive = vi.fn(async () => true);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).toHaveBeenCalledWith('s1');
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('fails over when the node cannot answer, rather than reading silence as gone', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      api.sessionAlive = vi.fn(async () => { throw new Error('Session s1 liveness unanswered within 8000 ms.'); });
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('leaves an unclassified report on the degradation channel as it was', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(unclassified());
+
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+  });
+
   it('asks the same node for a new generation instead of condemning it', async () => {
     const player = new FakePlayer();
     const api = reapedResolver(onNodeA(), replacement());
