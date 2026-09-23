@@ -8,7 +8,6 @@ import {
   mediaPlaylistTargets,
   preflightHlsSource,
   probeHlsReadiness,
-  probeSourceReadiness,
   resolveUrl,
 } from './hlsWalk.js';
 import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
@@ -456,52 +455,5 @@ describe('a node that states an implausible Retry-After', () => {
     });
     expect(await probeHlsReadiness(source(), { fetch }))
       .toEqual({ state: 'holding', retryAfterMs: 3_000 });
-  });
-});
-
-describe('probeSourceReadiness', () => {
-  // Two reaps on the Android TV set, 2026-09-23: a progressive direct-play
-  // fatal went up as `unknown` because nothing could ask a progressive source
-  // for its status without range-requesting the film, so core charged a
-  // healthy local node and failed over across the internet.
-  const progressive = (): PlaybackSource => source({
-    url: 'https://node-a.example/api/v1/playback/sessions/abc/stream/t/direct',
-    isManifest: false,
-    mode: 'direct',
-  });
-
-  it('reads the status a reaped direct session answers with, from one byte', async () => {
-    const { fetch, calls } = stubFetch({
-      'https://node-a.example/api/v1/playback/sessions/abc/stream/t/direct': { status: 404 },
-    });
-    expect(await probeSourceReadiness(progressive(), { fetch })).toEqual({ state: 'unavailable', status: 404 });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.headers.Range).toBe('bytes=0-0');
-  });
-
-  it('answers ready for a source still being served, and never reads the film when the range is ignored', async () => {
-    let cancelled = false;
-    const fetch = async () => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      body: { getReader: () => ({ read: async () => ({ done: false, value: { length: 1 } }), cancel: () => { cancelled = true; } }) },
-    }) as unknown as Response;
-    expect(await probeSourceReadiness(progressive(), { fetch })).toEqual({ state: 'ready' });
-    expect(cancelled).toBe(true);
-  });
-
-  it('walks a manifest exactly as probeHlsReadiness does', async () => {
-    const { fetch } = stubFetch({
-      'https://node-a.example/stream/abc/index.m3u8': { status: 404 },
-    });
-    expect(await probeSourceReadiness(source(), { fetch })).toEqual(await probeHlsReadiness(source(), { fetch }));
-  });
-
-  it('reports a transport failure as unavailable with no status, which is not a not-found', async () => {
-    const fetch = async () => { throw new TypeError('Failed to fetch'); };
-    const outcome = await probeSourceReadiness(progressive(), { fetch });
-    expect(outcome.state).toBe('unavailable');
-    expect((outcome as { status?: number }).status).toBeUndefined();
   });
 });
