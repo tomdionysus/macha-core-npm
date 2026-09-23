@@ -911,6 +911,9 @@ All three are defects in what core ships, not in client discipline:
 **Superseded in part, 2026-09-23: Tom ruled out core's one-byte probe — *"one-byte request - we're not doing this. Talk to server."*** The probe was removed in `38d0524`, and the `readinessFetch` / `noStoreFetch` wiring reverted in `5ca3661`. Core sends nothing to a stream route. **What stays:** the lead on `moveTo`, `holdsThroughLead`, and the evidence store the estimate reads. Nothing feeds that store now, so without a host lead a move asks for no lead.
 - **The server has been asked what it can offer** for a node's start cost on a request core already makes; waiting on its answer and Tom's word.
 - **The gbni-1 failures were transfer-bound, measured:** the node answered each fragment in 0.1-0.35 s, while the link from the fi-1-site client delivered 0.50 MB/s against a 0.63 MB/s stream. When throughput to a node is below the stream's bitrate, no lead helps, and the move should decline with a reason. Core has per-endpoint throughput and the bitrate, but that decision is only sound if the throughput is media throughput. Asked the web client whether it feeds `recordTransferByUrl`.
+- **Throughput is now media throughput on web.** From web client `98f4e3c` it feeds every hls.js fragment to `recordTransferByUrl`; before that, core's gbni-1 figure came from JSON reads. With media, gbni-1 reads about 1.6 MB/s steady against a 0.63 MB/s stream. **But the lost joins happened in the opening:** the first fragments of a cold connection arrived at 0.28-0.57 MB/s. So there are two separate questions:
+  - whether a node can sustain a stream — recorded rate against bitrate, now a meaningful decline to build;
+  - whether a join can be won — the lead. A lead computed from steady-state throughput would pass and then lose in the opening, so the host's end-to-end lead stays the source for it.
 - The notes below are the history that led here.
 
 **The lead is verified live; core's own estimate is not.** Web client `1fcec95` against `d58375a`, 2026-09-23, fi-1 and gbni-1:
@@ -961,6 +964,17 @@ Meanwhile a host lead measured end to end wins wherever the host has one, and th
 **Two things declined, and the second is against core as much as the server.** No to a name instead of the hex id — core has `nodes[].id`, `host` and `version` off `/api/v1/status` and can render a label itself; a name as the placement key becomes a second identifier that has to be policed for uniqueness and stability. **No to a server-side "best node" option**, because it would be a second ranking on different inputs from core's cascade, and when the two disagree nobody can explain a placement to an operator — **but core's cascade ranks for playback** (availability, sticky, failures, throughput, latency, capacity) and measures neither free disk nor sustained write, and its capacity axis abstains without `cpu_cores`. So core cannot claim to rank downloads today either. **The ask is facts, not a verdict:** per-node free disk on status (`ByteUsage` is already in core at `api/ClusterStatusApi.ts:30-34`), and core ranks and sends an explicit `node_id`. Whoever decides should be able to say why.
 
 **When it ships:** hard-cut `submitMagnet` to return `{ id, nodeId }`, make `TorrentJob.node_id` required if ask 1 lands, and surface the `409`'s stated code and target through the existing accessors. Nothing else moves.
+
+### ~~An unclassified fatal charges a node whose session was simply reaped~~ — BUILT on `develop` in `2bcce57`, unreleased
+**Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
+
+An unclassified terminal failure bound for failover now asks `sessionAlive()` first, the same recovery a `not-found` takes:
+- gone: regenerate on the same node, nothing charged;
+- alive, or no answer: failover and the charge, as before.
+
+The degradation channel is unchanged. **The liveness GET had no timeout at all** — plain host fetch, no signal — which already affected the `not-found` path. It is now bounded at `SESSION_LIVENESS_TIMEOUT_MS`, core's 8 s JSON bound, and a timeout reads as could-not-tell.
+
+**The replacement for the rejected one-byte probe, `probeSourceReadiness`, is this.** It asks the session API instead of the stream.
 
 ### Continue Watching owns the store but not the cadence
 **Waiting on:** core. **Has a consumer waiting with an implementation to delete, not a speculative ask.**
