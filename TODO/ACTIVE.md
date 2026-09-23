@@ -908,6 +908,11 @@ All three are defects in what core ships, not in client discipline:
 
 
 ### Core estimates what a generation start costs, and a move starts ahead of the viewer — BUILT on `develop` in `d58375a`, unreleased
+**Superseded in part, 2026-09-23: Tom ruled out core's one-byte probe — *"one-byte request - we're not doing this. Talk to server."*** The probe was removed in `38d0524`, and the `readinessFetch` / `noStoreFetch` wiring reverted in `5ca3661`. Core sends nothing to a stream route. **What stays:** the lead on `moveTo`, `holdsThroughLead`, and the evidence store the estimate reads. Nothing feeds that store now, so without a host lead a move asks for no lead.
+- **The server has been asked what it can offer** for a node's start cost on a request core already makes; waiting on its answer and Tom's word.
+- **The gbni-1 failures were transfer-bound, measured:** the node answered each fragment in 0.1-0.35 s, while the link from the fi-1-site client delivered 0.50 MB/s against a 0.63 MB/s stream. When throughput to a node is below the stream's bitrate, no lead helps, and the move should decline with a reason. Core has per-endpoint throughput and the bitrate, but that decision is only sound if the throughput is media throughput. Asked the web client whether it feeds `recordTransferByUrl`.
+- The notes below are the history that led here.
+
 **The lead is verified live; core's own estimate is not.** Web client `1fcec95` against `d58375a`, 2026-09-23, fi-1 and gbni-1:
 - **Unled**, with no evidence on either side: the join lost the race and froze the picture for 15.3 s. gbni-1 measured 19.6 s to a first fragment.
 - **Led, host lead 24,614 ms:** the adapter received `-21959`, the lead less the 2.7 s the create took while the viewer played on. The first fragment arrived at +9.0 s, and the cut came at +24.9 s with 27 s buffered ahead of the join. Across 270 samples at 100 ms the shown element never paused, never dropped below readyState 3 and never stopped advancing. The old session was stopped at the cut, and every session answered 404 afterwards.
