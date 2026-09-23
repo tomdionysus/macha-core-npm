@@ -60,7 +60,7 @@ class FakeCatalogue implements CatalogueApi {
       title: 'Artist',
       effective_artwork: [{ role: 'cover', id: 'artist-effective-art', mime_type: 'image/jpeg' }],
     }));
-    if (id === 'album-1') return Promise.resolve(catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' }));
+    if (id === 'album-1') return Promise.resolve(catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album', year: 1999 }));
     if (id === 'movie-with-capability-url') return Promise.resolve(catalogueItem('movie-with-capability-url', 'movie', {
       title: 'Movie',
       artwork: [{ role: 'poster', id: 'signed-poster', mime_type: 'image/jpeg', url: '/api/v1/catalogue/artwork/signed-poster?exp=1&sig=abc' }],
@@ -574,7 +574,7 @@ describe('search hits and their ancestry', () => {
   it('gives a track its album and artist', async () => {
     const [hit] = await new MachaMediaApi(new SearchCatalogue([TRACK])).search('ninth');
     expect(hit.musicContext).toEqual(expect.objectContaining({
-      album: { id: 'album-1', title: 'Album' },
+      album: { id: 'album-1', title: 'Album', year: 1999 },
       artist: { id: 'artist-1', title: 'Artist' },
     }));
     expect(hit.subtitle).toBe('Track 9');
@@ -592,8 +592,8 @@ describe('tracks name their album and artist', () => {
     const details = await new MachaMediaApi(new FakeCatalogue()).details('album-1');
     if (details.kind !== 'album' || !('tracks' in details)) throw new Error('expected album details');
     expect(details.tracks.map((track) => track.musicContext)).toEqual([
-      { album: { id: 'album-1', title: 'Album' }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
-      { album: { id: 'album-1', title: 'Album' }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+      { album: { id: 'album-1', title: 'Album', year: 1999 }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+      { album: { id: 'album-1', title: 'Album', year: 1999 }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
     ]);
   });
 

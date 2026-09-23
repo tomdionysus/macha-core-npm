@@ -430,7 +430,7 @@ export class MachaMediaApi implements MediaApi {
   private musicContext(album: CatalogueItem, artist: CatalogueItem | undefined): MusicHierarchyContext {
     const artwork = this.mapArtwork(album.effective_artwork ?? album.artwork);
     return {
-      album: { id: album.id, title: album.title },
+      album: { id: album.id, title: album.title, year: optionalNumber(album.year) },
       artist: artist ? { id: artist.id, title: artist.title } : undefined,
       artwork: artwork?.poster ?? artwork?.thumbnail,
     };

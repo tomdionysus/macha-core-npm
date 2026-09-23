@@ -69,7 +69,8 @@ export interface PlaybackHierarchyContext {
  * track carries none of its own.
  */
 export interface MusicHierarchyContext {
-  album: { id: string; title: string };
+  /** `year` is the album's release year, absent when the catalogue has none. */
+  album: { id: string; title: string; year?: number };
   artist?: { id: string; title: string };
   artwork?: ArtworkRef;
 }
