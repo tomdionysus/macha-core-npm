@@ -38,7 +38,8 @@ For the next session on `@machafoundation/core`. The detail is in [ACTIVE.md](AC
 ## Open decisions and next builds
 
 1. **Publish** — Tom's call.
-2. **A move declining a node that cannot sustain the stream** — recorded media throughput against the session bitrate. Worth building and not started. Only sound on media samples; the web client feeds them since its `98f4e3c`. Mind the `EndpointBandwidth.restore()` one-sample re-entry.
+2. **A move declining a node that cannot sustain the stream** — **built 2026-09-24 in `9f33b75`, unreleased and not exercised.** Media-only evidence, at least 6 samples, under 10 minutes old, against the served rate. Detail in ACTIVE. The viewer is told nothing yet.
+5. **Continue Watching write cadence** — **built 2026-09-24 in `5061a03`.** The Android TV client has been told and may swap onto it through its link.
 3. **Where core's start-cost estimate comes from** — waiting on the server. If the answer is "nothing", remove the evidence store and `startCostEstimate` rather than leave them unfed.
 4. **Continue Watching write cadence** (`progressWriteDue`) — a TODO in ACTIVE, asked for by the Android TV client. Its calibration against `SERVER_SESSION_IDLE_MS` is rejected there, with the reason.
 
