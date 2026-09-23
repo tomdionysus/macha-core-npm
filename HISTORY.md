@@ -135,9 +135,10 @@ Both halves of `probeEndpoint` were individually reasonable and the pair was wro
 | `0.13.0` | A 404 is about one session, not the node that answered it — and the replacement is built where the viewer will arrive. |
 | `0.13.1` | Four faults a seamless host made visible: `play()` resolving is not `play()` being called. |
 | `0.14.0` | Core reads the node's own deadlines instead of holding compiled-in guesses at them. |
-| `0.15.0` | A failure keeps the evidence it arrived with — and a recovery that cannot finish stops waiting for ever. |
+| `0.15.0` | A failure keeps the evidence it arrived with — and a recovery that cannot finish stops waiting for ever. Tagged, never published. |
 | `0.16.0` | Tolerance for two statuses no node sends yet. Tagged, never published — superseded within the hour. |
-| `0.17.0` | The tolerance release the fleet pins: the two statuses, and the machine code a host is meant to act on. |
+| `0.17.0` | The two statuses and the machine code a host is meant to act on. Tagged, never published; every client pinned it through a link, none from the registry. |
+| `0.18.0` | A session closes on the strength of its id, the cap is counted per node, and a viewer choosing a node is not evidence about it. The first publish since `0.14.0`; everything above it ships here. |
 
 ## The pause that killed a healthy node
 
@@ -258,3 +259,18 @@ Recorded because from outside a version gap and an unpublish look identical,
 and one of those is a reason to distrust a package. Nothing was unpublished.
 The four clients resolved by `file:` link throughout, so none of them was ever
 reading the registry and none was affected.
+
+**It happened again, and for a better reason.** `0.15.0`, `0.16.0` and `0.17.0`
+were tagged across 2026-09-20 and 2026-09-21 as waypoints while the work was
+proven through links to this tree, and none was published; `0.18.0` is the next
+version npm sees after `0.14.0`. This time it was the rule working rather than
+lapsing: a version is spent when there is something worth shipping, not on a
+turn of a verify-fix-verify loop, and a tag costs nothing to leave behind.
+`0.18.0` itself was cut once too early on 2026-09-21, reverted the same
+afternoon before anything was published, and cut again that evening after the
+gate. The tag has not moved since and cannot.
+
+So a `git tag` here is not a release history. Twenty-one of the twenty-seven tags
+have no artefact behind them. **Read the registry** — `npm view
+@machafoundation/core versions` — before calling a version released, before
+offering one to a client, and before treating a tag as movable.
