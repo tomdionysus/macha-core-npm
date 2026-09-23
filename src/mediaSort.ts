@@ -17,6 +17,13 @@ export interface MediaSort {
   key: MediaSortKey;
   /** The viewer-facing name, in English like every other string core produces. */
   label: string;
+  /**
+   * The option as a sort control shows it: "Sort By Title". Tom ruled
+   * 2026-09-24, for the web client, that a control has no separate "Sort by"
+   * heading and each option reads this way. It is composed here, so that four
+   * clients composing it for themselves cannot drift on case or wording.
+   */
+  choiceLabel: string;
   /** A new array in this order. Never the one passed in. */
   order(items: readonly MediaSummary[]): MediaSummary[];
 }
@@ -40,15 +47,15 @@ export function newestYearFirst(items: readonly MediaSummary[]): MediaSummary[] 
   });
 }
 
-const RELEVANCE: MediaSort = {
-  key: 'relevance',
-  label: 'Relevance',
-  // The server's own order. Only a search has one worth keeping.
-  order: (items) => [...items],
-};
-const TITLE: MediaSort = { key: 'title', label: 'Title', order: (items) => sortMediaByIndexedTitle([...items]) };
-const YEAR: MediaSort = { key: 'year', label: 'Year', order: newestYearFirst };
-const RECENT: MediaSort = { key: 'recent', label: 'Recently added', order: newestCatalogueFirst };
+function sort(key: MediaSortKey, label: string, order: MediaSort['order']): MediaSort {
+  return { key, label, choiceLabel: `Sort By ${label}`, order };
+}
+
+// Relevance is the server's own order. Only a search has one worth keeping.
+const RELEVANCE = sort('relevance', 'Relevance', (items) => [...items]);
+const TITLE = sort('title', 'Title', (items) => sortMediaByIndexedTitle([...items]));
+const YEAR = sort('year', 'Year', newestYearFirst);
+const RECENT = sort('recent', 'Recently added', newestCatalogueFirst);
 
 /** For search results, in the order a control should list them. */
 export const SEARCH_SORTS: readonly MediaSort[] = [RELEVANCE, TITLE, YEAR, RECENT];
