@@ -82,6 +82,14 @@ export const HLS_READINESS_RANGE = 'bytes=0-0';
  * which is the obvious-looking fix for the Tizen half and breaks the signature
  * for everyone. Headers are the only mechanism that suppresses caching without
  * touching the signed URL.
+ *
+ * **The cost, found on web on 2026-09-23:** a browser sends these cross-origin
+ * only if the node's CORS allow-list names them, and the deployed nodes allow
+ * `Authorization, Content-Type, If-Match, Range`. So a walk from a page on
+ * another origin fails before it leaves the browser, as `TypeError: Failed to
+ * fetch`, which reads as the node being unreachable. A browser host has
+ * `cache: 'no-store'` working properly and should wrap its fetch in
+ * `noStoreFetch`; see `MachaServicesOptions.readinessFetch`.
  */
 const NO_CACHE_HEADERS: Readonly<Record<string, string>> = {
   'Cache-Control': 'no-cache, no-store',
@@ -89,6 +97,25 @@ const NO_CACHE_HEADERS: Readonly<Record<string, string>> = {
 };
 
 export type HlsWalkFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The same walk for a browser host: core's cache suppression expressed as
+ * `cache: 'no-store'` instead of as the two request headers.
+ *
+ * **Only for a host where that option works properly**, which is a browser.
+ * On React Native it rewrites the signed URL and the node refuses it; on Tizen
+ * it is dropped. Where it works, it needs nothing from the node's CORS policy,
+ * which the headers do. The header names are core's, so the translation lives
+ * here rather than in a host that would have to know them. Every other header,
+ * `Range` included, passes through untouched.
+ */
+export function noStoreFetch(fetch: HlsWalkFetch): HlsWalkFetch {
+  return (url, init) => {
+    const headers: Record<string, string> = { ...((init?.headers as Record<string, string> | undefined) ?? {}) };
+    for (const name of Object.keys(NO_CACHE_HEADERS)) delete headers[name];
+    return fetch(url, { ...init, headers, cache: 'no-store' });
+  };
+}
 
 export interface HlsWalkOptions {
   /** The host's `fetch`. The only platform-varying part of either walk. */
