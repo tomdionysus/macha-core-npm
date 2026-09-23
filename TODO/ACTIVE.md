@@ -17,7 +17,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 **`develop` is 26 commits past `0.18.0`, pushed, unreleased.** HEAD `23583aa`, `dist` hash `66d79d1f8e4b` (`npm run dist:hash`), 1052 tests in 67 files. `package.json` still reads `0.18.0`, and the README carries `*v0.18.0*` under its title, which `npm version` now keeps in step (`0ac8f21`). **What a release would carry, each with its entry below:**
 - **`moveTo` and its door.** `PlaybackRuntime.moveTo` (`2f196a1`). The move releases the old session at the cut and asks about the session core owns (`5de9250`). Verified live twice.
 - **The lead on a move and `holdsThroughLead`** (`d58375a`, trimmed by `38d0524`). Verified live with a host lead.
-- **An unclassified fatal asks the node before charging it**, and the liveness GET is bounded at `SESSION_LIVENESS_TIMEOUT_MS`, 8 s, where it had no bound (`2bcce57`). Not yet exercised on a device.
+- **An unclassified fatal asks the node before charging it**, and the liveness GET is bounded at `SESSION_LIVENESS_TIMEOUT_MS`, 8 s, where it had no bound (`2bcce57`). **Verified on the Android TV set 2026-09-23 by outcome, not by trail.** Detail in its entry.
 - **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
 - **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
 - **A move declines a node whose recent media throughput is below the served rate** (`9f33b75`). `recordTransferByUrl` gains an optional fourth argument, `kind`, defaulting to media. Not yet exercised.
@@ -949,7 +949,17 @@ All three are defects in what core ships, not in client discipline:
 
 **When it ships:** hard-cut `submitMagnet` to return `{ id, nodeId }`, make `TorrentJob.node_id` required if ask 1 lands, and surface the `409`'s stated code and target through the existing accessors. Nothing else moves.
 
-### ~~An unclassified fatal charges a node whose session was simply reaped~~ — BUILT on `develop` in `2bcce57`, unreleased
+### ~~An unclassified fatal charges a node whose session was simply reaped~~ — BUILT on `develop` in `2bcce57`, unreleased, VERIFIED on the TV set
+**Verified 2026-09-23 on .133, through the link with the bundle checked, on a transcode session as planned.**
+- Transcode session `9ea528ac` on 10.35.1.50 (DTS audio, which the set cannot decode) was DELETEd at 23:51:35.
+- ExoPlayer failed at the end of its buffer at 23:52:42. That failure is `unknown` to core.
+- The replacement `fbfbe0b1` came up on 10.35.1.50, still transcode, with nothing on macnessa or ramaroja. The film resumed where it stopped after about 8 s without picture.
+- That night's two direct-play reaps, on the code before this, failed over across the internet. This one did not.
+
+**By outcome, not by trail.** The trail was off, so core's `source-reaped` / `session-regenerated` lines were not seen. What was seen is the node session lists and the resumed position. A failover excludes the charged node, so a replacement on the same node with nothing elsewhere is the regeneration path. If a later trail ever shows `source-failover-start` on a reap, this reading was wrong.
+
+**Still open, and the client's:** 66 s passed between the DELETE and the fatal. expo-video reports no per-segment failure, so the degradation channel is never used on that set.
+
 **Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. **Tried 2026-09-23 and not exercisable, for a reason that is the server's:** a direct session DELETEd with 204 (and listed on no node afterwards) went on streaming for 8 minutes, including after a seek two minutes past the buffered edge. No fatal ever reached the player, so there was nothing to classify. It is with the server, and matches the earlier report of a deleted macnessa session streaming for 2 min 28 s. Next try: a transcode session. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
 
 An unclassified terminal failure bound for failover now asks `sessionAlive()` first, the same recovery a `not-found` takes:

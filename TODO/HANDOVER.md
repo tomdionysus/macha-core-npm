@@ -14,7 +14,7 @@ For the next session on `@machafoundation/core`. The detail is in [ACTIVE.md](AC
 |---|---|---|
 | `PlaybackRuntime.moveTo`; the old session released at the cut; reap path asks about the owned session | `2f196a1`, `5de9250` | Live, twice, web client |
 | Lead on `moveTo`, `holdsThroughLead`, negative `play()` position | `d58375a`, trimmed by `38d0524` | Live with a host lead; core's own estimate has no source |
-| Unclassified fatal asks `sessionAlive()` before charging; liveness GET bounded at 8 s | `2bcce57` | **Not yet** — see below |
+| Unclassified fatal asks `sessionAlive()` before charging; liveness GET bounded at 8 s | `2bcce57` | On the Android TV set, a reaped transcode regenerated on the same node, by outcome (trail off) |
 | `episodeNeighbours` | `8dd1fcf` | On the Android TV set |
 | `needsProducedSource`: wait for `production.produced_ms > 0` before `play()` | `3e611b8` | **Not yet** — web client adopting it |
 | README version stamp kept by `npm version`, checked in `build` | `0ac8f21` | Mechanically |
