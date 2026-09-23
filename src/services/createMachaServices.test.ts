@@ -32,31 +32,6 @@ describe('createMachaServices', () => {
     expect(services.managementAvailable).toBe(true);
   });
 
-  it("measures generation starts with the host's readiness fetch where it supplies one", async () => {
-    // A browser host passes `noStoreFetch(fetch)`, because the node's CORS
-    // policy blocks core's no-cache headers cross-origin. That fetch has to be
-    // the one the probe uses, or the fix never reaches it.
-    const wire = {
-      session_id: 's', item_id: 'movie:test', media_id: 'macha:media', mode: 'remux', duration_ms: 60_000, seek_ms: 0,
-      preferences: { mode: 'remux', max_height: null, max_bitrate: null, audio_stream: null, subtitle_stream: null, audio_language: '', subtitle_language: '' },
-      selection: { video_stream: 0, audio_stream: 1, subtitle_stream: -1 },
-      source: { path: '/m.mkv', format: 'matroska', size: 1000, bitrate: 100, streams: [] },
-      output: {}, stream: { url: '/api/v1/playback/sessions/s/stream/t/1/index.m3u8', mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
-      options: { modes: ['remux'], quality_heights: [], media_ids: ['macha:media'], audio_streams: [], subtitle_streams: [], can_seek: true, can_change_quality: false, can_switch_media: false },
-    };
-    const api = vi.fn(async () => new Response(JSON.stringify(wire), { status: 201, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
-    const readinessFetch = vi.fn(async (url: string) => url.endsWith('.m3u8')
-      ? new Response('#EXTM3U\n#EXTINF:6,\nseg0.m4s\n', { status: 200 })
-      : new Response(new Uint8Array([0]), { status: 206 }));
-    const services = createMachaServices({ endpointRegistry: registry(), auth: fixedBearerToken('secret', api), readinessFetch });
-
-    await services.playbackResolver.resolve({ id: 'movie:test', kind: 'movie', title: 'T', mediaIds: ['macha:media'] }, {
-      platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
-    }, undefined, { mode: 'remux' });
-
-    await vi.waitFor(() => expect(readinessFetch).toHaveBeenCalled());
-  });
-
   it('needs no authentication to be constructed', () => {
     expect(() => createMachaServices({ endpointRegistry: registry() })).not.toThrow();
   });

@@ -1,5 +1,4 @@
 import { ClusterAcquisitionApi } from '../api/ClusterAcquisitionApi.js';
-import type { HlsWalkFetch } from '../playback/hlsWalk.js';
 import { ClusterPlaybackFactsApi } from '../api/ClusterPlaybackFactsApi.js';
 import type { PlaybackFactsApi } from '../api/PlaybackFactsApi.js';
 import type { AcquisitionApi } from '../api/AcquisitionApi.js';
@@ -48,24 +47,6 @@ export interface MachaServicesOptions {
   auth?: AuthenticatedFetch;
   apiOverride?: MediaApi;
   playbackOverride?: PlaybackResolver;
-  /**
-   * The fetch core measures generation starts with, where the platform's
-   * plain `fetch` will not do.
-   *
-   * The probe sends `Cache-Control` and `Pragma` as request headers, because on
-   * React Native `cache: 'no-store'` rewrites the signed URL and on Tizen it is
-   * dropped -- see `NO_CACHE_HEADERS` in `hlsWalk.ts`. In a browser talking to a
-   * node on another origin those two headers need the node's CORS allow-list,
-   * and the deployed nodes allow only `Authorization, Content-Type, If-Match,
-   * Range`: measured by the web client on 2026-09-23, the probe failed before
-   * leaving the page and core recorded no start costs at all. A browser host
-   * passes `noStoreFetch(fetch)`, which expresses the same intent as
-   * `cache: 'no-store'` and is safe there. Core cannot choose between the two itself: it does not know
-   * which platform it is on, and must not guess.
-   *
-   * Absent, the platform's `fetch` is used as is.
-   */
-  readinessFetch?: HlsWalkFetch;
 }
 
 /**
@@ -89,12 +70,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
     manageApi: new ClusterManageApi(endpointRouter, auth),
     usersApi: new ClusterUsersApi(endpointRouter, auth),
     mediaApi: apiOverride ?? new MachaMediaApi(catalogueApi),
-    playbackResolver: playbackOverride ?? new ClusterPlaybackResolver(
-      endpointRouter,
-      auth,
-      undefined,
-      options.readinessFetch ?? ((url, init) => fetch(url, init)),
-    ),
+    playbackResolver: playbackOverride ?? new ClusterPlaybackResolver(endpointRouter, auth, undefined, (url, init) => fetch(url, init)),
     serverApi: new ClusterServerApi(endpointRouter, auth),
     clusterStatusApi: new ClusterStatusRouter(endpointRouter, auth),
     acquisitionApi: new ClusterAcquisitionApi(endpointRouter, auth),

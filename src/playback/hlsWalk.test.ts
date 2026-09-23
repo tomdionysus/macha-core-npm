@@ -6,7 +6,6 @@ import {
   firstVariantUri,
   hlsWalkTargets,
   mediaPlaylistTargets,
-  noStoreFetch,
   preflightHlsSource,
   probeHlsReadiness,
   resolveUrl,
@@ -456,29 +455,5 @@ describe('a node that states an implausible Retry-After', () => {
     });
     expect(await probeHlsReadiness(source(), { fetch }))
       .toEqual({ state: 'holding', retryAfterMs: 3_000 });
-  });
-});
-
-describe('noStoreFetch', () => {
-  // Measured on web 2026-09-23: the nodes allow `Authorization, Content-Type,
-  // If-Match, Range` cross-origin, so a walk sending core's no-cache headers
-  // failed in the browser before it left the page, and the web client's own
-  // probe -- `cache: 'no-store'` plus `Range` -- answered 206 on the same URL.
-  it('sends the walk with cache: no-store in place of the two headers, and nothing else changed', async () => {
-    const seen: RequestInit[] = [];
-    const fetch = noStoreFetch(async (_url, init) => { seen.push(init ?? {}); return new Response(null, { status: 206 }); });
-    await probeHlsReadiness(source({ headers: { Authorization: 'Bearer t' } }), {
-      fetch: async (url, init) => {
-        if (String(url).endsWith('.m3u8')) return new Response('#EXTM3U\n#EXTINF:6,\nseg0.m4s\n', { status: 200 });
-        return fetch(url, init);
-      },
-    });
-    const segment = seen.at(-1)!;
-    const headers = segment.headers as Record<string, string>;
-    expect(segment.cache).toBe('no-store');
-    expect(headers['Cache-Control']).toBeUndefined();
-    expect(headers.Pragma).toBeUndefined();
-    expect(headers.Range).toBe('bytes=0-0');
-    expect(headers.Authorization).toBe('Bearer t');
   });
 });
