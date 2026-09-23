@@ -21,6 +21,12 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
 - **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
 - **A move declines a node whose recent media throughput is below the served rate** (`9f33b75`). `recordTransferByUrl` gains an optional fourth argument, `kind`, defaulting to media. Not yet exercised.
+- **Search hits carry their ancestry** (`839e190`): `playbackContext` on episodes, `showId` on seasons, `musicContext` on tracks. Asked for by the Android TV client on Tom's instruction.
+- **`musicContext` is produced at all** (`839e190`), on album-page tracks, `tracks()` and search. It had been declared since `0.6.0` and was never set, so the phone client never showed an artist or album. Snapshots stored before this keep none; see *Waiting on Tom*.
+- **`episodeLabel`** (`6289744`): "Season 1 Episode 4" for search results and Continue Watching, by Tom's ruling. Search subtitles read "Series · Season 1 Episode 4".
+- **`searchTerms` / `isSearchable` / `MIN_SEARCH_TERM_LENGTH` / `IGNORED_TITLE_WORDS`** (`a1dcfc3`): search keys only on words titles are not ordered without, by Tom's ruling; `search()` applies it.
+- **`MediaSort.choiceLabel`** (`672185d`): "Sort By Title", by Tom's ruling.
+- **Coded regenerate refusals** (`22281d0`): `SESSION_PROVENANCE_UNKNOWN_CODE` and `REGENERATION_ENDPOINT_GONE_CODE`, asked for by the phone client.
 - **The media sort vocabulary** (`2816e5e`): `MediaSortKey`, `SEARCH_SORTS` / `DEFAULT_SEARCH_SORT` (relevance), `LIBRARY_SORTS` / `DEFAULT_LIBRARY_SORT` (title), `orderMedia`, `isMediaSortKey`, and the new `newestYearFirst`. Asked for by the web client on Tom's instruction, relayed. Additive.
 - **`progressWriteDue` and `nextWatermark`**, the Continue Watching write cadence, taken from the Android TV client's copy (`5061a03`, 2026-09-24). Additive. That client deletes its copy once this is published.
 - **Not additive for a host:** `Player` gains two optional members (`holdsThroughLead`, `needsProducedSource`), and `play()` may receive a negative position, but only by opt-in. `ClusterPlaybackResolver`'s constructor lost nothing and gained nothing. The only exported symbols added are the new functions and constants.
@@ -424,6 +430,11 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 **Sequencing, and where it stands:** core's tolerance (`410`, cap status, provenance recovered from a session id) **shipped in `0.18.0` and every client's `main` pins it** — the clients' half of "first" is done. The server moves the routes **second**, and the clients need nothing for the URL move because they follow `source.url`. **Whether the nodes have moved is not visible from this tree; ask the server session.**
 
 ## Waiting on Tom
+
+### Three small questions from 2026-09-24
+- **Specials.** `episodeLabel` names a season-0 episode "Season 0 Episode 1". Should it be something else, such as the season's own title, "Specials"?
+- **"Plan A" is searched as "Plan".** This is a consequence of dropping "the", "an" and "a" anywhere in a query. It is Tom's rule as relayed, and this is its edge.
+- **Refresh stored snapshots on read?** `PlaylistStore` and `PlaybackQueueStore` (core's) keep each item as stored, so anything stored before `839e190` shows no artist or album on the phone until re-added. Refreshing on read would put a catalogue read behind a store read. The phone client owes no migration and is writing none. Macha has not shipped.
 
 ### Check the session route on a timer while the viewer is playing, so a reap is caught without player evidence
 **Proposed 2026-09-24. It reverses a documented rule, so it is Tom's call.** `sessionAlive()`'s docblock says *"Not a keepalive. It runs when something has already gone wrong, never on a timer."* The reason is real, and I read it in the server (`playback.cpp`, the reaper around line 3128): a GET on the session route resets `touched`, so polling a paused session would pin the node's transcode slot for as long as the tab stays open.
