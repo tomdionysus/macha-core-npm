@@ -976,6 +976,9 @@ The degradation channel is unchanged. **The liveness GET had no timeout at all**
 
 **The replacement for the rejected one-byte probe, `probeSourceReadiness`, is this.** It asks the session API instead of the stream.
 
+### ~~Previous and next episode, across season boundaries~~ — BUILT on `develop` in `8dd1fcf`, unreleased
+Tom's business P0, asked for by the Android TV client: every episode shows previous and next in the player, and back navigation goes episode → season → series → TV Shows. `episodeNeighbours(api, episode, signal)` works out the neighbours from `details()` alone, crossing seasons and stepping over empty ones. It returns the show and season for the back stack. **Specials (season 0) are a chain of their own**, core's call and stated to the client. It never throws for a broken hierarchy. **Waiting on:** the TV client to wire its buttons; the web client has nothing like it and will want it.
+
 ### Continue Watching owns the store but not the cadence
 **Waiting on:** core. **Has a consumer waiting with an implementation to delete, not a speculative ask.**
 
