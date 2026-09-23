@@ -153,11 +153,22 @@ function withServedSegmentContainer(
  *
  * `detail` is what a host should show; `code` is what it should branch on.
  */
+export const SESSION_PROVENANCE_UNKNOWN_CODE = 'session_provenance_unknown';
+
+/**
+ * `regenerate` was handed a generation whose node has since left the
+ * registry, so there is nowhere to rebuild it. Distinct from
+ * `SESSION_PROVENANCE_UNKNOWN_CODE`, where the id names no node at all. It was
+ * a bare `Error`, and the phone client, which drives the resolver directly,
+ * could tell the two apart only by core's wording.
+ */
+export const REGENERATION_ENDPOINT_GONE_CODE = 'regeneration_endpoint_gone';
+
 function unknownGeneration(sessionId: string): MachaPlaybackError {
   return new MachaPlaybackError(
     `Playback generation ${sessionId} has no endpoint provenance.`,
     undefined,
-    'session_provenance_unknown',
+    SESSION_PROVENANCE_UNKNOWN_CODE,
     undefined,
     undefined,
     'This stream is no longer available. Start it again.',
@@ -321,11 +332,17 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
     const endpointId = failedSession.endpoint?.id;
-    const endpoint = endpointId === undefined
-      ? undefined
-      : this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
+    if (endpointId === undefined) throw unknownGeneration(failedSession.sessionId);
+    const endpoint = this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
     if (!endpoint) {
-      throw new Error(`Playback generation ${failedSession.sessionId} has no endpoint to regenerate on.`);
+      throw new MachaPlaybackError(
+        `Playback generation ${failedSession.sessionId} has no endpoint to regenerate on: ${endpointId} is no longer configured.`,
+        undefined,
+        REGENERATION_ENDPOINT_GONE_CODE,
+        undefined,
+        undefined,
+        'This stream is no longer available. Start it again.',
+      );
     }
     // `warn`, like every other step of this recovery. At `info` these two
     // were the only blind spots on a path whose other lines are all visible,

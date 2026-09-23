@@ -3,7 +3,7 @@ import { bootstrapEndpoints, EndpointRegistry, MEDIA_THROUGHPUT_MAX_AGE_MS, MEDI
 import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import type { PlaybackSession } from './PlaybackResolver.js';
-import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
+import { ClusterPlaybackResolver, REGENERATION_ENDPOINT_GONE_CODE, SESSION_PROVENANCE_UNKNOWN_CODE } from './ClusterPlaybackResolver.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 
 const media: MediaSummary = { id: 'movie:test', kind: 'movie', title: 'Test', mediaIds: ['macha:media'] };
@@ -779,7 +779,18 @@ describe('regenerating on the node that reaped the session', () => {
 
     registry.replace([]);
 
-    await expect(resolver.regenerate(primary, media, capabilities, 0, { mode: 'direct' })).rejects.toThrow(/no endpoint to regenerate on/);
+    // Coded, so a host driving the resolver can branch without matching prose.
+    await expect(resolver.regenerate(primary, media, capabilities, 0, { mode: 'direct' }))
+      .rejects.toMatchObject({ code: REGENERATION_ENDPOINT_GONE_CODE });
+  });
+
+  it('says it cannot tell which node a generation came from, when it has none', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(wireSession('session-a')), { status: 201, headers: { 'Content-Type': 'application/json' } })));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    const primary = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await expect(resolver.regenerate({ ...primary, endpoint: undefined }, media, capabilities, 0, { mode: 'direct' }))
+      .rejects.toMatchObject({ code: SESSION_PROVENANCE_UNKNOWN_CODE });
   });
 });
 
