@@ -1,5 +1,7 @@
 # @machafoundation/core
 
+*v0.18.0*
+
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
 Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on — a React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds what is genuinely the same on all of them, so they cannot drift apart.
@@ -139,7 +141,7 @@ Two conventions to keep:
 - **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows each state in a comment what they are derived from. Change the derivation, not the number.
 - **Deadlines that belong to a node are read from that node.** `startup_timeout_ms` and `segment_timeout_ms` arrive per endpoint on the cluster status payload; the compiled-in constants in `streamProtocol.ts` are the answer only for a node too old to report them. Do not add a new private copy of a server figure.
 
-Releases are cut from `develop`: bump the version in its own commit, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
+Releases are cut from `develop`: bump the version with `npm version <x.y.z> --no-git-tag-version` in its own commit, which also stamps the version under this README's title, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
 
 ## Licence
 

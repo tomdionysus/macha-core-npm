@@ -43,7 +43,7 @@
   },
   "scripts": {
     "clean": "node -e \"for (const d of ['dist','dist.staging','dist.previous']) require('node:fs').rmSync(d, { recursive: true, force: true })\"",
-    "build": "npm run typecheck && npm run lint:platform && node scripts/build-dist.mjs",
+    "build": "npm run typecheck && npm run lint:platform && node scripts/readme-version.mjs --check && node scripts/build-dist.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json --pretty false",
     "lint:platform": "tsc --noEmit -p tsconfig.nodom.json --pretty false",
     "test": "vitest run",
@@ -51,7 +51,8 @@
     "dist:check": "node scripts/dist-check.mjs",
     "dist:hash": "node -e \"const{execSync}=require('node:child_process');process.stdout.write(execSync('find . -type f | sort | xargs shasum | shasum',{cwd:'dist'}).toString().slice(0,12)+'\\n')\"",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "version": "node scripts/readme-version.mjs && git add README.md"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^3.2.7",
