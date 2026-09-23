@@ -829,6 +829,19 @@ export class PlaybackCoordinator {
   /** Latest server-side session state; may be ahead of the source currently visible. */
   private serverSession?: PlaybackSession;
   /**
+   * Sessions a move has left behind and still owes a close, held until the
+   * player stops presenting them.
+   *
+   * **Release after the cut, never before it.** A host that prepares the
+   * replacement on a second element keeps the outgoing one playing -- and
+   * fetching -- until the join is resident, measured at 36 s on the web client
+   * on 2026-09-23. Closing at activation made every one of those fetches a
+   * `404` against a session core had deleted itself, and the reap path read
+   * them as the current generation dying. Flushed from `setSession`, which is
+   * the cut, and by `close()`, which ends the need to wait for one.
+   */
+  private readonly releaseAfterCut = new Set<string>();
+  /**
    * The Direct Play source actually loaded into the player right now, kept
    * distinct from `serverSession.source`. A silently promoted alternate
    * (see `promoteSilentDirectAlternate`) moves session bookkeeping forward
@@ -1292,6 +1305,11 @@ export class PlaybackCoordinator {
       await this.regenerationPromise?.catch(() => undefined);
       await Promise.all([...this.alternatePreparations].map((preparation) => preparation.catch(() => undefined)));
       const session = this.serverSession ?? this.snapshot.session ?? ownedAtClose;
+      // Waiting for a cut that will now never come. Released here rather than
+      // at the cut, with the same options as the session below.
+      const retired = [...this.releaseAfterCut].filter((id) => id !== session?.sessionId);
+      this.releaseAfterCut.clear();
+      await Promise.all(retired.map((id) => this.stopOnDisposal(id)));
       if (session) {
         try {
           await this.options.resolver.stop(session.sessionId, this.closeOptions);
@@ -1563,6 +1581,14 @@ export class PlaybackCoordinator {
         return false;
       }
 
+      // A replacement decided for the generation being left is a decision
+      // about a session this coordinator is about to stop owning. Same
+      // reasoning as `beginSourceFailover`.
+      this.discardPendingReplacement('move');
+      // Released at the cut, not here: see `releaseAfterCut`. Its failure is
+      // not the viewer's problem, and a node that will not answer reaps the
+      // session on its own clock.
+      this.releaseAfterCut.add(movingFrom);
       this.serverSession = moved;
       this.activateSession(moved, this.snapshot.intent.positionMs, 'continue');
       this.log.info('source-move-ready', {
@@ -1570,12 +1596,6 @@ export class PlaybackCoordinator {
         newSessionId: moved.sessionId,
         endpoint: moved.endpoint,
         positionMs: this.snapshot.intent.positionMs,
-      });
-      // Released after the swap, and its failure is not the viewer's problem:
-      // the picture is already on the new node. A node that will not answer
-      // reaps the session on its own clock.
-      await this.options.resolver.stop(movingFrom, this.closeOptions).catch((error) => {
-        this.log.warn('moved-from-session-close-failed', { sessionId: movingFrom, error });
       });
       this.patchSnapshot({ preparingSource: false, notice: undefined });
       return true;
@@ -2278,6 +2298,13 @@ export class PlaybackCoordinator {
 
   private setSession(session: PlaybackSession): void {
     this.patchSnapshot({ session, instruction: this.instructionWithServed(session) });
+    for (const retired of [...this.releaseAfterCut]) {
+      if (retired === session.sessionId || retired === this.serverSession?.sessionId) continue;
+      this.releaseAfterCut.delete(retired);
+      void this.options.resolver.stop(retired, this.closeOptions).catch((error: unknown) => {
+        this.log.warn('moved-from-session-close-failed', { sessionId: retired, error });
+      });
+    }
   }
 
   /**
@@ -2634,7 +2661,18 @@ export class PlaybackCoordinator {
    * looking at a stalled player with nothing running.
    */
   private beginMissingSessionRecovery(error: Error, terminal: boolean): boolean {
-    const session = this.snapshot.session ?? this.serverSession;
+    // **Ask about the session core owns, not the one on screen.** A player
+    // report carries no session id, so it is attributed to whatever is
+    // presented -- and between an activation and the cut that is the
+    // *outgoing* generation, still fetching. Probing it asks whether a session
+    // core has already replaced is alive, and "no" then rebuilt the replaced
+    // one over the top of the live one: measured on the web client on
+    // 2026-09-23, a clean move followed twenty seconds later by the viewer
+    // yanked back to the node they had left, and the new node's only
+    // transcode slot leaked.
+    const presented = this.snapshot.session ?? this.serverSession;
+    const session = this.serverSession ?? presented;
+    const outgoing = presented && session && presented.sessionId !== session.sessionId ? presented : undefined;
     const resolver = this.options.resolver;
     if (!session || !resolver.sessionAlive || !resolver.regenerate) return false;
     // Something is already replacing this generation. A second replacement for
@@ -2643,7 +2681,7 @@ export class PlaybackCoordinator {
     // already been built and is waiting, and the session it replaces can no
     // longer be probed at all.
     if (this.failoverPromise || this.regenerationPromise || this.pendingReplacement) return true;
-    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal).finally(() => {
+    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal, outgoing).finally(() => {
       this.regenerationPromise = undefined;
     });
     return true;
@@ -2673,6 +2711,7 @@ export class PlaybackCoordinator {
     session: PlaybackSession,
     error: Error,
     terminal: boolean,
+    outgoing?: PlaybackSession,
   ): Promise<void> {
     const giveUpOnThisSource = (): void => {
       if (this.disposed || this.snapshot.fatalError) return;
@@ -2720,6 +2759,17 @@ export class PlaybackCoordinator {
     }
     if (this.disposed) return;
 
+    if (alive && outgoing) {
+      // The generation core owns is alive, so the `404` came from the one
+      // being cut away from -- which is expected to be gone, and is not a
+      // reason to do anything on either channel. The cut is already coming.
+      this.log.info('source-not-found-on-outgoing-session', {
+        sessionId: session.sessionId,
+        outgoingSessionId: outgoing.sessionId,
+        terminal,
+      });
+      return;
+    }
     if (alive) {
       // An answer, and it clears the node: the `404` was a fragment past the
       // end of a live plan. Replacing the session would fix nothing and
@@ -2830,6 +2880,17 @@ export class PlaybackCoordinator {
     this.pendingReplacement = undefined;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
     this.pendingReplacementTimer = undefined;
+    // A replacement is only ever for the generation core owns. Anything else
+    // has already been replaced, and rebuilding it would put a second
+    // generation over the live one and orphan whichever lost.
+    if (this.serverSession && dead.sessionId !== this.serverSession.sessionId) {
+      this.log.warn('replacement-for-superseded-session-dropped', {
+        sessionId: dead.sessionId,
+        currentSessionId: this.serverSession.sessionId,
+        reason,
+      });
+      return;
+    }
     const requestedPositionMs = this.snapshot.intent.positionMs;
     if (this.lastRegenerationPositionMs !== undefined
       && Math.round(this.lastRegenerationPositionMs) === Math.round(requestedPositionMs)) {
@@ -2868,6 +2929,18 @@ export class PlaybackCoordinator {
         ));
       })(), attemptBudgetMs * 2 + RECOVERY_SUPERVISION_MARGIN_MS);
       if (this.disposed) {
+        await this.stopOnDisposal(next.sessionId);
+        return;
+      }
+      if (this.serverSession && this.serverSession.sessionId !== dead.sessionId) {
+        // Something else took ownership while this was negotiating -- a move,
+        // a failover. Theirs is live; this one is released, not adopted.
+        this.log.warn('replacement-arrived-for-superseded-session', {
+          sessionId: next.sessionId,
+          replacedSessionId: dead.sessionId,
+          currentSessionId: this.serverSession.sessionId,
+        });
+        this.patchSnapshot({ preparingSource: false });
         await this.stopOnDisposal(next.sessionId);
         return;
       }

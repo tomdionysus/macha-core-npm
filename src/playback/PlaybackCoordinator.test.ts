@@ -535,6 +535,104 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     expect(order).toEqual(['prepared', 'stopped:primary']);
   });
 
+  describe('a move, across the window before the cut', () => {
+    // Measured on the web client 2026-09-23, fi-1 to gbni-1: the host kept the
+    // outgoing element presenting and fetching for 36 s after activation. Core
+    // had already deleted the session behind it, the element's 404s reached the
+    // reap path attributed to that session, and the reap path rebuilt it on the
+    // old node over the live one -- the viewer yanked back twenty seconds after
+    // a clean move, and the new node's only transcode slot leaked.
+    const onA = () => session({ sessionId: 'primary', mode: 'transcode', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const onB = () => session({
+      sessionId: 'moved', mode: 'transcode', mediaId: 'macha:one',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...onA().source, mediaId: 'macha:one', url: 'http://b/moved.m3u8' },
+    });
+    const regenerated = () => session({
+      sessionId: 'regenerated', mode: 'transcode', mediaId: 'macha:one',
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      source: { ...onA().source, mediaId: 'macha:one', url: 'http://a/regenerated.m3u8' },
+    });
+    const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+
+    function moving() {
+      const player = new FakePlayer();
+      const api = resolver(onA()) as any;
+      api.prepareOn = vi.fn(async () => onB());
+      // What the node says after the move: the old session is gone once core
+      // has closed it, the moved one is alive.
+      const closed = new Set<string>();
+      api.stop.mockImplementation(async (id: string) => { closed.add(id); });
+      api.sessionAlive = vi.fn(async (id: string) => !closed.has(id));
+      api.regenerate = vi.fn(async () => regenerated());
+      api.failover = vi.fn(async () => regenerated());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      return { player, api, coordinator };
+    }
+
+    it('releases the session it moved away from at the cut, not at activation', async () => {
+      const { player, api, coordinator } = moving();
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+      await flush();
+      // The outgoing element is still on screen and still fetching.
+      expect(api.stop).not.toHaveBeenCalledWith('primary', expect.anything());
+
+      cut.resolve(true);
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', expect.anything()));
+      expect(api.stop).not.toHaveBeenCalledWith('moved', expect.anything());
+      await coordinator.close();
+    });
+
+    it('does not rebuild the session it moved away from when that element reports a 404 before the cut', async () => {
+      const { player, api, coordinator } = moving();
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+      await coordinator.moveTo('node-b');
+      // Force the field condition regardless of when the close lands: the
+      // outgoing session is gone on the node.
+      api.sessionAlive.mockImplementation(async (id: string) => id !== 'primary');
+
+      player.degrade(notFound());
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+      await flush();
+
+      // Asked about the generation core owns, which is alive -- and so did
+      // nothing on either side of the cut.
+      expect(api.sessionAlive).toHaveBeenLastCalledWith('moved');
+      expect(api.regenerate).not.toHaveBeenCalled();
+      expect(api.failover).not.toHaveBeenCalled();
+      cut.resolve(true);
+      await vi.waitFor(() => expect(coordinator.getSnapshot().session?.sessionId).toBe('moved'));
+      expect(api.stop).not.toHaveBeenCalledWith('moved', expect.anything());
+      await coordinator.close();
+    });
+
+    it('releases, rather than adopts, a replacement that lands for a generation a move has since replaced', async () => {
+      // The last line of defence: a regeneration already negotiating when the
+      // viewer moves must not overwrite the move and orphan its session.
+      const { player, api, coordinator } = moving();
+      const negotiating = deferred<PlaybackSession>();
+      api.regenerate = vi.fn(() => negotiating.promise);
+      await coordinator.start();
+      // Reaped for real, with no cover to defer against: build now.
+      api.sessionAlive.mockImplementation(async () => false);
+      player.degrade(notFound());
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+      negotiating.resolve(regenerated());
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('regenerated', expect.anything()));
+      expect(coordinator.getSnapshot().session?.sessionId).toBe('moved');
+      expect(player.playCalls.at(-1)?.source.url).toBe('http://b/moved.m3u8');
+      await coordinator.close();
+    });
+  });
+
   it('declines a move to the node already serving, without asking anyone', async () => {
     const player = new FakePlayer();
     const primary = session({ sessionId: 'primary', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
