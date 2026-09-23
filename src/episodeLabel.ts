@@ -1,3 +1,4 @@
+import { joinSubtitle } from './subtitleJoin.js';
 import type { MediaSummary } from './types.js';
 
 /**
@@ -15,4 +16,18 @@ export function episodeLabel(item: MediaSummary): string | undefined {
   if (item.kind !== 'episode' || item.episodeNumber === undefined) return undefined;
   const season = item.playbackContext?.season.seasonNumber ?? item.seasonNumber;
   return season === undefined ? `Episode ${item.episodeNumber}` : `Season ${season} Episode ${item.episodeNumber}`;
+}
+
+/**
+ * The episode's label with its series before it: "Firefly · Season 1 Episode
+ * 4". The label alone when no series is known; undefined when there is no
+ * label either. What search hits carry as their subtitle and what a Continue
+ * Watching card shows, composed once so the two cannot disagree. Asked for by
+ * the Android TV client.
+ */
+export function episodeSubtitle(item: MediaSummary): string | undefined {
+  const label = episodeLabel(item);
+  const series = item.playbackContext?.series.title;
+  if (!series) return label;
+  return joinSubtitle(series, label);
 }

@@ -1,5 +1,11 @@
 import type { ArtworkSource, CatalogueMediaProfile, CatalogueStatus } from './CatalogueApi.js';
 import type { ArtworkRef, LibraryHome, MediaDetails, MediaSummary } from '../types.js';
+import type { SearchCategoryKey } from '../searchCategories.js';
+
+export interface MediaSearchOptions {
+  /** Which kinds of title to return. All when absent; none when empty. */
+  categories?: readonly SearchCategoryKey[];
+}
 
 /** UI-facing catalogue facade. It contains no playback or per-client state. */
 export interface MediaApi {
@@ -11,7 +17,13 @@ export interface MediaApi {
   albums(signal?: AbortSignal): Promise<MediaSummary[]>;
   tracks(signal?: AbortSignal): Promise<MediaSummary[]>;
   details(id: string, signal?: AbortSignal): Promise<MediaDetails>;
-  search(query: string, signal?: AbortSignal): Promise<MediaSummary[]>;
+  /**
+   * Titles matching the words of `query` that a search keys on (see
+   * `searchTerms`), at most 50, each carrying its ancestry. `options.categories`
+   * narrows the kinds returned, all three when absent; an empty list returns
+   * nothing and makes no request.
+   */
+  search(query: string, signal?: AbortSignal, options?: MediaSearchOptions): Promise<MediaSummary[]>;
   artwork(ref: ArtworkRef, signal?: AbortSignal): Promise<Blob>;
   /**
    * Where this artwork can be fetched from, best first.

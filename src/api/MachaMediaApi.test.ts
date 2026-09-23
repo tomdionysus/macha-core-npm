@@ -500,6 +500,44 @@ describe('search hits and their ancestry', () => {
     expect(catalogue.queries).toEqual(['Matrix']);
   });
 
+  describe('narrowed to categories', () => {
+    class Limited extends SearchCatalogue {
+      readonly limits: number[] = [];
+      override search(_query?: string, limit?: number): Promise<CatalogueItem[]> { this.limits.push(limit ?? -1); return super.search(); }
+    }
+    const MOVIE = catalogueItem('movie-1', 'movie', { title: 'Film' });
+    const ALBUM = catalogueItem('album-9', 'album', { title: 'Record' });
+
+    it('returns only the kinds asked for', async () => {
+      const api = new MachaMediaApi(new Limited([MOVIE, EPISODE_1, ALBUM, SEASON]));
+      expect((await api.search('xx', undefined, { categories: ['shows'] })).map((hit) => hit.id)).toEqual(['episode-1', 'season-1']);
+      expect((await api.search('xx', undefined, { categories: ['movies', 'music'] })).map((hit) => hit.id)).toEqual(['movie-1', 'album-9']);
+      expect((await api.search('xx')).map((hit) => hit.id)).toEqual(['movie-1', 'episode-1', 'album-9', 'season-1']);
+    });
+
+    it('asks nobody when no category is selected', async () => {
+      const catalogue = new Limited([MOVIE]);
+      await expect(new MachaMediaApi(catalogue).search('xx', undefined, { categories: [] })).resolves.toEqual([]);
+      expect(catalogue.limits).toEqual([]);
+    });
+
+    it('asks for more when a filter will discard some, and still returns a page of at most 50', async () => {
+      const many = Array.from({ length: 120 }, (_, i) => catalogueItem(`m${i}`, 'movie'));
+      const catalogue = new Limited(many);
+      const api = new MachaMediaApi(catalogue);
+      await api.search('xx');
+      const narrowed = await api.search('xx', undefined, { categories: ['movies'] });
+      expect(catalogue.limits).toEqual([50, 200]);
+      expect(narrowed).toHaveLength(50);
+    });
+
+    it('fetches no parent for a hit the filter discarded', async () => {
+      const catalogue = new Limited([MOVIE, EPISODE_1]);
+      await new MachaMediaApi(catalogue).search('xx', undefined, { categories: ['movies'] });
+      expect(catalogue.fetched).toEqual([]);
+    });
+  });
+
   it('names the series on an episode, with the same context a season page gives', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
     const [hit] = await api.search('episode');

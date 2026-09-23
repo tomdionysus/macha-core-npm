@@ -17,8 +17,20 @@ import type {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
-import { episodeLabel } from '../episodeLabel.js';
+import { episodeSubtitle } from '../episodeLabel.js';
+import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
+import { joinSubtitle } from '../subtitleJoin.js';
+import type { MediaSearchOptions } from './MediaApi.js';
 import { isSearchable, searchTerms } from '../searchTerms.js';
+
+/** How many hits a search returns. */
+const SEARCH_PAGE_SIZE = 50;
+/**
+ * How many to ask the catalogue for when a category filter will discard some.
+ * A guess: enough that one kind rarely runs short, well under the server's
+ * cap of 1000. Moves to the server if it ever takes a kind.
+ */
+const SEARCH_FILTERED_FETCH_LIMIT = 200;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError('Artwork consumer cancelled.');
@@ -243,12 +255,23 @@ export class MachaMediaApi implements MediaApi {
    * returns the show too. A parent that fails to load leaves its hits as they
    * were, without context, rather than failing the search.
    */
-  async search(query: string, signal?: AbortSignal): Promise<MediaSummary[]> {
+  async search(query: string, signal?: AbortSignal, options: MediaSearchOptions = {}): Promise<MediaSummary[]> {
     // Only the words a search keys on, and no request at all when too little
     // is left. Applied here as well as by the client, so a client that forgets
     // to ask `isSearchable` still gets Tom's rule.
     if (!isSearchable(query)) return [];
-    const hits = await this.catalogue.search(searchTerms(query), 50, signal);
+    const categories = options.categories ?? DEFAULT_SEARCH_CATEGORIES;
+    const kinds = new Set(SEARCH_CATEGORIES.filter((category) => categories.includes(category.key)).flatMap((category) => category.kinds));
+    // Nothing selected finds nothing, and asks nobody.
+    if (kinds.size === 0) return [];
+    // The catalogue search takes no kind, so a filter is applied to what comes
+    // back. Asking for more when anything is filtered out keeps a page of
+    // SEARCH_PAGE_SIZE from quietly shrinking to the few hits of one kind that
+    // made the unfiltered cut. Filtered before the ancestry, so no parent is
+    // fetched for a hit that is then thrown away.
+    const narrowed = kinds.size < SEARCH_CATEGORIES.reduce((count, category) => count + category.kinds.length, 0);
+    const found = await this.catalogue.search(searchTerms(query), narrowed ? SEARCH_FILTERED_FETCH_LIMIT : SEARCH_PAGE_SIZE, signal);
+    const hits = found.filter((item) => kinds.has(item.kind)).slice(0, SEARCH_PAGE_SIZE);
     const known = new Map(hits.map((item) => [item.id, item]));
     const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track');
     await this.loadAncestors(known, withAncestry.map((item) => item.parent_id), signal);
@@ -386,7 +409,7 @@ export class MachaMediaApi implements MediaApi {
       const show = parent.parent_id ? known.get(parent.parent_id) : undefined;
       if (show?.kind !== 'show') return this.media(item);
       const episode = this.episode(item, parent, show);
-      return { ...episode, subtitle: joinSubtitle(show.title, episodeLabel(episode) ?? episode.subtitle) };
+      return { ...episode, subtitle: episodeSubtitle(episode) ?? episode.subtitle };
     }
     if (item.kind === 'season' && parent?.kind === 'show') {
       const season = this.seasonSummary(item, parent.id);
@@ -479,9 +502,4 @@ export class MachaMediaApi implements MediaApi {
     }
     return undefined;
   }
-}
-
-/** "Firefly · Season 1 Episode 1", or the series alone when the item has nothing to add. */
-function joinSubtitle(ancestor: string, own: string | undefined): string {
-  return own ? `${ancestor} · ${own}` : ancestor;
 }

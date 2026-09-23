@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { episodeLabel } from './episodeLabel.js';
+import { episodeLabel, episodeSubtitle } from './episodeLabel.js';
 import type { MediaSummary } from './types.js';
 
 function episode(partial: Partial<MediaSummary>): MediaSummary {
@@ -28,5 +28,19 @@ describe('episodeLabel', () => {
 
   it('keeps specials as season 0', () => {
     expect(episodeLabel(episode({ seasonNumber: 0, episodeNumber: 1 }))).toBe('Season 0 Episode 1');
+  });
+});
+
+describe('episodeSubtitle', () => {
+  const context = { series: { id: 's', title: 'Firefly' }, season: { id: 'x', title: 'Season 1', seasonNumber: 1 } };
+
+  it('puts the series before the label', () => {
+    expect(episodeSubtitle(episode({ episodeNumber: 4, playbackContext: context }))).toBe('Firefly · Season 1 Episode 4');
+  });
+
+  it('gives the label alone with no series, the series alone with no label, and nothing with neither', () => {
+    expect(episodeSubtitle(episode({ seasonNumber: 1, episodeNumber: 4 }))).toBe('Season 1 Episode 4');
+    expect(episodeSubtitle(episode({ playbackContext: context }))).toBe('Firefly');
+    expect(episodeSubtitle(episode({}))).toBeUndefined();
   });
 });
