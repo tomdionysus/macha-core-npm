@@ -20,6 +20,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **An unclassified fatal asks the node before charging it**, and the liveness GET is bounded at `SESSION_LIVENESS_TIMEOUT_MS`, 8 s, where it had no bound (`2bcce57`). Not yet exercised on a device.
 - **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
 - **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
+- **`progressWriteDue` and `nextWatermark`**, the Continue Watching write cadence, taken from the Android TV client's copy (`5061a03`, 2026-09-24). Additive. That client deletes its copy once this is published.
 - **Not additive for a host:** `Player` gains two optional members (`holdsThroughLead`, `needsProducedSource`), and `play()` may receive a negative position, but only by opt-in. `ClusterPlaybackResolver`'s constructor lost nothing and gained nothing. The only exported symbols added are the new functions and constants.
 
 **Withdrawn the same day and gone from the tree:** `probeSourceReadiness`, core's readiness-probe estimator, and `readinessFetch` / `noStoreFetch`. Tom ruled against every zero- and one-byte media check. The standby preflight's 64 KB read stays. See COMPLETED.
@@ -968,8 +969,11 @@ Tom ruled zero-byte checks out, the web client's own included. **The standby pre
 
 **Waiting on:** the web client to declare it on the native path, delete `probeFirstFragment`, and show a Samsung start.
 
-### Continue Watching owns the store but not the cadence
-**Waiting on:** core. **Has a consumer waiting with an implementation to delete, not a speculative ask.**
+### ~~Continue Watching owns the store but not the cadence~~ — BUILT on `develop` in `5061a03`, unreleased
+**Waiting on:** a publish, then the Android TV client to swap onto core's and delete `src/player/progressPersistence.ts` and its test. **Built 2026-09-24 from that client's file as it stood, not from the shape below**, which is the first version it sent. By then the rule had two corrections from the set: `ProgressWatermark` gained `attemptedAtMs`, `progressWriteDue` a `minAttemptGapMs` floor that the pause edge is exempt from, and `nextWatermark(previous, paused, nowMs, landed)` leaves `wroteAtMs` alone when the store declined the write. Without that, a film killed at about seventy seconds recorded nothing. Core exports all three, plus `ProgressWrite`, in `state/progressWrite.ts`, with that client's suite ported and one case added against the real `ContinueWatchingStore`, reading `landed` off `update()`'s list as a host does. Red-checked against both corrections. **The interval stays a parameter:** the 5 minutes is Tom's call and core takes no opinion. The finished-item short-circuit and the reset on no playback stay in the host, and the doc names them. The phone and web clients have not been asked whether they have the same exposure.
+
+The original entry follows.
+
 
 Core owns `ContinueWatchingStore` and `progressFor()` (`state/continueWatching.ts:35,39`). **Nothing owns when to call them.** So each client invents a write policy, and the Android TV client has now written one it wants to delete in favour of core's.
 
