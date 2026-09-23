@@ -8,6 +8,25 @@ Anything reverted or retracted stays here, marked, because knowing what was trie
 
 ---
 
+## 2026-09-23 — built and withdrawn, and believed and disproved
+
+Nothing shipped; `0.18.0` is still the whole answer to "what is released", and what was built and kept is in ACTIVE. This entry holds the other half: work built and taken out the same day on Tom's ruling, and three things believed and disproved, so none is rebuilt or re-believed at the same price.
+
+**Tom's ruling, which governs all of the withdrawn work: no zero- or one-byte media checks.** *"The one byte check sounds like a filthy brittle hack. No."* and *"one-byte request - we're not doing this."* It reaches the web client's own readiness probe too. **The standby preflight's 64 KB read of the first segment stays** — *"it is reasonable to request initial media from a node you're about to failover to."* The line is readiness asked of the media: ask the session route instead, which states it.
+
+**`probeSourceReadiness` (`9885730`, reverted in `629e89c`).** A `bytes=0-0` range on a progressive source, meant to let the Android TV client read a status its player never surfaces. Rejected before anything called it. **What replaced it:** an unclassified fatal now asks `sessionAlive()` before charging the node (`2bcce57`, in ACTIVE) — the session API, not the stream.
+
+**Core's start-cost estimator (`d58375a`; CORS fix `07bd029`, reverted in `5ca3661`; probe removed in `38d0524`).** After each create and relocating PATCH, core polled `probeHlsReadiness` on the first fragment and recorded request-to-ready per node and kind. It worked mechanically and was verified live: samples recorded, and the second move into a node read `leadSource: estimate`. It was also blocked on web until `noStoreFetch`, because core's `Cache-Control` / `Pragma` headers are not in the nodes' CORS allow-list. **Its figure was also the wrong quantity:** gbni-1 read 4.2-5.3 s while the race needed 14-20 s. The lead it drove, 9.2 s, lost where a 24.6 s host lead held. The lead on `moveTo`, `holdsThroughLead` and the evidence store survive; see ACTIVE.
+
+**Believed and disproved:**
+- ***"A `bytes=0-0` 206 answers before the segment is whole."*** Proposed by the web client to explain the short figure. False from the server's own source at `eea4795`: `MediaSegmentStore::publish_segment` publishes whole segments, with init always first, and `produced_media` advances in the same locked step. The same reading is what made `production.produced_ms > 0` a sound readiness signal (`3e611b8`).
+- ***"gbni-1 is slow to start."*** It answered every fragment in 0.1-0.35 s. The lost joins were transfer: a cold connection from the fi-1-site client delivered its first fragments at 0.28-0.57 MB/s against a 0.63 MB/s stream. **The client sits on fi-1's LAN, and gbni-1 is across the WAN from it.** Every gbni-1 figure from that client has to be read that way.
+- ***Two relayed versions of one ruling.*** Tom's decline of a server-stated start figure reached core as *"core's job"* from the server session and as *"the client measures"* from the web client. Core asked Tom rather than pick one. His answer — core measures, a host may override — was neither version. **A relayed ruling is a paraphrase until the person confirms it.**
+
+**And three wrong commit hashes sent to peers** (`26c7ec7`, `ff5b7e4`, `1b9ef1c`), each corrected within a minute. The `dist` hash was right every time, because it was read from output. Quote a hash only from `git log` after the commit lands, never in the same batch as the commit.
+
+---
+
 ## 0.18.0 — a session closes on the strength of its id, and a failure keeps the evidence it arrived with
 
 **The first publish since `0.14.0`, and it carries everything tagged in between.** `0.15.0`, `0.16.0` and `0.17.0` exist as annotated tags on this repository and were never published; from a client's side there is `0.14.0` and then this. Published 2026-09-21 by Tom from `a3b40ca`, which is what the tag points at and what npm records as `gitHead`; the tarball's `dist` hashes `ff5d065c5da7` by `npm run dist:hash`, byte-identical to a build of the tagged tree, and every other published file matches the tag. 1020 tests in 65 files, typecheck, `lint:platform`, `build` and `dist:check` all clean at the cut. **All three client trees pin `^0.18.0` on `main`** and carry `file:../macha-ts` on `develop`, read from each tree's `main:package.json` and `develop:package.json` on 2026-09-23 rather than taken from a message.
