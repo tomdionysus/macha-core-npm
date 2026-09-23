@@ -287,6 +287,7 @@ export class MachaMediaApi implements MediaApi {
   artworkUrls(ref: ArtworkRef): ArtworkSource[] {
     const nodes = this.catalogue.artworkUrls(ref.id);
     const signed = ref.url;
+    this.artworkHost.chooseOnce(nodes, signed);
     if (!signed) return nodes;
     // The signed URL first: no header needed, so it is the only kind usable
     // from an image loader that cannot set them, and the server owns

@@ -67,9 +67,20 @@ export function artworkHostOf(url: string): string | undefined {
  * Preference follows success only: a single artwork 404 never moves it, and
  * nothing here can make an image fail that would otherwise have loaded.
  */
+/**
+ * How much faster another node must measure before artwork moves to it: the
+ * same bar endpoint ranking applies to latency, both an absolute and a
+ * relative gap, so that two LAN nodes at 3 ms and 5 ms never trade places.
+ */
+const ARTWORK_HOST_MIN_GAIN_MS = 50;
+const ARTWORK_HOST_MIN_RELATIVE_GAIN = 0.4;
+
 export class ArtworkHostPreference {
   private value?: string;
   private loaded = false;
+  private chosen = false;
+  /** Set when `chooseOnce` moved the preference; see `noteLoaded`. */
+  private switched = false;
 
   constructor(private readonly storage: StorageLike | undefined = machaHost().storage) {}
 
@@ -97,6 +108,15 @@ export class ArtworkHostPreference {
   noteLoaded(url: string): void {
     const host = artworkHostOf(url);
     if (!host || host === this.get()) return;
+    // After a deliberate switch, a load from elsewhere is almost always one
+    // started before it, finishing late, and following it would undo the
+    // switch within the run. The chosen host still leads every list, and a
+    // poster it cannot serve still falls through to the next.
+    if (this.switched) return;
+    this.set(host);
+  }
+
+  private set(host: string): void {
     this.value = host;
     this.loaded = true;
     try {
@@ -104,6 +124,57 @@ export class ArtworkHostPreference {
     } catch {
       // Held in memory for this run regardless; the next start simply
       // re-learns it from the first poster that loads.
+    }
+  }
+
+  /**
+   * Once per run, move artwork to a node that is materially cheaper for this
+   * viewer to reach than the one it would otherwise come from.
+   *
+   * **Stickiness alone kept whichever node served first, and that was chosen
+   * by accident.** The signed URL is absolutised against whichever node
+   * answered the catalogue read, and it leads, so the first poster to load
+   * pinned that node for good. Measured by the web client from the fi-1 site,
+   * 2026-09-24: every poster came from macnessa (https, ~90 ms round trip,
+   * 636 ms median per cold poster) while fi-1 on the LAN served the identical
+   * signed URL in 65 ms cold and ~15 ms warm. Tom made slow artwork a business
+   * P0 that day.
+   *
+   * So the choice is made on this viewer's round trip to each ready node, from
+   * the health cycle's probes. It is made **once**: a switch re-downloads every
+   * poster the old host had cached, so it has to be worth it and must not
+   * happen again within the run. The next run looks again, since a laptop
+   * that has moved has a different nearest node. Without latency evidence
+   * yet, nothing is decided, and a later call tries again.
+   *
+   * `leadingUrl` is the URL that would be tried first without a preference,
+   * the signed capability where there is one.
+   */
+  chooseOnce(sources: readonly { url: string; latencyMs?: number }[], leadingUrl?: string): void {
+    if (this.chosen) return;
+    const latency = new Map<string, number>();
+    for (const source of sources) {
+      const host = artworkHostOf(source.url);
+      if (host && source.latencyMs !== undefined && !latency.has(host)) latency.set(host, source.latencyMs);
+    }
+    if (latency.size === 0) return;
+    this.chosen = true;
+
+    const current = this.get() ?? artworkHostOf(leadingUrl ?? sources[0]?.url ?? '');
+    let best: { host: string; latencyMs: number } | undefined;
+    for (const [host, latencyMs] of latency) {
+      if (!best || latencyMs < best.latencyMs) best = { host, latencyMs };
+    }
+    if (!best || best.host === current) return;
+    const currentMs = current === undefined ? undefined : latency.get(current);
+    // A current host with no reading is not ready, or not a node at all:
+    // anything measured beats it.
+    const worthIt = currentMs === undefined
+      || (currentMs - best.latencyMs >= ARTWORK_HOST_MIN_GAIN_MS
+        && best.latencyMs <= currentMs * (1 - ARTWORK_HOST_MIN_RELATIVE_GAIN));
+    if (worthIt) {
+      this.set(best.host);
+      this.switched = true;
     }
   }
 

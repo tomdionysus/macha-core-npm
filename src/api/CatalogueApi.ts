@@ -142,6 +142,12 @@ export interface ArtworkSource {
    * checking which it is.
    */
   requiresAuthorization: boolean;
+  /**
+   * This viewer's measured round trip to the node behind this URL, where the
+   * health cycle has one and the node is ready. What
+   * `ArtworkHostPreference.chooseOnce` compares hosts on.
+   */
+  latencyMs?: number;
 }
 
 export interface CatalogueApi {

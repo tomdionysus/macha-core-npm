@@ -103,7 +103,8 @@ export class ClusterCatalogueApi implements CatalogueApi {
    * any node holding it serves the same bytes.
    */
   artworkUrls(id: string): ArtworkSource[] {
-    return this.router.registry.candidates().flatMap(({ endpoint }) => this.api(endpoint).artworkUrls(id));
+    return this.router.registry.candidates().flatMap(({ endpoint, ready, latencyMs }) => this.api(endpoint).artworkUrls(id)
+      .map((source) => (ready && latencyMs !== undefined ? { ...source, latencyMs } : source)));
   }
 
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem> {

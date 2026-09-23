@@ -610,3 +610,97 @@ describe('tracks name their album and artist', () => {
     expect(track.musicContext?.artist?.title).toBe('Artist');
   });
 });
+
+/**
+ * Artwork from the node this viewer reaches fastest, chosen once and then kept.
+ * Measured 2026-09-24 from the fi-1 site: macnessa (~90 ms round trip) served
+ * every poster at 636 ms median cold while fi-1 on the LAN served the same
+ * signed URL in 65 ms. Stickiness kept whichever node served first, which was
+ * whichever answered the catalogue read.
+ */
+describe('choosing the artwork host by what it costs this viewer', () => {
+  const SIGNED_QUERY = `?exp=${Date.now() + 86_400_000}&sig=abc`;
+  const FAR = 'https://macnessa';
+  const NEAR = 'http://fi-1';
+
+  function catalogue(latency: Record<string, number | undefined>): CatalogueApi {
+    return {
+      status: async () => ({ ready: true } as CatalogueStatus),
+      list: async () => [],
+      get: async () => catalogueItem('x', 'movie'),
+      update: async (item) => item,
+      clearMetadata: async () => undefined,
+      search: async () => [],
+      putArtwork: async () => ({} as CatalogueArtwork),
+      artwork: async () => ({ size: 1, type: 'image/jpeg' } as Blob),
+      artworkUrls: (id) => Object.entries(latency).map(([node, latencyMs]) => ({
+        url: `${node}/api/v1/catalogue/artwork/${id}`,
+        requiresAuthorization: true,
+        ...(latencyMs === undefined ? {} : { latencyMs }),
+      })),
+      mediaProfile: async () => undefined,
+    };
+  }
+  const storage = () => {
+    const values = new Map<string, string>();
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+  };
+  const signedBy = (host: string) => ({ id: 'sha-1', mimeType: 'image/jpeg', url: `${host}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}` });
+  const leadHost = (sources: { url: string }[]) => sources[0]?.url.split('/api/')[0];
+
+  it('leads with the materially nearer node, over the one that signed the URL', () => {
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), new ArtworkHostPreference(storage()));
+    const sources = api.artworkUrls(signedBy(FAR));
+    expect(leadHost(sources)).toBe(NEAR);
+    // Still the header-free capability first, now on the near node.
+    expect(sources[0]).toEqual({ url: `${NEAR}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`, requiresAuthorization: false });
+  });
+
+  it('moves off a stored preference once, when another node is materially nearer', () => {
+    const preference = new ArtworkHostPreference(storage());
+    preference.noteLoaded(`${FAR}/api/v1/catalogue/artwork/sha-0`);
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('does not move for a small difference, so two nearby nodes never trade places', () => {
+    const preference = new ArtworkHostPreference(storage());
+    preference.noteLoaded(`${FAR}/api/v1/catalogue/artwork/sha-0`);
+    const api = new MachaMediaApi(catalogue({ [FAR]: 40, [NEAR]: 3 }), preference);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(FAR);
+  });
+
+  it('decides nothing without evidence, and decides once it has some', () => {
+    const preference = new ArtworkHostPreference(storage());
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: undefined, [NEAR]: undefined }), preference).artworkUrls(signedBy(FAR)))).toBe(FAR);
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('decides once per run: later readings do not move it again', () => {
+    const preference = new ArtworkHostPreference(storage());
+    new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR));
+    // The link has changed since, but a second switch would re-download every poster again.
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: 3, [NEAR]: 90 }), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('is not undone by a poster from the old host finishing late', () => {
+    const preference = new ArtworkHostPreference(storage());
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference);
+    api.artworkUrls(signedBy(FAR));
+    api.noteArtworkLoaded(`${FAR}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('keeps following success when it chose not to switch', () => {
+    // Nothing deliberate to protect, so the old behaviour stands.
+    const preference = new ArtworkHostPreference(storage());
+    const api = new MachaMediaApi(catalogue({ [FAR]: 10, [NEAR]: 8 }), preference);
+    api.artworkUrls(signedBy(FAR));
+    api.noteArtworkLoaded(`${NEAR}/api/v1/catalogue/artwork/sha-1`);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+});

@@ -10,6 +10,17 @@ function response(value: unknown, status = 200): Response {
 describe('ClusterCatalogueApi', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("carries each ready node's measured round trip on its artwork URLs, and none for a node cooling off", () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
+    registry.recordLatency('http://a', 90);
+    registry.recordLatency('http://b', 3);
+    registry.recordLatency('http://c', 1);
+    registry.recordFailure('http://c');
+    const byHost = Object.fromEntries(new ClusterCatalogueApi(registry).artworkUrls('sha')
+      .map((source) => [source.url.split('/api/')[0], source.latencyMs]));
+    expect(byHost).toEqual({ 'http://a': 90, 'http://b': 3, 'http://c': undefined });
+  });
+
   it('retries a safe read on the next bootstrap endpoint and makes it sticky', async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('node A unreachable'))
