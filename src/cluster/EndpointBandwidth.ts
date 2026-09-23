@@ -24,6 +24,18 @@ const RESTORE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 /** In-memory updates are free; writes are not, least of all on a TV. */
 const PERSIST_INTERVAL_MS = 5_000;
 
+/**
+ * What a transfer carried. `api` is core's own JSON; `media` is what a host
+ * reports through `EndpointRegistry.recordTransferByUrl`.
+ *
+ * They are kept apart because they measure different things. A JSON sample is
+ * timed around `response.json()`, so it carries parse time, and it arrives only
+ * when a viewer opens a library. A media sample is a fragment or a download
+ * moving at whatever the link will give it. Ranking takes both, as it always
+ * has. A judgement about whether a node can carry a stream takes media only.
+ */
+export type TransferKind = 'api' | 'media';
+
 interface BandwidthRecord {
   bytesPerSecond: number;
   samples: number;
@@ -46,6 +58,13 @@ interface BandwidthRecord {
  */
 export class EndpointBandwidth {
   private readonly records = new Map<string, BandwidthRecord>();
+  /**
+   * Media transfers alone, in memory only and never persisted or restored.
+   * The question this answers is about the link now, so a figure from a
+   * previous session is not evidence for it, and a restored record is exactly
+   * the one-sample re-entry that must not decide anything.
+   */
+  private readonly media = new Map<string, BandwidthRecord>();
   private lastPersistAt?: number;
   private restored = false;
 
@@ -72,19 +91,28 @@ export class EndpointBandwidth {
    * not just receiving the response headers — a `fetch()` that has resolved
    * has not yet moved the bytes we are trying to measure.
    */
-  record(endpointIdValue: string, bytes: number, durationMs: number): void {
+  record(endpointIdValue: string, bytes: number, durationMs: number, kind: TransferKind = 'api'): void {
     this.restore();
     if (!Number.isFinite(bytes) || !Number.isFinite(durationMs)) return;
     if (bytes < MIN_SAMPLE_BYTES || durationMs <= 0) return;
 
     const sample = (bytes / durationMs) * 1000;
-    const previous = this.records.get(endpointIdValue);
-    this.records.set(endpointIdValue, {
-      bytesPerSecond: previous ? previous.bytesPerSecond + SMOOTHING * (sample - previous.bytesPerSecond) : sample,
-      samples: (previous?.samples ?? 0) + 1,
-      updatedAt: this.now(),
-    });
+    this.records.set(endpointIdValue, this.smoothed(this.records.get(endpointIdValue), sample));
+    if (kind === 'media') this.media.set(endpointIdValue, this.smoothed(this.media.get(endpointIdValue), sample));
     this.persist();
+  }
+
+  /**
+   * Media throughput alone, with how many transfers back it and how long ago
+   * the last one landed. Undefined with no media evidence this session.
+   *
+   * The age is measured here, on this store's clock, because `updatedAt` is a
+   * reading of that clock and a caller's may be another.
+   */
+  mediaEstimate(endpointIdValue: string): { bytesPerSecond: number; samples: number; ageMs: number } | undefined {
+    const record = this.media.get(endpointIdValue);
+    if (!record) return undefined;
+    return { bytesPerSecond: record.bytesPerSecond, samples: record.samples, ageMs: this.now() - record.updatedAt };
   }
 
   /** The current estimate in bytes per second, or undefined with no evidence yet. */
@@ -106,6 +134,7 @@ export class EndpointBandwidth {
     for (const id of [...this.records.keys()]) {
       if (endpointIds.has(id)) continue;
       this.records.delete(id);
+      this.media.delete(id);
       changed = true;
     }
     if (changed) this.write();
@@ -114,6 +143,14 @@ export class EndpointBandwidth {
   /** Write immediately, ignoring the interval — for page-hide, where there is no later. */
   flush(): void {
     if (this.restored) this.write();
+  }
+
+  private smoothed(previous: BandwidthRecord | undefined, sample: number): BandwidthRecord {
+    return {
+      bytesPerSecond: previous ? previous.bytesPerSecond + SMOOTHING * (sample - previous.bytesPerSecond) : sample,
+      samples: (previous?.samples ?? 0) + 1,
+      updatedAt: this.now(),
+    };
   }
 
   private persist(): void {

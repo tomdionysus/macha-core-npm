@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { bootstrapEndpoints, EndpointRegistry, MEDIA_THROUGHPUT_MAX_AGE_MS, MEDIA_THROUGHPUT_MIN_SAMPLES } from '../cluster/EndpointRegistry.js';
+import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 import type { PlaybackSession } from './PlaybackResolver.js';
 import { ClusterPlaybackResolver } from './ClusterPlaybackResolver.js';
@@ -1314,5 +1315,159 @@ describe('a standby the node would not build', () => {
     expect(refusals()).toHaveLength(1);
     expect(refusals()[0].accountAtSessionLimit).toBe(false);
     expect(refusals()[0].code).toBe('resource_limit');
+  });
+});
+
+/**
+ * A move onto a node this client has watched fail to keep up.
+ *
+ * Measured 2026-09-23: a cold connection from the fi-1 site delivered gbni-1's
+ * first fragments at 0.28-0.57 MB/s against a 0.63 MB/s stream. Whether a move
+ * can win the join is the lead's question; whether the node can carry the
+ * stream at all is this one, and it is judged on media alone.
+ */
+describe('ClusterPlaybackResolver.prepareOn and throughput', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** 5 Mbit/s, which is 625,000 bytes a second. */
+  const STREAM_BITS = 5_000_000;
+  const SLOW = 400_000;
+  const FAST = 2_000_000;
+
+  function cluster() {
+    let clock = 1_000_000;
+    const values = new Map<string, string>();
+    const bandwidth = new EndpointBandwidth('client', {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => { values.set(key, value); },
+      removeItem: (key) => { values.delete(key); },
+    }, () => clock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.attachBandwidth(bandwidth);
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
+      const id = String(url).startsWith('http://b') ? 'session-b' : 'session-a';
+      return new Response(JSON.stringify(wireSession(id)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new ClusterPlaybackResolver(registry);
+    /** `count` transfers from b at `bytesPerSecond`, one second each. */
+    const feed = (count: number, bytesPerSecond: number, kind?: 'api' | 'media') => {
+      for (let i = 0; i < count; i += 1) {
+        registry.recordTransferByUrl('http://b/api/v1/playback/stream/x/seg.m4s', bytesPerSecond, 1_000, kind);
+      }
+    };
+    const postsToB = () => fetchMock.mock.calls.filter(([target, init]) =>
+      String(target).startsWith('http://b') && ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'POST').length;
+    return { resolver, feed, postsToB, advance: (ms: number) => { clock += ms; } };
+  }
+
+  async function activeOnA(resolver: ClusterPlaybackResolver, rate = STREAM_BITS): Promise<PlaybackSession> {
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    return { ...active, sourceInfo: { ...active.sourceInfo, bitrate: rate } };
+  }
+
+  function declines(): Record<string, unknown>[] {
+    return clientDiagnosticsSnapshot()
+      .filter((entry) => entry.event === 'move-declined')
+      .map((entry) => ((entry.data as { detail?: unknown })?.detail ?? entry.data ?? {}) as Record<string, unknown>)
+      .filter((data) => data.reason === 'insufficient-throughput');
+  }
+
+  it('declines a node whose media throughput here is below the stream, and asks it nothing', async () => {
+    clearClientDiagnostics();
+    const { resolver, feed, postsToB } = cluster();
+    const active = await activeOnA(resolver);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES, SLOW);
+
+    await expect(resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' })).resolves.toBeUndefined();
+
+    expect(postsToB()).toBe(0);
+    expect(declines()).toHaveLength(1);
+    expect(declines()[0]).toMatchObject({ endpointId: 'http://b', streamBitsPerSecond: STREAM_BITS });
+  });
+
+  it('moves when the same node measures above the stream', async () => {
+    const { resolver, feed } = cluster();
+    const active = await activeOnA(resolver);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES, FAST);
+
+    const moved = await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+    expect(moved?.endpoint?.id).toBe('http://b');
+  });
+
+  it('does not decide on one sample fewer than the minimum', async () => {
+    // Cold fragments are the slow ones, so an early figure understates the link.
+    const { resolver, feed } = cluster();
+    const active = await activeOnA(resolver);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES - 1, SLOW);
+
+    const moved = await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+    expect(moved?.endpoint?.id).toBe('http://b');
+  });
+
+  it("never decides on core's own JSON, however much of it there is", async () => {
+    // Timed around the parse, so it reads slower than the link.
+    const { resolver, feed } = cluster();
+    const active = await activeOnA(resolver);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES * 3, SLOW, 'api');
+
+    const moved = await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+    expect(moved?.endpoint?.id).toBe('http://b');
+  });
+
+  it('lets old evidence lapse, so a declined node is not declined for ever', async () => {
+    // A declined node serves no media, so nothing would ever refresh it.
+    const { resolver, feed, advance } = cluster();
+    const active = await activeOnA(resolver);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES, SLOW);
+    advance(MEDIA_THROUGHPUT_MAX_AGE_MS + 1);
+
+    const moved = await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+    expect(moved?.endpoint?.id).toBe('http://b');
+  });
+
+  it('moves when the session states no rate to judge against', async () => {
+    const { resolver, feed } = cluster();
+    const active = await activeOnA(resolver, 0);
+    feed(MEDIA_THROUGHPUT_MIN_SAMPLES, SLOW);
+
+    const moved = await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'direct' });
+    expect(moved?.endpoint?.id).toBe('http://b');
+  });
+
+  describe('an HLS session, whose rate is the sum of what it serves', () => {
+    function hls(active: PlaybackSession, audioBitrate: number | undefined): PlaybackSession {
+      return {
+        ...active,
+        mode: 'transcode',
+        sourceInfo: { ...active.sourceInfo, bitrate: 40_000_000 },
+        output: {
+          video: { sourceStream: 0, transform: 'transcode', bitrate: 4_000_000 },
+          audio: { sourceStream: 1, transform: 'copy', bitrate: audioBitrate },
+        },
+      };
+    }
+
+    it('judges video and audio together, not the source', async () => {
+      // 4.64 Mbit/s served. 560 KB/s is 4.48 Mbit/s: short by the audio alone,
+      // and nowhere near the 40 Mbit/s source.
+      clearClientDiagnostics();
+      const { resolver, feed } = cluster();
+      const active = hls(await activeOnA(resolver), 640_000);
+      feed(MEDIA_THROUGHPUT_MIN_SAMPLES, 560_000);
+
+      await expect(resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'transcode' })).resolves.toBeUndefined();
+      expect(declines()[0]).toMatchObject({ streamBitsPerSecond: 4_640_000 });
+    });
+
+    it('says nothing when a served stream states no rate, rather than judge a partial sum', async () => {
+      const { resolver, feed, postsToB } = cluster();
+      const active = hls(await activeOnA(resolver), undefined);
+      feed(MEDIA_THROUGHPUT_MIN_SAMPLES, 490_000);
+
+      await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'transcode' });
+      expect(postsToB()).toBe(1);
+    });
   });
 });

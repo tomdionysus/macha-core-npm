@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readJsonBody } from '../api/httpCompat.js';
 import { setTransferRecorder } from '../api/transferRecorder.js';
-import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { bootstrapEndpoints, EndpointRegistry, MEDIA_THROUGHPUT_MIN_SAMPLES } from '../cluster/EndpointRegistry.js';
 import { EndpointBandwidth } from '../cluster/EndpointBandwidth.js';
 import { configureMachaHost, memoryStorage } from '../runtime/host.js';
 import { createMachaServices } from './createMachaServices.js';
@@ -97,6 +97,23 @@ describe('core wires throughput; a host only feeds it bytes core cannot see', ()
 
     const b = registry.candidates().find((candidate) => candidate.endpoint.baseUrl === 'http://b.test');
     expect(b?.bytesPerSecond).toBeGreaterThan(0);
+  });
+
+  /**
+   * But core's own reads are filed as JSON. They rank nodes; they never decide
+   * that a node cannot carry a stream, since they are timed around the parse.
+   */
+  it('files its own reads apart from media, so they never count as media evidence', async () => {
+    freshHost({ 'macha-client-id': 'client-42' });
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
+    createMachaServices({ endpointRegistry: registry });
+
+    for (let i = 0; i < MEDIA_THROUGHPUT_MIN_SAMPLES * 2; i += 1) {
+      await readJsonBody(jsonResponse('http://a.test/api/v1/library/movies', 4_000_000));
+    }
+
+    expect(registry.candidates()[0]?.bytesPerSecond).toBeGreaterThan(0);
+    expect(registry.mediaBytesPerSecond('http://a.test')).toBeUndefined();
   });
 
   it('keys the store by the client id the host already has, never a fresh one', () => {

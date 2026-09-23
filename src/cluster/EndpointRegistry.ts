@@ -1,6 +1,6 @@
 import { normalizeBaseUrl } from '../api/httpCompat.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
-import type { EndpointBandwidth } from './EndpointBandwidth.js';
+import type { EndpointBandwidth, TransferKind } from './EndpointBandwidth.js';
 
 export type EndpointSource = 'bootstrap' | 'environment' | 'discovered';
 
@@ -221,6 +221,25 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
 const THROUGHPUT_MIN_SAMPLES = 2;
 /** How much faster (or slower) a link must measure before throughput changes any decision. */
 const THROUGHPUT_MIN_RELATIVE_DIFFERENCE = 0.4;
+/**
+ * Media transfers needed before core will say a node cannot carry a stream.
+ *
+ * Higher than ranking's two on purpose, because a refusal costs more than a
+ * reordering. The first fragments over a cold connection are the slow ones:
+ * measured 2026-09-23, fi-1-site to gbni-1, the first fragments came at
+ * 0.28-0.57 MB/s against a 0.63 MB/s stream, and steady state settled near
+ * 1.6 MB/s. At the smoothing `EndpointBandwidth` applies, the first sample's
+ * weight after six is about a tenth. A guess, stated as one.
+ */
+export const MEDIA_THROUGHPUT_MIN_SAMPLES = 6;
+/**
+ * How recent the last media transfer must be to count. A node's link to this
+ * client is the thing being judged, and it is not the same link ten minutes
+ * later. It also means a node declined once is not declined for ever on the
+ * strength of evidence nobody is refreshing, since a declined node serves no
+ * media to update it. Client policy, a guess.
+ */
+export const MEDIA_THROUGHPUT_MAX_AGE_MS = 10 * 60_000;
 /**
  * Ranking thresholds, deliberately blunt for the same reason throughput's is:
  * ordering must not reshuffle on noise. Latency needs an absolute floor as
@@ -812,11 +831,16 @@ export class EndpointRegistry {
    * qualifying catalogue read at all. Without this call that client ranks
    * endpoints with the throughput axis permanently dark, and nothing says so
    * beyond one `throughput-unavailable` line.
+   *
+   * **A host calls it with three arguments, and what it reports is media.**
+   * Media is the only evidence `mediaBytesPerSecond` reads, and so the only
+   * evidence on which a move declines a node. Core files its own JSON reads
+   * here as `'api'`.
    */
-  recordTransferByUrl(url: string, bytes: number, durationMs: number): void {
+  recordTransferByUrl(url: string, bytes: number, durationMs: number, kind: TransferKind = 'media'): void {
     if (!this.bandwidth) return;
     const endpoint = this.endpoints.find((candidate) => url.startsWith(`${candidate.baseUrl}/`) || url === candidate.baseUrl);
-    if (endpoint) this.bandwidth.record(endpoint.id, bytes, durationMs);
+    if (endpoint) this.bandwidth.record(endpoint.id, bytes, durationMs, kind);
   }
 
   /** Record a node's self-reported load, from the status call the health cycle already makes. */
@@ -993,6 +1017,22 @@ export class EndpointRegistry {
     if (!this.bandwidth) return undefined;
     if (this.bandwidth.samples(endpointIdValue) < THROUGHPUT_MIN_SAMPLES) return undefined;
     return this.bandwidth.bytesPerSecond(endpointIdValue);
+  }
+
+  /**
+   * Media throughput from this client to that node, in bytes per second, only
+   * when enough recent media transfers back it. Undefined means core cannot
+   * say, which is never the same as slow.
+   *
+   * Media only: core's own JSON reads are timed around the parse and arrive
+   * only when a viewer browses, so they rank nodes but do not decide whether
+   * one can carry a stream.
+   */
+  mediaBytesPerSecond(endpointIdValue: string): number | undefined {
+    const estimate = this.bandwidth?.mediaEstimate(endpointIdValue);
+    if (!estimate || estimate.samples < MEDIA_THROUGHPUT_MIN_SAMPLES) return undefined;
+    if (estimate.ageMs > MEDIA_THROUGHPUT_MAX_AGE_MS) return undefined;
+    return estimate.bytesPerSecond;
   }
 
   /**

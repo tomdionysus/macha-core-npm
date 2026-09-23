@@ -618,6 +618,17 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       this.log.info('move-declined', { reason: 'unknown-endpoint', endpointId });
       return undefined;
     }
+    // A node this client has just watched fail to keep up is not one to move
+    // a viewer onto. Media evidence only, and only a floor: below the stream's
+    // average rate it cannot carry it at all, peaks aside. Without evidence or
+    // a stated rate core says nothing and the move goes ahead, which is what
+    // happened before this check existed.
+    const bytesPerSecond = this.registry.mediaBytesPerSecond(endpointId);
+    const streamBitsPerSecond = servedBitsPerSecond(activeSession);
+    if (bytesPerSecond !== undefined && streamBitsPerSecond !== undefined && bytesPerSecond * 8 < streamBitsPerSecond) {
+      this.log.info('move-declined', { reason: 'insufficient-throughput', endpointId, bytesPerSecond, streamBitsPerSecond });
+      return undefined;
+    }
     // Everything but the chosen node. `create` walks `candidates(excluded)`,
     // so excluding the rest is what turns a ranked walk into an instruction —
     // and it keeps the attempt budget, the logging and the close ladder that
@@ -1112,4 +1123,25 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     }
     return resolver;
   }
+}
+
+/**
+ * What a session serves, in bits per second, from what the node states: the
+ * source's rate for direct play, otherwise the sum of the served streams'
+ * rates. The node states no overall output rate, and states a transcoded
+ * video's rate only under a `max_bitrate` cap, so an HLS session with any
+ * served stream missing a rate answers undefined rather than a partial sum
+ * that would understate it.
+ */
+function servedBitsPerSecond(session: PlaybackSession): number | undefined {
+  if (session.mode === 'direct') return session.sourceInfo.bitrate > 0 ? session.sourceInfo.bitrate : undefined;
+  if (session.output.bitrate !== undefined && session.output.bitrate > 0) return session.output.bitrate;
+  const served = [session.output.video, session.output.audio].filter((stream) => stream !== undefined);
+  if (served.length === 0) return undefined;
+  let total = 0;
+  for (const stream of served) {
+    if (stream.bitrate === undefined || !(stream.bitrate > 0)) return undefined;
+    total += stream.bitrate;
+  }
+  return total;
 }
