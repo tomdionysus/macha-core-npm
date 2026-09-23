@@ -487,6 +487,19 @@ describe('search hits and their ancestry', () => {
   const SEASON = catalogueItem('season-1', 'season', { parent_id: 'show', season_number: 1, title: 'Season 1' });
   const TRACK = catalogueItem('track-9', 'track', { parent_id: 'album-1', track_number: 9, title: 'Ninth' });
 
+  it('sends only the words a search keys on, and nothing when none are left', async () => {
+    class Recording extends SearchCatalogue {
+      readonly queries: string[] = [];
+      override search(query?: string): Promise<CatalogueItem[]> { this.queries.push(query ?? ''); return super.search(); }
+    }
+    const catalogue = new Recording([]);
+    const api = new MachaMediaApi(catalogue);
+    await api.search('The Matrix');
+    await expect(api.search('the')).resolves.toEqual([]);
+    await expect(api.search('a x')).resolves.toEqual([]);
+    expect(catalogue.queries).toEqual(['Matrix']);
+  });
+
   it('names the series on an episode, with the same context a season page gives', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
     const [hit] = await api.search('episode');

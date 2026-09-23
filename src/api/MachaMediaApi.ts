@@ -18,6 +18,7 @@ import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
 import { episodeLabel } from '../episodeLabel.js';
+import { isSearchable, searchTerms } from '../searchTerms.js';
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError('Artwork consumer cancelled.');
@@ -243,7 +244,11 @@ export class MachaMediaApi implements MediaApi {
    * were, without context, rather than failing the search.
    */
   async search(query: string, signal?: AbortSignal): Promise<MediaSummary[]> {
-    const hits = await this.catalogue.search(query, 50, signal);
+    // Only the words a search keys on, and no request at all when too little
+    // is left. Applied here as well as by the client, so a client that forgets
+    // to ask `isSearchable` still gets Tom's rule.
+    if (!isSearchable(query)) return [];
+    const hits = await this.catalogue.search(searchTerms(query), 50, signal);
     const known = new Map(hits.map((item) => [item.id, item]));
     const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track');
     await this.loadAncestors(known, withAncestry.map((item) => item.parent_id), signal);

@@ -7,7 +7,14 @@ export const ALPHABET_INDEX = [
 ] as const;
 export type AlphabetIndexKey = (typeof ALPHABET_INDEX)[number];
 
-const LEADING_ARTICLE = /^(?:the|an|a)\s+/i;
+/**
+ * The words a title is ordered without, when leading. Search drops them
+ * wherever they appear in a query, by Tom's ruling of 2026-09-24, so ordering
+ * and search cannot disagree about which words are ignored.
+ */
+export const IGNORED_TITLE_WORDS: readonly string[] = ['the', 'an', 'a'];
+
+const LEADING_ARTICLE = new RegExp(`^(?:${IGNORED_TITLE_WORDS.join('|')})\\s+`, 'i');
 const COMBINING_MARKS = /\p{M}/gu;
 const TITLE_COLLATOR = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
 const ALPHABET_ORDER = new Map<AlphabetIndexKey, number>(ALPHABET_INDEX.map((key, index) => [key, index]));

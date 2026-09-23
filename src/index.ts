@@ -123,6 +123,7 @@ export * from './playbackRoute.js';
 export * from './episodeLabel.js';
 export * from './mediaSort.js';
 export * from './recentMedia.js';
+export * from './searchTerms.js';
 export * from './titleIndex.js';
 
 // ------------------------------------------------------------ diagnostics
