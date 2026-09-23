@@ -21,6 +21,8 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
 - **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
 - **A move declines a node whose recent media throughput is below the served rate** (`9f33b75`). `recordTransferByUrl` gains an optional fourth argument, `kind`, defaulting to media. Not yet exercised.
+- **Search categories** (`550820a`): `SEARCH_CATEGORIES`, `DEFAULT_SEARCH_CATEGORIES`, and `MediaApi.search(query, signal?, { categories })`, where an empty set makes no request. Filtered client-side, fetching 200 to return 50, until the server takes a `kind`, which was asked of it 2026-09-24. Tom's ruling.
+- **`episodeSubtitle`** (`550820a`), asked for by the Android TV client for Continue Watching. **`albumLabel` / `trackSubtitle`** and `MusicHierarchyContext.album.year` (`397ad2c`), for "Artist - Album (year)", Tom's ruling.
 - **Search hits carry their ancestry** (`839e190`): `playbackContext` on episodes, `showId` on seasons, `musicContext` on tracks. Asked for by the Android TV client on Tom's instruction.
 - **`musicContext` is produced at all** (`839e190`), on album-page tracks, `tracks()` and search. It had been declared since `0.6.0` and was never set, so the phone client never showed an artist or album. Snapshots stored before this keep none; see *Waiting on Tom*.
 - **`episodeLabel`** (`6289744`): "Season 1 Episode 4" for search results and Continue Watching, by Tom's ruling. Search subtitles read "Series · Season 1 Episode 4".
@@ -434,6 +436,7 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 ### Three small questions from 2026-09-24
 - **Specials.** `episodeLabel` names a season-0 episode "Season 0 Episode 1". Should it be something else, such as the season's own title, "Specials"?
 - **"Plan A" is searched as "Plan".** This is a consequence of dropping "the", "an" and "a" anywhere in a query. It is Tom's rule as relayed, and this is its edge.
+- **Two links on a TV card.** The Android TV client says a card is a single focus target, so it cannot hold separate series and season links as the ruling describes. It reaches both by Back instead: TV Shows → series → season sits beneath every episode. If Tom wants separate focusable targets there, that is a different design and the TV client wants his call.
 - **Refresh stored snapshots on read?** `PlaylistStore` and `PlaybackQueueStore` (core's) keep each item as stored, so anything stored before `839e190` shows no artist or album on the phone until re-added. Refreshing on read would put a catalogue read behind a store read. The phone client owes no migration and is writing none. Macha has not shipped.
 
 ### Check the session route on a timer while the viewer is playing, so a reap is caught without player evidence
