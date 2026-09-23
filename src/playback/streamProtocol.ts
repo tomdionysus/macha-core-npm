@@ -31,6 +31,19 @@ import type { PlaybackFailureKind } from '../platform/Platform.js';
 export const SERVER_SEGMENT_HOLD_MS = 6_000;
 
 /**
+ * How often core asks a node whether a new generation has produced anything,
+ * for a player that cannot ride out a hold.
+ *
+ * **Client policy, not a server figure,** and a guess documented as one. The
+ * node states no polling cadence, and its segment hold -- the one interval it
+ * does state -- is 6 s, which would add up to 6 s to every start. Each read is
+ * one small JSON GET on the session route and is bounded by the node's own
+ * attempt budget, so the cost of asking often is a handful of requests per
+ * start on the one kind of player that needs it.
+ */
+export const PRODUCED_POLL_INTERVAL_MS = 500;
+
+/**
  * How long a node keeps a playback session whose client has stopped asking for
  * media, before the reaper erases it.
  *

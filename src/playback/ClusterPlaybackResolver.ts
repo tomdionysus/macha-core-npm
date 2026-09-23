@@ -1,4 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
+import { PRODUCED_POLL_INTERVAL_MS } from './streamProtocol.js';
 import { generationStartKind } from './generationStart.js';
 import {
   endpointFailure,
@@ -566,6 +567,34 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * opportunistic — it is a viewer's instruction — so the error from a node
    * that refuses is allowed to propagate rather than being swallowed.
    */
+  async awaitProduced(session: PlaybackSession, signal?: AbortSignal): Promise<'produced' | 'gone' | 'unknown'> {
+    if (!session.production) return 'unknown';
+    if (session.production.producedMs > 0) return 'produced';
+    const owned = this.sessions.get(session.sessionId) ?? this.provenanceFromId(session.sessionId);
+    if (!owned) return 'unknown';
+    const budgetMs = generationAttemptBudgetMs(this.registry.playbackBudgets(owned.endpoint.id));
+    const started = machaHost().now();
+    for (;;) {
+      if (signal?.aborted) return 'unknown';
+      await new Promise<void>((resolve) => { setTimeout(resolve, PRODUCED_POLL_INTERVAL_MS); });
+      if (signal?.aborted) return 'unknown';
+      if (machaHost().now() - started > budgetMs) {
+        this.log.warn('produced-wait-exhausted', { sessionId: session.sessionId, endpointId: owned.endpoint.id, budgetMs });
+        return 'unknown';
+      }
+      let current: PlaybackSession | undefined;
+      try {
+        current = await owned.resolver.read(owned.nodeSessionId);
+      } catch {
+        // No answer this time is not an answer. The budget decides when to stop.
+        continue;
+      }
+      if (!current) return 'gone';
+      if (!current.production) return 'unknown';
+      if (current.production.producedMs > 0) return 'produced';
+    }
+  }
+
   /**
    * What starting a generation like `activeSession` would cost on this node,
    * from core's own recent measurements there. Undefined means unknown.

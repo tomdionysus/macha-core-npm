@@ -2023,6 +2023,64 @@ describe('a node that reaped the session it was serving', () => {
   });
   const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
 
+  describe('a player that cannot ride a hold', () => {
+    // The Samsung build's native HLS element fails or stalls silently when its
+    // first segment answers `500 segment_not_ready`. It used to be protected by
+    // a bytes=0-0 probe of the media, which Tom ruled out; the node already
+    // says the same thing on the session route, as `production.produced_ms`.
+    const starting = () => session({
+      sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      production: { producedMs: 0, producingMs: 0, producedAgeMs: 0, producerParked: false },
+    });
+
+    function waiting(outcome: Promise<'produced' | 'gone' | 'unknown'>, needs = true) {
+      const player = new FakePlayer();
+      player.needsProducedSource = needs;
+      const api = reapedResolver(starting(), replacement());
+      api.awaitProduced = vi.fn(() => outcome);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      return { player, api, coordinator };
+    }
+
+    it('hands over the source only once the node says something has been produced', async () => {
+      const produced = deferred<'produced' | 'gone' | 'unknown'>();
+      const { player, api, coordinator } = waiting(produced.promise);
+      const started = coordinator.start();
+      await vi.waitFor(() => expect(api.awaitProduced).toHaveBeenCalledTimes(1));
+      expect(player.playCalls).toHaveLength(0);
+
+      produced.resolve('produced');
+      await started;
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+      await coordinator.close();
+    });
+
+    it('hands over as before when the node cannot say', async () => {
+      const { player, coordinator } = waiting(Promise.resolve('unknown'));
+      await coordinator.start();
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+      await coordinator.close();
+    });
+
+    it('sends a generation that vanished before producing into the reaped-session recovery, not to the player', async () => {
+      const { player, api, coordinator } = waiting(Promise.resolve('gone'));
+      await coordinator.start();
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalledWith('s1'));
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+      expect(player.playCalls.some((call) => call.source.url === starting().source.url)).toBe(false);
+      expect(api.failover).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('never makes any other player wait', async () => {
+      const { player, api, coordinator } = waiting(new Promise(() => undefined), false);
+      await coordinator.start();
+      expect(player.playCalls).toHaveLength(1);
+      expect(api.awaitProduced).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+  });
+
   describe('a fatal that says nothing about what failed', () => {
     // Measured on the Android TV set 2026-09-23: expo-video's terminal error
     // carries no status, so a reaped direct-play session arrived as `unknown`,

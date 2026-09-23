@@ -1650,6 +1650,27 @@ export class PlaybackCoordinator {
   }
 
   /**
+   * For a player that cannot ride a hold, wait until the node says this
+   * generation has produced something. Every other player, and every source
+   * the node gives no production reading for, goes straight through.
+   */
+  private waitsForProduction(session: PlaybackSession): boolean {
+    return this.options.player.needsProducedSource === true
+      && session.mode !== 'direct'
+      && this.options.resolver.awaitProduced !== undefined
+      && session.production !== undefined
+      && !(session.production.producedMs > 0);
+  }
+
+  private async producedForPlayer(session: PlaybackSession): Promise<'produced' | 'gone' | 'unknown'> {
+    const awaitProduced = this.options.resolver.awaitProduced?.bind(this.options.resolver);
+    if (!awaitProduced) return 'unknown';
+    const outcome = await awaitProduced(session).catch(() => 'unknown' as const);
+    this.log.info('source-produced-wait', { sessionId: session.sessionId, outcome });
+    return outcome;
+  }
+
+  /**
    * How far ahead of the viewer a move to this node should ask for.
    *
    * Zero unless the player can hold through a lead, and zero when the lead
@@ -2010,7 +2031,24 @@ export class PlaybackCoordinator {
       paused: startPaused,
     });
 
-    void this.options.player.play(session.source, localPositionMs, startPaused, transition).then((started) => {
+    const handOver = (): Promise<boolean> => this.options.player.play(session.source, localPositionMs, startPaused, transition);
+    // Synchronous for every player that did not ask to wait: `play()` is called
+    // in this turn, exactly as before, and only a player declaring
+    // `needsProducedSource` takes the extra step.
+    const playing = this.waitsForProduction(session)
+      ? this.producedForPlayer(session).then((produced) => {
+        if (this.disposed || activationRevision !== this.sourceActivationRevision) return undefined;
+        if (produced === 'gone') {
+          // The generation vanished before producing anything. The same answer
+          // a 404 on its first fragment would have given, delivered through the
+          // same door, so the reaped-session recovery takes it from here.
+          throw new PlaybackSourceError(`Generation ${session.sessionId} is gone before producing media.`, 'not-found');
+        }
+        return handOver();
+      })
+      : handOver();
+    void playing.then((started) => {
+      if (started === undefined) return;
       if (this.disposed || activationRevision !== this.sourceActivationRevision) return;
       present();
       // User intent may have changed while the source was attaching. Reconcile

@@ -55,6 +55,46 @@ function withSessionCloses(fetchMock: ReturnType<typeof vi.fn>): ReturnType<type
 describe('ClusterPlaybackResolver', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  describe('waiting for a generation to produce, from the session route', () => {
+    const hls = (producedMs: number | null) => ({
+      ...wireSession('session-b'),
+      mode: 'transcode',
+      stream: {
+        url: '/api/v1/playback/sessions/session-b/stream/t/1/index.m3u8', mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null,
+        ...(producedMs === null ? {} : { production: { produced_ms: producedMs, producing_ms: producedMs ? 900 : 0, produced_age_ms: 0, producer_parked: false } }),
+      },
+    });
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+    it('reads the session until the node says it has produced something, touching no media', async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(json(hls(0), 201))
+        .mockResolvedValueOnce(json(hls(0)))
+        .mockResolvedValueOnce(json(hls(6_000)));
+      vi.stubGlobal('fetch', withSessionCloses(fetchMock));
+      const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://b'])));
+      const session = await resolver.resolve(media, capabilities, undefined, { mode: 'transcode' });
+
+      await expect(resolver.awaitProduced(session)).resolves.toBe('produced');
+      const urls = (fetchMock.mock.calls as Array<[string]>).map(([url]) => String(url));
+      expect(urls.slice(1).every((url) => url.endsWith('/api/v1/playback/sessions/session-b'))).toBe(true);
+      // Kept asking while the answer was zero, and stopped at the first that was not.
+      expect(urls).toHaveLength(3);
+    });
+
+    it('answers gone when the node no longer holds the session, and unknown when it reports no production', async () => {
+      const gone = vi.fn()
+        .mockResolvedValueOnce(json(hls(0), 201))
+        .mockResolvedValueOnce(json({ error: { code: 'not_found', message: 'gone' } }, 404));
+      vi.stubGlobal('fetch', withSessionCloses(gone));
+      const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://b'])));
+      const session = await resolver.resolve(media, capabilities, undefined, { mode: 'transcode' });
+      await expect(resolver.awaitProduced(session)).resolves.toBe('gone');
+
+      await expect(resolver.awaitProduced({ ...session, production: undefined })).resolves.toBe('unknown');
+    });
+  });
+
 
   it('hands the host the deadlines of the node that actually served the session', async () => {
     const fetchMock = vi.fn()

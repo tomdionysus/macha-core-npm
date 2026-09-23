@@ -575,6 +575,27 @@ export class MachaPlaybackResolver implements PlaybackResolver {
    * gone". Acting on the difference is what stops a node being condemned for
    * answering honestly.
    */
+  /**
+   * The session as the node describes it now, or undefined when the node no
+   * longer holds it. Bounded like `sessionAlive`, and for the same reason.
+   */
+  async read(sessionId: string): Promise<PlaybackSession | undefined> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SESSION_LIVENESS_TIMEOUT_MS);
+    try {
+      const wire = await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+      return this.mapSession(wire);
+    } catch (error) {
+      if (error instanceof MachaPlaybackError && error.status === 404) return undefined;
+      if (controller.signal.aborted) {
+        throw new MachaConnectionError(`Session ${sessionId} unanswered within ${SESSION_LIVENESS_TIMEOUT_MS} ms.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async sessionAlive(sessionId: string): Promise<boolean> {
     // Bounded, because nothing below this was. The request went through the
     // host's plain fetch with no signal, so a node that had dropped off the

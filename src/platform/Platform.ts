@@ -148,6 +148,19 @@ export interface Player {
    * gets exactly the move it got before leads existed.
    */
   readonly holdsThroughLead?: boolean;
+  /**
+   * Whether this player must not be handed a transcode or remux source until
+   * the node has produced its first segment.
+   *
+   * For a player that cannot ride out a `segment_not_ready` hold -- a native
+   * HLS element handed a playlist whose first segment answers `500` fails or
+   * stalls with nothing to recover from. Core then waits for the session route
+   * to report `production.produced_ms` above zero before `play()`, reading the
+   * node's own statement rather than the media. **Opt-in, and absent means
+   * no:** a player that retries a hold itself is handed the source at once, as
+   * before.
+   */
+  readonly needsProducedSource?: boolean;
   /** Unbind presentation without changing playback/resource ownership. */
   detachHost?(): void;
   /** Final player destruction. This is resource-destructive. */
