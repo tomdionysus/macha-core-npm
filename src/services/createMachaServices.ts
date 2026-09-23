@@ -70,7 +70,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
     manageApi: new ClusterManageApi(endpointRouter, auth),
     usersApi: new ClusterUsersApi(endpointRouter, auth),
     mediaApi: apiOverride ?? new MachaMediaApi(catalogueApi),
-    playbackResolver: playbackOverride ?? new ClusterPlaybackResolver(endpointRouter, auth),
+    playbackResolver: playbackOverride ?? new ClusterPlaybackResolver(endpointRouter, auth, undefined, (url, init) => fetch(url, init)),
     serverApi: new ClusterServerApi(endpointRouter, auth),
     clusterStatusApi: new ClusterStatusRouter(endpointRouter, auth),
     acquisitionApi: new ClusterAcquisitionApi(endpointRouter, auth),
@@ -110,7 +110,9 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  * nothing — a restored record re-enters at one sample against a threshold of
  * two, so persisted throughput never ranks on its own regardless.
  *
- * What core cannot do is see media bytes; it never fetches media. A host that
+ * What core cannot do is see media bytes; it never fetches them. Its only
+ * request to a stream route is the `bytes=0-0` readiness probe that measures
+ * a generation start, which moves no payload. A host that
  * has them feeds `EndpointRegistry.recordTransferByUrl`. That is the whole of
  * a host's involvement.
  */

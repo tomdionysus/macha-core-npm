@@ -7,6 +7,7 @@ import {
   PlaybackCoordinator,
   type PlaybackCoordinatorSnapshot,
   type PlaybackInstructionReport,
+  type PlaybackMoveOptions,
 } from './PlaybackCoordinator.js';
 import type {
   PlaybackPreferences,
@@ -359,8 +360,8 @@ export class PlaybackRuntime {
    * spells that as `prefer(endpointId)` on the registry and then `retry()`;
    * there is nothing here for a move to act on.
    */
-  moveTo(endpointId: string): Promise<boolean> {
-    if (this.coordinator) return this.coordinator.moveTo(endpointId);
+  moveTo(endpointId: string, options?: PlaybackMoveOptions): Promise<boolean> {
+    if (this.coordinator) return this.coordinator.moveTo(endpointId, options);
     return Promise.resolve(false);
   }
 

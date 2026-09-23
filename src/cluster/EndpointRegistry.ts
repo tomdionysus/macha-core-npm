@@ -120,6 +120,34 @@ export interface EndpointPlaybackBudgets {
  * the comparator from stored evidence, which is how an afternoon of transcode
  * measurements got taken against the wrong node before anyone noticed.
  */
+/**
+ * What a generation start involves, which is what decides how long it takes.
+ *
+ * Kept apart because they differ by an order of magnitude on one node: a
+ * software HEVC re-encode against a stream copy is seconds against fractions
+ * of one. One figure per node would describe neither.
+ */
+export type GenerationStartKind = 'video-transcode' | 'video-copy' | 'remux';
+
+/** How many recent starts per node and kind make an estimate. */
+export const GENERATION_START_SAMPLES = 5;
+
+/**
+ * How long a start measurement stays evidence.
+ *
+ * A node's start cost moves with its load: another viewer's transcode on the
+ * same box is the difference between the two figures the web client measured
+ * on gbni-1. Old samples describe a load that has gone, so they are dropped
+ * rather than averaged in. Thirty minutes is a guess at "recent", not a server
+ * figure; nothing on the wire says how long contention lasts.
+ */
+export const GENERATION_START_EVIDENCE_TTL_MS = 30 * 60_000;
+
+interface GenerationStartSample {
+  ms: number;
+  at: number;
+}
+
 export type EndpointSelectionAxis =
   | 'availability'
   | 'sticky'
@@ -359,6 +387,7 @@ export class EndpointRegistry {
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
   private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
+  private readonly generationStarts = new Map<string, GenerationStartSample[]>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
   /** So the abstention is reported once rather than on every probe cycle. */
@@ -417,6 +446,7 @@ export class EndpointRegistry {
     for (const id of this.latencySamples.keys()) if (!retained.has(id)) this.latencySamples.delete(id);
     for (const id of this.capacities.keys()) if (!retained.has(id)) this.capacities.delete(id);
     for (const id of this.playbackBudgetsById.keys()) if (!retained.has(id)) this.playbackBudgetsById.delete(id);
+    for (const key of this.generationStarts.keys()) if (!retained.has(key.slice(0, key.lastIndexOf('|')))) this.generationStarts.delete(key);
     this.bandwidth?.retain(retained);
     if (this.preferredId && !retained.has(this.preferredId)) this.preferredId = undefined;
     if (this.latencyAdvantageId && !retained.has(this.latencyAdvantageId)) {
@@ -767,7 +797,9 @@ export class EndpointRegistry {
    * from the URL it was fetched from.
    *
    * **This is the seam for bytes core cannot see.** Core records its own JSON
-   * reads automatically; it never fetches media. The web client's Direct Play
+   * reads automatically; it never fetches media bytes — its one request to a
+   * stream route is a `bytes=0-0` readiness probe for start costs, which moves
+   * none and is not a transfer. The web client's Direct Play
    * read-ahead worker does, and until it fed those bytes in, its throughput
    * record described only JSON — a node serving nothing but media had no
    * evidence against it and the client spent an afternoon streaming from its
@@ -825,6 +857,43 @@ export class EndpointRegistry {
   playbackBudgets(endpointIdValue: string): EndpointPlaybackBudgets | undefined {
     const value = this.playbackBudgetsById.get(endpointIdValue);
     return value ? { ...value } : undefined;
+  }
+
+  /**
+   * Record how long a generation start took on this node, measured by core from
+   * the request to the first fragment the node would serve.
+   *
+   * **Evidence, not configuration.** No node states this, and Tom ruled on
+   * 2026-09-23 that none will: estimating a start is the client's, and core is
+   * the client that every host shares. Anything non-finite or negative is
+   * refused rather than stored, because it would become a lead.
+   */
+  recordGenerationStart(endpointIdValue: string, kind: GenerationStartKind, ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0) return;
+    const key = `${endpointIdValue}|${kind}`;
+    const samples = [...(this.generationStarts.get(key) ?? []), { ms, at: this.now() }];
+    this.generationStarts.set(key, samples.slice(-GENERATION_START_SAMPLES));
+  }
+
+  /**
+   * The longest recent start of this kind on this node, or undefined.
+   *
+   * **The longest, not the mean,** because the two ways of being wrong cost
+   * differently. Estimating long makes a move ask for a generation further
+   * ahead, which the outgoing source's runway pays for, and a move that cannot
+   * afford it declines. Estimating short makes the join start behind the viewer,
+   * and a node that produces at no better than realtime never catches up: the
+   * freeze this exists to prevent.
+   *
+   * **Undefined means unknown, never zero.** A node with no recent start of this
+   * kind gets no estimate, and a move there behaves as it did before this
+   * existed, because a figure borrowed from another node would be describing a
+   * different machine.
+   */
+  generationStartEstimate(endpointIdValue: string, kind: GenerationStartKind): number | undefined {
+    const cutoff = this.now() - GENERATION_START_EVIDENCE_TTL_MS;
+    const recent = (this.generationStarts.get(`${endpointIdValue}|${kind}`) ?? []).filter((sample) => sample.at >= cutoff);
+    return recent.length === 0 ? undefined : Math.max(...recent.map((sample) => sample.ms));
   }
 
   recordSuccess(endpointIdValue: string): void {

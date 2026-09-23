@@ -1,4 +1,5 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
@@ -481,6 +482,17 @@ function clampPosition(positionMs: number, durationMs: number | undefined): numb
 
 export function isPrematurePlaybackEnd(positionMs: number, durationMs: number): boolean {
   return durationMs > 0 && positionMs + PLAYBACK_END_TOLERANCE_MS < durationMs;
+}
+
+/** What a host may say about a move. See `PlaybackCoordinator.moveTo`. */
+export interface PlaybackMoveOptions {
+  /**
+   * How far ahead of the viewer to ask the target node to start, in
+   * milliseconds, in place of core's own estimate. The host's figure for this
+   * move only: core does not keep it. Ignored unless the player declares
+   * `holdsThroughLead`.
+   */
+  leadMs?: number;
 }
 
 export function generationLocalPosition(
@@ -1536,8 +1548,25 @@ export class PlaybackCoordinator {
    * Returns whether the move happened. `false` is an ordinary answer: already
    * on that node, no session yet, the endpoint unknown, or the node unwilling
    * to build an equivalent generation.
+   *
+   * **A lead, for a host that can hold through one.** A node produces a
+   * generation sequentially from the position it is asked for, at no better
+   * than realtime on the boxes that are slow to start, so a generation asked
+   * for at the viewer's position begins one start-cost behind them and never
+   * catches up. Measured on the web client on 2026-09-23: gbni-1 took 8.5 to
+   * 12.3 s to a first fragment, the join lost the race both times, and the
+   * picture froze for 15 to 19 s. So the move asks for the viewer's position
+   * plus the lead, and the outgoing source plays on until the viewer reaches
+   * the new generation, where the host cuts.
+   *
+   * The lead is `options.leadMs` where a host supplies one, otherwise core's
+   * own estimate for that node and kind plus `MOVE_LEAD_MARGIN_MS`. No estimate
+   * means no lead, which is the behaviour before estimates existed. **Only a
+   * player declaring `holdsThroughLead` gets one**: any other host cannot keep
+   * the outgoing source presenting until the viewer arrives, and a lead handed
+   * to it is a skip forward.
    */
-  async moveTo(endpointId: string): Promise<boolean> {
+  async moveTo(endpointId: string, options: PlaybackMoveOptions = {}): Promise<boolean> {
     if (this.disposed) return false;
     const session = this.snapshot.session;
     if (!session) {
@@ -1548,12 +1577,16 @@ export class PlaybackCoordinator {
     if (!this.options.resolver.prepareOn) return false;
 
     const movingFrom = session.sessionId;
-    const requestedPositionMs = this.snapshot.intent.positionMs;
+    const viewerPositionMs = this.snapshot.intent.positionMs;
+    const leadMs = this.moveLeadMs(endpointId, session, viewerPositionMs, options);
+    const requestedPositionMs = viewerPositionMs + leadMs;
     this.log.info('source-move-start', {
       fromEndpoint: session.endpoint,
       toEndpointId: endpointId,
       sessionId: movingFrom,
-      positionMs: requestedPositionMs,
+      positionMs: viewerPositionMs,
+      leadMs,
+      leadSource: leadMs === 0 ? 'none' : options.leadMs !== undefined ? 'host' : 'estimate',
     });
     this.patchSnapshot({ preparingSource: true, notice: undefined });
     try {
@@ -1590,7 +1623,7 @@ export class PlaybackCoordinator {
       // session on its own clock.
       this.releaseAfterCut.add(movingFrom);
       this.serverSession = moved;
-      this.activateSession(moved, this.snapshot.intent.positionMs, 'continue');
+      this.activateSession(moved, this.snapshot.intent.positionMs, 'continue', leadMs > 0);
       this.log.info('source-move-ready', {
         oldSessionId: movingFrom,
         newSessionId: moved.sessionId,
@@ -1606,6 +1639,37 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ preparingSource: false });
       return false;
     }
+  }
+
+  /**
+   * How far ahead of the viewer a move to this node should ask for.
+   *
+   * Zero unless the player can hold through a lead, and zero when the lead
+   * would reach past the end of the title: there is nothing to ask for there,
+   * and a move near the end is better made at the viewer's position than not
+   * at all. Never remembered — re-read on every move, because a node's start
+   * cost moves with its load.
+   */
+  private moveLeadMs(
+    endpointId: string,
+    session: PlaybackSession,
+    viewerPositionMs: number,
+    options: PlaybackMoveOptions,
+  ): number {
+    if (session.mode === 'direct') return 0;
+    if (this.options.player.holdsThroughLead !== true) {
+      if (options.leadMs !== undefined) {
+        this.log.info('move-lead-ignored', { endpointId, leadMs: options.leadMs, reason: 'player-cannot-hold' });
+      }
+      return 0;
+    }
+    const estimate = this.options.resolver.startCostEstimate?.(endpointId, session);
+    const requested = options.leadMs ?? (estimate === undefined ? 0 : estimate + MOVE_LEAD_MARGIN_MS);
+    const leadMs = Number.isFinite(requested) ? Math.max(0, requested) : 0;
+    if (leadMs === 0) return 0;
+    const durationMs = session.durationMs;
+    if (durationMs > 0 && viewerPositionMs + leadMs >= durationMs) return 0;
+    return leadMs;
   }
 
   /**
@@ -1815,7 +1879,12 @@ export class PlaybackCoordinator {
     }
   }
 
-  private activateSession(session: PlaybackSession, desiredAbsoluteMs: number, transition: PlaybackTransition): void {
+  private activateSession(
+    session: PlaybackSession,
+    desiredAbsoluteMs: number,
+    transition: PlaybackTransition,
+    ahead = false,
+  ): void {
     if (this.disposed) return;
     // Catalogue profiling may already have prepared the reusable player. The
     // session supplies the same facts authoritatively and completes that setup
@@ -1823,7 +1892,16 @@ export class PlaybackCoordinator {
     this.options.player.prepare?.(technicalProfileFromSession(session));
     const activationRevision = ++this.sourceActivationRevision;
     this.releaseObsoleteAlternates(session.sessionId);
-    const localPositionMs = this.activationPosition(session, desiredAbsoluteMs);
+    // A generation asked for ahead of the viewer begins after them, on purpose.
+    // The renegotiation below exists for a viewer who moved *backwards* while a
+    // generation was being negotiated; applied here it would PATCH the lead
+    // away and pay a second full start. So the position goes to the player as
+    // it is -- negative, the viewer that far before this generation's start --
+    // and a player that declared `holdsThroughLead` plays the outgoing source
+    // up to it.
+    const localPositionMs = ahead && session.mode !== 'direct' && desiredAbsoluteMs < Math.max(0, session.seekMs)
+      ? desiredAbsoluteMs - Math.max(0, session.seekMs)
+      : this.activationPosition(session, desiredAbsoluteMs);
 
     if (localPositionMs === undefined) {
       // The user moved behind the generation while it was being prepared. This
@@ -1840,9 +1918,13 @@ export class PlaybackCoordinator {
 
     this.serverSession = session;
     const nextStreamOffsetMs = session.mode === 'direct' ? 0 : Math.max(0, session.seekMs);
+    // Clamped at the generation's start for the one case that goes below it: a
+    // lead, where the host cuts when the viewer *reaches* the start. Presenting
+    // at the position the move began from would pin the readout a whole lead
+    // behind the picture.
     const absoluteStartMs = session.mode === 'direct'
       ? localPositionMs
-      : nextStreamOffsetMs + localPositionMs;
+      : nextStreamOffsetMs + Math.max(0, localPositionMs);
     const startPaused = this.snapshot.intent.paused;
 
     /**

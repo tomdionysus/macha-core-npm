@@ -136,6 +136,18 @@ export type PlaybackHost = unknown;
 export interface Player {
   /** Bind the existing player surface to a presentation host. Must not create a playback session. */
   attach(host: PlaybackHost): void;
+  /**
+   * Whether this player can keep the outgoing source presenting while the
+   * viewer plays up to a generation that starts ahead of them — see the
+   * negative `positionMs` on `play`.
+   *
+   * **Opt-in, and absent means no.** A player that tears its element down on
+   * `play` cannot: handed a generation that starts ahead, it would skip the
+   * viewer forward by the whole lead. So core only asks a node to start ahead
+   * of the viewer for a player that says it can hold, and every other player
+   * gets exactly the move it got before leads existed.
+   */
+  readonly holdsThroughLead?: boolean;
   /** Unbind presentation without changing playback/resource ownership. */
   detachHost?(): void;
   /** Final player destruction. This is resource-destructive. */
@@ -154,6 +166,13 @@ export interface Player {
    * `transition` says whether the viewer asked for this — see
    * `PlaybackTransition`. A host that can replace a source invisibly must only
    * do so for `continue`.
+   *
+   * **`positionMs` is negative only for a player declaring `holdsThroughLead`,
+   * and only on a `continue`.** It then means the viewer is that far *before*
+   * this generation's start, because a move asked the node to begin ahead of
+   * them. Keep presenting the outgoing source, load this one from its own
+   * start, and cut when the viewer reaches it; resolve at the cut as always.
+   * No other player is ever handed a negative position.
    */
   play(
     source: PlaybackSource,

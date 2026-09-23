@@ -3,6 +3,7 @@ import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
+import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
@@ -629,6 +630,87 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
       await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('regenerated', expect.anything()));
       expect(coordinator.getSnapshot().session?.sessionId).toBe('moved');
       expect(player.playCalls.at(-1)?.source.url).toBe('http://b/moved.m3u8');
+      await coordinator.close();
+    });
+  });
+
+  describe('a move that asks the node to start ahead of the viewer', () => {
+    // Measured on the web client 2026-09-23: gbni-1 took 8.5-12.3 s to a first
+    // fragment, and a generation asked for at the viewer's position begins that
+    // far behind them and never catches up at realtime. So a move asks for the
+    // viewer's position plus a lead, and a host that can hold plays the old
+    // source up to the new generation's start.
+    const onA = () => session({ sessionId: 'primary', mode: 'transcode', mediaId: 'macha:one', seekMs: 0, endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+
+    function leading(options: { holds: boolean; estimate?: number; positionMs: number }) {
+      const player = new FakePlayer();
+      player.holdsThroughLead = options.holds;
+      const api = resolver(onA()) as any;
+      api.startCostEstimate = vi.fn(() => options.estimate);
+      api.prepareOn = vi.fn(async (_endpointId: string, _active: PlaybackSession, _media: MediaSummary, _caps: PlaybackCapabilities, seekMs: number) => session({
+        sessionId: 'moved', mode: 'transcode', mediaId: 'macha:one', seekMs,
+        endpoint: { id: 'node-b', baseUrl: 'http://b' },
+        source: { ...onA().source, mediaId: 'macha:one', url: 'http://b/moved.m3u8' },
+      }));
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: options.positionMs });
+      return { player, api, coordinator };
+    }
+
+    it('asks for the viewer position plus the estimate and margin, and hands the player the viewer before the start', async () => {
+      const { player, api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 182_820 });
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+
+      const lead = 12_300 + MOVE_LEAD_MARGIN_MS;
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(182_820 + lead);
+      // Negative: the viewer is a whole lead before this generation begins.
+      expect(player.playCalls.at(-1)?.positionMs).toBe(-lead);
+      expect(player.playCalls.at(-1)?.transition).toBe('continue');
+      // And no renegotiation back to the viewer's position, which would throw
+      // the lead away and pay a second full start on the target.
+      expect(api.update).not.toHaveBeenCalled();
+
+      cut.resolve(true);
+      await vi.waitFor(() => expect(coordinator.getSnapshot().session?.sessionId).toBe('moved'));
+      // The host cut when the viewer reached the generation's start, so that is
+      // where the readout lands, not a lead behind the picture.
+      expect(coordinator.getSnapshot().intent.positionMs).toBe(182_820 + lead);
+      await coordinator.close();
+    });
+
+    it("takes the host's lead over its own estimate", async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b', { leadMs: 20_000 });
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(120_000);
+      await coordinator.close();
+    });
+
+    it('gives a player that cannot hold the move it had before leads existed, whatever it is told', async () => {
+      const { player, api, coordinator } = leading({ holds: false, estimate: 12_300, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b', { leadMs: 20_000 });
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(100_000);
+      expect(player.playCalls.at(-1)?.positionMs).toBeGreaterThanOrEqual(0);
+      await coordinator.close();
+    });
+
+    it('asks for no lead where core has no evidence about that node', async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: undefined, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b');
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(100_000);
+      await coordinator.close();
+    });
+
+    it('asks for no lead that would reach past the end of the title', async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 590_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b');
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(590_000);
       await coordinator.close();
     });
   });

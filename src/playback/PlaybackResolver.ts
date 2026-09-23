@@ -420,6 +420,12 @@ export interface PlaybackResolver {
    * candidate, or would come back in a different mode: a viewer asking for a
    * different node has not asked for a different transform.
    */
+  /**
+   * What starting a generation equivalent to `activeSession` would cost on this
+   * node, in milliseconds, from the resolver's own recent measurements.
+   * Undefined means unknown, never zero. See `EndpointRegistry.generationStartEstimate`.
+   */
+  startCostEstimate?(endpointId: string, activeSession: PlaybackSession): number | undefined;
   prepareOn?(
     endpointId: string,
     activeSession: PlaybackSession,

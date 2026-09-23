@@ -33,6 +33,12 @@ The entry point depends on no test runner — plain classes, usable from Vitest,
 
 It reports that this source is the one now being presented — for a host that tears the old element down, the moment it is dispatched; for a host that prepares a replacement alongside, the moment it cuts. Until it resolves, the core goes on describing the source still playing. Never resolve on buffering completing: that stalls the failover timing that moves a viewer to a healthy node.
 
+### A negative position, and `holdsThroughLead`
+
+A node produces a generation sequentially from where it is asked to start, and a slow one takes seconds to reach a first fragment. So a viewer moved to another node at their own position arrives one start-cost behind the generation, and it never catches up. `moveTo` fixes that by asking the node to start *ahead* of the viewer, by core's own measured estimate for that node or by a lead you pass, and then the old source has to play on until the viewer reaches the new one.
+
+Only a host that can do that should say so. Set `holdsThroughLead: true` on your `Player` if, on a `continue` activation, you can keep the outgoing source presenting and fetching, load the incoming one from its own start, and cut when the viewer reaches it. You will then sometimes get a **negative** `positionMs` on `play()`: the viewer is that far before the generation's start. Resolve at the cut, as always. If you tear your element down on `play()`, leave it unset. You will never be handed a negative position, and a move behaves exactly as it did before leads existed.
+
 ### `localSeekCoverage()` and `seek()` share one coordinate system
 
 Both are source-generation-local: positions within the media the player currently holds, not positions in the title. Platforms disagree about timestamp origins and an HLS manifest may start at an arbitrary PTS, so normalise before exposing ranges. Get this wrong and seeks land in the wrong place, or the coordinator negotiates a new server session for a seek you could have served locally.
