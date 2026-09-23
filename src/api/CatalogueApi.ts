@@ -148,6 +148,12 @@ export interface ArtworkSource {
    * `ArtworkHostPreference.chooseOnce` compares hosts on.
    */
   latencyMs?: number;
+  /**
+   * False when the node behind this URL is in failure cooldown. Absent means
+   * nothing is known, which a single-node API is, and is treated as usable.
+   * `ArtworkHostPreference.order` never promotes a host marked false.
+   */
+  ready?: boolean;
 }
 
 export interface CatalogueApi {

@@ -104,7 +104,7 @@ export class ClusterCatalogueApi implements CatalogueApi {
    */
   artworkUrls(id: string): ArtworkSource[] {
     return this.router.registry.candidates().flatMap(({ endpoint, ready, latencyMs }) => this.api(endpoint).artworkUrls(id)
-      .map((source) => (ready && latencyMs !== undefined ? { ...source, latencyMs } : source)));
+      .map((source) => (ready && latencyMs !== undefined ? { ...source, ready, latencyMs } : { ...source, ready })));
   }
 
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem> {

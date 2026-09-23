@@ -695,6 +695,38 @@ describe('choosing the artwork host by what it costs this viewer', () => {
     expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
   });
 
+  it('never leads with a chosen host while it is in cooldown, and leads with it again once it recovers', () => {
+    const preference = new ArtworkHostPreference(storage());
+    new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR));
+
+    const withNear = (ready: boolean): CatalogueApi => ({
+      ...catalogue({}),
+      artworkUrls: (id) => [
+        { url: `${FAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: true, latencyMs: 90 },
+        { url: `${NEAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready },
+      ],
+    });
+    expect(leadHost(new MachaMediaApi(withNear(false), preference).artworkUrls(signedBy(FAR)))).toBe(FAR);
+    // Kept, not forgotten: its cache is warm the moment it is back.
+    expect(leadHost(new MachaMediaApi(withNear(true), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('moves a stored preference off a host that is down at the next run', () => {
+    const shared = storage();
+    const before = new ArtworkHostPreference(shared);
+    before.noteLoaded(`${NEAR}/api/v1/catalogue/artwork/sha-0`);
+    const restarted = new ArtworkHostPreference(shared);
+    const api = new MachaMediaApi({
+      ...catalogue({}),
+      artworkUrls: (id) => [
+        { url: `${FAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: true, latencyMs: 90 },
+        { url: `${NEAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: false },
+      ],
+    }, restarted);
+    expect(leadHost(api.artworkUrls(signedBy(NEAR)))).toBe(FAR);
+    expect(restarted.get()).toBe(FAR);
+  });
+
   it('keeps following success when it chose not to switch', () => {
     // Nothing deliberate to protect, so the old behaviour stands.
     const preference = new ArtworkHostPreference(storage());

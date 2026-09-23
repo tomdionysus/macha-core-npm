@@ -60,12 +60,15 @@ export function artworkHostOf(url: string): string | undefined {
  * is needed. The goal is warmth, not determinism. Keep asking whoever last
  * answered, because that is whose bytes are already here.
  *
- * **It needs no failure handling**, which is what makes it safe. It orders
- * candidates the cluster already offered rather than choosing among nodes, so
- * a host that is down, cooling off, or gone from the registry contributes no
- * candidate and the ordinary order and ordinary failover apply untouched.
- * Preference follows success only: a single artwork 404 never moves it, and
- * nothing here can make an image fail that would otherwise have loaded.
+ * **It never puts an unavailable node first.** It orders candidates the
+ * cluster already offered. A host gone from the registry contributes none, and
+ * a host in failure cooldown is still offered but marked `ready: false`, and
+ * `order` does not promote it. This comment used to say a cooling host
+ * contributed no candidate, and that was wrong: `candidates()` returns every
+ * configured node. So while the preferred host is down, the cluster's own
+ * ranking leads, and the preference is kept, not forgotten, so the host leads
+ * again, with its warm cache, once it recovers. Preference follows success
+ * only: a single artwork 404 never moves it.
  */
 /**
  * How much faster another node must measure before artwork moves to it: the
@@ -197,9 +200,12 @@ export class ArtworkHostPreference {
    * cluster's own ranking, so failover order is unchanged for every candidate
    * this does not promote.
    */
-  order<T extends { url: string }>(sources: readonly T[]): T[] {
+  order<T extends { url: string; ready?: boolean }>(sources: readonly T[]): T[] {
     const host = this.get();
     if (!host) return [...sources];
+    // A host in cooldown is not led with, however preferred. Checked on every
+    // call, so it leads again as soon as it is ready.
+    if (sources.some((source) => artworkHostOf(source.url) === host && source.ready === false)) return [...sources];
     const preferred: T[] = [];
     const rest: T[] = [];
     for (const source of sources) {

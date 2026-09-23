@@ -19,6 +19,9 @@ describe('ClusterCatalogueApi', () => {
     const byHost = Object.fromEntries(new ClusterCatalogueApi(registry).artworkUrls('sha')
       .map((source) => [source.url.split('/api/')[0], source.latencyMs]));
     expect(byHost).toEqual({ 'http://a': 90, 'http://b': 3, 'http://c': undefined });
+    const ready = Object.fromEntries(new ClusterCatalogueApi(registry).artworkUrls('sha')
+      .map((source) => [source.url.split('/api/')[0], source.ready]));
+    expect(ready).toEqual({ 'http://a': true, 'http://b': true, 'http://c': false });
   });
 
   it('retries a safe read on the next bootstrap endpoint and makes it sticky', async () => {
