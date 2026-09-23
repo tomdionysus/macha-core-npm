@@ -577,7 +577,7 @@ describe('search hits and their ancestry', () => {
       album: { id: 'album-1', title: 'Album', year: 1999 },
       artist: { id: 'artist-1', title: 'Artist' },
     }));
-    expect(hit.subtitle).toBe('Track 9');
+    expect(hit.subtitle).toBe('Artist - Album (1999)');
   });
 });
 

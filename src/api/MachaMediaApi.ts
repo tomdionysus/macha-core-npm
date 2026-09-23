@@ -20,6 +20,7 @@ import { abortError } from '../errors.js';
 import { episodeSubtitle } from '../episodeLabel.js';
 import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
 import { joinSubtitle } from '../subtitleJoin.js';
+import { trackSubtitle } from '../musicLabel.js';
 import type { MediaSearchOptions } from './MediaApi.js';
 import { isSearchable, searchTerms } from '../searchTerms.js';
 
@@ -246,7 +247,7 @@ export class MachaMediaApi implements MediaApi {
    * - an episode gets `playbackContext` and a subtitle such as "Firefly · Season 1
    *   Episode 1", per `episodeLabel`;
    * - a season gets `showId` and a subtitle such as "Firefly · Season 1";
-   * - a track gets `musicContext`.
+   * - a track gets `musicContext` and a subtitle such as "Björk - Homogenic (1997)".
    * Ancestry is the search's own business: a detail page's episodes keep
    * "S01E01", since the series is already on screen there.
    *
@@ -415,7 +416,10 @@ export class MachaMediaApi implements MediaApi {
       const season = this.seasonSummary(item, parent.id);
       return { ...season, subtitle: joinSubtitle(parent.title, season.subtitle ?? season.title) };
     }
-    if (item.kind === 'track') return this.track(item, known);
+    if (item.kind === 'track') {
+      const track = this.track(item, known);
+      return { ...track, subtitle: trackSubtitle(track) ?? track.subtitle };
+    }
     return this.media(item);
   }
 
