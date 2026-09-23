@@ -966,7 +966,7 @@ Meanwhile a host lead measured end to end wins wherever the host has one, and th
 **When it ships:** hard-cut `submitMagnet` to return `{ id, nodeId }`, make `TorrentJob.node_id` required if ask 1 lands, and surface the `409`'s stated code and target through the existing accessors. Nothing else moves.
 
 ### ~~An unclassified fatal charges a node whose session was simply reaped~~ — BUILT on `develop` in `2bcce57`, unreleased
-**Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
+**Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. **Tried 2026-09-23 and not exercisable, for a reason that is the server's:** a direct session DELETEd with 204 (and listed on no node afterwards) went on streaming for 8 minutes, including after a seek two minutes past the buffered edge. No fatal ever reached the player, so there was nothing to classify. It is with the server, and matches the earlier report of a deleted macnessa session streaming for 2 min 28 s. Next try: a transcode session. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
 
 An unclassified terminal failure bound for failover now asks `sessionAlive()` first, the same recovery a `not-found` takes:
 - gone: regenerate on the same node, nothing charged;
@@ -977,7 +977,12 @@ The degradation channel is unchanged. **The liveness GET had no timeout at all**
 **The replacement for the rejected one-byte probe, `probeSourceReadiness`, is this.** It asks the session API instead of the stream.
 
 ### ~~Previous and next episode, across season boundaries~~ — BUILT on `develop` in `8dd1fcf`, unreleased
-Tom's business P0, asked for by the Android TV client: every episode shows previous and next in the player, and back navigation goes episode → season → series → TV Shows. `episodeNeighbours(api, episode, signal)` works out the neighbours from `details()` alone, crossing seasons and stepping over empty ones. It returns the show and season for the back stack. **Specials (season 0) are a chain of their own**, core's call and stated to the client. It never throws for a broken hierarchy. **Waiting on:** the TV client to wire its buttons; the web client has nothing like it and will want it.
+Tom's business P0, asked for by the Android TV client: every episode shows previous and next in the player, and back navigation goes episode → season → series → TV Shows. `episodeNeighbours(api, episode, signal)` works out the neighbours from `details()` alone, crossing seasons and stepping over empty ones. It returns the show and season for the back stack. **Specials (season 0) are a chain of their own**, core's call and stated to the client. It never throws for a broken hierarchy. **Verified on the Android TV set 2026-09-23 against `3f77ef4`**:
+- Resumed from Continue Watching (Bushwhacked S01E02): both neighbours present, and Next went to S01E03.
+- From the season page, S01E01: previous greyed, next present.
+- Back walked season → series → TV Shows from the returned show and season, with no errors.
+
+**Waiting on:** the web client, which has nothing like it and will want it.
 
 ### ~~A player that cannot ride a hold needed a media probe~~ — BUILT on `develop` in `3e611b8`, unreleased
 Tom ruled zero-byte checks out, the web client's own included. **The standby preflight's `bytes=0-65535` read stays** — Tom: *"it is reasonable to request initial media from a node you're about to failover to."* The web client's native-HLS path (Samsung) waited for a `bytes=0-0` 206 on the first segment before handing over a source. That wait is replaced by the node's own statement: `production.produced_ms > 0` on the session route. **Checked in the server at `eea4795`:** `produced_media` advances only in `publish_segment`, which publishes whole segments with init first, and create, PATCH and GET all carry `production` through `session_json`.
