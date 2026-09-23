@@ -465,3 +465,97 @@ describe('keeping an artwork URL byte-identical across an endpoint swap', () => 
     expect(api.artworkUrls(ref('http://proxy/node-a'))[0].url).toBe(artworkPath('http://proxy/node-b'));
   });
 });
+
+/**
+ * Search hits carry the ancestry a detail page would give them. Asked for by
+ * the Android TV client on Tom's instruction: an episode found by search said
+ * "S01E02" and not which series.
+ */
+describe('search hits and their ancestry', () => {
+  class SearchCatalogue extends FakeCatalogue {
+    readonly fetched: string[] = [];
+    constructor(private readonly hits: CatalogueItem[], private readonly failing = new Set<string>()) { super(); }
+    override search(): Promise<CatalogueItem[]> { return Promise.resolve(this.hits); }
+    override get(id: string): Promise<CatalogueItem> {
+      this.fetched.push(id);
+      if (this.failing.has(id)) return Promise.reject(new Error('unavailable'));
+      return super.get(id);
+    }
+  }
+
+  const EPISODE_3 = catalogueItem('episode-3', 'episode', { parent_id: 'season-1', season_number: 1, episode_number: 3, title: 'Third' });
+  const SEASON = catalogueItem('season-1', 'season', { parent_id: 'show', season_number: 1, title: 'Season 1' });
+  const TRACK = catalogueItem('track-9', 'track', { parent_id: 'album-1', track_number: 9, title: 'Ninth' });
+
+  it('names the series on an episode, with the same context a season page gives', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
+    const [hit] = await api.search('episode');
+    expect(hit.subtitle).toBe('Show · S01E02');
+    expect(hit.playbackContext).toEqual({
+      series: { id: 'show', title: 'Show' },
+      season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
+    });
+  });
+
+  it('names the series on a season', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([SEASON]));
+    const [hit] = await api.search('season');
+    expect(hit.subtitle).toBe('Show · Season 1');
+    expect((hit as { showId?: string }).showId).toBe('show');
+  });
+
+  it('fetches each ancestor once, and none that the search already returned', async () => {
+    const show = catalogueItem('show', 'show', { title: 'Show' });
+    const catalogue = new SearchCatalogue([show, EPISODE_1, EPISODE_3]);
+    const hits = await new MachaMediaApi(catalogue).search('show');
+    expect(catalogue.fetched).toEqual(['season-1']);
+    expect(hits.map((hit) => hit.subtitle)).toEqual([undefined, 'Show · S01E02', 'Show · S01E03']);
+  });
+
+  it('returns the hit as it was when an ancestor will not load, rather than failing the search', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1, SEASON], new Set(['show'])));
+    const [episode, season] = await api.search('episode');
+    expect(episode.subtitle).toBe('S01E02');
+    expect(episode.playbackContext).toBeUndefined();
+    expect(season.subtitle).toBe('Season 1');
+  });
+
+  it('gives a track its album and artist', async () => {
+    const [hit] = await new MachaMediaApi(new SearchCatalogue([TRACK])).search('ninth');
+    expect(hit.musicContext).toEqual(expect.objectContaining({
+      album: { id: 'album-1', title: 'Album' },
+      artist: { id: 'artist-1', title: 'Artist' },
+    }));
+    expect(hit.subtitle).toBe('Track 9');
+  });
+});
+
+/**
+ * `musicContext` was declared "resolved by the media API" from 0.6.0 and
+ * nothing ever set it, so the phone client's Now Playing, queue and downloads
+ * never named an artist or album. Found 2026-09-24 while building search
+ * ancestry.
+ */
+describe('tracks name their album and artist', () => {
+  it('on an album page', async () => {
+    const details = await new MachaMediaApi(new FakeCatalogue()).details('album-1');
+    if (details.kind !== 'album' || !('tracks' in details)) throw new Error('expected album details');
+    expect(details.tracks.map((track) => track.musicContext)).toEqual([
+      { album: { id: 'album-1', title: 'Album' }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+      { album: { id: 'album-1', title: 'Album' }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+    ]);
+  });
+
+  it('in the whole-library track list', async () => {
+    class Listing extends FakeCatalogue {
+      override list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
+        if (kind === 'album' && parent === undefined) return Promise.resolve([catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' })]);
+        if (kind === 'artist' && parent === undefined) return Promise.resolve([catalogueItem('artist-1', 'artist', { title: 'Artist' })]);
+        return super.list(kind, parent);
+      }
+    }
+    const [track] = await new MachaMediaApi(new Listing()).tracks();
+    expect(track.musicContext?.album.title).toBe('Album');
+    expect(track.musicContext?.artist?.title).toBe('Artist');
+  });
+});

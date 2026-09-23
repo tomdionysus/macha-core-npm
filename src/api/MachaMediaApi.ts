@@ -9,6 +9,7 @@ import type {
   LibraryHome,
   MediaDetails,
   MediaSummary,
+  MusicHierarchyContext,
   SeasonDetails,
   SeasonSummary,
   ShowDetails,
@@ -138,8 +139,22 @@ export class MachaMediaApi implements MediaApi {
     return (await this.catalogue.list('album', undefined, signal)).map((item) => this.media(item));
   }
 
+  /**
+   * Every track, each naming its album and artist.
+   *
+   * Two more list reads, albums and artists, rather than a read per album:
+   * the whole library is being listed anyway. If either fails, the tracks
+   * still come back, without the context that read would have supplied.
+   */
   async tracks(signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('track', undefined, signal)).map((item) => this.media(item));
+    const [tracks, albums, artists] = await Promise.all([
+      this.catalogue.list('track', undefined, signal),
+      this.catalogue.list('album', undefined, signal).catch(() => [] as CatalogueItem[]),
+      this.catalogue.list('artist', undefined, signal).catch(() => [] as CatalogueItem[]),
+    ]);
+    if (signal?.aborted) throw abortReason(signal);
+    const known = new Map([...albums, ...artists].map((item) => [item.id, item]));
+    return tracks.map((item) => this.track(item, known));
   }
 
   async details(id: string, signal?: AbortSignal): Promise<MediaDetails> {
@@ -189,8 +204,14 @@ export class MachaMediaApi implements MediaApi {
     }
 
     if (item.kind === 'album') {
-      const tracks = (await this.catalogue.list('track', item.id, signal))
-        .map((track) => this.media(track))
+      const [trackItems, artist] = await Promise.all([
+        this.catalogue.list('track', item.id, signal),
+        item.parent_id ? this.catalogue.get(item.parent_id, signal).catch(() => undefined) : undefined,
+      ]);
+      if (signal?.aborted) throw abortReason(signal);
+      const context = this.musicContext(item, artist);
+      const tracks = trackItems
+        .map((track) => ({ ...this.media(track), musicContext: context }))
         .sort((a, b) => (a.discNumber ?? 1) - (b.discNumber ?? 1) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0));
       return {
         ...this.media(item),
@@ -202,8 +223,34 @@ export class MachaMediaApi implements MediaApi {
     return this.media(item);
   }
 
+  /**
+   * Search hits, each carrying its ancestry the way a detail page would.
+   *
+   * The catalogue search returns bare items holding only `parent_id`, so an
+   * episode found by search could say "S01E01" and not which series, and every
+   * client would otherwise walk the parents itself. Here:
+   * - an episode gets `playbackContext` and a subtitle such as "Firefly · S01E01";
+   * - a season gets `showId` and a subtitle such as "Firefly · Season 1";
+   * - a track gets `musicContext`.
+   * Ancestry is the search's own business: a detail page's episodes keep
+   * "S01E01", since the series is already on screen there.
+   *
+   * Each distinct parent is fetched once, in parallel, and a hit that is
+   * itself an ancestor is not fetched at all. A search for a show typically
+   * returns the show too. A parent that fails to load leaves its hits as they
+   * were, without context, rather than failing the search.
+   */
   async search(query: string, signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.search(query, 50, signal)).map((item) => this.media(item));
+    const hits = await this.catalogue.search(query, 50, signal);
+    const known = new Map(hits.map((item) => [item.id, item]));
+    const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track');
+    await this.loadAncestors(known, withAncestry.map((item) => item.parent_id), signal);
+    // One level further for the two kinds whose parent has a parent worth naming.
+    const grandparents = withAncestry
+      .filter((item) => item.kind === 'episode' || item.kind === 'track')
+      .map((item) => (item.parent_id ? known.get(item.parent_id)?.parent_id : undefined));
+    await this.loadAncestors(known, grandparents, signal);
+    return hits.map((item) => this.searchHit(item, known));
   }
 
   artworkUrls(ref: ArtworkRef): ArtworkSource[] {
@@ -313,6 +360,52 @@ export class MachaMediaApi implements MediaApi {
     };
   }
 
+  private async loadAncestors(
+    known: Map<string, CatalogueItem>,
+    ids: readonly (string | null | undefined)[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const wanted = [...new Set(ids.filter((id): id is string => !!id && !known.has(id)))];
+    const loaded = await Promise.allSettled(wanted.map((id) => this.catalogue.get(id, signal)));
+    if (signal?.aborted) throw abortReason(signal);
+    for (const result of loaded) {
+      if (result.status === 'fulfilled') known.set(result.value.id, result.value);
+    }
+  }
+
+  private searchHit(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const parent = item.parent_id ? known.get(item.parent_id) : undefined;
+    if (item.kind === 'episode' && parent?.kind === 'season') {
+      const show = parent.parent_id ? known.get(parent.parent_id) : undefined;
+      if (show?.kind !== 'show') return this.media(item);
+      const episode = this.episode(item, parent, show);
+      return { ...episode, subtitle: joinSubtitle(show.title, episode.subtitle) };
+    }
+    if (item.kind === 'season' && parent?.kind === 'show') {
+      const season = this.seasonSummary(item, parent.id);
+      return { ...season, subtitle: joinSubtitle(parent.title, season.subtitle ?? season.title) };
+    }
+    if (item.kind === 'track') return this.track(item, known);
+    return this.media(item);
+  }
+
+  private track(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const album = item.parent_id ? known.get(item.parent_id) : undefined;
+    if (album?.kind !== 'album') return this.media(item);
+    const artist = album.parent_id ? known.get(album.parent_id) : undefined;
+    return { ...this.media(item), musicContext: this.musicContext(album, artist?.kind === 'artist' ? artist : undefined) };
+  }
+
+  /** The album's own poster, for a track that carries no artwork of its own. */
+  private musicContext(album: CatalogueItem, artist: CatalogueItem | undefined): MusicHierarchyContext {
+    const artwork = this.mapArtwork(album.effective_artwork ?? album.artwork);
+    return {
+      album: { id: album.id, title: album.title },
+      artist: artist ? { id: artist.id, title: artist.title } : undefined,
+      artwork: artwork?.poster ?? artwork?.thumbnail,
+    };
+  }
+
   private parentId(item: CatalogueItem): string {
     if (!item.parent_id) throw new Error(`Catalogue ${item.kind} ${item.id} has no parent.`);
     return item.parent_id;
@@ -379,4 +472,9 @@ export class MachaMediaApi implements MediaApi {
     }
     return undefined;
   }
+}
+
+/** "Firefly · S01E01", or the series alone when the item has nothing to add. */
+function joinSubtitle(ancestor: string, own: string | undefined): string {
+  return own ? `${ancestor} · ${own}` : ancestor;
 }
