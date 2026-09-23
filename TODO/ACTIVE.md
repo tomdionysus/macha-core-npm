@@ -979,6 +979,13 @@ The degradation channel is unchanged. **The liveness GET had no timeout at all**
 ### ~~Previous and next episode, across season boundaries~~ — BUILT on `develop` in `8dd1fcf`, unreleased
 Tom's business P0, asked for by the Android TV client: every episode shows previous and next in the player, and back navigation goes episode → season → series → TV Shows. `episodeNeighbours(api, episode, signal)` works out the neighbours from `details()` alone, crossing seasons and stepping over empty ones. It returns the show and season for the back stack. **Specials (season 0) are a chain of their own**, core's call and stated to the client. It never throws for a broken hierarchy. **Waiting on:** the TV client to wire its buttons; the web client has nothing like it and will want it.
 
+### ~~A player that cannot ride a hold needed a media probe~~ — BUILT on `develop` in `3e611b8`, unreleased
+Tom ruled zero-byte checks out, the web client's own included. **The standby preflight's `bytes=0-65535` read stays** — Tom: *"it is reasonable to request initial media from a node you're about to failover to."* The web client's native-HLS path (Samsung) waited for a `bytes=0-0` 206 on the first segment before handing over a source. That wait is replaced by the node's own statement: `production.produced_ms > 0` on the session route. **Checked in the server at `eea4795`:** `produced_media` advances only in `publish_segment`, which publishes whole segments with init first, and create, PATCH and GET all carry `production` through `session_json`.
+- A player declaring `needsProducedSource` gets a transcode or remux source only once `awaitProduced` says so: reads every `PRODUCED_POLL_INTERVAL_MS` (500 ms, client policy documented as a guess), each bounded at 8 s, the whole wait bounded by the node's attempt budget.
+- No production reading means hand over as before. A 404 means not-found and the reaped-session recovery.
+
+**Waiting on:** the web client to declare it on the native path, delete `probeFirstFragment`, and show a Samsung start.
+
 ### Continue Watching owns the store but not the cadence
 **Waiting on:** core. **Has a consumer waiting with an implementation to delete, not a speculative ask.**
 
