@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { albumLabel, trackSubtitle } from './musicLabel.js';
+import { albumLabel, trackNumberLabel, trackSubtitle } from './musicLabel.js';
 import type { MediaSummary } from './types.js';
 
 const track = (musicContext?: MediaSummary['musicContext']): MediaSummary =>
@@ -21,5 +21,18 @@ describe('trackSubtitle', () => {
   it('gives the album alone with no artist, and nothing with no context', () => {
     expect(trackSubtitle(track({ album: { id: 'a', title: 'Homogenic' } }))).toBe('Homogenic');
     expect(trackSubtitle(track())).toBeUndefined();
+  });
+});
+
+describe('trackNumberLabel', () => {
+  it('names the disc only after the first', () => {
+    expect(trackNumberLabel({ trackNumber: 9 })).toBe('Track 9');
+    expect(trackNumberLabel({ discNumber: 1, trackNumber: 9 })).toBe('Track 9');
+    expect(trackNumberLabel({ discNumber: 2, trackNumber: 3 })).toBe('Disc 2 · Track 3');
+  });
+
+  it('says nothing without a track number', () => {
+    expect(trackNumberLabel({ discNumber: 2 })).toBeUndefined();
+    expect(trackNumberLabel({})).toBeUndefined();
   });
 });

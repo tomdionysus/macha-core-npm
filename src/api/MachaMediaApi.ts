@@ -20,7 +20,7 @@ import { abortError } from '../errors.js';
 import { episodeSubtitle } from '../episodeLabel.js';
 import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
 import { joinSubtitle } from '../subtitleJoin.js';
-import { trackSubtitle } from '../musicLabel.js';
+import { trackNumberLabel, trackSubtitle } from '../musicLabel.js';
 import type { MediaSearchOptions } from './MediaApi.js';
 import { isSearchable, searchTerms } from '../searchTerms.js';
 
@@ -499,10 +499,8 @@ export class MachaMediaApi implements MediaApi {
       return `Episode ${item.episode_number}`;
     }
     if (item.kind === 'season' && item.season_number !== null) return `Season ${item.season_number}`;
-    if (item.kind === 'track' && item.track_number !== null) {
-      return item.disc_number && item.disc_number > 1
-        ? `Disc ${item.disc_number} · Track ${item.track_number}`
-        : `Track ${item.track_number}`;
+    if (item.kind === 'track') {
+      return trackNumberLabel({ discNumber: optionalNumber(item.disc_number), trackNumber: optionalNumber(item.track_number) });
     }
     return undefined;
   }
