@@ -17,6 +17,7 @@ import type {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
+import { episodeLabel } from '../episodeLabel.js';
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError('Artwork consumer cancelled.');
@@ -229,7 +230,8 @@ export class MachaMediaApi implements MediaApi {
    * The catalogue search returns bare items holding only `parent_id`, so an
    * episode found by search could say "S01E01" and not which series, and every
    * client would otherwise walk the parents itself. Here:
-   * - an episode gets `playbackContext` and a subtitle such as "Firefly · S01E01";
+   * - an episode gets `playbackContext` and a subtitle such as "Firefly · Season 1
+   *   Episode 1", per `episodeLabel`;
    * - a season gets `showId` and a subtitle such as "Firefly · Season 1";
    * - a track gets `musicContext`.
    * Ancestry is the search's own business: a detail page's episodes keep
@@ -379,7 +381,7 @@ export class MachaMediaApi implements MediaApi {
       const show = parent.parent_id ? known.get(parent.parent_id) : undefined;
       if (show?.kind !== 'show') return this.media(item);
       const episode = this.episode(item, parent, show);
-      return { ...episode, subtitle: joinSubtitle(show.title, episode.subtitle) };
+      return { ...episode, subtitle: joinSubtitle(show.title, episodeLabel(episode) ?? episode.subtitle) };
     }
     if (item.kind === 'season' && parent?.kind === 'show') {
       const season = this.seasonSummary(item, parent.id);
@@ -474,7 +476,7 @@ export class MachaMediaApi implements MediaApi {
   }
 }
 
-/** "Firefly · S01E01", or the series alone when the item has nothing to add. */
+/** "Firefly · Season 1 Episode 1", or the series alone when the item has nothing to add. */
 function joinSubtitle(ancestor: string, own: string | undefined): string {
   return own ? `${ancestor} · ${own}` : ancestor;
 }

@@ -490,7 +490,7 @@ describe('search hits and their ancestry', () => {
   it('names the series on an episode, with the same context a season page gives', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
     const [hit] = await api.search('episode');
-    expect(hit.subtitle).toBe('Show · S01E02');
+    expect(hit.subtitle).toBe('Show · Season 1 Episode 2');
     expect(hit.playbackContext).toEqual({
       series: { id: 'show', title: 'Show' },
       season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
@@ -509,7 +509,7 @@ describe('search hits and their ancestry', () => {
     const catalogue = new SearchCatalogue([show, EPISODE_1, EPISODE_3]);
     const hits = await new MachaMediaApi(catalogue).search('show');
     expect(catalogue.fetched).toEqual(['season-1']);
-    expect(hits.map((hit) => hit.subtitle)).toEqual([undefined, 'Show · S01E02', 'Show · S01E03']);
+    expect(hits.map((hit) => hit.subtitle)).toEqual([undefined, 'Show · Season 1 Episode 2', 'Show · Season 1 Episode 3']);
   });
 
   it('returns the hit as it was when an ancestor will not load, rather than failing the search', async () => {
