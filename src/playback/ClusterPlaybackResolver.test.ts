@@ -55,60 +55,6 @@ function withSessionCloses(fetchMock: ReturnType<typeof vi.fn>): ReturnType<type
 describe('ClusterPlaybackResolver', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  describe('measuring what a generation start costs on each node', () => {
-    const remux = () => ({
-      ...wireSession('session-b'),
-      mode: 'remux',
-      stream: { url: '/api/v1/playback/sessions/session-b/stream/t/1/index.m3u8', mime_type: 'application/vnd.apple.mpegurl', subtitle_url: null },
-    });
-    const readyNode = () => vi.fn(async (url: string) => url.endsWith('.m3u8')
-      ? new Response('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.m4s\n#EXT-X-ENDLIST\n', { status: 200 })
-      : new Response(new Uint8Array([0]), { status: 206 }));
-
-    it('records the start of every generation it creates, per node and kind, from its own probe', async () => {
-      const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(remux()), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-      vi.stubGlobal('fetch', withSessionCloses(fetchMock));
-      const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
-      const probe = readyNode();
-      const resolver = new ClusterPlaybackResolver(registry, undefined, undefined, probe);
-
-      const session = await resolver.resolve(media, capabilities, undefined, { mode: 'remux' });
-
-      await vi.waitFor(() => expect(registry.generationStartEstimate('http://b', 'remux')).toBeDefined());
-      expect(resolver.startCostEstimate('http://b', session)).toBe(registry.generationStartEstimate('http://b', 'remux'));
-      // Measured on the probe fetch, never on the API's.
-      expect(probe).toHaveBeenCalled();
-    });
-
-    it('records a relocating seek, which restarts the pipeline, and not a change that does not', async () => {
-      const created = () => new Response(JSON.stringify(remux()), { status: 201, headers: { 'Content-Type': 'application/json' } });
-      const patched = () => new Response(JSON.stringify(remux()), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      const fetchMock = vi.fn().mockResolvedValueOnce(created()).mockResolvedValueOnce(patched()).mockResolvedValueOnce(patched());
-      vi.stubGlobal('fetch', withSessionCloses(fetchMock));
-      const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
-      const recorded = vi.spyOn(registry, 'recordGenerationStart');
-      const resolver = new ClusterPlaybackResolver(registry, undefined, undefined, readyNode());
-      const session = await resolver.resolve(media, capabilities, undefined, { mode: 'remux' });
-      await vi.waitFor(() => expect(recorded).toHaveBeenCalledTimes(1));
-
-      await resolver.update(session.sessionId, { preferences: { subtitleStream: 2 } });
-      await resolver.update(session.sessionId, { seekMs: 90_000 });
-
-      await vi.waitFor(() => expect(recorded).toHaveBeenCalledTimes(2));
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(recorded).toHaveBeenCalledTimes(2);
-    });
-
-    it('measures nothing without a probe fetch, so no estimate can ever exist', async () => {
-      const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(remux()), { status: 201, headers: { 'Content-Type': 'application/json' } }));
-      vi.stubGlobal('fetch', withSessionCloses(fetchMock));
-      const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
-      const session = await new ClusterPlaybackResolver(registry).resolve(media, capabilities, undefined, { mode: 'remux' });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(registry.generationStartEstimate('http://b', 'remux')).toBeUndefined();
-      expect(session.mode).toBe('remux');
-    });
-  });
 
   it('hands the host the deadlines of the node that actually served the session', async () => {
     const fetchMock = vi.fn()

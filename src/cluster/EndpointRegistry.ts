@@ -797,9 +797,7 @@ export class EndpointRegistry {
    * from the URL it was fetched from.
    *
    * **This is the seam for bytes core cannot see.** Core records its own JSON
-   * reads automatically; it never fetches media bytes — its one request to a
-   * stream route is a `bytes=0-0` readiness probe for start costs, which moves
-   * none and is not a transfer. The web client's Direct Play
+   * reads automatically; it never fetches media. The web client's Direct Play
    * read-ahead worker does, and until it fed those bytes in, its throughput
    * record described only JSON — a node serving nothing but media had no
    * evidence against it and the client spent an afternoon streaming from its
@@ -860,13 +858,13 @@ export class EndpointRegistry {
   }
 
   /**
-   * Record how long a generation start took on this node, measured by core from
-   * the request to the first fragment the node would serve.
+   * Record how long a generation start took on this node.
    *
-   * **Evidence, not configuration.** No node states this, and Tom ruled on
-   * 2026-09-23 that none will: estimating a start is the client's, and core is
-   * the client that every host shares. Anything non-finite or negative is
-   * refused rather than stored, because it would become a lead.
+   * **Nothing feeds this yet.** Core measured it with a `bytes=0-0` readiness
+   * probe until Tom ruled that out on 2026-09-23; where the figure comes from
+   * instead is with the server. Kept because it is where that figure lands and
+   * what `moveTo`'s estimate reads. Anything non-finite or negative is refused
+   * rather than stored, because it would become a lead.
    */
   recordGenerationStart(endpointIdValue: string, kind: GenerationStartKind, ms: number): void {
     if (!Number.isFinite(ms) || ms < 0) return;

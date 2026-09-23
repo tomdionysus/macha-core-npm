@@ -1,6 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
-import { generationStartKind, measureGenerationStart } from './generationStart.js';
-import type { HlsWalkFetch } from './hlsWalk.js';
+import { generationStartKind } from './generationStart.js';
 import {
   endpointFailure,
   isAccountSessionLimit,
@@ -222,13 +221,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
      * test drive the abandonment path without waiting out a real budget.
      */
     private readonly generationAttemptTimeoutMs = generationAttemptBudgetMs(),
-    /**
-     * The fetch core measures generation starts with, by probing readiness on
-     * the first fragment. **Opt-in:** absent, nothing is measured and no
-     * estimate ever exists, so a move behaves as it did before estimates did.
-     * `createMachaServices` supplies the platform's.
-     */
-    private readonly readinessFetch?: HlsWalkFetch,
   ) {
     this.registry = routerOrRegistry instanceof ClusterEndpointRouter
       ? routerOrRegistry.registry
@@ -583,28 +575,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     return kind ? this.registry.generationStartEstimate(endpointId, kind) : undefined;
   }
 
-  /**
-   * Measure this start in the background, and keep it only if it measured.
-   *
-   * Never awaited: this rides on a viewer's admission and must not delay it.
-   * Bounded by the node's own attempt budget, so a node that never produces
-   * leaves no sample rather than a large one.
-   */
-  private sampleGenerationStart(endpointId: string, session: PlaybackSession, startedAt: number): void {
-    const kind = generationStartKind(session);
-    if (!kind || !this.readinessFetch) return;
-    void measureGenerationStart(session.source, {
-      fetch: this.readinessFetch,
-      startedAt,
-      budgetMs: generationAttemptBudgetMs(this.registry.playbackBudgets(endpointId)),
-      now: () => machaHost().now(),
-    }).then((ms) => {
-      if (ms === undefined) return;
-      this.registry.recordGenerationStart(endpointId, kind, ms);
-      this.log.debug('generation-start-measured', { endpointId, kind, ms: Math.round(ms) });
-    }, () => undefined);
-  }
-
   async prepareOn(
     endpointId: string,
     activeSession: PlaybackSession,
@@ -888,7 +858,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     const deadlineMs = attemptTimeoutMs === undefined
       ? undefined
       : (stated ? generationAttemptBudgetMs(stated) : attemptTimeoutMs);
-    const startedAt = machaHost().now();
     const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
     const session = deadlineMs
       ? await awaitWithEndpointDeadline(
@@ -913,7 +882,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     const nodeSessionId = session.sessionId;
     session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
     this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
-    this.sampleGenerationStart(endpoint.id, session, startedAt);
     if (preferOnSuccess) this.registry.recordSuccess(endpoint.id);
     else this.registry.recordProbeSuccess(endpoint.id);
     // This node is answering again. Anything its close ladder gave up on is
@@ -927,16 +895,12 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     const owned = this.sessions.get(sessionId);
     if (!owned) throw unknownGeneration(sessionId);
     try {
-      const startedAt = machaHost().now();
       const session = await owned.resolver.update(owned.nodeSessionId, update, signal);
       const nodeSessionId = session.sessionId;
       session.sessionId = sessionId;
       session.endpoint = { id: owned.endpoint.id, baseUrl: owned.endpoint.baseUrl };
       owned.nodeSessionId = nodeSessionId;
       this.registry.recordSuccess(owned.endpoint.id);
-      // A relocating PATCH starts the pipeline again from the new position,
-      // which is the start a move pays for. A subtitle change does not.
-      if (update.seekMs !== undefined) this.sampleGenerationStart(owned.endpoint.id, session, startedAt);
       return session;
     } catch (error) {
       // Superseded client intent is not evidence that the owning node failed.
