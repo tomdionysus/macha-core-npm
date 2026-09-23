@@ -54,6 +54,7 @@ export * from './api/ClusterManageApi.js';
 export * from './api/ClusterServerApi.js';
 export * from './api/ClusterStatusApi.js';
 export * from './api/ClusterStatusRouter.js';
+export * from './api/episodeNeighbours.js';
 export * from './api/errorEnvelope.js';
 export * from './api/httpCompat.js';
 export * from './api/MachaAcquisitionApi.js';
