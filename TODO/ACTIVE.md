@@ -53,7 +53,11 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - Server text passes through untouched.
 - All three clients were sent the full replacement list.
 
-Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Sorting stays in core** (Tom, asked directly, 2026-09-24): it is behaviour, not text. That covers the sort tables, `orderMedia`, the title, year and recent orderings, the alphabet index keys, and the search-word rules. The server relayed "clients are responsible for sorting and presentation"; that ruling concerns the server providing no index key. `formatPlaybackTime` is gone, and the alphabet index's catch-all key is `other` where it was `#` (`f75b2bd`, Tom's word, after the server confirmed nothing it plans touches titles or indexing).
+Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **All three clients have moved over, on develop, 2026-09-24.** Each now owns its wording in one module of its own:
+- web `e62374d`, 526 tests, not pushed;
+- Android TV `9b3d56f`, 288 tests;
+- phone `0746aa3`, 271 tests, pushed. Four error sites on the phone still show `.message` and are its to finish, and so is a placeholder for an unnamed playlist.
+Every client's next release waits on a core publish, which is Tom's call. **Sorting stays in core** (Tom, asked directly, 2026-09-24): it is behaviour, not text. That covers the sort tables, `orderMedia`, the title, year and recent orderings, the alphabet index keys, and the search-word rules. The server relayed "clients are responsible for sorting and presentation"; that ruling concerns the server providing no index key. `formatPlaybackTime` is gone, and the alphabet index's catch-all key is `other` where it was `#` (`f75b2bd`, Tom's word, after the server confirmed nothing it plans touches titles or indexing).
 
 **The server's coming API work, not yet versioned, after its torrent fix.** Core adopts each as it ships.
 - **The search kind filter.**
