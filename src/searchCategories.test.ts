@@ -12,8 +12,8 @@ describe('search categories', () => {
     expect(searchCategoryOf('track')).toBe('music');
   });
 
-  it('labels them as the pills read, and starts with all three on', () => {
-    expect(SEARCH_CATEGORIES.map((category) => category.label)).toEqual(['Movies', 'TV Shows', 'Music']);
+  it('starts with all three on, and carries no viewer text', () => {
+    expect(SEARCH_CATEGORIES.every((category) => !('label' in category))).toBe(true);
     expect(DEFAULT_SEARCH_CATEGORIES).toEqual(['movies', 'shows', 'music']);
   });
 

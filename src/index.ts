@@ -120,9 +120,7 @@ export * from './connection/connectionConfiguration.js';
 // ------------------------------------------------------- routing and sort
 export * from './routing.js';
 export * from './playbackRoute.js';
-export * from './episodeLabel.js';
 export * from './mediaSort.js';
-export * from './musicLabel.js';
 export * from './recentMedia.js';
 export * from './searchCategories.js';
 export * from './searchTerms.js';

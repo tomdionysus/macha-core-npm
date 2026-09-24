@@ -17,10 +17,7 @@ import type {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
-import { episodeSubtitle } from '../episodeLabel.js';
 import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
-import { joinSubtitle } from '../subtitleJoin.js';
-import { trackNumberLabel, trackSubtitle } from '../musicLabel.js';
 import type { MediaSearchOptions } from './MediaApi.js';
 import { isSearchable, searchTerms } from '../searchTerms.js';
 
@@ -151,10 +148,8 @@ export class MachaMediaApi implements MediaApi {
   }
 
   /**
-   * Every album, each with its artist as its subtitle, the line a card shows
-   * below the title. Tom, 2026-09-24: "On Music, put the artist below the
-   * album name." One more list read, of artists; if it fails, the albums
-   * still come back without it.
+   * Every album, each naming its artist in `musicContext`. One more list
+   * read, of artists; if it fails, the albums still come back without it.
    */
   async albums(signal?: AbortSignal): Promise<MediaSummary[]> {
     const [albums, artists] = await Promise.all([
@@ -221,7 +216,7 @@ export class MachaMediaApi implements MediaApi {
 
     if (item.kind === 'artist') {
       const albums = (await this.catalogue.list('album', item.id, signal))
-        .map((album) => this.media(album))
+        .map((album) => ({ ...this.media(album), musicContext: this.musicContext(album, item) }))
         .sort((a, b) => (a.year ?? Number.MAX_SAFE_INTEGER) - (b.year ?? Number.MAX_SAFE_INTEGER) || a.title.localeCompare(b.title));
       return {
         ...this.media(item),
@@ -237,7 +232,7 @@ export class MachaMediaApi implements MediaApi {
       ]);
       if (signal?.aborted) throw abortReason(signal);
       const context = this.musicContext(item, artist);
-      const album = { ...this.media(item), subtitle: artist?.title ?? this.media(item).subtitle };
+      const album = { ...this.media(item), musicContext: context };
       const tracks = trackItems
         .map((track) => ({ ...this.media(track), musicContext: context }))
         .sort((a, b) => (a.discNumber ?? 1) - (b.discNumber ?? 1) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0));
@@ -255,15 +250,13 @@ export class MachaMediaApi implements MediaApi {
    * Search hits, each carrying its ancestry the way a detail page would.
    *
    * The catalogue search returns bare items holding only `parent_id`, so an
-   * episode found by search could say "S01E01" and not which series, and every
-   * client would otherwise walk the parents itself. Here:
-   * - an episode gets `playbackContext` and a subtitle such as "Firefly · Season 1
-   *   Episode 1", per `episodeLabel`;
-   * - a season gets `showId` and a subtitle such as "Firefly · Season 1";
-   * - a track gets `musicContext` and a subtitle such as "Björk - Homogenic (1997)";
-   * - an album gets its artist as its subtitle.
-   * Ancestry is the search's own business: a detail page's episodes keep
-   * "S01E01", since the series is already on screen there.
+   * episode found by search could not name its series, and every client would
+   * otherwise walk the parents itself. Here:
+   * - an episode gets `playbackContext` (series and season);
+   * - a season gets `showId` and `playbackContext` (its series, and itself);
+   * - a track gets `musicContext` (album and artist);
+   * - an album gets `musicContext` (itself and its artist).
+   * Data only: how a hit is worded is the client's.
    *
    * Each distinct parent is fetched once, in parallel, and a hit that is
    * itself an ancestor is not fetched at all. A search for a show typically
@@ -401,7 +394,7 @@ export class MachaMediaApi implements MediaApi {
       episodeNumber: item.episode_number ?? 0,
       playbackContext: {
         series: { id: show.id, title: show.title },
-        season: { id: season.id, title: season.title || `Season ${seasonNumber}`, seasonNumber },
+        season: { id: season.id, title: season.title, seasonNumber },
       },
     };
   }
@@ -424,26 +417,28 @@ export class MachaMediaApi implements MediaApi {
     if (item.kind === 'episode' && parent?.kind === 'season') {
       const show = parent.parent_id ? known.get(parent.parent_id) : undefined;
       if (show?.kind !== 'show') return this.media(item);
-      const episode = this.episode(item, parent, show);
-      return { ...episode, subtitle: episodeSubtitle(episode) ?? episode.subtitle };
+      return this.episode(item, parent, show);
     }
     if (item.kind === 'season' && parent?.kind === 'show') {
       const season = this.seasonSummary(item, parent.id);
-      return { ...season, subtitle: joinSubtitle(parent.title, season.subtitle ?? season.title) };
+      return {
+        ...season,
+        playbackContext: {
+          series: { id: parent.id, title: parent.title },
+          season: { id: season.id, title: season.title, seasonNumber: season.seasonNumber },
+        },
+      };
     }
     if (item.kind === 'album') return this.album(item, known);
-    if (item.kind === 'track') {
-      const track = this.track(item, known);
-      return { ...track, subtitle: trackSubtitle(track) ?? track.subtitle };
-    }
+    if (item.kind === 'track') return this.track(item, known);
     return this.media(item);
   }
 
-  /** An album with its artist below its title, where the artist is known. */
+  /** An album naming its artist, where the artist is known. */
   private album(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
-    const media = this.media(item);
     const artist = item.parent_id ? known.get(item.parent_id) : undefined;
-    return artist?.kind === 'artist' ? { ...media, subtitle: artist.title } : media;
+    if (artist?.kind !== 'artist') return this.media(item);
+    return { ...this.media(item), musicContext: this.musicContext(item, artist) };
   }
 
   private track(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
@@ -476,7 +471,7 @@ export class MachaMediaApi implements MediaApi {
       kind: 'season',
       showId,
       seasonNumber,
-      title: item.title || `Season ${seasonNumber}`,
+      title: item.title,
     };
   }
 
@@ -485,7 +480,6 @@ export class MachaMediaApi implements MediaApi {
       id: item.id,
       kind: item.kind,
       title: item.title,
-      subtitle: this.subtitle(item),
       year: optionalNumber(item.year),
       synopsis: item.synopsis || undefined,
       artwork: this.mapArtwork(item.effective_artwork ?? item.artwork),
@@ -513,18 +507,5 @@ export class MachaMediaApi implements MediaApi {
       thumbnail: byRole(['still', 'thumbnail', 'thumb']),
     };
     return result.poster || result.backdrop || result.thumbnail ? result : undefined;
-  }
-
-  private subtitle(item: CatalogueItem): string | undefined {
-    if (item.kind === 'episode' && item.episode_number !== null) {
-      const episode = String(item.episode_number).padStart(2, '0');
-      if (item.season_number !== null) return `S${String(item.season_number).padStart(2, '0')}E${episode}`;
-      return `Episode ${item.episode_number}`;
-    }
-    if (item.kind === 'season' && item.season_number !== null) return `Season ${item.season_number}`;
-    if (item.kind === 'track') {
-      return trackNumberLabel({ discNumber: optionalNumber(item.disc_number), trackNumber: optionalNumber(item.track_number) });
-    }
-    return undefined;
   }
 }

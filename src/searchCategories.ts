@@ -8,16 +8,15 @@ import type { MediaKind } from './types.js';
 export type SearchCategoryKey = 'movies' | 'shows' | 'music';
 
 export interface SearchCategory {
+  /** What a client keys its own wording on. Core names no category for a viewer. */
   key: SearchCategoryKey;
-  /** The viewer-facing name, in English like every other string core produces. */
-  label: string;
   kinds: readonly MediaKind[];
 }
 
 export const SEARCH_CATEGORIES: readonly SearchCategory[] = [
-  { key: 'movies', label: 'Movies', kinds: ['movie'] },
-  { key: 'shows', label: 'TV Shows', kinds: ['show', 'season', 'episode'] },
-  { key: 'music', label: 'Music', kinds: ['artist', 'album', 'track'] },
+  { key: 'movies', kinds: ['movie'] },
+  { key: 'shows', kinds: ['show', 'season', 'episode'] },
+  { key: 'music', kinds: ['artist', 'album', 'track'] },
 ];
 
 /** All three on: a search the viewer has not narrowed finds everything. */

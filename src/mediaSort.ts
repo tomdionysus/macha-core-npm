@@ -6,7 +6,7 @@ import type { MediaSummary } from './types.js';
  * The orderings a viewer can choose for a list of media, in one place.
  *
  * Every client with a search or library screen needs the same table, and the
- * web client had begun writing its own. Written per client, the keys, labels,
+ * web client had begun writing its own. Written per client, the keys,
  * defaults and tie-breaks drift apart, and a viewer moving between the
  * television and the phone finds "Recently added" meaning two things. Asked
  * for by the web client on Tom's instruction, 2026-09-24.
@@ -14,16 +14,8 @@ import type { MediaSummary } from './types.js';
 export type MediaSortKey = 'relevance' | 'title' | 'year' | 'recent';
 
 export interface MediaSort {
+  /** What a client keys its own wording on. Core names no sort for a viewer. */
   key: MediaSortKey;
-  /** The viewer-facing name, in English like every other string core produces. */
-  label: string;
-  /**
-   * The option as a sort control shows it: "Sort By Title". Tom ruled
-   * 2026-09-24, for the web client, that a control has no separate "Sort by"
-   * heading and each option reads this way. It is composed here, so that four
-   * clients composing it for themselves cannot drift on case or wording.
-   */
-  choiceLabel: string;
   /** A new array in this order. Never the one passed in. */
   order(items: readonly MediaSummary[]): MediaSummary[];
 }
@@ -47,15 +39,11 @@ export function newestYearFirst(items: readonly MediaSummary[]): MediaSummary[] 
   });
 }
 
-function sort(key: MediaSortKey, label: string, order: MediaSort['order']): MediaSort {
-  return { key, label, choiceLabel: `Sort By ${label}`, order };
-}
-
 // Relevance is the server's own order. Only a search has one worth keeping.
-const RELEVANCE = sort('relevance', 'Relevance', (items) => [...items]);
-const TITLE = sort('title', 'Title', (items) => sortMediaByIndexedTitle([...items]));
-const YEAR = sort('year', 'Year', newestYearFirst);
-const RECENT = sort('recent', 'Recently added', newestCatalogueFirst);
+const RELEVANCE: MediaSort = { key: 'relevance', order: (items) => [...items] };
+const TITLE: MediaSort = { key: 'title', order: (items) => sortMediaByIndexedTitle([...items]) };
+const YEAR: MediaSort = { key: 'year', order: newestYearFirst };
+const RECENT: MediaSort = { key: 'recent', order: newestCatalogueFirst };
 
 /** For search results, in the order a control should list them. */
 export const SEARCH_SORTS: readonly MediaSort[] = [RELEVANCE, TITLE, YEAR, RECENT];

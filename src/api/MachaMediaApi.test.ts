@@ -138,7 +138,8 @@ describe('MachaMediaApi', () => {
     if (details.kind !== 'season' || !('episodes' in details)) throw new Error('expected season details');
     expect(details.episodes[0]).toEqual(expect.objectContaining({
       id: 'episode-1',
-      subtitle: 'S01E02',
+      seasonNumber: 1,
+      episodeNumber: 2,
       mediaIds: ['file:abc'],
       artwork: { thumbnail: { id: 'art123', mimeType: 'image/jpeg' } },
       releaseDate: undefined,
@@ -155,7 +156,8 @@ describe('MachaMediaApi', () => {
     expect(details.kind).toBe('episode');
     expect(details).toEqual(expect.objectContaining({
       id: 'episode-1',
-      subtitle: 'S01E02',
+      seasonNumber: 1,
+      episodeNumber: 2,
       playbackContext: {
         series: { id: 'show', title: 'Show' },
         season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
@@ -175,7 +177,7 @@ describe('MachaMediaApi', () => {
     expect(album.kind).toBe('album');
     if (album.kind !== 'album' || !('tracks' in album)) throw new Error('expected album details');
     expect(album.tracks.map((item) => item.id)).toEqual(['track-1', 'track-2']);
-    expect(album.tracks[0].subtitle).toBe('Track 1');
+    expect(album.tracks[0].trackNumber).toBe(1);
     expect(album.tracks[0].artwork).toEqual({ poster: { id: 'album-effective-art', mimeType: 'image/jpeg' } });
   });
 
@@ -186,7 +188,7 @@ describe('MachaMediaApi', () => {
       id: 'track-global',
       kind: 'track',
       parentId: 'album-1',
-      subtitle: 'Track 3',
+      trackNumber: 3,
       artwork: { poster: { id: 'global-effective-art', mimeType: 'image/jpeg' } },
     })]);
   });
@@ -541,7 +543,6 @@ describe('search hits and their ancestry', () => {
   it('names the series on an episode, with the same context a season page gives', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
     const [hit] = await api.search('episode');
-    expect(hit.subtitle).toBe('Show · Season 1 Episode 2');
     expect(hit.playbackContext).toEqual({
       series: { id: 'show', title: 'Show' },
       season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
@@ -551,8 +552,11 @@ describe('search hits and their ancestry', () => {
   it('names the series on a season', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([SEASON]));
     const [hit] = await api.search('season');
-    expect(hit.subtitle).toBe('Show · Season 1');
     expect((hit as { showId?: string }).showId).toBe('show');
+    expect(hit.playbackContext).toEqual({
+      series: { id: 'show', title: 'Show' },
+      season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
+    });
   });
 
   it('fetches each ancestor once, and none that the search already returned', async () => {
@@ -560,15 +564,15 @@ describe('search hits and their ancestry', () => {
     const catalogue = new SearchCatalogue([show, EPISODE_1, EPISODE_3]);
     const hits = await new MachaMediaApi(catalogue).search('show');
     expect(catalogue.fetched).toEqual(['season-1']);
-    expect(hits.map((hit) => hit.subtitle)).toEqual([undefined, 'Show · Season 1 Episode 2', 'Show · Season 1 Episode 3']);
+    expect(hits.map((hit) => hit.playbackContext?.series.title)).toEqual([undefined, 'Show', 'Show']);
   });
 
   it('returns the hit as it was when an ancestor will not load, rather than failing the search', async () => {
     const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1, SEASON], new Set(['show'])));
     const [episode, season] = await api.search('episode');
-    expect(episode.subtitle).toBe('S01E02');
     expect(episode.playbackContext).toBeUndefined();
-    expect(season.subtitle).toBe('Season 1');
+    expect(episode.episodeNumber).toBe(2);
+    expect(season.playbackContext).toBeUndefined();
   });
 
   it('gives a track its album and artist', async () => {
@@ -577,7 +581,6 @@ describe('search hits and their ancestry', () => {
       album: { id: 'album-1', title: 'Album', year: 1999 },
       artist: { id: 'artist-1', title: 'Artist' },
     }));
-    expect(hit.subtitle).toBe('Artist - Album (1999)');
   });
 });
 
@@ -737,8 +740,8 @@ describe('choosing the artwork host by what it costs this viewer', () => {
   });
 });
 
-/** Tom, 2026-09-24: "On Music, put the artist below the album name." */
-describe('an album names its artist below its title', () => {
+/** An album carries its artist as data; how a card words it is the client's. */
+describe('an album names its artist', () => {
   class Library extends FakeCatalogue {
     constructor(private readonly artistsFail = false) { super(); }
     override list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
@@ -760,8 +763,8 @@ describe('an album names its artist below its title', () => {
 
   it('in the album list and on Home, leaving an album with no artist as it was', async () => {
     const api = new MachaMediaApi(new Library());
-    expect((await api.albums()).map((album) => album.subtitle)).toEqual(['Artist', undefined]);
-    expect((await api.home()).albums.map((album) => album.subtitle)).toEqual(['Artist', undefined]);
+    expect((await api.albums()).map((album) => album.musicContext?.artist?.title)).toEqual(['Artist', undefined]);
+    expect((await api.home()).albums.map((album) => album.musicContext?.artist?.title)).toEqual(['Artist', undefined]);
   });
 
   it('keeps the year on the item for a card that wants both lines', async () => {
@@ -771,18 +774,18 @@ describe('an album names its artist below its title', () => {
 
   it('still lists the albums when the artists will not load', async () => {
     const albums = await new MachaMediaApi(new Library(true)).albums();
-    expect(albums.map((album) => [album.id, album.subtitle])).toEqual([['album-1', undefined], ['orphan', undefined]]);
+    expect(albums.map((album) => [album.id, album.musicContext])).toEqual([['album-1', undefined], ['orphan', undefined]]);
   });
 
   it('on the album page and in search', async () => {
     const api = new MachaMediaApi(new Library());
-    expect((await api.details('album-1')).subtitle).toBe('Artist');
-    expect((await api.search('album'))[0]?.subtitle).toBe('Artist');
+    expect((await api.details('album-1')).musicContext?.artist?.title).toBe('Artist');
+    expect((await api.search('album'))[0]?.musicContext?.artist?.title).toBe('Artist');
   });
 
-  it("but not on the artist's own page, where the artist is already on screen", async () => {
+  it("and on the artist's own page; whether to show it there is the client's call", async () => {
     const details = await new MachaMediaApi(new Library()).details('artist-1');
     if (details.kind !== 'artist' || !('albums' in details)) throw new Error('expected artist details');
-    expect(details.albums[0]?.subtitle).toBeUndefined();
+    expect(details.albums[0]?.musicContext?.artist?.title).toBe('Artist');
   });
 });

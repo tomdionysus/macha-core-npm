@@ -46,12 +46,6 @@ describe('the sort tables', () => {
     expect(LIBRARY_SORTS.some((sort) => sort.key === DEFAULT_LIBRARY_SORT)).toBe(true);
   });
 
-  it('composes each option as a control shows it, so no client composes its own', () => {
-    expect(SEARCH_SORTS.map((sort) => sort.choiceLabel)).toEqual([
-      'Sort By Relevance', 'Sort By Title', 'Sort By Year', 'Sort By Recently added',
-    ]);
-  });
-
   it('orders by each key', () => {
     expect(ids(orderMedia(items, 'relevance'))).toEqual(['old', 'new', 'mid']);
     expect(ids(orderMedia(items, 'title'))).toEqual(['new', 'mid', 'old']);
