@@ -3841,6 +3841,29 @@ describe('a copied stream the player could not decode', () => {
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
   });
 
+  it("drops 'source-plays-as-is' from the reasons, which stopped being true", async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.reasons).toContain('source-plays-as-is');
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(coordinator.getSnapshot().instruction?.reasons).toEqual(['player-could-not-decode']);
+  });
+
+  it("reports a mode the viewer chose partway through as the viewer's", async () => {
+    // Measured on the Android TV set: Transcode chosen during playback, and
+    // the report went on describing the automatic copy.
+    const { coordinator } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.chosenByViewer).toBe(false);
+    const container = coordinator.getSnapshot().instruction?.container;
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'transcode', chosenByViewer: true, reasons: [] });
+    expect(coordinator.getSnapshot().instruction?.container).toBe(container);
+  });
+
   it('ends playback as before when the viewer chose the mode at the start', async () => {
     const { coordinator, player, updates } = setup({ mode: 'direct' });
     await coordinator.start();

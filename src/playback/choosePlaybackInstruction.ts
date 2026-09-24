@@ -436,6 +436,16 @@ export function choosePlaybackInstruction(
  * stream it could not handle, and the fallback is taken only once. Undefined
  * when nothing was being copied.
  */
+/**
+ * A step down's reasons: the instruction's own, less `source-plays-as-is`,
+ * which stops being true the moment anything is converted, plus why it
+ * stepped down. The Android TV set showed "plays the file as it is" beside
+ * "could not decode the original streams" on 2026-09-24.
+ */
+function steppedDownReasons(reasons: readonly PlaybackDecisionReason[], why: PlaybackDecisionReason): PlaybackDecisionReason[] {
+  return [...reasons.filter((reason) => reason !== 'source-plays-as-is'), why];
+}
+
 export function transcodeUndecodable(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
   if (instruction.video !== 'copy' && instruction.audio !== 'copy') return undefined;
   return {
@@ -443,12 +453,12 @@ export function transcodeUndecodable(instruction: PlaybackInstruction): Playback
     mode: 'transcode',
     video: instruction.video === 'copy' ? 'transcode' : instruction.video,
     audio: instruction.audio === 'copy' ? 'transcode' : instruction.audio,
-    reasons: [...instruction.reasons, 'player-could-not-decode'],
+    reasons: steppedDownReasons(instruction.reasons, 'player-could-not-decode'),
   };
 }
 
 export function degradeInstruction(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
-  const reasons: PlaybackDecisionReason[] = [...instruction.reasons, 'executor-refused-copy'];
+  const reasons = steppedDownReasons(instruction.reasons, 'executor-refused-copy');
 
   // Audio first: re-encoding a soundtrack costs far less than re-encoding
   // video, and an unsupported copy is more often the audio codec.

@@ -1577,8 +1577,30 @@ export class PlaybackCoordinator {
     // about what the viewer wants.
     if (this.snapshot.session && update.preferences?.mode !== undefined) {
       this.viewerModeChoice = update.preferences.mode !== 'choose';
+      if (update.preferences.mode !== 'choose') this.reportViewerChoice(update.preferences);
     }
     this.applyUpdate(update);
+  }
+
+  /**
+   * Report a mode the viewer chose partway through as theirs.
+   *
+   * The report was set only where the chooser ran, at the start or on
+   * "decide for me", so a concrete mode chosen mid-playback left the
+   * automatic decision in the snapshot. Measured on the Android TV set
+   * 2026-09-24: Transcode chosen during playback, and the screen went on
+   * saying the device played the file as it was. The container is kept when
+   * the viewer did not name one, because later changes restate it from here.
+   */
+  private reportViewerChoice(preferences: PlaybackPreferencesUpdate): void {
+    this.chosenInstruction = undefined;
+    this.patchSnapshot({ instruction: {
+      mode: preferences.mode as PlaybackMode,
+      video: preferences.video,
+      audio: preferences.audio,
+      container: preferences.container ?? this.snapshot.instruction?.container,
+      reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+    } });
   }
 
   private applyUpdate(update: PlaybackUpdate): void {

@@ -187,6 +187,11 @@ describe('degradeInstruction', () => {
     expect(next?.reasons).toContain('executor-refused-copy');
   });
 
+  it("drops 'source-plays-as-is', which stops being true once anything is converted", () => {
+    const direct = { ...remuxCopyBoth, mode: 'direct' as const, reasons: ['source-plays-as-is' as const] };
+    expect(degradeInstruction(direct)?.reasons).toEqual(['executor-refused-copy']);
+  });
+
   it('gives up the video copy only when the audio copy is already gone', () => {
     const next = degradeInstruction({ ...remuxCopyBoth, audio: 'transcode' });
     expect(next).toMatchObject({ mode: 'transcode', video: 'transcode', audio: 'transcode' });
