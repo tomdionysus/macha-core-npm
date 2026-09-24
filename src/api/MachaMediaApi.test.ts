@@ -736,3 +736,53 @@ describe('choosing the artwork host by what it costs this viewer', () => {
     expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
   });
 });
+
+/** Tom, 2026-09-24: "On Music, put the artist below the album name." */
+describe('an album names its artist below its title', () => {
+  class Library extends FakeCatalogue {
+    constructor(private readonly artistsFail = false) { super(); }
+    override list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
+      if (kind === 'album' && parent === undefined) {
+        return Promise.resolve([
+          catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album', year: 1999 }),
+          catalogueItem('orphan', 'album', { title: 'Orphan' }),
+        ]);
+      }
+      if (kind === 'artist' && parent === undefined) {
+        return this.artistsFail ? Promise.reject(new Error('unavailable')) : Promise.resolve([catalogueItem('artist-1', 'artist', { title: 'Artist' })]);
+      }
+      return super.list(kind, parent);
+    }
+    override search(): Promise<CatalogueItem[]> {
+      return Promise.resolve([catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' })]);
+    }
+  }
+
+  it('in the album list and on Home, leaving an album with no artist as it was', async () => {
+    const api = new MachaMediaApi(new Library());
+    expect((await api.albums()).map((album) => album.subtitle)).toEqual(['Artist', undefined]);
+    expect((await api.home()).albums.map((album) => album.subtitle)).toEqual(['Artist', undefined]);
+  });
+
+  it('keeps the year on the item for a card that wants both lines', async () => {
+    const [album] = await new MachaMediaApi(new Library()).albums();
+    expect(album.year).toBe(1999);
+  });
+
+  it('still lists the albums when the artists will not load', async () => {
+    const albums = await new MachaMediaApi(new Library(true)).albums();
+    expect(albums.map((album) => [album.id, album.subtitle])).toEqual([['album-1', undefined], ['orphan', undefined]]);
+  });
+
+  it('on the album page and in search', async () => {
+    const api = new MachaMediaApi(new Library());
+    expect((await api.details('album-1')).subtitle).toBe('Artist');
+    expect((await api.search('album'))[0]?.subtitle).toBe('Artist');
+  });
+
+  it("but not on the artist's own page, where the artist is already on screen", async () => {
+    const details = await new MachaMediaApi(new Library()).details('artist-1');
+    if (details.kind !== 'artist' || !('albums' in details)) throw new Error('expected artist details');
+    expect(details.albums[0]?.subtitle).toBeUndefined();
+  });
+});

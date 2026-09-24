@@ -150,8 +150,20 @@ export class MachaMediaApi implements MediaApi {
     return (await this.catalogue.list('artist', undefined, signal)).map((item) => this.media(item));
   }
 
+  /**
+   * Every album, each with its artist as its subtitle, the line a card shows
+   * below the title. Tom, 2026-09-24: "On Music, put the artist below the
+   * album name." One more list read, of artists; if it fails, the albums
+   * still come back without it.
+   */
   async albums(signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('album', undefined, signal)).map((item) => this.media(item));
+    const [albums, artists] = await Promise.all([
+      this.catalogue.list('album', undefined, signal),
+      this.catalogue.list('artist', undefined, signal).catch(() => [] as CatalogueItem[]),
+    ]);
+    if (signal?.aborted) throw abortReason(signal);
+    const known = new Map(artists.map((item) => [item.id, item]));
+    return albums.map((item) => this.album(item, known));
   }
 
   /**
@@ -225,11 +237,12 @@ export class MachaMediaApi implements MediaApi {
       ]);
       if (signal?.aborted) throw abortReason(signal);
       const context = this.musicContext(item, artist);
+      const album = { ...this.media(item), subtitle: artist?.title ?? this.media(item).subtitle };
       const tracks = trackItems
         .map((track) => ({ ...this.media(track), musicContext: context }))
         .sort((a, b) => (a.discNumber ?? 1) - (b.discNumber ?? 1) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0));
       return {
-        ...this.media(item),
+        ...album,
         kind: 'album',
         tracks,
       } as AlbumDetails;
@@ -247,7 +260,8 @@ export class MachaMediaApi implements MediaApi {
    * - an episode gets `playbackContext` and a subtitle such as "Firefly · Season 1
    *   Episode 1", per `episodeLabel`;
    * - a season gets `showId` and a subtitle such as "Firefly · Season 1";
-   * - a track gets `musicContext` and a subtitle such as "Björk - Homogenic (1997)".
+   * - a track gets `musicContext` and a subtitle such as "Björk - Homogenic (1997)";
+   * - an album gets its artist as its subtitle.
    * Ancestry is the search's own business: a detail page's episodes keep
    * "S01E01", since the series is already on screen there.
    *
@@ -274,7 +288,7 @@ export class MachaMediaApi implements MediaApi {
     const found = await this.catalogue.search(searchTerms(query), narrowed ? SEARCH_FILTERED_FETCH_LIMIT : SEARCH_PAGE_SIZE, signal);
     const hits = found.filter((item) => kinds.has(item.kind)).slice(0, SEARCH_PAGE_SIZE);
     const known = new Map(hits.map((item) => [item.id, item]));
-    const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track');
+    const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track' || item.kind === 'album');
     await this.loadAncestors(known, withAncestry.map((item) => item.parent_id), signal);
     // One level further for the two kinds whose parent has a parent worth naming.
     const grandparents = withAncestry
@@ -417,11 +431,19 @@ export class MachaMediaApi implements MediaApi {
       const season = this.seasonSummary(item, parent.id);
       return { ...season, subtitle: joinSubtitle(parent.title, season.subtitle ?? season.title) };
     }
+    if (item.kind === 'album') return this.album(item, known);
     if (item.kind === 'track') {
       const track = this.track(item, known);
       return { ...track, subtitle: trackSubtitle(track) ?? track.subtitle };
     }
     return this.media(item);
+  }
+
+  /** An album with its artist below its title, where the artist is known. */
+  private album(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const media = this.media(item);
+    const artist = item.parent_id ? known.get(item.parent_id) : undefined;
+    return artist?.kind === 'artist' ? { ...media, subtitle: artist.title } : media;
   }
 
   private track(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
