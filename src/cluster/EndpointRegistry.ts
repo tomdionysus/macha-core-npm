@@ -353,6 +353,44 @@ export function endpointId(baseUrl: string): string {
   return normalizeBaseUrl(baseUrl);
 }
 
+/**
+ * A registry's starting endpoints, labelled as the health cycle needs them.
+ *
+ * `configured`: what the viewer or build set, as `bootstrap`
+ * (`MachaClientConfiguration.bootstrapEndpoints()`). `environment`: addresses
+ * the host derives at runtime, such as the page's own origin. `remembered`:
+ * nodes reached in earlier runs, as `discovered`
+ * (`MachaClientConfiguration.discoveredEndpoints()`).
+ *
+ * **Remembered nodes must be `discovered`**, because `persistConfirmedEndpoints`
+ * rewrites the remembered list from `discovered` entries alone. Two of three
+ * clients seeded them as `bootstrap` or `environment`, and the first health
+ * cycle after a restart wrote the list back without them: a fallback that
+ * lasted exactly one start. Found on the Android TV set, 2026-09-24. One
+ * helper so no host has to know that.
+ *
+ * An address appears once, under the first list that names it.
+ */
+export function seedEndpoints(lists: {
+  configured: readonly string[];
+  remembered?: readonly string[];
+  environment?: readonly string[];
+}): MachaEndpoint[] {
+  const seeds: MachaEndpoint[] = [];
+  const taken = new Set<string>();
+  const add = (endpoints: MachaEndpoint[]) => {
+    for (const endpoint of endpoints) {
+      if (taken.has(endpoint.baseUrl)) continue;
+      taken.add(endpoint.baseUrl);
+      seeds.push(endpoint);
+    }
+  };
+  add(bootstrapEndpoints(lists.configured, 'bootstrap'));
+  add(bootstrapEndpoints(lists.environment ?? [], 'environment'));
+  add(bootstrapEndpoints(lists.remembered ?? [], 'discovered'));
+  return seeds;
+}
+
 export function bootstrapEndpoints(urls: readonly string[], source: EndpointSource = 'bootstrap'): MachaEndpoint[] {
   const unique = new Set<string>();
   const endpoints: MachaEndpoint[] = [];
