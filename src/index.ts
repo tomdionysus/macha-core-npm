@@ -84,7 +84,6 @@ export * from './cluster/endpointRouting.js';
 
 // --------------------------------------------------------------- playback
 export * from './playback/BufferedTimeline.js';
-export * from './playback/formatDuration.js';
 export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
 export * from './playback/generationStart.js';
