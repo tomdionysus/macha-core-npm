@@ -1009,8 +1009,9 @@ describe('a regeneration whose close never comes back', () => {
   });
 
   it('says the close timed out rather than letting it pass unrecorded', async () => {
-    // The node is now holding a transcode slot nothing has released, which is
-    // the operator-visible half of Law 4's discipline. It is a warn because
+    // The node is now holding a transcode slot nothing has released: the
+    // operator action that the retried-work discipline under Law 4 requires
+    // (backoff, a failure budget, a parked state and an operator action). It is a warn because
     // the recovery continued; the leak is real and needs somewhere to be read.
     clearClientDiagnostics();
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {

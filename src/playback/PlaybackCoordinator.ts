@@ -467,8 +467,8 @@ const PLAYER_SILENCE_GUARD_MS = 15_000;
  * mechanism survives all of that, and the viewer was still frozen.**
  *
  * So this does not bound a suspect. It bounds *the work item* — "build a
- * replacement" — which is what Law 4's discipline actually asks for: backoff,
- * a failure budget, a parked state and an operator action, for the retried
+ * replacement" — which is what the retried-work discipline under Law 4 asks
+ * for: backoff, a failure budget, a parked state and an operator action, for the retried
  * unit rather than for each of its limbs. It converts every unnamed mechanism,
  * including ones nobody has thought of, from an indefinite freeze into a
  * bounded wait followed by the failover that already exists.
