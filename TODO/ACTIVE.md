@@ -1319,6 +1319,9 @@ Two conventions have now produced the same incident on three clients — the pho
 
 ## P3
 
+### Consider the ebook proposal — Tom, 2026-09-25, later
+**Waiting on:** core, when Tom calls it. The proposal is in the server tree at `../macha/docs/macha-ebooks-proposal.md`. It has not been read yet. Read it, and say what core would own: the catalogue kinds, API families and reader state, by the usual test of whether nearly every client would need it.
+
 ### Music library state moves into core — approved, not started
 **Waiting on:** core. **Tom, 2026-09-13:** yes — *"capabilities differ, but the core should handle this"*, which says the per-client differences are not an argument against the move, they are the thing core absorbs.
 
