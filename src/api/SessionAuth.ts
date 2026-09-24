@@ -1,8 +1,8 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import type { CurrentSession, UserRole } from './UsersApi.js';
-import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
-import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
+import { isGatewayConnectionFailure, LIVENESS_PATH, serverUnreachable } from './serverConnection.js';
+import type { EndpointCandidate, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
 /**
  * A session, for whatever account minted it.
@@ -70,6 +70,8 @@ export class SessionAuthError extends Error {
      * wrong here.
      */
     public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
   ) {
     super(message);
   }
@@ -133,8 +135,8 @@ export async function mintSession(baseUrl: string, credentials?: SessionCredenti
     // reached the viewer as "Could not start a session: 401" while the
     // server's own sentence, and the code the client needed, were both in the
     // body all along.
-    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code);
+    const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code, detail);
   }
   const token = typeof record?.token === 'string' ? record.token : undefined;
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
@@ -166,9 +168,42 @@ function sessionRoles(record: Record<string, unknown> | undefined): UserRole[] |
  * any node is valid cluster-wide, so a single down node must not block
  * getting a token.
  */
+/**
+ * The ranked candidates, led by the first to answer a liveness probe when the
+ * registry has no evidence about any of them yet: a fresh sign-in, or a cold
+ * start with no cached token.
+ *
+ * A mint creates a session, so it cannot be hedged the way validation is:
+ * each losing mint would hold a session against the account's cap. So the
+ * question "who is answering" is asked of the unauthenticated health route,
+ * hedged, and the mint then goes to that node alone, falling back to the rest
+ * in ranked order. Without it a fresh sign-in waited a full request timeout,
+ * 8 s, for every dead node ranked ahead of a live one.
+ */
+async function mintOrder(registry: EndpointRegistry): Promise<EndpointCandidate['endpoint'][]> {
+  const candidates = registry.candidates();
+  const ranked = candidates.map(({ endpoint }) => endpoint);
+  if (candidates.length < 2 || candidates.some(({ health }) => health.lastSuccessAt !== undefined || health.consecutiveFailures > 0)) {
+    return ranked;
+  }
+  const won = await firstToAnswer(registry, async (endpoint, signal) => {
+    await fetchWithTimeout(
+      (target, init) => fetch(target, init),
+      `${endpoint.baseUrl}${LIVENESS_PATH}`,
+      { method: 'GET', headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }), cache: 'no-store', signal },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
+    // Any response is an answer. A node answering 503 while it starts is
+    // reachable, and the mint decides the rest.
+    return true;
+  });
+  if (!won) return ranked;
+  return [won.endpoint, ...ranked.filter((endpoint) => endpoint.id !== won.endpoint.id)];
+}
+
 export async function mintSessionAnyNode(registry: EndpointRegistry, credentials?: SessionCredentials): Promise<Session> {
   let lastError: unknown;
-  for (const { endpoint } of registry.candidates()) {
+  for (const endpoint of await mintOrder(registry)) {
     try {
       const session = await mintSession(endpoint.baseUrl, credentials);
       registry.recordSuccess(endpoint.id);
@@ -236,8 +271,8 @@ export async function revokeSessionAnyNode(registry: EndpointRegistry, token: st
       // concerned. Anything else the node says is a real failure to revoke and
       // the caller must hear about it rather than be told it signed out.
       if (response.ok || response.status === 401 || response.status === 403) return;
-      const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-      throw new SessionAuthError(`Could not end the session: ${message}`, response.status, code);
+      const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+      throw new SessionAuthError(`Could not end the session: ${message}`, response.status, code, detail);
     } catch (error) {
       if (error instanceof SessionAuthError) throw error;
       registry.recordFailure(endpoint.id);
@@ -279,12 +314,12 @@ export async function revokeSessionAnyNode(registry: EndpointRegistry, token: st
  * response is the same either way — mint fresh — but a caller that reports
  * the reason to a viewer must not claim the session timed out.
  */
-export async function validateSession(baseUrl: string, token: string): Promise<CurrentSession | undefined> {
+export async function validateSession(baseUrl: string, token: string, signal?: AbortSignal): Promise<CurrentSession | undefined> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   const response = await fetchWithTimeout(
     (target, init) => fetch(target, init),
     url,
-    { headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }) },
+    { headers: mergeRequestHeaders(undefined, { Accept: 'application/json', Authorization: `Bearer ${token}` }), signal },
     DEFAULT_REQUEST_TIMEOUT_MS,
   );
   // A reachable node that rejects the token is a definitive, cluster-wide
@@ -301,8 +336,8 @@ export async function validateSession(baseUrl: string, token: string): Promise<C
   if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
   if (response.status === 401 || response.status === 403) return undefined;
   if (!response.ok) {
-    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-    throw new SessionAuthError(message, response.status, code);
+    const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Session check failed: ${message}`, response.status, code, detail);
   }
   // The record is returned rather than a boolean because this request already
   // carries the answer to a second question nothing else was asking: what the
@@ -319,25 +354,89 @@ export async function validateSession(baseUrl: string, token: string): Promise<C
 }
 
 /**
- * Any-node counterpart to `mintSessionAnyNode`: tries known
- * endpoints in order until one actually answers the validity question.
- * Resolves `false` only for a genuine rejection; an endpoint that merely
- * failed to answer is skipped in favor of the next candidate, and if none
- * can be reached the caller falls back to minting fresh (which will hit the
- * same unreachable nodes and fail the same way — no worse than today).
+ * Any-node counterpart to `mintSessionAnyNode`: asks the known endpoints,
+ * hedged, until one actually answers the validity question. Resolves
+ * `undefined` only for a genuine rejection (401 or 403). An endpoint that
+ * fails to answer is skipped for the next, and when none answers at all it
+ * throws a `MachaConnectionError`: "could not find out" is not "rejected".
  */
 export async function validateSessionAnyNode(
   registry: EndpointRegistry,
   token: string,
 ): Promise<CurrentSession | undefined> {
-  for (const { endpoint } of registry.candidates()) {
-    try {
-      const session = await validateSession(endpoint.baseUrl, token);
-      registry.recordSuccess(endpoint.id);
-      return session;
-    } catch {
-      registry.recordFailure(endpoint.id);
-    }
+  // Hedged, because a cold start walked it one node at a time: measured by
+  // the web client 2026-09-24 with two nodes down, 8.2 s and 8.0 s of
+  // timeouts before the third answered in 0.52 s, 17.2 s before a viewer saw
+  // anything. A GET, so asking a second node early costs a request and
+  // nothing else. A refusal (401 or 403) is an answer, and ends it.
+  const won = await firstToAnswer(registry, (endpoint, signal) => validateSession(endpoint.baseUrl, token, signal));
+  // No node answered, which is not the same as the token being refused.
+  // Resolving `undefined` here told the caller "rejected", and it minted
+  // fresh; on a cluster that requires an account the anonymous mint is then
+  // refused and a viewer holding a good 30-day token is sent to sign in.
+  // Measured on the web client 2026-09-24 with two nodes down.
+  if (!won) {
+    // With nothing configured there is nothing to ask; the mint says so.
+    if (registry.candidates().length === 0) return undefined;
+    throw serverUnreachable();
   }
-  return undefined;
+  return won.value;
+}
+
+/**
+ * How long one node has to answer before the next is also asked. Short
+ * against the 8 s request bound, long against a working node's answer (0.52
+ * s cold across the WAN, measured): a guess, and it only spends a request.
+ */
+export const SESSION_HEDGE_MS = 1_000;
+
+/**
+ * Ask the ranked candidates in turn, starting the next when the current one
+ * fails or has not answered within `SESSION_HEDGE_MS`, and take the first
+ * answer. The rest are cancelled, and a cancelled attempt is not charged.
+ * Only for requests that are safe to send twice: never a mint.
+ */
+async function firstToAnswer<T>(
+  registry: EndpointRegistry,
+  attempt: (endpoint: EndpointCandidate['endpoint'], signal: AbortSignal) => Promise<T>,
+): Promise<{ endpoint: EndpointCandidate['endpoint']; value: T } | undefined> {
+  const candidates = registry.candidates().map(({ endpoint }) => endpoint);
+  if (candidates.length === 0) return undefined;
+  const controller = new AbortController();
+  return new Promise((resolve) => {
+    let next = 0;
+    let running = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: { endpoint: EndpointCandidate['endpoint']; value: T } | undefined) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      controller.abort();
+      resolve(result);
+    };
+    const launch = () => {
+      if (settled || next >= candidates.length) return;
+      const endpoint = candidates[next++];
+      running += 1;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(launch, SESSION_HEDGE_MS);
+      attempt(endpoint, controller.signal).then(
+        (value) => {
+          running -= 1;
+          if (settled) return;
+          registry.recordSuccess(endpoint.id);
+          finish({ endpoint, value });
+        },
+        () => {
+          running -= 1;
+          if (settled) return;
+          registry.recordFailure(endpoint.id);
+          if (next < candidates.length) launch();
+          else if (running === 0) finish(undefined);
+        },
+      );
+    };
+    launch();
+  });
 }

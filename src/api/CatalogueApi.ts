@@ -48,6 +48,8 @@ export interface CatalogueStatus {
   local_artwork_objects: number;
   last_sync_unix_ms: number;
   error: string | null;
+  /** `converging` or `unavailable` when not ready, else null. Absent before 0.56.0. */
+  error_code?: 'converging' | 'unavailable' | (string & {}) | null;
 }
 
 export interface CatalogueMediaStreamProfile {
@@ -142,6 +144,19 @@ export interface ArtworkSource {
    * checking which it is.
    */
   requiresAuthorization: boolean;
+  /**
+   * This viewer's measured round trip to the node behind this URL, where the
+   * health cycle has one and the node is ready. What
+   * `ArtworkHostPreference.chooseOnce` compares hosts on.
+   */
+  latencyMs?: number;
+  /**
+   * False when the last thing heard from the node behind this URL was a
+   * failure, whether or not its retry cooldown has passed. Absent means
+   * nothing is known, which a single-node API is, and is treated as usable.
+   * `ArtworkHostPreference.order` never promotes a host marked false.
+   */
+  ready?: boolean;
 }
 
 export interface CatalogueApi {

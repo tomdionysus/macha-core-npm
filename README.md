@@ -1,5 +1,7 @@
 # @machafoundation/core
 
+*v0.19.0*
+
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
 Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on — a React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds what is genuinely the same on all of them, so they cannot drift apart.
@@ -48,17 +50,16 @@ Then bring up the session, the registry and the services over them:
 
 ```ts
 import {
-  bootstrapEndpoints, createMachaServices, EndpointHealthMonitor,
-  EndpointRegistry, sessionManager,
+  createMachaServices, EndpointHealthMonitor, EndpointRegistry,
+  seedEndpoints, sessionManager,
 } from '@machafoundation/core';
 
-const registry = new EndpointRegistry([
-  ...bootstrapEndpoints(configuration.bootstrapEndpoints()),
-  // Seeded under their own source, or the health cycle sees nothing it is
-  // allowed to persist and writes the remembered set back as empty: the
-  // discovered history is wiped on every second start.
-  ...bootstrapEndpoints(configuration.discoveredEndpoints(), 'discovered'),
-]);
+// Each list under the source the health cycle needs: remembered nodes must be
+// `discovered`, or the cycle writes the remembered set back as empty.
+const registry = new EndpointRegistry(seedEndpoints({
+  configured: configuration.bootstrapEndpoints(),
+  remembered: configuration.discoveredEndpoints(),
+}));
 sessionManager.start(registry);
 
 const services = createMachaServices({ endpointRegistry: registry, auth: sessionManager });
@@ -83,11 +84,11 @@ The core drives a `Player` the host implements, and never touches a media elemen
 
 ### Telling a viewer what went wrong
 
-Four accessors, and a host should need nothing else. `playbackFailureCode` and `playbackFailureStatus` walk the cause chain for what the server said; `isAccountSessionLimit` names the one refusal a viewer can genuinely act on; and `playbackFailureDetail` returns the sentence to show them.
+**Core writes no viewer text.** Every word a viewer sees is the host's. Core supplies codes, kinds and data to word it from, and passes the server's own sentences through untouched. `playbackFailureCode` and `playbackFailureStatus` walk the cause chain for what the server said; `isAccountSessionLimit` names the one refusal a viewer can genuinely act on; `playbackFailureDetail` returns the server's own sentence, where it gave one. API errors carry the same as `detail`, and snapshot notices are codes.
 
 **Do not render `.message`.** It is a log line, and by the time a playback failure has crossed `endpointFailure` it reads *"Macha endpoint https://node.example failed: Macha playback request failed: …"* — two of core's envelopes and a node address, in front of someone trying to watch a film. Three clients displayed exactly that before these existed.
 
-Do not reconstruct it either. Stripping core's prefixes means matching on core's wording, which goes quiet the first time one is reworded; the server's sentence is carried on the error from the moment it is parsed. `playbackFailureDetail` returning `undefined` means no layer stated one — write your own rather than falling back.
+Do not reconstruct it either. Stripping core's prefixes means matching on core's wording, which goes quiet the first time one is reworded. Key on the code; `playbackFailureDetail` returning `undefined` means the server said nothing in words, so write your own rather than falling back.
 
 And a host must still decide what to *say*. A session holding no roles is reported faithfully by `sessionLockedOut`, but the remedy is the actionable half: it usually means signing in again, not finding an administrator, and only the host knows which of those its viewer can do.
 
@@ -139,7 +140,7 @@ Two conventions to keep:
 - **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows each state in a comment what they are derived from. Change the derivation, not the number.
 - **Deadlines that belong to a node are read from that node.** `startup_timeout_ms` and `segment_timeout_ms` arrive per endpoint on the cluster status payload; the compiled-in constants in `streamProtocol.ts` are the answer only for a node too old to report them. Do not add a new private copy of a server figure.
 
-Releases are cut from `develop`: bump the version in its own commit, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
+Releases are cut from `develop`: bump the version with `npm version <x.y.z> --no-git-tag-version` in its own commit, which also stamps the version under this README's title, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
 
 ## Licence
 

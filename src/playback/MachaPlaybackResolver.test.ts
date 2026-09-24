@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from '../api/MachaCatalogueApi.js';
-import { MachaPlaybackResolver } from './MachaPlaybackResolver.js';
+import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS } from './MachaPlaybackResolver.js';
+import { MachaConnectionError } from '../api/serverConnection.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 
@@ -121,6 +122,22 @@ describe('MachaPlaybackResolver', () => {
     const headers = new Headers(init.headers);
     expect(headers.get('Idempotency-Key')).toBeNull();
     expect(headers.get('Macha-Viewer-Session')).toBeNull();
+  });
+
+  it("puts only the server's own sentence in detail, never text core made up", async () => {
+    // Core writes no viewer text (Tom, 2026-09-24). The status line and a body
+    // dump still reach the log through the message; detail stays empty.
+    const reject = async (body: BodyInit | null, contentType = 'application/json') => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(body, { status: 503, statusText: 'Service Unavailable', headers: { 'Content-Type': contentType } })));
+      const error: unknown = await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'direct' }).then(() => undefined, (caught: unknown) => caught);
+      return error as { detail?: string; message: string };
+    };
+    expect((await reject(JSON.stringify({ error: 'busy', message: 'The node is busy.' }))).detail).toBe('The node is busy.');
+    expect((await reject(JSON.stringify({ error: 'Legacy human text' }))).detail).toBe('Legacy human text');
+    const bare = await reject(null);
+    expect(bare.detail).toBeUndefined();
+    expect(bare.message).toContain('503');
+    expect((await reject(JSON.stringify({ unexpected: { shape: true } }))).detail).toBeUndefined();
   });
 
   it('treats a non-conforming session profile_pending response as an endpoint failure without polling', async () => {
@@ -589,5 +606,34 @@ describe('quality caps and copy instructions', () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { preferences: Record<string, unknown> };
     expect(body.preferences).toMatchObject({ mode: 'direct', video: 'copy', audio: 'copy' });
+  });
+});
+
+describe('asking a node whether a session is alive', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('gives up after its own bound on a node that never answers, as could-not-tell', async () => {
+    // It sits in front of a failover. Unbounded, a node that dropped off the
+    // network held the question for as long as the platform let the connection
+    // hang, and that wait was the viewer's.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    })));
+    const resolver = new MachaPlaybackResolver('http://node.test');
+
+    const asked = resolver.sessionAlive('s1');
+    const settled = expect(asked).rejects.toBeInstanceOf(MachaConnectionError);
+    await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_TIMEOUT_MS);
+    await settled;
+  });
+
+  it('answers gone on 404 and alive on 200, untouched by the bound', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'not_found', message: 'gone' } }), { status: 404, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    const resolver = new MachaPlaybackResolver('http://node.test');
+    expect(await resolver.sessionAlive('s1')).toBe(false);
+    expect(await resolver.sessionAlive('s1')).toBe(true);
   });
 });

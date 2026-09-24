@@ -30,8 +30,6 @@ interface LegacyEntry {
   track: MediaSummary;
 }
 
-/** The name an adopted unnamed list arrives under — what the route was called. */
-const ADOPTED_NAME = 'Playlist';
 
 function validPlaylist(value: unknown): value is Playlist {
   if (!value || typeof value !== 'object') return false;
@@ -122,9 +120,8 @@ export class PlaylistStore {
    * Take over a single unnamed list left by the store this replaces.
    *
    * Only when nothing has been written here yet, so it can never overwrite a
-   * collection. It arrives under the name the route used rather than something
-   * like "Untitled", which would describe our uncertainty rather than the
-   * viewer's data — and they can rename it either way.
+   * collection. It arrives with no name, like any list the viewer did not
+   * name: a host shows its own placeholder, and the viewer can rename it.
    */
   private adoptLegacy(): Playlist[] {
     const legacy = readValidatedJson(this.storage, this.legacyKey, validLegacy);
@@ -132,7 +129,7 @@ export class PlaylistStore {
     const now = Date.now();
     const adopted: Playlist = {
       id: machaHost().uuid(),
-      name: ADOPTED_NAME,
+      name: '',
       items: legacy.map((entry) => entry.track).filter(isPlayable),
       createdAt: now,
       updatedAt: now,
@@ -149,7 +146,10 @@ export class PlaylistStore {
     const now = Date.now();
     const playlist: Playlist = {
       id: machaHost().uuid(),
-      name: name.trim() || 'Untitled playlist',
+      // Empty when the viewer gave none. A host shows its own placeholder;
+      // core writes no viewer text, and a stored default would be English
+      // saved into the viewer's data.
+      name: name.trim(),
       items: items.filter(isPlayable),
       createdAt: now,
       updatedAt: now,

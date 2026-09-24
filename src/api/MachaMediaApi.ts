@@ -9,6 +9,7 @@ import type {
   LibraryHome,
   MediaDetails,
   MediaSummary,
+  MusicHierarchyContext,
   SeasonDetails,
   SeasonSummary,
   ShowDetails,
@@ -16,6 +17,18 @@ import type {
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
 import { abortError } from '../errors.js';
+import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
+import type { MediaSearchOptions } from './MediaApi.js';
+import { isSearchable, searchTerms } from '../searchTerms.js';
+
+/** How many hits a search returns. */
+const SEARCH_PAGE_SIZE = 50;
+/**
+ * How many to ask the catalogue for when a category filter will discard some.
+ * A guess: enough that one kind rarely runs short, well under the server's
+ * cap of 1000. Moves to the server if it ever takes a kind.
+ */
+const SEARCH_FILTERED_FETCH_LIMIT = 200;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError('Artwork consumer cancelled.');
@@ -134,12 +147,36 @@ export class MachaMediaApi implements MediaApi {
     return (await this.catalogue.list('artist', undefined, signal)).map((item) => this.media(item));
   }
 
+  /**
+   * Every album, each naming its artist in `musicContext`. One more list
+   * read, of artists; if it fails, the albums still come back without it.
+   */
   async albums(signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('album', undefined, signal)).map((item) => this.media(item));
+    const [albums, artists] = await Promise.all([
+      this.catalogue.list('album', undefined, signal),
+      this.catalogue.list('artist', undefined, signal).catch(() => [] as CatalogueItem[]),
+    ]);
+    if (signal?.aborted) throw abortReason(signal);
+    const known = new Map(artists.map((item) => [item.id, item]));
+    return albums.map((item) => this.album(item, known));
   }
 
+  /**
+   * Every track, each naming its album and artist.
+   *
+   * Two more list reads, albums and artists, rather than a read per album:
+   * the whole library is being listed anyway. If either fails, the tracks
+   * still come back, without the context that read would have supplied.
+   */
   async tracks(signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.list('track', undefined, signal)).map((item) => this.media(item));
+    const [tracks, albums, artists] = await Promise.all([
+      this.catalogue.list('track', undefined, signal),
+      this.catalogue.list('album', undefined, signal).catch(() => [] as CatalogueItem[]),
+      this.catalogue.list('artist', undefined, signal).catch(() => [] as CatalogueItem[]),
+    ]);
+    if (signal?.aborted) throw abortReason(signal);
+    const known = new Map([...albums, ...artists].map((item) => [item.id, item]));
+    return tracks.map((item) => this.track(item, known));
   }
 
   async details(id: string, signal?: AbortSignal): Promise<MediaDetails> {
@@ -179,7 +216,7 @@ export class MachaMediaApi implements MediaApi {
 
     if (item.kind === 'artist') {
       const albums = (await this.catalogue.list('album', item.id, signal))
-        .map((album) => this.media(album))
+        .map((album) => ({ ...this.media(album), musicContext: this.musicContext(album, item) }))
         .sort((a, b) => (a.year ?? Number.MAX_SAFE_INTEGER) - (b.year ?? Number.MAX_SAFE_INTEGER) || a.title.localeCompare(b.title));
       return {
         ...this.media(item),
@@ -189,11 +226,18 @@ export class MachaMediaApi implements MediaApi {
     }
 
     if (item.kind === 'album') {
-      const tracks = (await this.catalogue.list('track', item.id, signal))
-        .map((track) => this.media(track))
+      const [trackItems, artist] = await Promise.all([
+        this.catalogue.list('track', item.id, signal),
+        item.parent_id ? this.catalogue.get(item.parent_id, signal).catch(() => undefined) : undefined,
+      ]);
+      if (signal?.aborted) throw abortReason(signal);
+      const context = this.musicContext(item, artist);
+      const album = { ...this.media(item), musicContext: context };
+      const tracks = trackItems
+        .map((track) => ({ ...this.media(track), musicContext: context }))
         .sort((a, b) => (a.discNumber ?? 1) - (b.discNumber ?? 1) || (a.trackNumber ?? 0) - (b.trackNumber ?? 0));
       return {
-        ...this.media(item),
+        ...album,
         kind: 'album',
         tracks,
       } as AlbumDetails;
@@ -202,13 +246,55 @@ export class MachaMediaApi implements MediaApi {
     return this.media(item);
   }
 
-  async search(query: string, signal?: AbortSignal): Promise<MediaSummary[]> {
-    return (await this.catalogue.search(query, 50, signal)).map((item) => this.media(item));
+  /**
+   * Search hits, each carrying its ancestry the way a detail page would.
+   *
+   * The catalogue search returns bare items holding only `parent_id`, so an
+   * episode found by search could not name its series, and every client would
+   * otherwise walk the parents itself. Here:
+   * - an episode gets `playbackContext` (series and season);
+   * - a season gets `showId` and `playbackContext` (its series, and itself);
+   * - a track gets `musicContext` (album and artist);
+   * - an album gets `musicContext` (itself and its artist).
+   * Data only: how a hit is worded is the client's.
+   *
+   * Each distinct parent is fetched once, in parallel, and a hit that is
+   * itself an ancestor is not fetched at all. A search for a show typically
+   * returns the show too. A parent that fails to load leaves its hits as they
+   * were, without context, rather than failing the search.
+   */
+  async search(query: string, signal?: AbortSignal, options: MediaSearchOptions = {}): Promise<MediaSummary[]> {
+    // Only the words a search keys on, and no request at all when too little
+    // is left. Applied here as well as by the client, so a client that forgets
+    // to ask `isSearchable` still gets Tom's rule.
+    if (!isSearchable(query)) return [];
+    const categories = options.categories ?? DEFAULT_SEARCH_CATEGORIES;
+    const kinds = new Set(SEARCH_CATEGORIES.filter((category) => categories.includes(category.key)).flatMap((category) => category.kinds));
+    // Nothing selected finds nothing, and asks nobody.
+    if (kinds.size === 0) return [];
+    // The catalogue search takes no kind, so a filter is applied to what comes
+    // back. Asking for more when anything is filtered out keeps a page of
+    // SEARCH_PAGE_SIZE from quietly shrinking to the few hits of one kind that
+    // made the unfiltered cut. Filtered before the ancestry, so no parent is
+    // fetched for a hit that is then thrown away.
+    const narrowed = kinds.size < SEARCH_CATEGORIES.reduce((count, category) => count + category.kinds.length, 0);
+    const found = await this.catalogue.search(searchTerms(query), narrowed ? SEARCH_FILTERED_FETCH_LIMIT : SEARCH_PAGE_SIZE, signal);
+    const hits = found.filter((item) => kinds.has(item.kind)).slice(0, SEARCH_PAGE_SIZE);
+    const known = new Map(hits.map((item) => [item.id, item]));
+    const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track' || item.kind === 'album');
+    await this.loadAncestors(known, withAncestry.map((item) => item.parent_id), signal);
+    // One level further for the two kinds whose parent has a parent worth naming.
+    const grandparents = withAncestry
+      .filter((item) => item.kind === 'episode' || item.kind === 'track')
+      .map((item) => (item.parent_id ? known.get(item.parent_id)?.parent_id : undefined));
+    await this.loadAncestors(known, grandparents, signal);
+    return hits.map((item) => this.searchHit(item, known));
   }
 
   artworkUrls(ref: ArtworkRef): ArtworkSource[] {
     const nodes = this.catalogue.artworkUrls(ref.id);
     const signed = ref.url;
+    this.artworkHost.chooseOnce(nodes, signed);
     if (!signed) return nodes;
     // The signed URL first: no header needed, so it is the only kind usable
     // from an image loader that cannot set them, and the server owns
@@ -308,8 +394,67 @@ export class MachaMediaApi implements MediaApi {
       episodeNumber: item.episode_number ?? 0,
       playbackContext: {
         series: { id: show.id, title: show.title },
-        season: { id: season.id, title: season.title || `Season ${seasonNumber}`, seasonNumber },
+        season: { id: season.id, title: season.title, seasonNumber },
       },
+    };
+  }
+
+  private async loadAncestors(
+    known: Map<string, CatalogueItem>,
+    ids: readonly (string | null | undefined)[],
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const wanted = [...new Set(ids.filter((id): id is string => !!id && !known.has(id)))];
+    const loaded = await Promise.allSettled(wanted.map((id) => this.catalogue.get(id, signal)));
+    if (signal?.aborted) throw abortReason(signal);
+    for (const result of loaded) {
+      if (result.status === 'fulfilled') known.set(result.value.id, result.value);
+    }
+  }
+
+  private searchHit(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const parent = item.parent_id ? known.get(item.parent_id) : undefined;
+    if (item.kind === 'episode' && parent?.kind === 'season') {
+      const show = parent.parent_id ? known.get(parent.parent_id) : undefined;
+      if (show?.kind !== 'show') return this.media(item);
+      return this.episode(item, parent, show);
+    }
+    if (item.kind === 'season' && parent?.kind === 'show') {
+      const season = this.seasonSummary(item, parent.id);
+      return {
+        ...season,
+        playbackContext: {
+          series: { id: parent.id, title: parent.title },
+          season: { id: season.id, title: season.title, seasonNumber: season.seasonNumber },
+        },
+      };
+    }
+    if (item.kind === 'album') return this.album(item, known);
+    if (item.kind === 'track') return this.track(item, known);
+    return this.media(item);
+  }
+
+  /** An album naming its artist, where the artist is known. */
+  private album(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const artist = item.parent_id ? known.get(item.parent_id) : undefined;
+    if (artist?.kind !== 'artist') return this.media(item);
+    return { ...this.media(item), musicContext: this.musicContext(item, artist) };
+  }
+
+  private track(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const album = item.parent_id ? known.get(item.parent_id) : undefined;
+    if (album?.kind !== 'album') return this.media(item);
+    const artist = album.parent_id ? known.get(album.parent_id) : undefined;
+    return { ...this.media(item), musicContext: this.musicContext(album, artist?.kind === 'artist' ? artist : undefined) };
+  }
+
+  /** The album's own poster, for a track that carries no artwork of its own. */
+  private musicContext(album: CatalogueItem, artist: CatalogueItem | undefined): MusicHierarchyContext {
+    const artwork = this.mapArtwork(album.effective_artwork ?? album.artwork);
+    return {
+      album: { id: album.id, title: album.title, year: optionalNumber(album.year) },
+      artist: artist ? { id: artist.id, title: artist.title } : undefined,
+      artwork: artwork?.poster ?? artwork?.thumbnail,
     };
   }
 
@@ -326,7 +471,7 @@ export class MachaMediaApi implements MediaApi {
       kind: 'season',
       showId,
       seasonNumber,
-      title: item.title || `Season ${seasonNumber}`,
+      title: item.title,
     };
   }
 
@@ -335,7 +480,6 @@ export class MachaMediaApi implements MediaApi {
       id: item.id,
       kind: item.kind,
       title: item.title,
-      subtitle: this.subtitle(item),
       year: optionalNumber(item.year),
       synopsis: item.synopsis || undefined,
       artwork: this.mapArtwork(item.effective_artwork ?? item.artwork),
@@ -363,20 +507,5 @@ export class MachaMediaApi implements MediaApi {
       thumbnail: byRole(['still', 'thumbnail', 'thumb']),
     };
     return result.poster || result.backdrop || result.thumbnail ? result : undefined;
-  }
-
-  private subtitle(item: CatalogueItem): string | undefined {
-    if (item.kind === 'episode' && item.episode_number !== null) {
-      const episode = String(item.episode_number).padStart(2, '0');
-      if (item.season_number !== null) return `S${String(item.season_number).padStart(2, '0')}E${episode}`;
-      return `Episode ${item.episode_number}`;
-    }
-    if (item.kind === 'season' && item.season_number !== null) return `Season ${item.season_number}`;
-    if (item.kind === 'track' && item.track_number !== null) {
-      return item.disc_number && item.disc_number > 1
-        ? `Disc ${item.disc_number} · Track ${item.track_number}`
-        : `Track ${item.track_number}`;
-    }
-    return undefined;
   }
 }

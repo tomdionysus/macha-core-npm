@@ -164,7 +164,9 @@ export interface SessionMintFailure {
   status?: number;
   /** The server's machine-readable reason, e.g. `anonymous_disabled`. */
   code?: string;
-  /** The server's own sentence where it sent one, otherwise ours. Never assume it is fit to show a viewer. */
+  /** The server's own sentence, where it sent one, for a host that shows it. Never core's text. */
+  detail?: string;
+  /** For a log: the server's sentence where it sent one, otherwise core's. Not viewer text. */
   message: string;
 }
 
@@ -174,6 +176,7 @@ function describeMintFailure(error: unknown): SessionMintFailure {
     reason: isSessionRefusal(error) ? 'refused' : 'unreachable',
     ...(authError?.status !== undefined ? { status: authError.status } : {}),
     ...(authError?.code !== undefined ? { code: authError.code } : {}),
+    ...(authError?.detail !== undefined ? { detail: authError.detail } : {}),
     message: error instanceof Error ? error.message : String(error),
   };
 }
@@ -692,7 +695,14 @@ export class SessionManager implements AuthenticatedFetch {
         try {
           record = await validateSessionAnyNode(registry, cached.token);
         } catch {
-          record = undefined;
+          // No node answered. The cached session is inside its lifetime and
+          // nothing has said it is bad, so keep it: a request it cannot make
+          // is answered 401 and re-mints through the ordinary path. Minting
+          // here instead sent a viewer with a good token to sign in whenever
+          // the cluster was briefly out of reach (web client, 2026-09-24).
+          if (this.abandoned(generation)) return;
+          this.adopt(cached, generation);
+          return;
         }
         if (this.abandoned(generation)) return;
         if (record) {

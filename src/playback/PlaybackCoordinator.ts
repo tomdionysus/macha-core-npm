@@ -1,4 +1,5 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
@@ -11,13 +12,41 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, segmentContainer, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { choosePlaybackInstruction, degradeInstruction, segmentContainer, transcodeUndecodable, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
 export interface PlaybackIntent {
   positionMs: number;
   paused: boolean;
+}
+
+/**
+ * Why the coordinator is telling the host something, for the host to word:
+ * - `copy-refused`: the node could not copy the source streams, so it is
+ *   converting them (the instruction's reasons carry `executor-refused-copy`);
+ * - `decode-fallback`: the player could not decode the copied streams, so they
+ *   are being converted (reasons carry `player-could-not-decode`); `error` is
+ *   the player's report;
+ * - `cannot-seek`: a seek was refused because this stream cannot seek;
+ * - `not-ready`: an update or a move was asked for before a session existed;
+ * - `instruction-failed`: re-choosing how to play failed; `error` says why;
+ * - `subtitles-loading`: a subtitle change is being applied;
+ * - `update-failed`: a change to the running generation failed; `error` says why.
+ */
+export type PlaybackNoticeCode =
+  | 'copy-refused'
+  | 'decode-fallback'
+  | 'cannot-seek'
+  | 'not-ready'
+  | 'instruction-failed'
+  | 'subtitles-loading'
+  | 'update-failed';
+
+export interface PlaybackNotice {
+  code: PlaybackNoticeCode;
+  /** The failure behind it, for the two codes that have one. Its message is log text, not viewer text. */
+  error?: Error;
 }
 
 export interface PlaybackCoordinatorSnapshot {
@@ -46,7 +75,11 @@ export interface PlaybackCoordinatorSnapshot {
    * classify without parsing prose.
    */
   fatalError?: Error;
-  notice?: string;
+  /**
+   * Something the viewer may want told, as a code. Core writes no viewer
+   * text (Tom, 2026-09-24); the host words each code, or shows nothing.
+   */
+  notice?: PlaybackNotice;
   /**
    * How this generation's instruction was arrived at, so a host can show it.
    *
@@ -483,6 +516,25 @@ export function isPrematurePlaybackEnd(positionMs: number, durationMs: number): 
   return durationMs > 0 && positionMs + PLAYBACK_END_TOLERANCE_MS < durationMs;
 }
 
+/**
+ * No evidence about what failed: a bare `Error`, or a `PlaybackSourceError` of
+ * kind `unknown`. The same test `source-failure-unclassified` reports on.
+ */
+function isUnclassifiedPlaybackFailure(error: unknown): boolean {
+  return !(error instanceof PlaybackSourceError) || error.kind === 'unknown';
+}
+
+/** What a host may say about a move. See `PlaybackCoordinator.moveTo`. */
+export interface PlaybackMoveOptions {
+  /**
+   * How far ahead of the viewer to ask the target node to start, in
+   * milliseconds, in place of core's own estimate. The host's figure for this
+   * move only: core does not keep it. Ignored unless the player declares
+   * `holdsThroughLead`.
+   */
+  leadMs?: number;
+}
+
 export function generationLocalPosition(
   session: PlaybackSession,
   absolutePositionMs: number,
@@ -829,6 +881,19 @@ export class PlaybackCoordinator {
   /** Latest server-side session state; may be ahead of the source currently visible. */
   private serverSession?: PlaybackSession;
   /**
+   * Sessions a move has left behind and still owes a close, held until the
+   * player stops presenting them.
+   *
+   * **Release after the cut, never before it.** A host that prepares the
+   * replacement on a second element keeps the outgoing one playing -- and
+   * fetching -- until the join is resident, measured at 36 s on the web client
+   * on 2026-09-23. Closing at activation made every one of those fetches a
+   * `404` against a session core had deleted itself, and the reap path read
+   * them as the current generation dying. Flushed from `setSession`, which is
+   * the cut, and by `close()`, which ends the need to wait for one.
+   */
+  private readonly releaseAfterCut = new Set<string>();
+  /**
    * The Direct Play source actually loaded into the player right now, kept
    * distinct from `serverSession.source`. A silently promoted alternate
    * (see `promoteSilentDirectAlternate`) moves session bookkeeping forward
@@ -851,6 +916,10 @@ export class PlaybackCoordinator {
    * regeneration changed nothing, and the next step has to be a different one.
    */
   private lastRegenerationPositionMs?: number;
+  /** Set once the decode fallback has been taken; see `fallBackFromUndecodable`. */
+  private decodeFallbackTaken = false;
+  /** Set by the viewer's own `update` with a mode; see `viewerChoseMode`. */
+  private viewerModeChoice?: boolean;
 
   /**
    * A replacement generation that is built and waiting for the buffered
@@ -1092,9 +1161,12 @@ export class PlaybackCoordinator {
     }
   }
 
-  /** The viewer named the mode themselves, so nothing here may quietly change it. */
+  /**
+   * The viewer named the mode themselves, so nothing here may quietly change
+   * it: at the start, or later through `update`, which overrides the start.
+   */
   private get viewerChoseMode(): boolean {
-    return (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
+    return this.viewerModeChoice ?? (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
   }
 
   /**
@@ -1121,7 +1193,7 @@ export class PlaybackCoordinator {
    * have been rebuilt from was the refused one, so every recovery re-asked for
    * the copy the first attempt had already given up on.
    */
-  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown): void {
+  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown, notice: PlaybackNotice = { code: 'copy-refused' }): void {
     const instruction = this.chosenInstruction;
     this.log.warn('instruction-degraded', {
       mediaId: this.options.media.id,
@@ -1142,8 +1214,39 @@ export class PlaybackCoordinator {
         chosenByViewer: false,
         withoutFacts: this.snapshot.instruction?.withoutFacts ?? false,
       },
-      notice: 'This node could not copy the original streams, so they are being converted.',
+      notice,
     });
+  }
+
+  /**
+   * The player could not decode what a copied generation handed it, so ask the
+   * same node for a transcode at the viewer's position, once.
+   *
+   * Tom's ruling, 2026-09-24. Found on the Android TV set: an AVI with MPEG-4
+   * Part 2 video failed in the hardware decoder. The failure moved node, which
+   * cannot help, because a decode failure follows the file to every node; a
+   * transcode played it.
+   *
+   * - Only for `media` or `unsupported`, the kinds that are facts about the
+   *   bytes and not about the node.
+   * - Only for a generation that copied something. A transcode that will not
+   *   decode is not fixed by another one.
+   * - Never over a mode the viewer chose themselves. Then the failure ends
+   *   playback as before, and the host may offer a transcode.
+   * - Once per playback. A second decode failure ends it.
+   */
+  private fallBackFromUndecodable(session: PlaybackSession, error: Error): boolean {
+    if (!(error instanceof PlaybackSourceError) || (error.kind !== 'media' && error.kind !== 'unsupported')) return false;
+    const instruction = this.chosenInstruction;
+    if (this.decodeFallbackTaken || this.viewerChoseMode || !instruction || !session.options.modes.includes('transcode')) return false;
+    const degraded = transcodeUndecodable(instruction);
+    if (!degraded) return false;
+    this.decodeFallbackTaken = true;
+    this.log.warn('decode-failed-transcoding', { sessionId: session.sessionId, mode: session.mode, kind: error.kind, error });
+    this.applyUpdate({ preferences: instructionPreferences(degraded) });
+    // After the update, which clears the notice when it queues a change.
+    this.applyDegradedInstruction(degraded, error, { code: 'decode-fallback', error });
+    return true;
   }
 
   /**
@@ -1292,6 +1395,11 @@ export class PlaybackCoordinator {
       await this.regenerationPromise?.catch(() => undefined);
       await Promise.all([...this.alternatePreparations].map((preparation) => preparation.catch(() => undefined)));
       const session = this.serverSession ?? this.snapshot.session ?? ownedAtClose;
+      // Waiting for a cut that will now never come. Released here rather than
+      // at the cut, with the same options as the session below.
+      const retired = [...this.releaseAfterCut].filter((id) => id !== session?.sessionId);
+      this.releaseAfterCut.clear();
+      await Promise.all(retired.map((id) => this.stopOnDisposal(id)));
       if (session) {
         try {
           await this.options.resolver.stop(session.sessionId, this.closeOptions);
@@ -1340,7 +1448,7 @@ export class PlaybackCoordinator {
     // would never reach: real positions were ignored, `seekBy` built on the
     // phantom, and a failover asked the next node to start there.
     if (session && !session.options.canSeek) {
-      this.patchSnapshot({ notice: 'This stream cannot seek.' });
+      this.patchSnapshot({ notice: { code: 'cannot-seek' } });
       return false;
     }
     // A pending replacement is built *now* rather than discarded, and both
@@ -1464,9 +1572,20 @@ export class PlaybackCoordinator {
 
   update(update: PlaybackUpdate): void {
     if (this.disposed) return;
+    // The viewer's own word on the mode, which a fallback must not override.
+    // Only here: core's own changes go through `applyUpdate` and say nothing
+    // about what the viewer wants.
+    if (this.snapshot.session && update.preferences?.mode !== undefined) {
+      this.viewerModeChoice = update.preferences.mode !== 'choose';
+    }
+    this.applyUpdate(update);
+  }
+
+  private applyUpdate(update: PlaybackUpdate): void {
+    if (this.disposed) return;
     const session = this.snapshot.session;
     if (!session) {
-      this.patchSnapshot({ notice: 'Playback options are still loading.' });
+      this.patchSnapshot({ notice: { code: 'not-ready' } });
       return;
     }
 
@@ -1518,24 +1637,45 @@ export class PlaybackCoordinator {
    * Returns whether the move happened. `false` is an ordinary answer: already
    * on that node, no session yet, the endpoint unknown, or the node unwilling
    * to build an equivalent generation.
+   *
+   * **A lead, for a host that can hold through one.** A node produces a
+   * generation sequentially from the position it is asked for, at no better
+   * than realtime on the boxes that are slow to start, so a generation asked
+   * for at the viewer's position begins one start-cost behind them and never
+   * catches up. Measured on the web client on 2026-09-23: gbni-1 took 8.5 to
+   * 12.3 s to a first fragment, the join lost the race both times, and the
+   * picture froze for 15 to 19 s. So the move asks for the viewer's position
+   * plus the lead, and the outgoing source plays on until the viewer reaches
+   * the new generation, where the host cuts.
+   *
+   * The lead is `options.leadMs` where a host supplies one, otherwise core's
+   * own estimate for that node and kind plus `MOVE_LEAD_MARGIN_MS`. No estimate
+   * means no lead, which is the behaviour before estimates existed. **Only a
+   * player declaring `holdsThroughLead` gets one**: any other host cannot keep
+   * the outgoing source presenting until the viewer arrives, and a lead handed
+   * to it is a skip forward.
    */
-  async moveTo(endpointId: string): Promise<boolean> {
+  async moveTo(endpointId: string, options: PlaybackMoveOptions = {}): Promise<boolean> {
     if (this.disposed) return false;
     const session = this.snapshot.session;
     if (!session) {
-      this.patchSnapshot({ notice: 'Playback is still loading.' });
+      this.patchSnapshot({ notice: { code: 'not-ready' } });
       return false;
     }
     if (session.endpoint?.id === endpointId) return false;
     if (!this.options.resolver.prepareOn) return false;
 
     const movingFrom = session.sessionId;
-    const requestedPositionMs = this.snapshot.intent.positionMs;
+    const viewerPositionMs = this.snapshot.intent.positionMs;
+    const leadMs = this.moveLeadMs(endpointId, session, viewerPositionMs, options);
+    const requestedPositionMs = viewerPositionMs + leadMs;
     this.log.info('source-move-start', {
       fromEndpoint: session.endpoint,
       toEndpointId: endpointId,
       sessionId: movingFrom,
-      positionMs: requestedPositionMs,
+      positionMs: viewerPositionMs,
+      leadMs,
+      leadSource: leadMs === 0 ? 'none' : options.leadMs !== undefined ? 'host' : 'estimate',
     });
     this.patchSnapshot({ preparingSource: true, notice: undefined });
     try {
@@ -1563,19 +1703,21 @@ export class PlaybackCoordinator {
         return false;
       }
 
+      // A replacement decided for the generation being left is a decision
+      // about a session this coordinator is about to stop owning. Same
+      // reasoning as `beginSourceFailover`.
+      this.discardPendingReplacement('move');
+      // Released at the cut, not here: see `releaseAfterCut`. Its failure is
+      // not the viewer's problem, and a node that will not answer reaps the
+      // session on its own clock.
+      this.releaseAfterCut.add(movingFrom);
       this.serverSession = moved;
-      this.activateSession(moved, this.snapshot.intent.positionMs, 'continue');
+      this.activateSession(moved, this.snapshot.intent.positionMs, 'continue', leadMs > 0);
       this.log.info('source-move-ready', {
         oldSessionId: movingFrom,
         newSessionId: moved.sessionId,
         endpoint: moved.endpoint,
         positionMs: this.snapshot.intent.positionMs,
-      });
-      // Released after the swap, and its failure is not the viewer's problem:
-      // the picture is already on the new node. A node that will not answer
-      // reaps the session on its own clock.
-      await this.options.resolver.stop(movingFrom, this.closeOptions).catch((error) => {
-        this.log.warn('moved-from-session-close-failed', { sessionId: movingFrom, error });
       });
       this.patchSnapshot({ preparingSource: false, notice: undefined });
       return true;
@@ -1586,6 +1728,58 @@ export class PlaybackCoordinator {
       this.patchSnapshot({ preparingSource: false });
       return false;
     }
+  }
+
+  /**
+   * For a player that cannot ride a hold, wait until the node says this
+   * generation has produced something. Every other player, and every source
+   * the node gives no production reading for, goes straight through.
+   */
+  private waitsForProduction(session: PlaybackSession): boolean {
+    return this.options.player.needsProducedSource === true
+      && session.mode !== 'direct'
+      && this.options.resolver.awaitProduced !== undefined
+      && session.production !== undefined
+      && !(session.production.producedMs > 0);
+  }
+
+  private async producedForPlayer(session: PlaybackSession): Promise<'produced' | 'gone' | 'unknown'> {
+    const awaitProduced = this.options.resolver.awaitProduced?.bind(this.options.resolver);
+    if (!awaitProduced) return 'unknown';
+    const outcome = await awaitProduced(session).catch(() => 'unknown' as const);
+    this.log.info('source-produced-wait', { sessionId: session.sessionId, outcome });
+    return outcome;
+  }
+
+  /**
+   * How far ahead of the viewer a move to this node should ask for.
+   *
+   * Zero unless the player can hold through a lead, and zero when the lead
+   * would reach past the end of the title: there is nothing to ask for there,
+   * and a move near the end is better made at the viewer's position than not
+   * at all. Never remembered — re-read on every move, because a node's start
+   * cost moves with its load.
+   */
+  private moveLeadMs(
+    endpointId: string,
+    session: PlaybackSession,
+    viewerPositionMs: number,
+    options: PlaybackMoveOptions,
+  ): number {
+    if (session.mode === 'direct') return 0;
+    if (this.options.player.holdsThroughLead !== true) {
+      if (options.leadMs !== undefined) {
+        this.log.info('move-lead-ignored', { endpointId, leadMs: options.leadMs, reason: 'player-cannot-hold' });
+      }
+      return 0;
+    }
+    const estimate = this.options.resolver.startCostEstimate?.(endpointId, session);
+    const requested = options.leadMs ?? (estimate === undefined ? 0 : estimate + MOVE_LEAD_MARGIN_MS);
+    const leadMs = Number.isFinite(requested) ? Math.max(0, requested) : 0;
+    if (leadMs === 0) return 0;
+    const durationMs = session.durationMs;
+    if (durationMs > 0 && viewerPositionMs + leadMs >= durationMs) return 0;
+    return leadMs;
   }
 
   /**
@@ -1603,10 +1797,10 @@ export class PlaybackCoordinator {
         capabilities,
       );
       if (this.disposed) return;
-      this.update({ ...update, preferences });
+      this.applyUpdate({ ...update, preferences });
     } catch (error) {
       this.log.warn('instruction-rechoose-failed', { mediaId: this.options.media.id, error });
-      this.patchSnapshot({ notice: 'Could not work out how to play this here.' });
+      this.patchSnapshot({ notice: { code: 'instruction-failed', error: asError(error) } });
     }
   }
 
@@ -1623,17 +1817,29 @@ export class PlaybackCoordinator {
     this.patchSnapshot({
       preparingSource: true,
       pendingPreferences: mergePreferences(this.snapshot.pendingPreferences, next.update.preferences),
-      notice: next.reason === 'subtitle' ? 'Loading subtitles…' : undefined,
+      notice: next.reason === 'subtitle' ? { code: 'subtitles-loading' } : undefined,
     });
     this.mutationRevision += 1;
-    if (!this.mutationLoop) {
-      this.mutationLoop = this.drainMutations().finally(() => {
-        this.mutationLoop = undefined;
-        if (!this.disposed && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
-          this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
-        }
-      });
-    }
+    this.startMutationLoop();
+  }
+
+  private startMutationLoop(): void {
+    if (this.mutationLoop) return;
+    this.mutationLoop = this.drainMutations().finally(() => {
+      this.mutationLoop = undefined;
+      // The loop returns when it finds nothing pending, and is only marked
+      // stopped here, a microtask later. A change queued in between saw a loop
+      // still "running", started none, and was never applied, while the line
+      // below then cleared the flag that said it was coming. Seen as a
+      // "decide for me" lost behind a fallback's update, 2026-09-24.
+      if (!this.disposed && this.pendingMutation) {
+        this.startMutationLoop();
+        return;
+      }
+      if (!this.disposed && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
+        this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
+      }
+    });
   }
 
   private scheduleSeekMutation(next: PendingMutation): void {
@@ -1786,7 +1992,7 @@ export class PlaybackCoordinator {
           update,
           error,
         });
-        this.patchSnapshot({ notice: error instanceof Error ? error.message : String(error) });
+        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error) } });
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;
@@ -1795,7 +2001,12 @@ export class PlaybackCoordinator {
     }
   }
 
-  private activateSession(session: PlaybackSession, desiredAbsoluteMs: number, transition: PlaybackTransition): void {
+  private activateSession(
+    session: PlaybackSession,
+    desiredAbsoluteMs: number,
+    transition: PlaybackTransition,
+    ahead = false,
+  ): void {
     if (this.disposed) return;
     // Catalogue profiling may already have prepared the reusable player. The
     // session supplies the same facts authoritatively and completes that setup
@@ -1803,7 +2014,16 @@ export class PlaybackCoordinator {
     this.options.player.prepare?.(technicalProfileFromSession(session));
     const activationRevision = ++this.sourceActivationRevision;
     this.releaseObsoleteAlternates(session.sessionId);
-    const localPositionMs = this.activationPosition(session, desiredAbsoluteMs);
+    // A generation asked for ahead of the viewer begins after them, on purpose.
+    // The renegotiation below exists for a viewer who moved *backwards* while a
+    // generation was being negotiated; applied here it would PATCH the lead
+    // away and pay a second full start. So the position goes to the player as
+    // it is -- negative, the viewer that far before this generation's start --
+    // and a player that declared `holdsThroughLead` plays the outgoing source
+    // up to it.
+    const localPositionMs = ahead && session.mode !== 'direct' && desiredAbsoluteMs < Math.max(0, session.seekMs)
+      ? desiredAbsoluteMs - Math.max(0, session.seekMs)
+      : this.activationPosition(session, desiredAbsoluteMs);
 
     if (localPositionMs === undefined) {
       // The user moved behind the generation while it was being prepared. This
@@ -1820,9 +2040,13 @@ export class PlaybackCoordinator {
 
     this.serverSession = session;
     const nextStreamOffsetMs = session.mode === 'direct' ? 0 : Math.max(0, session.seekMs);
+    // Clamped at the generation's start for the one case that goes below it: a
+    // lead, where the host cuts when the viewer *reaches* the start. Presenting
+    // at the position the move began from would pin the readout a whole lead
+    // behind the picture.
     const absoluteStartMs = session.mode === 'direct'
       ? localPositionMs
-      : nextStreamOffsetMs + localPositionMs;
+      : nextStreamOffsetMs + Math.max(0, localPositionMs);
     const startPaused = this.snapshot.intent.paused;
 
     /**
@@ -1900,7 +2124,24 @@ export class PlaybackCoordinator {
       paused: startPaused,
     });
 
-    void this.options.player.play(session.source, localPositionMs, startPaused, transition).then((started) => {
+    const handOver = (): Promise<boolean> => this.options.player.play(session.source, localPositionMs, startPaused, transition);
+    // Synchronous for every player that did not ask to wait: `play()` is called
+    // in this turn, exactly as before, and only a player declaring
+    // `needsProducedSource` takes the extra step.
+    const playing = this.waitsForProduction(session)
+      ? this.producedForPlayer(session).then((produced) => {
+        if (this.disposed || activationRevision !== this.sourceActivationRevision) return undefined;
+        if (produced === 'gone') {
+          // The generation vanished before producing anything. The same answer
+          // a 404 on its first fragment would have given, delivered through the
+          // same door, so the reaped-session recovery takes it from here.
+          throw new PlaybackSourceError(`Generation ${session.sessionId} is gone before producing media.`, 'not-found');
+        }
+        return handOver();
+      })
+      : handOver();
+    void playing.then((started) => {
+      if (started === undefined) return;
       if (this.disposed || activationRevision !== this.sourceActivationRevision) return;
       present();
       // User intent may have changed while the source was attaching. Reconcile
@@ -2278,6 +2519,13 @@ export class PlaybackCoordinator {
 
   private setSession(session: PlaybackSession): void {
     this.patchSnapshot({ session, instruction: this.instructionWithServed(session) });
+    for (const retired of [...this.releaseAfterCut]) {
+      if (retired === session.sessionId || retired === this.serverSession?.sessionId) continue;
+      this.releaseAfterCut.delete(retired);
+      void this.options.resolver.stop(retired, this.closeOptions).catch((error: unknown) => {
+        this.log.warn('moved-from-session-close-failed', { sessionId: retired, error });
+      });
+    }
   }
 
   /**
@@ -2604,7 +2852,24 @@ export class PlaybackCoordinator {
     // either the adapter has no degradation channel, or the cover ran out
     // before recovery finished. Same question, same answer, and still not a
     // reason to condemn the node.
+    if (failedSession && this.fallBackFromUndecodable(failedSession, fatalError)) return;
     if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
+    // **An unclassified fatal asks the same question before it charges
+    // anyone.** A player that cannot see a status -- expo-video's terminal
+    // error carries only a message -- reports a reaped session as `unknown`,
+    // and until now that went straight to failover: measured on the Android TV
+    // set on 2026-09-23, two reaps each charged a healthy local node and moved
+    // the viewer across the internet. The session route can tell a reaped
+    // session from a failing node without anyone reading the message, so ask
+    // it. Gone: regenerate on the same node, uncharged. Alive, or no answer:
+    // the stream really failed, and failover and the charge go ahead as before.
+    if (failedSession
+      && isUnclassifiedPlaybackFailure(fatalError)
+      && isEndpointRetryablePlaybackFailure(fatalError)
+      && this.beginMissingSessionRecovery(fatalError, true)) {
+      this.noteUnclassifiedFailure(fatalError, 'fatal');
+      return;
+    }
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);
@@ -2634,7 +2899,18 @@ export class PlaybackCoordinator {
    * looking at a stalled player with nothing running.
    */
   private beginMissingSessionRecovery(error: Error, terminal: boolean): boolean {
-    const session = this.snapshot.session ?? this.serverSession;
+    // **Ask about the session core owns, not the one on screen.** A player
+    // report carries no session id, so it is attributed to whatever is
+    // presented -- and between an activation and the cut that is the
+    // *outgoing* generation, still fetching. Probing it asks whether a session
+    // core has already replaced is alive, and "no" then rebuilt the replaced
+    // one over the top of the live one: measured on the web client on
+    // 2026-09-23, a clean move followed twenty seconds later by the viewer
+    // yanked back to the node they had left, and the new node's only
+    // transcode slot leaked.
+    const presented = this.snapshot.session ?? this.serverSession;
+    const session = this.serverSession ?? presented;
+    const outgoing = presented && session && presented.sessionId !== session.sessionId ? presented : undefined;
     const resolver = this.options.resolver;
     if (!session || !resolver.sessionAlive || !resolver.regenerate) return false;
     // Something is already replacing this generation. A second replacement for
@@ -2643,7 +2919,7 @@ export class PlaybackCoordinator {
     // already been built and is waiting, and the session it replaces can no
     // longer be probed at all.
     if (this.failoverPromise || this.regenerationPromise || this.pendingReplacement) return true;
-    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal).finally(() => {
+    this.regenerationPromise = this.recoverFromMissingSession(session, error, terminal, outgoing).finally(() => {
       this.regenerationPromise = undefined;
     });
     return true;
@@ -2673,6 +2949,7 @@ export class PlaybackCoordinator {
     session: PlaybackSession,
     error: Error,
     terminal: boolean,
+    outgoing?: PlaybackSession,
   ): Promise<void> {
     const giveUpOnThisSource = (): void => {
       if (this.disposed || this.snapshot.fatalError) return;
@@ -2720,13 +2997,27 @@ export class PlaybackCoordinator {
     }
     if (this.disposed) return;
 
+    if (alive && outgoing) {
+      // The generation core owns is alive, so the `404` came from the one
+      // being cut away from -- which is expected to be gone, and is not a
+      // reason to do anything on either channel. The cut is already coming.
+      this.log.info('source-not-found-on-outgoing-session', {
+        sessionId: session.sessionId,
+        outgoingSessionId: outgoing.sessionId,
+        terminal,
+      });
+      return;
+    }
     if (alive) {
       // An answer, and it clears the node: the `404` was a fragment past the
       // end of a live plan. Replacing the session would fix nothing and
       // building a standby for it is the churn `not-found` exists to stop, so
       // the degradation path deliberately stops here. A fatal one still needs
       // somewhere to go.
-      this.log.warn('source-not-found-on-live-session', {
+      // Named for what arrived: a `not-found` against a live session is a miss
+      // in the plan, while an unclassified failure against one is the stream
+      // failing on a node whose session is fine -- the failover below charges it.
+      this.log.warn(isMissingSourceFailure(error) ? 'source-not-found-on-live-session' : 'unclassified-failure-on-live-session', {
         sessionId: session.sessionId,
         endpoint: session.endpoint,
         positionMs: this.snapshot.intent.positionMs,
@@ -2830,6 +3121,17 @@ export class PlaybackCoordinator {
     this.pendingReplacement = undefined;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
     this.pendingReplacementTimer = undefined;
+    // A replacement is only ever for the generation core owns. Anything else
+    // has already been replaced, and rebuilding it would put a second
+    // generation over the live one and orphan whichever lost.
+    if (this.serverSession && dead.sessionId !== this.serverSession.sessionId) {
+      this.log.warn('replacement-for-superseded-session-dropped', {
+        sessionId: dead.sessionId,
+        currentSessionId: this.serverSession.sessionId,
+        reason,
+      });
+      return;
+    }
     const requestedPositionMs = this.snapshot.intent.positionMs;
     if (this.lastRegenerationPositionMs !== undefined
       && Math.round(this.lastRegenerationPositionMs) === Math.round(requestedPositionMs)) {
@@ -2868,6 +3170,18 @@ export class PlaybackCoordinator {
         ));
       })(), attemptBudgetMs * 2 + RECOVERY_SUPERVISION_MARGIN_MS);
       if (this.disposed) {
+        await this.stopOnDisposal(next.sessionId);
+        return;
+      }
+      if (this.serverSession && this.serverSession.sessionId !== dead.sessionId) {
+        // Something else took ownership while this was negotiating -- a move,
+        // a failover. Theirs is live; this one is released, not adopted.
+        this.log.warn('replacement-arrived-for-superseded-session', {
+          sessionId: next.sessionId,
+          replacedSessionId: dead.sessionId,
+          currentSessionId: this.serverSession.sessionId,
+        });
+        this.patchSnapshot({ preparingSource: false });
         await this.stopOnDisposal(next.sessionId);
         return;
       }

@@ -119,5 +119,7 @@ function wireThroughput(registry: EndpointRegistry): void {
     const configuration = new MachaClientConfiguration();
     registry.attachBandwidth(new EndpointBandwidth(() => configuration.existingClientId()));
   }
-  setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs));
+  // Core's own JSON, filed as such: it ranks nodes but never decides whether
+  // one can carry a stream. See `TransferKind`.
+  setTransferRecorder((url, bytes, durationMs) => registry.recordTransferByUrl(url, bytes, durationMs, 'api'));
 }

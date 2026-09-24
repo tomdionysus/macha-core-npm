@@ -15,7 +15,13 @@ import type {
 } from './ManageApi.js';
 
 export class MachaManageApiError extends Error {
-  constructor(message: string, public readonly status?: number, public readonly code?: string) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
+  ) {
     super(message);
     this.name = 'MachaManageApiError';
   }
@@ -121,7 +127,7 @@ export class MachaManageApi implements ManageApi {
       const { body, wasJson } = await readResponseBody(response);
       if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
       const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-      throw new MachaManageApiError(`Macha management request failed: ${parsed.message}`, response.status, parsed.code);
+      throw new MachaManageApiError(`Macha management request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
     }
     if (response.status === 204) return undefined as T;
     try {

@@ -1,12 +1,20 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
+import { parseErrorEnvelope } from './errorEnvelope.js';
 export interface ServerStatus {
   version: string | null;
   playback: Record<string, unknown>;
   playbackAvailable: boolean;
   httpStatus: number;
-  message: string | null;
+  /**
+   * The server's status code: the top-level `status` every response carries
+   * from 0.56.0 (`ok` on success), or the error's code. Null when the node
+   * states none, as one older than 0.56.0 does on success. A host words this.
+   */
+  code: string | null;
+  /** The server's own sentence, where it sent one. Never core's text. */
+  detail: string | null;
 }
 
 export interface ServerApi {
@@ -76,16 +84,15 @@ export class MachaServerApi implements ServerApi {
     const playback = objectValue(parsed.body) ?? {};
     if (isGatewayConnectionFailure(response, parsed.wasJson)) throw serverUnreachable();
 
-    const message = stringValue(playback.message)
-      ?? stringValue(playback.error)
-      ?? (response.ok ? null : `${response.status} ${response.statusText}`);
+    const envelope = response.ok ? undefined : parseErrorEnvelope(parsed.body, `${response.status} ${response.statusText}`);
 
     return {
       version: reportedVersion(playback),
       playback,
       playbackAvailable: response.ok,
       httpStatus: response.status,
-      message,
+      code: envelope?.code ?? stringValue(playback.status) ?? null,
+      detail: envelope ? envelope.detail ?? null : stringValue(playback.message) ?? null,
     };
   }
 }

@@ -24,7 +24,11 @@ function mediaProfilePending(value: unknown): boolean {
   const marker = [candidate.status, candidate.error, candidate.code]
     .find((entry): entry is string => typeof entry === 'string')
     ?.trim().toLowerCase().replace(/[ -]+/g, '_');
-  return marker === 'profile_not_available'
+  // `pending` is the node's own 202 while it prepares the profile, since
+  // server 0.22. Core missed it and read that answer as an invalid profile,
+  // a 502, for as long as the route has existed.
+  return marker === 'pending'
+    || marker === 'profile_not_available'
     || marker === 'profile_pending'
     || marker === 'not_available_yet'
     || marker === 'profile_not_available_yet'
@@ -36,6 +40,8 @@ export class MachaApiError extends Error {
     message: string,
     public readonly status?: number,
     public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
   ) {
     super(message);
   }
@@ -229,6 +235,6 @@ export class MachaCatalogueApi implements CatalogueApi {
     const { body, wasJson } = await readResponseBody(response);
     if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
     const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-    throw new MachaApiError(`Macha catalogue request failed: ${parsed.message}`, response.status, parsed.code);
+    throw new MachaApiError(`Macha catalogue request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
   }
 }

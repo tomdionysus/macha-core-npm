@@ -1,4 +1,5 @@
-import { mergeRequestHeaders, normalizeBaseUrl, queryString } from '../api/httpCompat.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS, mergeRequestHeaders, normalizeBaseUrl, queryString } from '../api/httpCompat.js';
+import { MachaConnectionError } from '../api/serverConnection.js';
 import type { PlaybackProduction } from './streamProtocol.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
@@ -185,6 +186,17 @@ interface WireSession {
     can_switch_media: boolean;
   };
 }
+
+/**
+ * How long core waits for a node to say whether a session still exists.
+ *
+ * Core's ordinary bound on a JSON API request, `DEFAULT_REQUEST_TIMEOUT_MS`,
+ * because that is what this is: one small GET on the session route. Exported
+ * because it sits in front of a failover: on a node that has genuinely gone,
+ * it is the longest core waits before walking away, and a host budgeting a
+ * recovery should be able to name it rather than find it.
+ */
+export const SESSION_LIVENESS_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MS;
 
 export class MachaPlaybackError extends Error {
   constructor(
@@ -563,9 +575,37 @@ export class MachaPlaybackResolver implements PlaybackResolver {
    * gone". Acting on the difference is what stops a node being condemned for
    * answering honestly.
    */
-  async sessionAlive(sessionId: string): Promise<boolean> {
+  /**
+   * The session as the node describes it now, or undefined when the node no
+   * longer holds it. Bounded like `sessionAlive`, and for the same reason.
+   */
+  async read(sessionId: string): Promise<PlaybackSession | undefined> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SESSION_LIVENESS_TIMEOUT_MS);
     try {
-      await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {});
+      const wire = await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal });
+      return this.mapSession(wire);
+    } catch (error) {
+      if (error instanceof MachaPlaybackError && error.status === 404) return undefined;
+      if (controller.signal.aborted) {
+        throw new MachaConnectionError(`Session ${sessionId} unanswered within ${SESSION_LIVENESS_TIMEOUT_MS} ms.`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async sessionAlive(sessionId: string): Promise<boolean> {
+    // Bounded, because nothing below this was. The request went through the
+    // host's plain fetch with no signal, so a node that had dropped off the
+    // network -- packets lost rather than refused -- held the question for as
+    // long as the platform lets a connection hang. It sits in front of a
+    // failover now, so that wait would be the viewer's.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SESSION_LIVENESS_TIMEOUT_MS);
+    try {
+      await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal });
       this.log.debug('session-alive', { sessionId });
       return true;
     } catch (error) {
@@ -573,7 +613,14 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         this.log.info('session-gone', { sessionId });
         return false;
       }
+      // A typed timeout rather than the abort: "could not find out", which the
+      // caller already treats as no answer, never as the session being gone.
+      if (controller.signal.aborted) {
+        throw new MachaConnectionError(`Session ${sessionId} liveness unanswered within ${SESSION_LIVENESS_TIMEOUT_MS} ms.`);
+      }
       throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -795,7 +842,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       parsed.code,
       retryAfterMs(response.headers.get('retry-after')),
       parsed.reason,
-      parsed.message,
+      parsed.detail,
     );
   }
 }

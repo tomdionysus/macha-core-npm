@@ -8,88 +8,106 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 
 ## Start here if you are new to this
 
-### State of play, end of 2026-09-21
+### State of play, end of 2026-09-23
 
-**Core is `76d94ba` on `develop`, `dist` hash `ff5d065c5da7`, 1020 tests green, and nothing is pushed.** `package.json` reads `0.17.0` and npm still ends at `0.14.0`.
+**Read [HANDOVER.md](HANDOVER.md) first.** It is the short version of this section and says what to do next.
 
-**The last artefact anyone but core validated is `5077468` / `04554181bfba`.** All three clients ran their suites against it — web 461, phone 204, television 240 — and the television additionally smoke-tested it on `10.35.1.133`, all three modes playing and three sessions created and closed. **Two commits sit on top of that and nobody has tested them:** `03d941e`, documentation only, and `76d94ba`, a real fix to a real defect.
+**Published: `0.18.0`, and nothing since.** npm `latest` is `0.18.0`, `gitHead` `a3b40ca`. `main` holds it, and all three client trees pin `^0.18.0` on `main` and link this tree on `develop`.
 
-**Nothing built today has been exercised against a node, with that one exception.** Not the session-leak fix, not `moveTo`, not the standby window, not identity resolution. Three green suites prove these changes break nothing; they prove nothing about whether they work. **Treat "green" as "does not break the client", never as validation**, and say which you mean when reporting one.
+**`develop` is 26 commits past `0.18.0`, pushed, unreleased.** HEAD `23583aa`, `dist` hash `66d79d1f8e4b` (`npm run dist:hash`), 1052 tests in 67 files. `package.json` still reads `0.18.0`, and the README carries `*v0.18.0*` under its title, which `npm version` now keeps in step (`0ac8f21`). **What a release would carry, each with its entry below:**
+- **`moveTo` and its door.** `PlaybackRuntime.moveTo` (`2f196a1`). The move releases the old session at the cut and asks about the session core owns (`5de9250`). Verified live twice.
+- **The lead on a move and `holdsThroughLead`** (`d58375a`, trimmed by `38d0524`). Verified live with a host lead.
+- **An unclassified fatal asks the node before charging it**, and the liveness GET is bounded at `SESSION_LIVENESS_TIMEOUT_MS`, 8 s, where it had no bound (`2bcce57`). **Verified on the Android TV set 2026-09-23 by outcome, not by trail.** Detail in its entry.
+- **`episodeNeighbours`** (`8dd1fcf`). Verified on the Android TV set.
+- **A player declaring `needsProducedSource` waits for `production.produced_ms > 0`** on the session route before `play()` (`3e611b8`). Not yet exercised.
+- **A move declines a node whose recent media throughput is below the served rate** (`9f33b75`). `recordTransferByUrl` gains an optional fourth argument, `kind`, defaulting to media. Not yet exercised.
+- **The artwork host is chosen by this viewer's round trip, once per run** (`154270d`), for Tom's artwork P0. It moves only on a gain of at least 50 ms and 40%, and it stays sticky. Measured before: 636 ms per cold poster from macnessa against 65 ms from fi-1 on the LAN. **Verified live by the web client 2026-09-24 against `19bc53863cf2`, from the fi-1 site.** The first run took all 33 on-screen posters from fi-1, re-downloaded once: first at 81 ms, half at 272 ms, all at 644 ms, where macnessa had ended between 0.7 and 3.4 s. After a reload, all 33 were still from fi-1 and all came from cache as their cards rendered. **Tom asked whether it could send artwork to an unavailable node.** When choosing, no: only ready nodes carry a round trip. After choosing, it could, and two fixes followed. `4f50200` stops `order()` leading with a host marked not ready. `75c2d27` makes "ready" for artwork mean nothing has failed since the last success. Before that, the registry's 0.5 s and 2 s retry cooldowns left a just-dead node reading ready for most of its first 20 s. **The window that remains is a silent death between probes.** A dropped host is charged 8-18 s after it dies (10 s cycle, 8 s probe timeout). Until then, the web client's loader waits 14.7 s per poster on it before falling through, as it measured. A refused connection falls through in 19 ms. Detecting a silent death faster would be the fix, and nothing does that yet. The server's share (cold reads, daily-rotating URLs, oversized posters) is the server's.
+- **Search categories** (`550820a`): `SEARCH_CATEGORIES`, `DEFAULT_SEARCH_CATEGORIES`, and `MediaApi.search(query, signal?, { categories })`, where an empty set makes no request. Filtered client-side, fetching 200 to return 50, until the server takes a `kind`. **Tom approved the server's `kind` filter 2026-09-24**, in core's shape: a repeated `kind`, applied before `limit`, absent meaning all kinds, an unknown value answering 400. It comes after the server's `0.54.0` torrent fix, and the server names the version when it ships. When it does, move the filter into the request, drop the 200 over-fetch, and keep the client-side filter only for nodes older than that version. Tom's ruling.
+- **`episodeSubtitle`** (`550820a`), asked for by the Android TV client for Continue Watching. **`albumLabel` / `trackSubtitle`** and `MusicHierarchyContext.album.year` (`397ad2c`), for "Artist - Album (year)", Tom's ruling.
+- **Search hits carry their ancestry** (`839e190`): `playbackContext` on episodes, `showId` on seasons, `musicContext` on tracks. Asked for by the Android TV client on Tom's instruction.
+- **`musicContext` is produced at all** (`839e190`), on album-page tracks, `tracks()` and search. It had been declared since `0.6.0` and was never set, so the phone client never showed an artist or album. Snapshots stored before this keep none; see *Waiting on Tom*.
+- **`episodeLabel`** (`6289744`): "Season 1 Episode 4" for search results and Continue Watching, by Tom's ruling. Search subtitles read "Series · Season 1 Episode 4".
+- **`searchTerms` / `isSearchable` / `MIN_SEARCH_TERM_LENGTH` / `IGNORED_TITLE_WORDS`** (`a1dcfc3`): search keys only on words titles are not ordered without, by Tom's ruling; `search()` applies it.
+- **`MediaSort.choiceLabel`** (`672185d`): "Sort By Title", by Tom's ruling.
+- **Coded regenerate refusals** (`22281d0`): `SESSION_PROVENANCE_UNKNOWN_CODE` and `REGENERATION_ENDPOINT_GONE_CODE`, asked for by the phone client.
+- **The media sort vocabulary** (`2816e5e`): `MediaSortKey`, `SEARCH_SORTS` / `DEFAULT_SEARCH_SORT` (relevance), `LIBRARY_SORTS` / `DEFAULT_LIBRARY_SORT` (title), `orderMedia`, `isMediaSortKey`, and the new `newestYearFirst`. Asked for by the web client on Tom's instruction, relayed. Additive.
+- **`progressWriteDue` and `nextWatermark`**, the Continue Watching write cadence, taken from the Android TV client's copy (`5061a03`, 2026-09-24). Additive. That client deletes its copy once this is published.
+- **Not additive for a host:** `Player` gains two optional members (`holdsThroughLead`, `needsProducedSource`), and `play()` may receive a negative position, but only by opt-in. `ClusterPlaybackResolver`'s constructor lost nothing and gained nothing. The only exported symbols added are the new functions and constants.
 
-**And today's field evidence was taken against a cluster with no DELETEs reaching it at all** — 57 creates and zero closes on fi-1 since 13:00. Tom's judgement, and it is the right one: *"No DELETE on session smashes all the results."* Anything measured against a node today carries that caveat, the AC-3 remux split most of all. The server has independently reached the same conclusion about its own orphan theory.
+**Withdrawn the same day and gone from the tree:** `probeSourceReadiness`, core's readiness-probe estimator, and `readinessFetch` / `noStoreFetch`. Tom ruled against every zero- and one-byte media check. The standby preflight's 64 KB read stays. See COMPLETED.
 
-**What to do first, when this resumes:** clear every node of leftover sessions, get the clients onto a build everyone agrees on, and re-run the things that matter against a clean cluster. In particular re-run the AAC-versus-AC-3 comparison before anyone goes into libav, because retry count and codec are perfectly confounded in the evidence that produced it.
+**Verified live today:**
+- The deferred replacement after a 34.7-minute pause: regenerated in place on the same node with no stall in 1,257 samples, which closes a `0.13.0` item.
+- `moveTo` twice, and the lead.
+- `episodeNeighbours` on the TV set.
 
-### The three P0s of 2026-09-21, and where each stands
+**The P0s:**
+- **AC-3 audio-copy remux stall.** Server-side, and still open; `delay_moov` is disproved as the cause.
+- **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
+- **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-1. **Nothing was ever closed — core's fault, fixed, untested in the field.** `ClusterPlaybackResolver.stop()` looked a session id up in an in-process map and **returned silently when it was missing**: no request, no log, a resolved promise. Every client's cleanup was thrown away one layer below it. A missing entry is the ordinary case — the map dies with the process, a failover replaces it — and it was caching what the id already states, since core mints `${endpoint.id}::${nodeSessionId}`. Fixed in `61e4d74`. **Nobody has yet watched a DELETE arrive on a node.**
-2. **The per-account cap is counted per node, and core refused to walk on it.** `sessions_held_by_locked` iterates that node's own session map; there is no cluster-wide total. A viewer was refused outright while a node with room sat beside it. Fixed in `7b4548a`. The premise came from the server's own comment, about a hundred lines from the loop that disproves it — **read the loop, not the comment beside it.**
-3. **AC-3 audio-copy remux stalls** — measured by three clients on one node within minutes, and the only P0 still open. The mechanism is **not** `delay_moov`; that was disproved by experiment. Server-side, and see the retraction in COMPLETED.
+### Release candidate, 2026-09-24 — FROZEN, waiting on Tom's word and version
+`develop` at `d7aa96d`, `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. `f235a99` after it is README only. All three clients were told of the freeze and the candidate. Proposed version: **`0.19.0`**, because it is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced). Procedure: `npm version 0.19.0 --no-git-tag-version`, commit, merge to `main`, annotated bare-semver tag, push, `npm publish`, `git checkout develop`, build last. Then tell every client, which will each verify `main` against the registry copy.
 
-### Open, and waiting
+### Core writes no viewer text — Tom, 2026-09-24
+**Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
+- An error's `message` is log text.
+- Every API error carries `detail`, the server's own sentence only, for a host that wants the server's words.
+- Server text passes through untouched.
+- All three clients were sent the full replacement list.
 
-- **The orphan reclaim seam.** The television has built its half — `orphanedSessions()` / `forgetSessions(closed)`, inert, nine tests. Core's `stop()` and `sessionAlive()` both recover provenance from an id now, so it will work. **Waiting on Tom** to say wire it.
-- **`moveTo` has no caller.** The web client will switch `selectNode` to it the first time live runs are allowed; it declined to write that under a suite-only instruction, correctly, since the whole point is what happens on a real cluster.
-- **A clean-cluster re-run of everything above.**
+Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Built 2026-09-24 afternoon, all pushed, not yet seen on a device:**
+- `b47773d`: `seedEndpoints`. The remembered-endpoints list no longer lasts one start: two clients seeded remembered nodes under the wrong source, and the health cycle dropped unconfirmed ones. Found by the Android TV client.
+- `9654e1e`: session validation is hedged at `SESSION_HEDGE_MS` (1 s). The web client measured a 17.2 s cold start with two nodes down. When no node answers, the cached session is now kept, where a viewer with a good token had been sent to sign in on a cluster that requires an account.
+- `f3cf74c`: `unreachableEndpointFailure` recognises `MachaClusterRouteError`. Found by the phone client.
+- `33fa8b5`: `TorrentJob.catalogue` is optional.
+- `5973dc5`: resolver-level recovery is documented.
 
-**Where things stand. Core is building `0.17.0` right now.** It is not released, not published, and its contents are still moving — **`npm view @machafoundation/core versions` ends at `0.14.0`, and the rest of the world has seen nothing since.** Tom, 2026-09-21: *"It's 0.17.0 because the rest of the world hasn't seen that yet."*
+- `e840d72`: a copied stream the player cannot decode falls back to a transcode on the same node, once, never over a mode the viewer chose (Tom's ruling). The viewer's mid-playback mode choice is now recorded, and the copy-refused fallback respects it too. It needs the Android TV client to report decoder errors as `media`; they arrive as `unknown` today.
+- **Decode fallback verified on the Android TV set 2026-09-24:** Classroom 216 (AVI, MPEG-4 Part 2) in Auto; the instruction listed `player-could-not-decode`, and it transcoded from 10.35.1.50 and resumed where it stopped.
+- `d7aa96d`: a change queued while the previous one was finishing was never applied. The loop was marked stopped a microtask after its last check. This is what lost the `choose` seen while testing the fallback, and it predated today.
+- `47812f7`: a fresh mint on a registry with no evidence first probes the health route, hedged, and mints on the first node to answer, so a dead node costs a 1 s hedge where it cost the 8 s timeout. The mint tests now answer by URL.
 
-**A version number is only immutable once it is published.** Until then it is the name of the thing being built, and `0.17.0` will go on accumulating work under that name until it is proven and published. **The `0.15.0` and `0.16.0` tags are waypoints from earlier today and mean nothing to anybody** — do not offer them to a client, do not treat them as releases, and do not reason about what is "in" them.
+**Which servers core may use — Tom, 2026-09-24:** only those that come from clients (configured) or from the servers themselves (advertised membership, including the saved remembered list). **Current behaviour is correct; do not change it.**
+- A removed server cannot be told apart without asking a current member: `/api/v1/status` needs a token, and `/api/v1/health` carries no cluster identity or membership.
+- Core keeps only `online` nodes from any member's answer and drops remembered ones it omits.
+- The Android TV client relayed a stricter-sounding version, "ABSOLUTELY NOT pick up old servers"; asked directly, Tom confirmed the above.
 
-**Core proposed a `-dev` prerelease scheme to stop the version string equalling a stale tag, and Tom rejected it:** *"NO. Do not do this. We're a development private cluster."* He is right and it was ceremony — nothing is published, every consumer is hotlinked, and the honest identifier for a moving tree is a SHA. **Where a client needs to say what it measured against, it records core's SHA and a hash of `dist`**, as the phone client already does; its detail is worth keeping, that the hash must be taken from *inside* `dist`, because `shasum` includes the path it is given and two runs from different directories disagree about identical bytes.
+**ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
 
-**A build system may not notice core changed at all, which is the sharpest edge of the link.** *Found 2026-09-21 by the phone client.* Core is consumed through a symlink, and **nothing says Gradle tracks a tree outside the project as a task input** — so an "up to date" bundle can ship **stale core while every version string agrees**. That client deleted the generated JS bundle by hand before rebuilding and proved the difference: the bundle sha moved from `a94c2e0e65fa9851` to `e44394668997211c`. **A client taking a core change through a link must verify the artefact moved, not that the build ran.**
+**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
+- `/manage/unmatched` carries no `error_code`, by design: it lists only no-match hints, whose error is cleared.
+- The same review fixed core reading media-info's 202 "pending" as an invalid profile.
 
-**And the best post-install check anyone has produced is behavioural, not a version.** That client confirmed core `0.17.0` was genuinely on the device by observing routing lines carrying **both `advisory: true` and `advisory: false`**, which no published core emits. **Find a behaviour only the new code produces and watch for it** — a version string, a commit and a green build all agreed throughout, and none of them was evidence.
+**All three clients have moved over, on develop, 2026-09-24.** Each now owns its wording in one module of its own:
+- web `e62374d`, 526 tests, not pushed;
+- Android TV `9b3d56f`, 288 tests;
+- phone `0746aa3`, 271 tests, pushed. Four error sites on the phone still show `.message` and are its to finish, and so is a placeholder for an unnamed playlist.
+Every client's next release waits on a core publish, which is Tom's call. **Sorting stays in core** (Tom, asked directly, 2026-09-24): it is behaviour, not text. That covers the sort tables, `orderMedia`, the title, year and recent orderings, the alphabet index keys, and the search-word rules. The server relayed "clients are responsible for sorting and presentation"; that ruling concerns the server providing no index key. `formatPlaybackTime` is gone, and the alphabet index's catch-all key is `other` where it was `#` (`f75b2bd`, Tom's word, after the server confirmed nothing it plans touches titles or indexing).
 
-**Build cost, so nobody budgets the wrong number:** cold `assembleRelease` **20m 11s**; incremental after a JS-only change **1m 31s** (60 tasks executed, 677 cached). **Taking a core change onto a device costs ninety seconds plus an install, not twenty minutes**, once that client has built once.
+**The server's coming API work, not yet versioned, after its torrent fix.** Core adopts each as it ships.
+- **The search kind filter.**
+- **"Codes are primary":** every response carries a snake_case code, success included. Errors and warnings carry a code plus an English message, never the message alone. Codes are coming beside text-only fields: ingest and torrent job errors, `placement_failed`, the cluster torrent add result, the catalogue hint error, and status diagnostics. The hint result becomes a code. The shape of success responses is not designed yet.
+- **People (directors, cast) on catalogue items.**
+The server's error envelope has no `detail` field: it is `error.code`, `error.message` and `error.reason`. Core's `detail` is core's own name for the server's message.
 
-**A link resolves core's WORKING TREE, not a commit — so while clients are linked, an uncommitted edit here is their dependency.** *Found 2026-09-21 by the web client, which measured before believing core's own message about itself.* For about an hour, *"core's `develop` reads `0.18.0-dev`"* and *"the tree this client compiles against reads `0.17.0`"* were **both true**: `package.json` was modified in core's working copy against HEAD `938501d`, and `dist` had been built three minutes after that commit. **A SHA alone does not identify what a linked client is building against.** The identity is **SHA + dirty state + `dist` hash**, which is what that client now records.
+### What the link week taught, kept because it still governs `develop`
 
-**And the rule cuts both ways, which the web client sharpened after core stated it: core's tree being clean when core writes a message is not the same as clean when a client compiles.** Its `dist` hash moved from `f662293ec1c0` to `8351d54d21b4` between two of its own messages, so a *"402 tests green"* it had already reported was green against a tree no longer on disk. It re-measures rather than carrying a result across one of core's commits, which is right — **but the churn is core's to reduce, not the client's to absorb.**
+**A version number is immutable once it is published and only then.** Before that it is the name of the thing being built. **Core proposed a `-dev` prerelease scheme to stop the version string equalling a stale tag, and Tom rejected it:** *"NO. Do not do this. We're a development private cluster."* The honest identifier for a moving tree is a SHA, and where a client needs to say what it measured against it records **SHA + dirty state + `dist` hash**, the hash by `npm run dist:hash` and nothing else — three sessions computed three hashes of one `dist` in a day before that script existed, because `shasum` includes the path it is given and one method covered only `*.js` while `dist` carries 72 `.d.ts` files a linked client compiles against.
 
-**The asymmetry, in the web client's words, and it is the half a client owns:** core saying *"quiescent, identity attached"* makes a result trustworthy for longer than one message; **a client's result is only ever evidence about a *measured* tree state, so record what you measured against, not when you measured.** A timestamped green is worthless across a rebuild; a green carrying SHA + dirty state + `dist` hash can be re-confirmed in one command instead of a full gate, which is how that client answered core's last message without re-running anything. **Both of us measured `db8d5a2` by different hash methods and agreed it was unchanged — two methods agreeing on "unchanged" is worth more than either number.**
+**A link resolves core's WORKING TREE, not a commit.** *Found 2026-09-21 by the web client, which measured before believing core's own message about itself.* For an hour *"core's `develop` reads `0.18.0-dev`"* and *"the tree this client compiles against reads `0.17.0`"* were both true. So: **do not leave the tree dirty while anyone is linked** — somebody is compiling against it now, not at a moment of core's choosing — and check `git status` is clean and `dist:check` passes before saying anything to a client about what core contains. **Do not rebuild `dist` for a record-only commit**: a commit that did not touch `src` must leave `dist` alone, or it moves under four linked clients for nothing. Batch source commits while a client is mid-verification, and when core is quiescent say so with the full identity so a result can be trusted for longer than one message.
 
-**So: do not rebuild `dist` for a record-only commit.** Core has been running the whole gate reflexively on `TODO`/docs changes, which moves `dist` under four linked clients for no reason. The existing rule already says *build when the commit touched `src`*; the missing half is that a commit which did **not** touch `src` must leave `dist` alone. Batch source commits while a client is mid-verification, and when core is quiescent, say so with the full identity so a client can trust a result for longer than one message.
+**A build system may not notice core changed at all.** *Found 2026-09-21 by the phone client.* Nothing says Gradle tracks a tree outside the project as a task input, so an "up to date" bundle can ship stale core while every version string agrees. That client deleted the generated JS bundle by hand and proved it: the bundle sha moved from `a94c2e0e65fa9851` to `e44394668997211c`. **A client taking a core change through a link must verify the artefact moved, not that the build ran.** Cold `assembleRelease` is **20m 11s**; incremental after a JS-only change **1m 31s**. Taking a core change onto a device costs ninety seconds plus an install once that client has built once.
 
-**The operational rule this implies is core's, and it is stronger than the one already here.** *Build before ending a session that touched `src`* is not enough: **do not leave the tree dirty while anyone is linked**, because somebody is compiling against it now rather than at a moment of core's choosing. Check `git status` is clean and `dist:check` passes before saying anything to a client about what core contains — core described its own tree wrongly once today by reading its intent rather than its disk.
+**The best post-install check anyone has produced is behavioural, not a version.** The phone client confirmed the new core was genuinely on the device by observing routing lines carrying **both `advisory: true` and `advisory: false`**, which no published core then emitted. **Find a behaviour only the new code produces and watch for it** — a version string, a commit and a green build all agreed throughout, and none of them was evidence.
 
-**How the fleet works meanwhile: every client hotlinks this tree.** Tom: *"they should hotlink for now so we can actually test this works."* That ruling and the linking one earlier the same day are the same policy — all four clients point at core during development. **A publish happens when the work is proven on hardware, not when it compiles**, because a registry entry is permanent and cannot be withdrawn.
+**A linked client cannot cut a release, and the gate is what makes the link safe.** `main` pins published versions, so while `develop` depends on symbols in no published version nobody tags. That is why `0.18.0` had to go out before any client could — and now that it has, each client's `main` is on it and its `develop` is linked again for the next round. The gate in its final shape: prove through the links on hardware → publish core → clients pin and release → then the nodes move.
 
-**The one consequence to state rather than discover: a linked client cannot cut a release.** `main` pins published versions, and every client's `develop` now depends on symbols that exist in no published version. **Nobody tags a client release until core `0.17.0` is published.** The phone client recorded this itself before core said it, and its `version:check` enforces the mechanical half.
-
-**The gate on the route move, in its final shape:** core and the web client ship tolerance → **proven through the links, on hardware** → core `0.17.0` published → clients pin and release → **then** the nodes move.
-
-**What `0.17.0` is about, in one line: a failure keeps the evidence it arrived with, and a recovery that cannot finish stops waiting for ever.** The seven things in it that reach a host:
-1. **`hlsWalkTargets` now throws `HlsManifestUnavailableError` instead of returning `[]`** on a playlist that answered with a status. **This is the one breaking change** — a host calling that exported primitive directly must catch it. `preflightHlsSource` and `probeHlsReadiness` are unaffected in shape; the latter now reports `unavailable` with a status where it used to say `unassessable / empty-manifest`.
-2. **A reaped session is classifiable again.** The `404` on a master playlist reaches the host, so `playbackFailureKindForStatus` can answer `not-found` rather than `unknown` — which is what stops core charging a node that answered honestly.
-3. **The whole recovery is bounded** (`superviseRecovery`), at twice the node's stated attempt budget plus head-room, ending in the ordinary failover with `client_recovery_deadline`.
-4. **The close a regeneration waits on is bounded** (`releaseWithin`), with `failed-session-close-timeout` when it expires.
-5. **`generation-regenerate` and `session-regenerated` moved from `info` to `warn`**, so a recovery's two quiet steps are visible at the level the rest of the path uses.
-6. **`source-failure-unclassified`** at `debug`, once per session, naming the endpoint about to be charged on evidence the host never classified.
-7. **The encoder speed is read**: `PlaybackSession.production`, `productionRate()`, `outpacesPlayback()`. Reading only — nothing decides on it yet.
-
-**Two things a release note must carry rather than let a client discover**, both predating this release and still true: `FakePlayer.detach()` now stops (it ships on the `./testing` export), and `PlaybackEvent.forwardBufferMs` gained a contract both RN clients have been told about and checked themselves against.
-
-**The one entry this release does not close.** The Android TV freeze's **cause is still unconfirmed** — see its entry in *P1*. The release bounds it rather than explaining it, which is the honest claim and the one the entry makes.
-
-**`develop` and `main` are level as of the release.** Everything previously marked *BUILT on `develop`, unreleased* is now shipped in `0.16.0`; those entries have not yet been migrated to [COMPLETED.md](COMPLETED.md), which is bookkeeping this file owes and which should happen before the next release rather than accumulating.
-
-**`dist` is another repository's input.** The phone client is on a `file:` link to this tree's `develop`, so a change here reaches it as soon as `dist` is rebuilt, with no publish in between. Build before ending a session that touched `src`.
-
-**The release gate on the transform restatement is cleared — the server answered both questions on 2026-09-20, against current source.** Naming `video: 'copy'` at session *creation* is honoured: create calls `parse_preferences` with **no** `current` (`src/playback.cpp:2165`), so there is nothing to clear and the field is simply read, while PATCH passes `old->preferences` (`:2372`) and clears the four. `mode: 'transcode'` with `video: 'copy'` is legal and is not normalised away — the server's own docs call transcode *"the permissive mode, and it is how a mixture is asked for"*. A node that cannot copy a codec into the requested container throws `invalid_argument` and returns **400**, not a 5xx and not a substitution. **The fix does what it was built to do.**
-
-**It left two new items behind, both below in *P1 — correctness*, and one of them is a live hazard rather than a nicety**: `bad_playback_request` does not distinguish "this node cannot do that" from "your request was malformed", and there is exactly one silent-substitution shape which core can detect from the payload and currently does not look at. Two things a release has to carry into its note rather than let a client discover: `FakePlayer.detach()` now stops (it ships on the `./testing` export), and `PlaybackEvent.forwardBufferMs` gained a contract both RN clients have already been told about and checked themselves against.
-
-**Six commits sit on `main` after the `0.14.0` tag and none of them is code** — the README and guide rewrite, and two on the headless sample. `dist` is unaffected, so no client sees a difference and there is nothing to publish. Say so here rather than letting the next session read `git log` and conclude a release is owed.
-
-**The registry is now the answer to "what can a client have".** It was not, for a long stretch — see *Moving the clients onto public npm* for the gap and why `git tag` stopped being a safe question to ask. The last three releases have gone out, so the two questions have converged again; do not let them drift apart without saying so here.
-
-**The web client is on `@machafoundation/core@^0.14.0` from the registry**, not on a `file:` link to this tree. Its `0.17.2` was re-cut against the published tarball so that the tag points at something a user could actually install. A link is for verifying a fix that is not yet releasable, taken and removed in one sitting; anything a client builds on is a published version.
+**Treat "green" as "does not break the client", never as validation**, and say which you mean when reporting one. Three green suites against `5077468` proved those changes broke nothing; they proved nothing about whether they worked. Nothing built on 2026-09-21 had been exercised against a node bar one smoke test when this was written, and the published artefact has not been reported against one since — that is the clients' to report, and this file records what it is told.
 
 Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, never `v0.11.0`) on `main`, with the version bump *inside* the release commit so the tag points at exactly what ships.
 
-**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **897 tests in 64 files, all passing** as of 2026-09-19. Run all five.
+**How to check you have not broken anything:** `npm run typecheck`, `npm run lint:platform` (the no-DOM gate — this is the one that catches a browser global sneaking into core), `npx vitest run`, `npm run build`, `npm run dist:check`. The suite is **1020 tests in 65 files, all passing** as of `0.18.0`. Run all five.
 
 **Build LAST, after the final `git checkout`.** `dist:check` compares mtimes, and a branch switch rewrites every source file's. So "build, merge to `main`, tag, checkout `develop`" leaves `dist` stale **even though no source changed**, and every client's `pretest` then refuses. This happened on the `0.10.0` release and blocked a client until it was caught. Core reported "dist is current" in good faith and was wrong within the minute.
 
@@ -97,7 +115,7 @@ Work happens on `develop`; a release is an annotated bare-semver tag (`0.11.0`, 
 
 **Never put Claude attribution in a commit message.** No `Co-Authored-By`, no `Claude-Session`, no generated-with line. A commit message ends with its last line of prose. This cost a full history rewrite of 16 commits across `main`, `develop` and two release tags on 2026-09-13.
 
-**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **All three that have been asked resolve it from the registry**, decided 2026-09-15 and completed by 2026-09-17; the Tizen build shares the web client's tree. So a change on `develop` is invisible to every client until it is **published** — use a `--tag next` prerelease to get it in front of a client to adopt or ship on. A temporary `file:` link is for *verifying* something not yet releasable and is removed the same session; see the amendment under *Moving the clients onto public npm* for the line between them, and that section for why the `file:` loop was retired.
+**Four clients consume this package** — a web/TV app, a Samsung Tizen build of the same, a React Native phone app, and a React Native Android TV app. **All three pin the registry on `main` and link this tree on `develop`** — verified from their trees 2026-09-23; the Tizen build shares the web client's tree. So a change on `develop` here reaches every client's `develop` as soon as `dist` is rebuilt, and reaches no client's `main` until it is **published**. The rule and its four-step gate are under *How an unreleased core change reaches a client*; *Moving the clients onto public npm* records why the older registry-only advice was written and what superseded it.
 
 **`@machafoundation/core` is the name everywhere now.** Two clients used to install it as `@macha/core` through a `file:` target — an unclaimed npm scope that would have broken the moment they resolved from the registry, and a dependency-confusion exposure while it stood. Both renamed on 2026-09-15–17. The history is under *Moving the clients onto public npm*; nothing about it is still open.
 
@@ -133,7 +151,7 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 ## Open threads — state of play at the cutover, 2026-09-21
 
-**The order of work is above.** This section is who is waiting on whom *right now*, because five sessions moved fast today and none of it is derivable from the code.
+**Written 2026-09-21, before `0.18.0` shipped. Core's lines below are updated; the server's and the clients' are as they stood that evening and this file has not been told otherwise.** **The order of work is above.** This section is who is waiting on whom *right now*, because five sessions moved fast today and none of it is derivable from the code.
 
 **BLOCKED ON TOM — and these are the only two things holding the cutover:**
 1. **The web bundle deploy.** Every node still serves `index-BGrNH6KR.js`, which has **no `410` in 614,717 bytes**, so it reads a superseded generation as evidence against the endpoint. A replacement is built and verified *in the shipped JS*. **The `ssh`/`rsync` was denied by that session's own permission classifier** — it correctly did not route around it and correctly did not ask core to run it. Tom grants the permission or runs the two commands. **"The web client is ready" and "the bundle is on the nodes" are different claims and only the first is true.**
@@ -141,7 +159,7 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 **Waiting on the server:** the cutover itself, on all three nodes at once; the cap's number; and where the limit and count live with what freshness, which is the last thing core needs to decline a standby *before* being refused rather than after.
 
-**Core: cap work COMPLETE except what the server gates.** Classification, three accessors, `standby-preparation-refused`, and the proof that the reason survives to a host. **HEAD `42d92fb`, clean, `dist` unchanged since `28d6b70`** — the last commits are records only, so client measurements against `28d6b70`'s `dist` still hold.
+**Core: cap work SHIPPED in `0.18.0`, except what the server gates.** Classification, three accessors, `standby-preparation-refused`, `410` tolerance, and the proof that the reason survives to a host — all published, all on every client's `main`. What remains is item 4 below: reading the limit and count off the wire, blocked on the server shipping the field.
 
 **Client readiness, each verified in its own artefact rather than its source:**
 - **Web** — 410 in three call paths including the Samsung native preflight; `isSourceGoneStatus` delegating to `playbackFailureKindForStatus` so it holds no status list; cap notice built; two tests asserting it composes no path. Bundle rebuilt against `28d6b70`. **Cannot deploy.**
@@ -169,11 +187,11 @@ Each of these has cost real time. The `codegraph_explore` habit in the first is 
 
 | Client | Resolves core by | Suite | Ported |
 |---|---|---|---|
-| Web | **npm `^0.14.0`** — released as `macha-client` 0.17.2, no link | 46 files / 335 | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed |
-| Android TV | **npm `^0.11.1`** — renamed, no link, `expo export` green | 11 files / 159 | **no** — `secureStorage` **not supplied**; token in app-private storage |
-| Phone | **`file:../macha-ts` on `develop`** as of 2026-09-20, per Tom; was npm `^0.12.0` at its `0.6.0`. `version:check` refuses a `file:` dependency on a tagged commit or `main` | 12 files / 90 | **no** — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow` |
+| Web | **`main`: npm `^0.18.0`. `develop`: `file:../macha-ts`** — read from that tree 2026-09-23. Its own tag is `0.18.0` | 461 at `5077468` (2026-09-21) | **no** — `AccountMenu.signOut` onto `sessionManager.signOut()`, `lastIdentityChange` unsubscribed. Unverified since 2026-09-19 |
+| Android TV | **`main`: npm `^0.18.0`. `develop`: `file:../macha-ts`** — read from that tree 2026-09-23. Reports itself at `0.6.0` | 240 at `5077468` (2026-09-21) | **no** — `secureStorage` **not supplied**; token in app-private storage. Unverified since 2026-09-17 |
+| Phone | **`main`: npm `^0.18.0`. `develop`: `file:../macha-ts`** — read from that tree 2026-09-23. `version:check` refuses a `file:` dependency on a tagged commit or `main` | 204 at `5077468` (2026-09-21) | **no** — `secureStorage`, `lastIdentityChange`, `signOut`, `probeNow`. Unverified since 2026-09-17 |
 
-**All three clients were on `0.12.0`, verified against the published tarball, as of 2026-09-17.** The web client has since moved to `0.14.0`; the other two have not been asked. Web: refactor landed, 338 tests, fresh-clone acceptance. Phone: migrated, 100 tests, `expo export`. Android TV: installed, 166 tests, 841 modules, and the Hermes bundle byte-identical between working tree and fresh clone.
+**The first two columns were read off each tree's `main:package.json` and `develop:package.json` on 2026-09-23 and are current as of that read.** The suite figures are what each client reported against core `5077468` on 2026-09-21, and the *Ported* column has not been re-asked since the dates shown — treat it as the last thing each client said, not as the state of its tree. **Nobody has run `test -L node_modules/@machafoundation/core` on a client's `main` checkout from here**, and a `package.json` range is not that check.
 
 **But the release's central fix is unverified, and no automated check can verify it.** The `memoryStorage` capture typechecked, bundled, and passed a green suite while a viewer lost their configured endpoint on every restart. So a green suite on `0.12.0` says nothing about whether the getter actually fixed it. **That needs a device session on the television:** set an endpoint in Settings, force-quit, relaunch, confirm it survives; confirm `macha-client-id` reaches AsyncStorage for the first time; confirm the trail shows `throughput-unavailable / insufficient-samples` rather than `no-bandwidth-store`, which would mean `attachBandwidth` never ran.
 
@@ -277,7 +295,7 @@ What moves it: `rm -rf node_modules/@machafoundation/core` then `npm install @ma
 
 ### `isMachaStorageKey`'s doc comment told hosts to do the wrong thing
 
-**Found by the phone client on 2026-09-15, by making the change rather than reasoning about it.** Fixed in the working tree; ships next release.
+**Found by the phone client on 2026-09-15, by making the change rather than reasoning about it.** Shipped in `0.18.0`.
 
 The comment said *"Use this rather than a prefix test of your own."* Read as intended that means "do not hand-roll a test for core's keys". Read as written it means "replace your own key filter with this", and **that is catastrophic**: the registry lists what *core* owns, and a host owns more. The phone client's `owned()` set is strictly larger, and `isMachaStorageKey` returns false for all of `macha.clientId.v1`, `macha.endpoints.v1`, `macha.discoveredEndpoints.v1`, `macha.downloads.v1.`, `macha.musicLibrary.v1.` and `macha.progress.v1:`.
 
@@ -291,7 +309,7 @@ The comment is now explicit that the function answers "is this one of core's", n
 
 ### Adopt-on-read silently assumes the host's storage can see a key core never named
 
-**Found by the phone client on 2026-09-15 while verifying a correction.** Fixed in the working tree; ships next release. **The Android TV client has been asked whether it is exposed** — its answer is outstanding.
+**Found by the phone client on 2026-09-15 while verifying a correction.** Shipped in `0.18.0`. **The Android TV client has been asked whether it is exposed** — its answer is outstanding.
 
 `ContinueWatchingStore.read()` adopts `macha-client-progress:<clientId>` when the current key is empty (`state/continueWatching.ts:143`). The comment above it says adopt-on-read was chosen so *"the caller cannot forget to run it"* — and that is true, but **the guarantee is only as strong as the storage core was handed.**
 
@@ -392,13 +410,9 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 
 **So the walk stops at the cap and the recovery does not.** Those look inconsistent and are not: a walk tries *other nodes* for an answer only the account can change, while a failover retries *the same question* after time has passed. Do not converge them.
 
-### ~~A refused standby was swallowed whole, so the cap could disable seamless failover in silence~~ — BUILT on `develop` 2026-09-21
+### ~~A refused standby was swallowed whole, so the cap could disable seamless failover in silence~~ — shipped in `0.18.0`
 
-**Found while checking what a cap refusal does on the speculative path, which nobody had asked.** `prepareAlternate` ended in a bare `catch { return undefined; }`. Three very different states — *nothing suitable was available*, *the node refused*, *this threw* — collapsed into one silent `undefined`.
-
-**The cap makes that acute rather than untidy. A standby is the *first* thing an account at its limit is refused**, because it is the speculative request rather than the one a viewer is waiting on. So the mechanism most likely to meet the cap first was the one that could not report meeting it: **seamless failover would simply stop happening, with nothing on any trail saying why, and the first evidence would be a viewer watching a stall.** A cap number set too low would have been indistinguishable from the unexplained freeze the Android TV session is still hunting, on the same instrument, in the same week.
-
-`standby-preparation-refused` at **warn**, carrying the endpoint, the media, the code, the status and **`accountAtSessionLimit`** by name — because that is the one cause a host can turn into a sentence a person can act on. Two tests, both verified red: one against the reporting itself, one against the account/node distinction, since calling a node genuinely full an account limit is wrong in the most confusing direction.
+In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3 above and the cutover section point at it: `standby-preparation-refused` at warn, carrying `accountAtSessionLimit` by name, is the discriminator between a cap-caused loss of seamless failover and the unexplained freeze.
 
 ## The route break: playback sessions become a REST resource — CORE OWNS THE TRANSITION
 
@@ -456,14 +470,27 @@ Five decisions from Tom, in one sitting. Four shipped together in `0.12.0`; the 
 **The `410` tolerance spans two repositories, not one.** The web client found that **a `410` on a segment never reaches core as a status**: hls.js raises it, and its own classifier sorts it before core hears anything — `isHlsSegmentHold` is `500`, `isHlsSourceNotFound` is `404`, and everything else falls to `isHlsNetworkDegradation`, reported as `stream`, **which is evidence against the endpoint.** Same failure mode as core's, one layer lower. It needs a `410` branch beside its `404` one, classified `not-found`, landing in the same window. **Core's sequencing did not cover that and now does.**
 
 **What core must ship BEFORE any node moves**, and this is the standing rule *"core ships tolerance first, nodes move second"*:
-- ~~**`410` tolerance**~~ **BUILT on `develop` 2026-09-21, unreleased.** `SOURCE_SUPERSEDED_STATUS = 410`, mapped to **`not-found`** rather than to a seventh kind — the required action is identical (the object is gone, the node is fine, ask the session route), and `not-found` already carries the `Player.subscribeFailure` obligation not to tear the presentation down. **A new kind would put that obligation behind a value every existing host meets as `default`**, so an un-updated host would read `410` as unhandled and condemn a node: the exact failure this tolerance exists to stop, arriving through the fix for it. Three tests, two verified red against the branch; the third guards that `418` and `451` still answer `unknown`, because tolerance is not a licence to invent meanings.
+- ~~**`410` tolerance**~~ **Shipped in `0.18.0`.** `SOURCE_SUPERSEDED_STATUS = 410`, mapped to **`not-found`** rather than to a seventh kind — the required action is identical (the object is gone, the node is fine, ask the session route), and `not-found` already carries the `Player.subscribeFailure` obligation not to tear the presentation down. **A new kind would put that obligation behind a value every existing host meets as `default`**, so an un-updated host would read `410` as unhandled and condemn a node: the exact failure this tolerance exists to stop, arriving through the fix for it. Three tests, two verified red against the branch; the third guards that `418` and `451` still answer `unknown`, because tolerance is not a licence to invent meanings.
 - Whatever status the **cap refusal** uses, core must not walk or charge on it.
 
 **Open questions core has put to the server** (see the message log): whether the collection `GET` is **node-local or cluster-wide** — core's sessions are keyed `${endpoint.id}::${nodeSessionId}` and are node-local, so a client adopting "the account's sessions" must either fan out across nodes or be told the listing is per-node; and whether an adopted session arrives **with its endpoint**, because every core recovery path needs provenance and throws `has no endpoint provenance` without it.
 
-**Sequencing core proposes:** core ships tolerance (`410`, cap status, adoption provenance) in a release the clients take **first**; the server moves the routes **second**; the clients need nothing for the URL move because they follow `source.url`. **Nothing here is started.**
+**Sequencing, and where it stands:** core's tolerance (`410`, cap status, provenance recovered from a session id) **shipped in `0.18.0` and every client's `main` pins it** — the clients' half of "first" is done. The server moves the routes **second**, and the clients need nothing for the URL move because they follow `source.url`. **Whether the nodes have moved is not visible from this tree; ask the server session.**
 
 ## Waiting on Tom
+
+### Three small questions from 2026-09-24
+- **Specials.** `episodeLabel` names a season-0 episode "Season 0 Episode 1". Should it be something else, such as the season's own title, "Specials"?
+- **"Plan A" is searched as "Plan".** This is a consequence of dropping "the", "an" and "a" anywhere in a query. It is Tom's rule as relayed, and this is its edge.
+- **Two links on a TV card.** The Android TV client says a card is a single focus target, so it cannot hold separate series and season links as the ruling describes. It reaches both by Back instead: TV Shows → series → season sits beneath every episode. If Tom wants separate focusable targets there, that is a different design and the TV client wants his call.
+- **Refresh stored snapshots on read?** `PlaylistStore` and `PlaybackQueueStore` (core's) keep each item as stored, so anything stored before `839e190` shows no artist or album on the phone until re-added. Refreshing on read would put a catalogue read behind a store read. The phone client owes no migration and is writing none. Macha has not shipped.
+
+### Check the session route on a timer while the viewer is playing, so a reap is caught without player evidence
+**Proposed 2026-09-24. It reverses a documented rule, so it is Tom's call.** `sessionAlive()`'s docblock says *"Not a keepalive. It runs when something has already gone wrong, never on a timer."* The reason is real, and I read it in the server (`playback.cpp`, the reaper around line 3128): a GET on the session route resets `touched`, so polling a paused session would pin the node's transcode slot for as long as the tab stays open.
+
+**While the viewer is playing, that reason does not apply.** The player's own segment fetches already refresh `touched`, so a check then pins nothing that is not already pinned. With the check, core would notice a reap, a DELETE or a node restart within one interval, from any host, whether or not its player reports per-segment failures. Measured on the Android TV set 2026-09-23: 66 s passed between the DELETE and the fatal, and after it came 8 s without picture that regeneration inside the buffer would have hidden. The cost is one small GET per interval per playing viewer, and the interval is a guess to state as one.
+
+**The alternative is host-side:** each player reports its 404s on `subscribeDegradation`. The web client already does. The TV client has been told how, and it is building that regardless.
 
 - ~~**The package alias split.**~~ Decided 2026-09-15: `@machafoundation/core`, because `@macha` is an unclaimed scope and `@machafoundation/core` is already published and owned. See *Moving the clients onto public npm* above.
 - **Coverage.** Deferred 2026-09-13: *"not at this time, we'll update later."* Re-measured 2026-09-15 and the cheap half taken; see *Coverage: what is done and what is left* below for where it now stands and what the rest costs.
@@ -572,11 +599,13 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 ## P1 — correctness
 
+**Eleven entries that stood here marked *BUILT on `develop`, unreleased* shipped in `0.18.0` and moved to [COMPLETED.md](COMPLETED.md)** — so an entry below that says "the entry above" or "below" about one of these is pointing at that file now: the recovery supervision (`superviseRecovery`), the transform restatement (`withRestatedTransforms`, `recoverWithPreferences`, `interchangeableGeneration`), the playlist `404` reaching the host (`HlsManifestUnavailableError`), the runway re-read (`spentSince`, `emptyBufferIsEvidence`, `readAheadBytes`), advisory status routing, `close()` awaiting its recoveries, the session manager's `generation`, the health loop surviving a storage write, the `/users` envelope comment, the `signIn` obligation, and `find`'s `onAbsence`.
+
 **Ordered against the laws on 2026-09-20, not by age or by who found them.** *Numbering is core's, per `docs/principles-and-laws.md`; the server numbers the same three differently — see the entry in* Waiting on Tom. Law 2 first — anything that makes the viewer wait or stall. Then Law 1 — control work reaching into the viewer's data path, which the principles call a correctness failure rather than a benchmark. Then failures the contract says must be *visible and actionable* and are currently neither. Then the two remaining places core still holds a private copy of server configuration, which is the class `0.14.0` set out to end. The rest is real, verified, and cheaper. Everything here is core's to do; the items that need a decision first have moved up to *Waiting on Tom*.
 
-### A regeneration waits for ever on a close nobody bounded — BOUND BUILT on `develop` 2026-09-20, **cause NOT confirmed**
+### A regeneration waits for ever on a close nobody bounded — bound shipped in `0.18.0`, **cause NOT confirmed**
 
-**Waiting on:** a re-run on the television, then a release. **Found 2026-09-20 on hardware by the Android TV client, in front of Tom, within an hour of core opening the path that reaches it.** `ClusterPlaybackResolver.ts` — `releaseWithin`, `regenerate`; `PlaybackCoordinator.ts` — `session-regenerated`'s level.
+**Waiting on:** a freeze reproduced on the television with the `info` trail on. `releaseWithin` and `superviseRecovery` both shipped in `0.18.0`, so the next one ends in a failover carrying `client_recovery_deadline` after 48 s rather than a frozen frame — and finally leaves a line. **Found 2026-09-20 on hardware by the Android TV client, in front of Tom, within an hour of core opening the path that reaches it.** `ClusterPlaybackResolver.ts` — `releaseWithin`, `regenerate`; `PlaybackCoordinator.ts` — `session-regenerated`'s level.
 
 **What the viewer saw.** A reaped session classified correctly as `not-found`, `source-reaped` → `session-reaped-regenerating` on the right node — and then **nothing, for minutes**. Chrome stuck on *"Preparing new stream"*, position frozen at 5:00, no failure screen, no further trail line. **Strictly worse than the bug it replaced:** before the walk fix the same reap was misclassified `unknown`, took the failover path, and recovered in 7.2 s with the viewer seeing nothing.
 
@@ -607,53 +636,6 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **So all four hold at once: every branch bounded or loud, the close settled, nothing disposed, and `preparingSource` true for minutes. Neither session has a candidate that survives, and neither is inventing one.**
 
-### ~~A recovery can hang with every limb bounded, because the composition was not~~ — BUILT on `develop` 2026-09-21, unreleased
-
-**This is the answer to an unnamed mechanism, and it is deliberately not a guess at which one.** Each limb of `buildReplacement` has a budget — the close now, the create always, the walk its own. **The work item does not.** Law 4's discipline asks for backoff, a failure budget, a parked state and an operator action **for the retried unit**, and core had been reading it as "for each limb", which is how four bounded steps compose into an unbounded wait.
-
-`superviseRecovery` bounds the whole build at **twice the node's own stated attempt budget plus 10 s head-room** — 48 s against fi-1's 19 s. Generous on purpose: the close and the create may each legitimately spend the full budget, and **a false positive crosses to another node and loses the stream copy**, which is worse than waiting. On expiry it rejects into the catch that already exists, so the recovery ends in the ordinary bounded failover rather than in a frozen frame.
-
-**It never cancels.** A cancelled create tells the node nothing about whether to keep the work — the same reasoning `awaitWithEndpointDeadline` already uses. A replacement that lands after supervision gave up is **released**, with `replacement-arrived-after-supervision` at warn, because a success nobody is waiting for is a generation nobody will ever close, and on a node whose `max_video_transcodes` is 1 that is the next viewer's refusal. Late handlers are attached unconditionally so an abandoned rejection cannot surface as an unhandled one.
-
-**Three tests, two verified red against the supervision itself and one against the late release.** The third — a recovery that takes 30 s and must *not* be interrupted — is a guard and is green either way by design.
-
-**What this does and does not claim.** It does not explain the freeze and does not close the entry above. It converts every unnamed mechanism, including ones nobody has thought of, from an indefinite freeze into a bounded wait. **If the next reap freezes, it will now end in a failover with `client_recovery_deadline` on it after 48 s** — which is both a better outcome for the viewer and, finally, a line in the trail.
-
-**So: the close bound stays, as insurance rather than as a fix.** A viewer must never wait on that close for ever, whatever caused this one. **The entry stays open** until a freeze is reproduced with the `info` trail on, which now names every step. **Core over-claimed here** — "found it" was asserted from one candidate consistent with the symptom, before eliminating the others, and the elimination above should have come first.
-
-**The lesson worth more than the fix: a correct classification that opens an untested path is not an improvement yet.** The walk fix was right. It moved a live reap off a path that worked badly onto a path that had never run, and core shipped it without asking what was on the other side. The client's `201 in 1.21 s` probe against the node is what proved this was core's rather than the server's, before core looked at all.
-
-### ~~A recovery restates the mode and drops the transforms the chooser picked~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release, and on two confirmations from outside this tree that are named below. **Found 2026-09-20 by reading, prompted by an on-hardware report from the Android TV client.** `PlaybackCoordinator.ts` — `withRestatedTransforms`, `currentPreferences`, `recoverWithPreferences`, `applyDegradedInstruction`; `ClusterPlaybackResolver.ts` — `interchangeableGeneration`.
-
-**What the client measured.** A generation with **video COPY** (HEVC 1920x1040 passed through, DTS 5.1 converted to AAC) was reaped on its node. Recovery rebuilt it elsewhere as a full transcode, HEVC re-encoded to H264, taking the new node's only `max_video_transcodes` slot to re-encode a stream the television was decoding natively. The server ruled out its own substitution: that path logs at INFO and did not fire, and the journal shows `mode=transcode` from admission. **Core asked for it.** Both `prepareAlternate` and `failover` were handed `completePreferences(session)` — `mode`, the caps and the stream selections, and **no `video` and no `audio`** — so under the 0.34.0 rule that naming `mode` restates the whole transform, the recovery cleared the `video: 'copy'` that made it a copy.
-
-**The two questions the old entry said had to be answered first, and the answers, both from reading.**
-
-*Instruction or session echo?* **Instruction.** `session.transform` is what the node did; restating it would make a server-side downgrade permanent, because each recovery would rebuild from the last one's and the copy could never come back. It is also the only source that can contradict the `mode` beside it — `mode` comes from the confirmed preferences overlaid with the viewer's pending change, so pairing it with the echo can state `remux` alongside a transcoded video, an instruction nobody chose. `degradeInstruction` is the same coupling seen from the other side: giving up an audio copy forces `remux` to become `transcode`. **Mode and transforms come from one place or not at all**, which is why a report for a *different* mode is left alone entirely.
-
-*Re-consult the replacement node's capabilities?* **No, and that was already decided.** `facts()` documents it: `operations` describes the answering node's build, it is deliberately not re-fetched on failover, and a refusal is left to the 400 path because re-probing would put a request on the viewer's critical path at the moment playback is already struggling.
-
-**But that answer had a consequence the entry did not foresee, and it is why this was not a one-line fix.** Restating `video: 'copy'` asks a node that never agreed to it to perform it, and **a 400 is not a retryable endpoint failure** — `create` throws it rather than walking to the next candidate. The naive fix would have traded a silent full transcode for a *terminal* failure, which is worse by a distance. So `recoverWithPreferences` gives up the copies exactly once on a 400, and only when the request actually asked a node to copy something; every other 400 behaves precisely as before.
-
-**Three changes.**
-1. `withRestatedTransforms` restates `video`/`audio` from `snapshot.instruction` on every recovery, guarded on the report describing the same mode being sent, skipping `direct`, and never overwriting a field already present so a viewer's in-flight change still wins.
-2. The single step down above, on `failover` and `regenerate` only. **Standby preparation deliberately does not use it**: a downgrade rewrites the instruction the *live* generation will be rebuilt from, and a weak node refusing a copy it was only offered speculatively must not decide that for the session the viewer is watching. A standby that cannot reproduce the generation simply does not get made.
-3. `interchangeableGeneration` now compares the per-stream transforms, not just mode and container. `transcode` covers both a passthrough and a full re-encode and they are not substitutes — that is the same fault arriving through the standby door.
-
-**And one staleness found on the way, which the fix needed closed.** A 400 downgrade set the private `chosenInstruction` and left `snapshot.instruction` reporting `video: 'copy'` for a generation the node had refused to copy. A host's diagnostics were wrong, and once recoveries restated from that report every later recovery would have re-asked for the copy the first attempt had already given up. `applyDegradedInstruction` now patches both.
-
-**Three tests, each verified red against the specific line it pins** — the restatement neutered, the fallback neutered, the mode-match guard neutered — rather than merely red. 924 tests, typecheck, `lint:platform`, `build` and `dist:check` all clean.
-
-**Confirmed against server source 2026-09-20, so this no longer rests on a reading.** Create passes no `current` to `parse_preferences`, so `video: 'copy'` is honoured as given rather than cleared; `transcode` with `video: 'copy'` is legal and not normalised; a node that cannot copy returns **400**. The step down fires on the right signal. See the two entries this produced, immediately below.
-
-**Confirmed on hardware 2026-09-20 by the Android TV client, and the fix holds three ways.** The §1.0 reap was re-run on *Life of Brian* against a build of `0.4.0` carrying `32da3e0`, APK verified byte-identical on the set. The replacement **kept the copy**: the control bar read `VIDEO COPY · HEVC · 1920x1040 · 9.8 Mb/s`, the session payload carried `preferences.video: "copy"` and `output.video.transform: "copy"`, and `running_video_transcode_pipelines` was **0 on both nodes** afterwards — which is the independent check, because a silent re-encode cannot hide from a slot count. It also rebuilt on the **local** node rather than across the site. Failure to new source: **7.2 s**, inside the buffer, viewer saw nothing.
-
-**And the remux question dissolves — it was a labelling fault on the client, not a substitution.** The generation was `mode: transcode, video: copy, audio: transcode` throughout, straight from the node, before and after. `describePlaybackSession` prints `CONTAINER : endpoint`, so the screen only ever said `FMP4 :`; the word "remux" in that client's §1.0 was its own inference. There was never a disagreement between what was asked for and what was performed here, and the prediction this entry made — that the 5.1 downmix shape made a transcode-with-copied-video far likelier than a substitution — was right for the reason it gave. **The substitution detector below therefore has no live sighting behind it**, which does not make it wrong; it makes it a detector that has not yet caught anything, and that is worth saying plainly rather than letting this run stand in as evidence for it.
-
-**The node's own answers, probed directly on 10.35.1.50, same title.** `{mode: transcode, video: copy, audio: transcode}` → **201** with `output.video.transform: copy`, so core's reading that the copy is honoured as given was right against the live node as well as against the source. Two `400 bad_playback_request` refusals came back from the same probe and they are the fallback path's test matrix, in the server's own words: `{mode: remux}` → *"fragmented MP4 cannot carry a copied dts audio stream; ask for preferences.audio=transcode"*; `{mode: remux, video: copy, audio: transcode}` → *"remux repackages and copies every stream: to re-encode one, ask for mode=transcode with video=copy or audio=copy"*. **Both are the `isExecutorRefusal` case `recoverWithPreferences` gives up the copies on**, and the second is worth reading twice: a request that names `mode: remux` *with* transforms is refused for naming them at all, so the step down out of `remux` has to change the mode rather than only the transforms — which `degradeInstruction` already does at `choosePlaybackInstruction.ts:441-447`. **Its comment states the server's rule in the server's own terms** — *"giving up the audio copy leaves the mode's own contract violated if it was `remux`, which requires every stream copied"* — written here without sight of that validator, and the two now agree word for word. That is the one kind of duplicated server model this file does not mind: derived independently and confirmed to match, rather than assumed. These two bodies pin it as a fixture rather than a belief.
-
 ### A playback session is keyed on the bearer token, so a second POST supersedes — core is clear, and not by design
 
 **Established 2026-09-20**: measured against fi-1 by the web client, then confirmed from server source by the server session. **Not core's bug, recorded because core's standby model would be fatally exposed if any of three incidental facts changed.**
@@ -680,7 +662,12 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **What has to be decided, and it is not obvious.** The honest arrival point is *the position the viewer will have reached when the generation is usable*, which needs an estimate of the round trip — and an over-estimate lands the generation ahead of the viewer, which `activationPosition` then has to resolve against the seek contract. The node states `startup_timeout_ms`; core already derives an attempt budget from it and carries it on `PlaybackSource.budgets.deadlineMs`. **That is probably the right input and it is already in core's hands.** But a budget is a ceiling rather than an expectation, and using a 19 s ceiling to place a generation a viewer reaches in 11.5 s is its own fault in the other direction.
 
-### A host driving the resolver directly must not failover on a probe that threw — core's contract says so nowhere
+### ~~A host driving the resolver directly must not failover on a probe that threw — core's contract says so nowhere~~ — DOCUMENTED 2026-09-24
+
+**Done:** `docs/writing-a-player.md`, *Recovering without the coordinator*, gives the sequence: attribute, probe, regenerate, bound, fail over. Two facts have changed since this entry was written:
+- `sessionAlive` now recovers the node from the id, so a session the host released itself answers `false`, not a provenance throw. Attribution comes first because of that.
+- Both stop cases are now coded, as `SESSION_PROVENANCE_UNKNOWN_CODE` and `REGENERATION_ENDPOINT_GONE_CODE` (`22281d0`).
+The original entry follows.
 
 **Waiting on:** core, and it is documentation rather than code. **Raised 2026-09-20** by the phone client, which called the resolver contract correctly from the `.d.ts` and then proposed one rule core has already measured the cost of.
 
@@ -758,7 +745,7 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Deploy:** `0.47.0` goes to es-1, fi-1 and gbni-1 today, closing the gbni-1 `0.43.0` skew. gbni-2 has been defunct for months and is not in the deploy — worth knowing, because core's candidate walk should not be counting it as a node that might help.
 
-**BUILT on `develop` 2026-09-20, unreleased — the reading half.** `MachaPlaybackResolver` parses `stream.production` into `PlaybackSession.production` (`PlaybackProduction`: `producedMs`, `producingMs`, `producedAgeMs`, `producerParked`), dropping a partial block **whole** rather than filling it in — a rate built from a present `produced_ms` and a missing `producing_ms` is a number nobody sent, and absent lands in a branch every consumer already handles. `streamProtocol.ts` gains `productionRate()` and `outpacesPlayback()`. **Seven tests**, pinned to the server's own measured numbers rather than invented ones: 2000/771 on the first fragment, 34031/10832 settled, and the three parked readings whose `producedAgeMs` climbs while the rate must not move. `outpacesPlayback(undefined)` is `undefined`, never `false` — collapsing those refuses every handover on direct play and across a mixed-version cluster, which is the class `0.14.0` existed to end.
+**Shipped in `0.18.0` — the reading half.** `MachaPlaybackResolver` parses `stream.production` into `PlaybackSession.production` (`PlaybackProduction`: `producedMs`, `producingMs`, `producedAgeMs`, `producerParked`), dropping a partial block **whole** rather than filling it in — a rate built from a present `produced_ms` and a missing `producing_ms` is a number nobody sent, and absent lands in a branch every consumer already handles. `streamProtocol.ts` gains `productionRate()` and `outpacesPlayback()`. **Seven tests**, pinned to the server's own measured numbers rather than invented ones: 2000/771 on the first fragment, 34031/10832 settled, and the three parked readings whose `producedAgeMs` climbs while the rate must not move. `outpacesPlayback(undefined)` is `undefined`, never `false` — collapsing those refuses every handover on direct play and across a mixed-version cluster, which is the class `0.14.0` existed to end.
 
 **Still to build, and it is the half that touches the viewer:** the deadline on `PlaybackSource.budgets` that can say "never", and the `rate <= 1` refusal that names its reason. Neither is started.
 
@@ -849,32 +836,6 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Status 2026-09-20:** the server judged the three-axis version wider than what Tom approved — a distinct code for the capability case, correct HTTP status, specific code in the body — and took it back to him rather than building past it. Correct call. **Core is not blocked either way**, and the server has been asked to say so to Tom, so it is scheduled on merit rather than as an unblock.
 
-### ~~A `404` on a playlist is thrown away inside core's own walk, so the host cannot classify it~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release. **Found 2026-09-20** by the Android TV client, on hardware, while reporting something else — and it is the third recorded instance of this class reaching a viewer.
-
-**What it measured.** A reaped session arrived at core as `kind: "unknown"` with `Response code: 404` sitting in the error message, and with **no `terminal-failure-classified` line at all**. `isEndpointRetryablePlaybackFailure` reads `unknown` as endpoint evidence, so **core charged a node that had answered honestly and walked a generation that `not-found` would have had regenerated in place on the node already holding it.** Precisely the fault `0.13.0` was spent removing, arriving through a different door.
-
-**And the root cause is core's, which is not what this entry said an hour earlier.** It was first written as "the bug is that client's and it is fixing it", on that client's own first reading. **They then traced it into core's tree and were right.** `hlsWalkTargets` fetched the master playlist, read `.ok`, and **returned `[]`** — discarding the `404`. `probeHlsReadiness` could then only answer `unassessable / empty-manifest`, whose `status` field is only ever populated from a *fragment*. So the host's `kindForTerminalError`, which correctly requires a status before it will classify, had nothing to classify from. `playbackFailureKindForStatus(404)` returned `not-found` the whole time; **nothing ever called it, because nothing still held the 404**. The contract worked at every step except the one where the evidence was thrown away, inside core.
-
-**Worth keeping as a boundary lesson in its own right.** Core accepted a client's account of whose bug it was, wrote it down as settled, and the client — not core — went and disproved it in core's tree within the hour. A peer saying "this one is mine" is no more authoritative than a peer saying "this one is yours", and this file already records the same fault in the other direction twice. **Check the tree named, whichever way the claim points.**
-
-**What core must not do, and it is tempting.** The status was *also* in the message. Reading it out of there is the inference this file already records as a fault class twice over, and the message is the host's to format — `expo-video` builds it as `"A playback exception has occurred: ${localizedMessage} ${cause?.localizedMessage}"` and could change it in any release. Core does not parse it. It holds the number honestly instead, which it had all along.
-
-**The fix, built on `develop` 2026-09-20.** `hlsWalkTargets` throws a typed `HlsManifestUnavailableError` carrying the URL and the status instead of returning `[]`, for both the master and the variant playlist; `probeHlsReadiness` maps it to `{ state: 'unavailable', status, detail }`, mirroring exactly what it already does for a fragment one branch below. **Thrown rather than returned so every caller of the exported primitive meets it** — a host asking the walk its own question got the same empty list and the same missing number, and an empty array reads as "nothing here" however carefully it is documented. `preflightHlsSource` is unaffected: it already catches to `false`, which is the answer it gave on an empty list, and a test pins that so the throw cannot escape into a caller that never expected one. **`empty-manifest` gets its real meaning back** — a `200` that parsed to nothing — which it could not have while the common case was drowning it.
-
-**Six tests. Four verified red against their own neutered line** (the master throw, the variant throw, the status on the outcome, the detail on the outcome). **Two are guards and are green either way, deliberately:** `empty-manifest` still answering for a served-but-empty playlist, and `preflightHlsSource` still answering `false`. Those two pin what must *not* change, and saying they were "verified red" would be the exact claim this file's tenth lesson is about.
-
-**Nothing in core calls either function** — they are exported for hosts, and the grep is the evidence. So this changes no core behaviour and no client breaks; it changes what a host is *able* to see, which was the entire defect. A host that reads `unassessable` today and does nothing will now read `unavailable` with a status, which is the outcome it should have been getting.
-
-**What core can do, and has.** `isEndpointRetryablePlaybackFailure` cannot distinguish three different events that all arrive as "no evidence": a host that never wired classification (which the `Player` contract expressly permits), a host whose classifier ran and could not tell, and a host whose classifier was *meant* to run and silently did not. The first two are fine. The third is a defect that is invisible from both sides — the client sees a kind it did not intend, core sees a node it condemns. `noteUnclassifiedFailure` now emits **`source-failure-unclassified` at `debug`, once per session**, at the two sites where the evidence is actually spent, carrying the endpoint being charged, which channel it came through, `classified` (whether the host tried at all and could not tell, versus never tried), and **the message verbatim** — so a capture shows the evidence the host had and did not use.
-
-**`debug` rather than `warn`, for the `seek-invariant-not-stated` reason.** An unclassified failure is permitted by the contract, so it is ordinary rather than a fault, and one client renders warn-level onto a television for the whole of a film. A capture taken at `warn` still cannot separate these; one taken at `debug` can.
-
-**Four tests, each verified red against its own line — and one was rewritten after passing for the wrong reason.** The once-per-session test was first driven through the fatal channel, where `failNow`'s `failoverPromise` guard drops the second failure before it ever reaches the note: it passed with the latch deleted. It now runs through the degradation channel with `prepareAlternate` returning `undefined`, which is both the case that reaches the note twice and the live shape — a dead source going on emitting while a cluster with no spare node has nothing to prepare. **Third occurrence of this in two days; the neuter check caught all three.**
-
-**What this does not do.** It does not change a single decision — the charge still happens, the walk still walks. It makes an invisible misattribution greppable, which is the whole of it. If unclassified charges turn out to be common in captures, *then* there is a case for core declining to charge on them; that is a behaviour change and is not being made on one sighting.
-
 ### A node substitutes a remux for a transcode and says so in the payload, and core has never looked
 
 **Waiting on:** core. **Found 2026-09-20** from the server session, unprompted, while answering a different question. Nothing in core reads this today.
@@ -883,82 +844,13 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Why core wants it.** This is the exact uncertainty the transform-restatement item above was written around: *"they differ after a server-side substitution, and restating the node's own downgrade would make one bad plan permanent."* Core resolved that by restating from the instruction and never from the echo — which is right, and which means core is now **re-asking for a remux every recovery on a title whose keyframe index will never be usable**, getting substituted every time, with nothing anywhere saying so. One comparison of two fields core already holds turns that from invisible into a fact.
 
-**BUILT on `develop` 2026-09-20, unreleased — the reporting half.** `PlaybackInstructionReport` gains `performedMode` and `modeHonoured`, computed once in `instructionWithServed` beside `containerHonoured`, plus one `generation-mode-substituted` warning per generation — once, not once per snapshot patch, because on the Android TV client warn-level events are on screen for the whole of a film. Four tests, each verified red against its own line, and **two of them were rewritten after passing for the wrong reason**: the first version of the viewer-mode-change test could not distinguish the two candidate comparisons at all, and the once-per-generation test never patched the report twice.
+**Shipped in `0.18.0` — the reporting half.** `PlaybackInstructionReport` gains `performedMode` and `modeHonoured`, computed once in `instructionWithServed` beside `containerHonoured`, plus one `generation-mode-substituted` warning per generation — once, not once per snapshot patch, because on the Android TV client warn-level events are on screen for the whole of a film. Four tests, each verified red against its own line, and **two of them were rewritten after passing for the wrong reason**: the first version of the viewer-mode-change test could not distinguish the two candidate comparisons at all, and the once-per-generation test never patched the report twice.
 
 **The memory half is still open and still needs deciding.** Whether core should remember per media that the remux was substituted and choose transcode directly next time. Not obviously right: the fallback is a fact about one node's view of one title, and pinning it would be the same mistake as caching `operations` as a cluster property. **Do not build it without deciding that.**
 
 **What it should do with it, and the shape needs deciding before it is built.** At minimum report it: a substitution is a degraded state and the contract says those must be *visible and actionable*, and it belongs in `PlaybackInstructionReport` beside `containerHonoured`, which is the same question asked about the carriage. Whether it should also stop core re-asking — remembering per media that the remux was substituted, and choosing transcode directly next time — is a real design question and not obviously right: the fallback is a fact about one node's view of one title, and pinning it would be the same mistake as caching `operations` as a cluster property. **Do not build the memory half without deciding that.** The reporting half is unambiguous and can go first.
 
 **This is `containerHonoured`'s twin and should be built like it** — requested and performed kept side by side, absent rather than false when either side is unknown, because an unanswered question must not read as an answer.
-
-### ~~The runway is read from a stale snapshot, and the field that would refresh it has no guard~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release, and on both RN clients to know the event contract moved. **Found 2026-09-19**, while answering the Android TV client's question about how long it may spend classifying a statusless player error. Not found by reading core — found because a client asked what core's deadlines were and the answer required opening the path.
-
-**What landed.** `elementRunwayMs` splits into a reported figure and an aged one: `spentSince` subtracts time elapsed since the last player event, **but only while the viewer is playing**, because a paused element drains nothing and a pause long enough to have the session reaped is the common case here rather than the corner. `readAheadBytes` is aged the same way, against the same playhead. `forwardBufferMs` gains the guard `positionMs` already had, as `emptyBufferIsEvidence`: while a recovery is in flight, an element reporting no cover while also reporting that it is *playing*, not buffering and not ended is describing a state that cannot occur, so the last trusted figure stands, decayed. Outside a recovery nothing is about to spend the figure and the player is believed.
-
-**Five tests, three of them seen red against code that lacked the specific half they pin.** Two pin the defect itself. Two pin its boundaries and passed before the fix, deliberately: a paused viewer's cover must not be spent (which a naive elapsed-time decay would break), and a `buffering` report must still be believed at once (which a naive guard would swallow).
-
-**The fifth came from the web client and is the one worth keeping.** It asked what happens on a `source-gone` generation where that adapter deliberately does not tear down: as the element plays out its last buffer, `currentMs` passes the end of the final range, so `forwardBufferMs` is *genuinely* `0` while `readyState` stays at 4 for a beat and `buffering` has not flipped yet. **A real zero, in exactly the shape the guard distrusts.** It is harmless, and the reason is that the two halves of this fix are not independent: **a buffer that drained by being watched took exactly as long to drain as it was worth**, so the decayed trusted figure reaches zero at the same moment the true one does. The guard can only ever hold a figure the viewer has already spent. Pinned with a 40 s figure deliberately above the 26 s lead so the two behaviours differ — **verified red when `spentSince` is neutered** (it defers instead of building), which the first version of the test at 3 s did not do, because 3 s is under the lead and both branches build.
-
-902 tests, typecheck and `lint:platform` clean.
-
-**Both RN clients have been told**, because the event contract moved: an adapter that reports `forwardBufferMs: 0` during a recovery without also setting `buffering` is no longer taken at its word. **Both have checked their own source and both are clean** — the web client computes the field purely as a measurement and signals exhaustion through `buffering`; the Android TV client takes `buffering` from `expo-video`'s own `status === 'loading'` rather than inferring it from the buffer. Neither uses a zero as a request to give up.
-
-**One gap the checking turned up, and it is now closed.** The web adapter has a Direct Play read-ahead cache on 453 of 748 titles and **had never emitted `readAheadBytes`** — it wired it the same day, from the worker's `aheadBytes` measured beyond `lastServedOffset`, absent rather than zero where there is no read-ahead so core's absent-means-no-cache reading stays true. **Worth passing to any host wiring the same field:** that client deliberately excludes it from its event dedupe, because it changes on every prefetch response and comparing it would turn the dedupe into a firehose on the path already moving the most bytes. The omission is commented as deliberate, because it reads exactly like a bug. Core's docblock says absence means the host has no read-ahead, never that it holds zero — so core has been reading that host as having no second cache rather than one it cannot see, on the path where the element buffer understates cover the most. The field's contract being undocumented is what had stopped them; that is settled now. **Core asserted they were already emitting it and was wrong** — a claim about another tree made without reading it, which is the boundary fault this file already records twice.
-
-**Two halves. The first is the defect; the second is why the obvious fix makes it worse.**
-
-**The runway is measured before two round trips and spent after them.** `recoverFromMissingSession` reads `this.runwayMs()` at `:2263`, which reads `elementRunwayMs()` at `:2521`, which takes `forwardBufferMs` from `this.snapshot.event` — the last event the player sent. On the terminal path that snapshot is already stale by however long the player has been dead, because `failNow` reaches `beginMissingSessionRecovery(fatalError, true)` at `:2129` and **a player that has stopped is a player that has stopped emitting**. Then `recoverFromMissingSession` *awaits* `sessionAlive()` — a full router walk with its own deadline — and only then compares `runwayMs > leadTimeMs` at `:2287` to decide whether to defer the replacement or build it now.
-
-So the comparison is between a cover figure measured before the walk and a lead time that assumes it is current. **Three terms of staleness**, named by the client that hit them from the other side: time since the player stopped emitting, the adapter's own classification round trip, and core's `sessionAlive` await. Core is doing exactly the thing that client's probe budget exists to bound, and then deciding on pre-probe numbers.
-
-**Which way it fails.** The runway only ever reads *high*, so core defers a replacement it no longer has the cover to defer, and the swap lands after the buffer it was pacing against has already run out. That is the stall the deferral exists to prevent, arriving through the mechanism that prevents it.
-
-**The obvious fix — have the adapter emit a fresh event before it reports — is currently unsafe, and core already knows why.** `onPlayerEvent` is synchronous (`:711`, `:1854`), so an event emitted immediately before the failure listener would land in the snapshot first; the plumbing works. But `:1858-1871` records that **a tearing-down element can report a position of zero**, and guards `positionMs` with a forward-only rule through `lastObservedPositionMs` (`:1873-1876`). **That guard covers the position only, and only while a failover is in flight.** `forwardBufferMs` rides through untouched in the spread at `:1885`. So a player that zeroes its buffer on the way down writes `forwardBufferMs: 0` straight into the snapshot, `elementRunwayMs()` returns 0, and the decision goes to `no-cover` — spending precisely the buffer the deferral was protecting. **The unprotected field is the one a refresh would hand core.**
-
-**The fix was core's alone and was not pushed onto hosts — this is what was built.** Emitting once more removes one term of three; the adapter's walk and core's own await remain whatever a host does. Core closes all three by re-reading the runway at the decision point rather than trusting a snapshot taken before two round trips — and needs the dying-witness guard on the buffer before that re-read is safe. A sentence in `docs/writing-a-player.md` would ask four hosts to each do something partial, only correct after core changes anyway, to fix what core fixes once. **That is Tom's rule failing in the direction that matters:** it is not required of nearly every conceivable client, it is required of core.
-
-**Cross-checked rather than asserted.** The Android TV client read the same functions in its installed copy and reported the line numbers back before either of us acted; it has recorded that it will not emit, and why. Its own case is the same fault on a shorter path — a client reading a runway to bound a probe — and it has fixed its half with a test that fails without the subtraction.
-
-### ~~Background discovery records real routing evidence~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release. Nothing for a client to do: no signature moved and no host emits anything new.
-
-**What landed.** `ClusterEndpointRouter.request` takes the `advisory` option `find` already had, and `ClusterStatusRouter`'s read path passes it. So the ten-second discovery call — and any status read a client makes for a diagnostics screen — records health through `recordProbeSuccess`/`recordProbeFailure` and leaves authority alone. A status timeout no longer un-sticks the endpoint the viewer's media is flowing through, and a status success on another node no longer steals preference from it. `mutation` (`checkConnectivity`) is untouched: it is a deliberate action on one node.
-
-**Stronger than `find`'s advisory, and the asymmetry is deliberate.** There, an advisory *hit* records probe success but a failure still records a failure, because artwork is a real request a viewer is waiting on and a node that cannot serve it has failed real work. Nothing routed through the status path is waited on by anyone, so both directions use the probe variants. Said in the code, so the next reader does not converge them.
-
-**Two tests, both seen red against the unfixed recording.** They are built so the cooldown and the preference are separable: the advisory walk fails on the authoritative node and succeeds elsewhere, the first assertion checks the failover happened *and* cost the node a cooldown — so the advisory path is not a no-op — and then the clock advances past that cooldown, at which point sticky is the only absolute axis left that can explain the order. With the probe variants swapped back for the real ones, both fail on exactly that last assertion. 903 tests, typecheck and `lint:platform` clean.
-
-### ~~`close()` resolves while a failover `POST` is still in flight~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release. Nothing for a client to do; no signature moved.
-
-**The item as written overstated the fault, and reading both recovery bodies is what showed it.** It said the replacement session is created after close with nothing left to own it, holding the node's transcode entitlement for `session_idle`. It is not orphaned: both `recoverFromSourceFailure` and `recoverFromMissingSession` re-check `disposed` after the resolver call and stop what they built. The entry in the low register had been promoted on the strength of `close()` not awaiting `failoverPromise`, which is true, without opening the thing it fails to await — **exactly the inference this file records as fault 1**, made by me, on my own code.
-
-**What was actually wrong, and is now fixed.**
-
-1. **`close()` resolved while that release was still outstanding.** It awaited `startPromise`, `mutationLoop` and every `alternatePreparation`, and neither recovery promise. A host that tears down auth on the strength of `close()` resolving races its own `DELETE` — and a `DELETE` sent with a revoked token is the leak the item described, reached by a longer route. `close()` now awaits `failoverPromise` and `regenerationPromise` first. Nothing can start a new recovery from inside close: the failure channel is unsubscribed before the awaits and every entry point re-checks `disposed`, so those two promises are all there is.
-2. **Those releases dropped the close options, `keepalive` among them.** `PlaybackRuntime`'s unload path sets `keepalive: true` because a `DELETE` issued as the document goes away is cancelled otherwise — and a session negotiated *during* the unload is the likeliest of all to be cancelled. The three disposal stops went through a bare `resolver.stop(id)`; they now share `stopOnDisposal`, which carries `this.closeOptions` and logs a failure as `recovered-session-close-failed` rather than swallowing it. That silent `.catch(() => undefined)` was the real thirty-minute leak in the item, and only on the unload path.
-
-Also collapsed a duplicated `disposed` check in `recoverFromMissingSession`: two identical guards with nothing but a synchronous log between them, so the second could never fire.
-
-**One test, both halves seen red separately.** It holds a failover open on a deferred, calls `close({ keepalive: true })`, spins fifty microtask turns — well past what the close path itself needs, so the assertion is about the await and not about scheduling — and checks `close()` has not resolved; then releases the failover and checks both sessions were stopped with `{ keepalive: true }`. Dropping the two awaits fails the first assertion; dropping `closeOptions` from `stopOnDisposal` fails the second. 904 tests, typecheck and `lint:platform` clean.
-
-**`degrade()` not checking `failoverPromise` stays in the low register** and is still the bounded cousin: a redundant standby, churn rather than a leak.
-
-### ~~Session manager: three mint/re-mint gaps `0.10.0` did not touch~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release. Nothing for a client to do; no signature moved and no behaviour a host has to adopt. Item 4's remainder is still open and is the entry below.
-
-**Taken together, as the item said to.** They are all the mint and re-mint paths, and two of the three had the same root: **a boolean cannot say which lifecycle a promise belongs to.** `stop()` sets `cancelled`, `start()` clears it, so work cancelled by the `stop()` *inside* `start()` sees the flag false again by the time it lands. There is now a `generation` counter that only ever moves forward, moved by every `stop()`, and `abandoned(generation)` replaces the bare `cancelled` checks in `adopt`, `mintNow`, `bootstrap` and `scheduleRefresh`.
-
-1. **`authorization()` no longer hands out a rejected token.** `fetch` drops the token before asking for a replacement, rather than leaving it to be overwritten when the mint lands — `authorization()` answers from `this.token` and only waits when it is undefined, so the old shape handed a native player the one token a node had just refused, for the whole length of the re-mint. The doc on `authorization()` now states the guarantee it keeps.
-2. **A restart mid-bootstrap contacts the new registry.** `bootstrap` and `mint` coalesce only within a generation, so an in-flight run against the registry just replaced is no longer returned as this start's own answer; and the abandoned run cannot adopt its session or clear its successor's `inFlight` handle when it finally lands.
-3. **Timers are replaced, not overwritten.** Both sites now go through `armTimer`, which clears whatever was pending. A retry timer armed over a refresh timer used to leave the refresh running with nothing able to cancel it, since `stop()` clears only the handle it can still see.
-
-**Three tests, each seen red against its own defect and only its own.** Neutering the token drop fails the first with `'Bearer token-a'` where the test wants a pending promise; restoring the generation-blind coalescing fails the second with one mint where two are owed; removing the `clearTimeout` from `armTimer` fails the third with two pending timers where one is owed. 907 tests, typecheck and `lint:platform` clean.
 
 ### `fetch` still returns a bare 401 when the mint failed — decision 1 closed only half the window
 **Waiting on:** core, and it needs its own go/no-go. **Re-verified on `develop` 2026-09-20** — `:509` refuses only on no registry; `:513` hands back the 401 whenever `sent === undefined`. Unchanged since `0.12.0`. **Under the laws this is a visibility failure, not a nicety:** a mint that failed is a degraded state, and the contract says it must be *visible and actionable* — a bare 401 is neither, because it reads as an auth rejection. `src/api/SessionManager.ts`, the `fetch` guard. **Found by the phone client on 2026-09-15 by declining an instruction of mine and checking the installed build.**
@@ -1028,14 +920,6 @@ Two numbers chosen independently and never compared — the fault this file keep
 
 **Do not fold this into the `not-found` work.** It predates it, it affects a path that ships today, and it deserves its own before-and-after.
 
-### ~~A storage write error kills the health loop silently~~ — BUILT on `develop` 2026-09-20, unreleased
-
-**Waiting on:** a release. Nothing for a client to do.
-
-**Both halves, as the item said to pair them.** `runCycle` wraps `persistConfirmedEndpoints` in its own `try`/`catch` and logs `discovered-endpoints-not-persisted`, and the reschedule has moved into a `finally` that arms unless the controller was aborted — so the loop surviving no longer depends on the body having succeeded. `EndpointRegistry.notify()` isolates each listener and logs `endpoint-listener-failed`, the posture `publishConnectionState` has always taken; it also copies the set before iterating, since a listener may unsubscribe itself on delivery.
-
-**Two tests, and the first needed both guards removed before it went red — which is the point.** With only the inner `catch` removed it still passed, because the reschedule was inside the `try` and nothing threw past it; with only the `finally` removed it still passed, because the `catch` swallowed the throw. Restoring the original shape — no inner catch, reschedule in the body — fails it at `expected 2 to be greater than 2`: the loop stopped probing. The listener test rejects with the host's own error when `notify` is left unguarded. 909 tests, typecheck and `lint:platform` clean.
-
 ### The throughput axis may never have ranked anything, anywhere
 **Waiting on:** core for one small change, and on the web client for one measurement. **Rewritten 2026-09-20 after reading the code this entry had admitted not reading.**
 
@@ -1061,24 +945,10 @@ Raised by the phone client and **closed by it the same day**, on reading rather 
 
 **How this entry came to be wrong is the part worth keeping.** The `0.14.0` seek work was moved to COMPLETED.md wholesale during the 2026-09-19 reconciliation; a later session re-opened the half it could not find evidence for, and re-opened it on the strength of not finding it rather than on looking. That is fault 1 in the list above, in its cheapest form: the whole check is one call on the first line of the function the entry cites by line number.
 
-### ~~`GET /api/v1/users` envelope — core is already right, the comment will not be~~ — BUILT on `develop` 2026-09-20, unreleased
-
-Comment rewritten: `items` is the envelope, `users` is legacy and kept **because a node may be stranded on an older build** — the reason is in the comment, so the branch is not deleted as dead later. The lookup order follows, current envelope first. No behaviour change; `userList` already accepted all three shapes and still throws `invalid_user_list` on anything else.
-
-**Loose end, unchanged:** the operator reported an accept-either shim in a client. The web client checked and it is not there. It is sitting unremarked in one of the other three trees, and a client that hand-handles a wire format will not notice the next change either.
-
-### ~~Playback must be stopped before sign-in and sign-out, and nothing says so~~ — BUILT on `develop` 2026-09-20, unreleased
-
-`signIn`'s doc comment now carries the obligation `signOut`'s already did, with the cost stated: a session created under the old identity cannot be closed once the token changes, so the node holds its transcode entitlement until `session_idle`, thirty minutes, and on a one-slot node the next viewer gets `429 resource_limit` with nothing pointing at the client that caused it. Invisible from the client that causes it, which is why it is said here.
-
 ### Smaller correctness items
-**Waiting on:** core. **Three of five built on `develop` 2026-09-20, unreleased.**
+**All five done.** The last, `TorrentJob.catalogue` made optional, went out 2026-09-24 beside 0.56.0's `error_code` on the same type; the web client already guarded for its absence. **Four of five shipped in `0.18.0`** and are in COMPLETED: the README seeding snippet, the emptied bootstrap set, the per-title guard on `ClusterPlaybackFactsApi`, and `envelopeArray` with the `502 invalid_response` classification.
 
-- ~~**README seeding snippet defeats discovered-endpoint persistence.**~~ **BUILT.** The snippet seeds the two sets under their own sources — `bootstrapEndpoints(configuration.discoveredEndpoints(), 'discovered')` — so `persistConfirmedEndpoints` has something it is allowed to persist. The round-trip test the entry asked for is in `EndpointHealthMonitor.test.ts` and fails against the old snippet with `expected [] to deeply equal ['http://10.44.1.51:7438']`.
-- ~~**An emptied bootstrap set is persisted and treated as configured.**~~ **BUILT.** `setBootstrapEndpoints([])` removes the key, as `setDiscoveredEndpoints` always has, *and* `bootstrapEndpoints()` reads a stored empty list as absent — written as absent is not enough on its own, because a client may already be carrying one from a build that wrote it. Two tests, both red against the old shape.
-- ~~**`ClusterPlaybackFactsApi` records per-title faults as endpoint evidence.**~~ **BUILT.** `:63-67` now carries the `!isPerTitleFailure(error)` guard `ClusterPlaybackResolver.create` has, so one unreadable extent no longer demotes the node for every title on it.
 - **`TorrentJob.catalogue` is declared required but version-gated.** `api/AcquisitionApi.ts:72`, "since 0.28.1", and the package supports mixed-version endpoint sets with no runtime check. Make it optional; absent stays absent. **Held deliberately:** widening a required field to optional is a compile break in every consumer that reads it, so it is not internal work and wants to go out with whatever else moves that type, announced rather than discovered.
-- ~~**Success bodies are assumed to be the envelope.**~~ **BUILT on `develop` 2026-09-20, unreleased.** One shared `envelopeArray` in `httpCompat.ts` — the file where every family already reads a success body — checked at the three collection sites (`items`, `jobs`, `items`), plus a `SyntaxError` guard in each family's `request`. Both now throw that family's own typed error with `502` and `invalid_response`. **502 is deliberate and stays retryable:** in a mixed-version endpoint set the next node may answer a shape this build can read, which is what being generous about envelopes exists for, and `invalid_media_profile` has taken the same position since it was written. The old behaviour was worse in both directions — a raw `SyntaxError` carries no status, so an HTML 200 from a captive portal was non-retryable and "Unexpected token <" reached the viewer; a `TypeError` at `.map` was read as a *transport* failure, so a schema mismatch cooled the node down as though it had been unreachable. Four tests, one of them asserting the classification through `retryableEndpointFailure` rather than assuming it.
 
 ---
 
@@ -1111,6 +981,121 @@ All three are defects in what core ships, not in client discipline:
 2. **An expired capability is not re-hosted**, so a client filtering authenticated sources keeps one dead URL and the walk finds nothing. Bounded and rare now: `expiredCapability` cannot fire on a freshly read payload — the server's bucket guarantees more than one TTL of validity — so this survives only for a payload held **across a bucket boundary** (persisted state, a long idle).
 3. **The Blob path never teaches the host preference**, because `ClusterCatalogueApi` walks internally and returns bytes. **Deliberately not plumbed out:** that path fetches the *authenticated* per-node URL, a different cache key, so a success there says a node serves artwork and says nothing about whether the platform holds capability-keyed bytes for that host. Moving the preference on it would act on evidence that does not bear on the question. Revisit only if a cluster turns up where the Blob path is the normal one rather than the fallback.
 
+
+### A move starts ahead of the viewer — lead BUILT and verified live; where core's own estimate comes from is open
+**Waiting on:** the server's answer on a node's start cost (asked 2026-09-23, Tom's word needed on its side). **Unreleased on `develop`:** `d58375a`, trimmed by `38d0524`.
+
+**What is built and holds.** `moveTo(endpointId, { leadMs })` asks the target node for the viewer's position plus a lead. A player declaring `holdsThroughLead` is handed a negative position on the `continue` activation, meaning the viewer is that far before the generation's start. It plays the outgoing source up to it and cuts there. Core bypasses the renegotiation that would have PATCHed the lead away. Only such a player ever gets a lead.
+
+**Verified live, web client, fi-1 → gbni-1, 2026-09-23:**
+- A 24.6 s host lead was seamless: 270 samples at 100 ms, never paused, and the cut came with 27 s buffered ahead of the join.
+- The same move unled froze the picture for 15.3 s.
+
+**Why the lead has to come from the host today.**
+- Core measured start cost with a `bytes=0-0` readiness probe, and Tom ruled that out. It is removed, and the history is in COMPLETED.
+- The evidence store and `startCostEstimate` stay as the landing point for whatever the server offers. Nothing feeds them now, so without a host lead a move asks for none.
+- The web client's lead is create-to-first-fragment-loaded, measured end to end per node. It captures what actually decides the race.
+
+**The race is decided by transfer as much as by start.** Measured: gbni-1 answered every fragment in 0.1-0.35 s, while a cold connection from the fi-1-site client delivered the first fragments at 0.28-0.57 MB/s against a 0.63 MB/s stream. Steady state later settled near 1.6 MB/s. So two questions, kept apart:
+- **Can the join be won in the opening?** That is the lead. A lead computed from steady-state throughput would pass and then lose.
+- **Can the node sustain the stream from here?** That is recorded media throughput against the bitrate. **BUILT on `develop` in `9f33b75`, 2026-09-24, unreleased and not yet exercised.** `prepareOn` declines (`move-declined`, reason `insufficient-throughput`, with `bytesPerSecond` and `streamBitsPerSecond`) when the media estimate is below the served rate, and asks the node nothing.
+  - **Media only.** `EndpointBandwidth` keeps a second estimate, in memory and never persisted, so the one-sample restore cannot decide anything. `recordTransferByUrl` files media by default, which is what the web client (hls.js fragments, Direct Play read-ahead) and the phone client (downloads) both report. Core's own JSON is filed as `'api'` because it is timed around the parse. Ranking still takes both.
+  - **Gated** on `MEDIA_THROUGHPUT_MIN_SAMPLES` = 6 and `MEDIA_THROUGHPUT_MAX_AGE_MS` = 10 min, both guesses. Six because cold fragments understate the link, as above. The age limit is there because a declined node serves no media to refresh its figure.
+  - **The rate** is the source bitrate for direct play. Otherwise it is the sum of `output.video.bitrate` and `output.audio.bitrate`, and core abstains if either is missing. Read against the server's `output_json`: bits per second, no overall output rate, and a transcoded video states one only under a `max_bitrate` cap. So most uncapped transcodes, and remuxes of containers without per-stream rates, abstain.
+  - **Only a floor.** Below the average rate the node cannot carry the stream, peaks aside. It does not test for headroom.
+  - **Open:** the viewer sees nothing. `moveTo` returns `false`, as it does for an unknown node, and only the trail says why. A host wanting to tell the viewer needs a reason on the return, which is a hard cut of `moveTo`'s `boolean`. That is not done, and waits on a host asking. **What to watch for on a device:** `move-declined` / `insufficient-throughput` only after six or more media fragments from that node in the last ten minutes. The Android TV client feeds no media at all, so it never declines.
+
+### The server can place a torrent download on a chosen node, and core's `submitMagnet` cannot say where a job went
+**Waiting on:** the server to deploy and name the version; then core. **Contract reviewed 2026-09-22, feedback sent, nothing built.** Building against an undeployed server would spend a version on a loop.
+
+**What the server built, unreleased.** `POST /api/v1/torrents/jobs` takes an optional `node_id` (32 hex); absent, the job runs on the receiving node as before. The `202` now **always** returns `{ id, node_id }`, including for a local add. `400 bad_request` on a malformed id; `409 placement_failed` when the named node is not an active member or is unreachable — **deliberately never a silent local download instead.** The nodes are not interchangeable: one of the three is a four-core, 4 GB, single-spinning-disk machine, and which node ran a download was previously decided by which address the client happened to be configured with.
+
+**Where it lands here.** `MachaAcquisitionApi.submitMagnet` (`api/MachaAcquisitionApi.ts:65`) reads `IdEnvelope { id }` and returns `Promise<string>`, so today the node a job went to is unknowable from core. The always-returned `node_id` is worth a **hard cut** of that signature to return both; four clients rebuild. Routing needs nothing: `ClusterAcquisitionApi.write()` goes through `ClusterEndpointRouter.mutation()`, which picks `candidates()[0]` and never walks, so the receiving node is already the best-ranked one and forwards from there. **Core never sends `acquisition_ref`, only `magnet`** — said to the server in case that path matters.
+
+**The `409` is already classified correctly, and it is worth saying that rather than leaving it to luck.** `retryableEndpointFailure` returns `false` for a `409`, so `mutation()` neither walks nor calls `recordFailure` on the receiving endpoint. That is the right outcome: the receiving node is healthy — it forwarded and truthfully reported a fact about a *different* node — and charging it would cool a working node for someone else's condition. Same scope distinction `0.18.0` was about.
+
+**Two asks sent to the server, both cheap while unreleased:**
+1. **Return `node_id` on the single-job action responses too** — `/{id}/pause|resume|retry|cancel` omit it, which is why `TorrentJob.node_id` is optional here (`api/AcquisitionApi.ts:76-78`). If create always carries it, the actions should, and core drops the optional. A client that just placed a job otherwise loses the node the moment it pauses it.
+2. **`placement_failed` needs a machine `code`, the target `node_id` and a viewer-facing `detail` as fields**, not "the reason in the message". A host never parses a message; `playbackFailureCode` and `playbackFailureDetail` exist because clients were string-matching server prose, and a client that matches on wording goes silent the first time it is reworded.
+
+**Two things declined, and the second is against core as much as the server.** No to a name instead of the hex id — core has `nodes[].id`, `host` and `version` off `/api/v1/status` and can render a label itself; a name as the placement key becomes a second identifier that has to be policed for uniqueness and stability. **No to a server-side "best node" option**, because it would be a second ranking on different inputs from core's cascade, and when the two disagree nobody can explain a placement to an operator — **but core's cascade ranks for playback** (availability, sticky, failures, throughput, latency, capacity) and measures neither free disk nor sustained write, and its capacity axis abstains without `cpu_cores`. So core cannot claim to rank downloads today either. **The ask is facts, not a verdict:** per-node free disk on status (`ByteUsage` is already in core at `api/ClusterStatusApi.ts:30-34`), and core ranks and sends an explicit `node_id`. Whoever decides should be able to say why.
+
+**When it ships:** hard-cut `submitMagnet` to return `{ id, nodeId }`, make `TorrentJob.node_id` required if ask 1 lands, and surface the `409`'s stated code and target through the existing accessors. Nothing else moves.
+
+### ~~An unclassified fatal charges a node whose session was simply reaped~~ — BUILT on `develop` in `2bcce57`, unreleased, VERIFIED on the TV set
+**Verified 2026-09-23 on .133, through the link with the bundle checked, on a transcode session as planned.**
+- Transcode session `9ea528ac` on 10.35.1.50 (DTS audio, which the set cannot decode) was DELETEd at 23:51:35.
+- ExoPlayer failed at the end of its buffer at 23:52:42. That failure is `unknown` to core.
+- The replacement `fbfbe0b1` came up on 10.35.1.50, still transcode, with nothing on macnessa or ramaroja. The film resumed where it stopped after about 8 s without picture.
+- That night's two direct-play reaps, on the code before this, failed over across the internet. This one did not.
+
+**By outcome, not by trail.** The trail was off, so core's `source-reaped` / `session-regenerated` lines were not seen. What was seen is the node session lists and the resumed position. A failover excludes the charged node, so a replacement on the same node with nothing elsewhere is the regeneration path. If a later trail ever shows `source-failover-start` on a reap, this reading was wrong.
+
+**Still open: 66 s passed between the DELETE and the fatal.** expo-video reports no per-segment failure to JS, so the degradation channel is never used on that set. **This first read "and the client's", and Tom corrected it: core exists to support the clients.** Core already holds most of the answer, and sent it to that client 2026-09-24:
+- A `not-found` `PlaybackSourceError` on `subscribeDegradation`, built with `playbackFailureKindForStatus(404)`, regenerates within the buffer's cover, as the web client measured invisibly on 2026-09-17.
+- media3 reports each failed load natively, through `AnalyticsListener.onLoadError` with `InvalidResponseCodeException.responseCode`.
+- A core-side, playing-only check of the session route could catch a reap with no player evidence at all. That one waits on Tom, under *Waiting on Tom*.
+
+**Waiting on:** a reap on the Android TV set to confirm `session-regenerated` on the same endpoint with no `source-failover-start` in between. **Tried 2026-09-23 and not exercisable, for a reason that is the server's:** a direct session DELETEd with 204 (and listed on no node afterwards) went on streaming for 8 minutes, including after a seek two minutes past the buffered edge. No fatal ever reached the player, so there was nothing to classify. It is with the server, and matches the earlier report of a deleted macnessa session streaming for 2 min 28 s. Next try: a transcode session. Asked for by that client and approved by Tom, relayed. expo-video's terminal error carries no status, so both of that set's reaps on 2026-09-23 reached core as `unknown`, charged a healthy 10.35.1.50, and failed over across the internet.
+
+An unclassified terminal failure bound for failover now asks `sessionAlive()` first, the same recovery a `not-found` takes:
+- gone: regenerate on the same node, nothing charged;
+- alive, or no answer: failover and the charge, as before.
+
+The degradation channel is unchanged. **The liveness GET had no timeout at all** — plain host fetch, no signal — which already affected the `not-found` path. It is now bounded at `SESSION_LIVENESS_TIMEOUT_MS`, core's 8 s JSON bound, and a timeout reads as could-not-tell.
+
+**The replacement for the rejected one-byte probe, `probeSourceReadiness`, is this.** It asks the session API instead of the stream.
+
+### ~~Previous and next episode, across season boundaries~~ — BUILT on `develop` in `8dd1fcf`, unreleased
+Tom's business P0, asked for by the Android TV client: every episode shows previous and next in the player, and back navigation goes episode → season → series → TV Shows. `episodeNeighbours(api, episode, signal)` works out the neighbours from `details()` alone, crossing seasons and stepping over empty ones. It returns the show and season for the back stack. **Specials (season 0) are a chain of their own**, core's call and stated to the client. It never throws for a broken hierarchy. **Verified on the Android TV set 2026-09-23 against `3f77ef4`**:
+- Resumed from Continue Watching (Bushwhacked S01E02): both neighbours present, and Next went to S01E03.
+- From the season page, S01E01: previous greyed, next present.
+- Back walked season → series → TV Shows from the returned show and season, with no errors.
+
+**Waiting on:** the web client, which has nothing like it and will want it.
+
+### ~~A player that cannot ride a hold needed a media probe~~ — BUILT on `develop` in `3e611b8`, unreleased
+Tom ruled zero-byte checks out, the web client's own included. **The standby preflight's `bytes=0-65535` read stays** — Tom: *"it is reasonable to request initial media from a node you're about to failover to."* The web client's native-HLS path (Samsung) waited for a `bytes=0-0` 206 on the first segment before handing over a source. That wait is replaced by the node's own statement: `production.produced_ms > 0` on the session route. **Checked in the server at `eea4795`:** `produced_media` advances only in `publish_segment`, which publishes whole segments with init first, and create, PATCH and GET all carry `production` through `session_json`.
+- A player declaring `needsProducedSource` gets a transcode or remux source only once `awaitProduced` says so: reads every `PRODUCED_POLL_INTERVAL_MS` (500 ms, client policy documented as a guess), each bounded at 8 s, the whole wait bounded by the node's attempt budget.
+- No production reading means hand over as before. A 404 means not-found and the reaped-session recovery.
+
+**Waiting on:** the web client to declare it on the native path, delete `probeFirstFragment`, and show a Samsung start.
+
+### ~~Continue Watching owns the store but not the cadence~~ — BUILT on `develop` in `5061a03`, unreleased
+**Waiting on:** a publish, then the Android TV client to swap onto core's and delete `src/player/progressPersistence.ts` and its test. **Built 2026-09-24 from that client's file as it stood, not from the shape below**, which is the first version it sent. By then the rule had two corrections from the set: `ProgressWatermark` gained `attemptedAtMs`, `progressWriteDue` a `minAttemptGapMs` floor that the pause edge is exempt from, and `nextWatermark(previous, paused, nowMs, landed)` leaves `wroteAtMs` alone when the store declined the write. Without that, a film killed at about seventy seconds recorded nothing. Core exports all three, plus `ProgressWrite`, in `state/progressWrite.ts`, with that client's suite ported and one case added against the real `ContinueWatchingStore`, reading `landed` off `update()`'s list as a host does. Red-checked against both corrections. **The interval stays a parameter:** the 5 minutes is Tom's call and core takes no opinion. The finished-item short-circuit and the reset on no playback stay in the host, and the doc names them. The phone and web clients have not been asked whether they have the same exposure.
+
+The original entry follows.
+
+
+Core owns `ContinueWatchingStore` and `progressFor()` (`state/continueWatching.ts:35,39`). **Nothing owns when to call them.** So each client invents a write policy, and the Android TV client has now written one it wants to delete in favour of core's.
+
+**The incident, which is the reason this is P1 rather than a nicety.** On 2026-09-22 at 20:42:15 a TCL at 10.35.1.133 replaced Android System WebView and force-stopped the TV client while it was in the foreground — `Killing 3554:foundation.macha.client.tv/u0a96 (adj 0): stop com.google.android.webview due to installPackageLI`. `ApplicationExitInfo` records it as `reason=10` (USER REQUESTED); all 16 recorded exits for the package are that reason and **none is a crash**. A kill of that shape runs no teardown — no stop, no unmount, no final write. The TV client wrote progress only on deliberate exit, so a viewer killed an hour into a film resumed from wherever they last pressed Back, which on a first viewing is the beginning.
+
+**The rule, as the TV client states it** — dependency-free, two booleans, a duration and a clock, which is why it belongs here:
+
+    progressWriteDue(
+      previous: { paused: boolean; wroteAtMs: number },
+      current: { paused: boolean; durationMs: number } | undefined,
+      nowMs: number,
+      intervalMs: number,
+    ): 'paused' | 'interval' | undefined
+
+- no playback (`undefined`) → no write. The clean stop; writing stamps a position after the viewer has left.
+- `durationMs <= 0` → no write. The fraction is meaningless and renders as an entry with no position.
+- playing → paused, **the edge and not the state** → `'paused'`. Held paused it must not rewrite: the position is not advancing and the RN stores are AsyncStorage-backed, so it is pure churn.
+- playing and `nowMs - wroteAtMs >= intervalMs` → `'interval'`. The interval does **not** run while paused.
+
+**Hosts keep the timer, the playback subscription, and where the writer lives.** The TV client's sits at app scope rather than the player screen's, because a screen that unmounts on Back stops writing exactly when there is still something to record. That part is platform and stays with the client.
+
+**Do not adopt the calibration that came with it.** The TV client chose its 5-minute interval by pinning it to `SERVER_SESSION_IDLE_MS` "as a relationship, not a number", reasoning that the kill which orphans a session on the node is the kill which strands the resume point on the device. **The constant checks out — `streamProtocol.ts:68` is `1_800_000` — and the inference from it is still wrong, twice over.**
+
+1. **It re-creates a dependency core deliberately deleted.** The doc on that constant says it: it is *the server's default*, each node states its own `session_idle_ms` on `/api/v1/status`, **core does not read it on purpose** — *"nothing here should be timing against a session's erasure, and the dependency that did was deleted rather than re-pointed at the wire"* — and *"treat it as a ceiling to stay well under rather than a number to match, and never let correctness depend on it."* The 30 minutes was measured once, on fi-1 on 2026-09-17, off `/etc/macha/macha.yaml:176` running the default. **A default is not a contract**, and this is the fault class recorded at `ACCOUNT_SCOPED_FAILURE_CODES` in `cluster/endpointFailure.ts`: a client sized itself against `look_ahead_ms`'s default of 8 segments where the node was configured for 4, and sat refused at the frontier for a 12.7 s viewer freeze.
+2. **The relationship does no work even where the number is right.** What bounds the viewer's loss is `intervalMs` alone: an unannounced kill lands whenever it lands, and the stored position is stale by at most one interval whether the node reaps at thirty minutes, at five, or never. Session reaping is the *node* reclaiming a transcode slot; the write cadence is *the device* surviving a process kill. The TV client's incident shares a trigger with reaping, not a mechanism. Tie the interval to what it actually bounds — how much progress a viewer may lose — and 5 minutes is then Tom's call on that question, which is the right question. Deriving it from session idle means a node configured to reap sooner silently argues for more AsyncStorage churn that buys nothing.
+
+**Unverified, and flagged as the TV client flagged it:** it believes the phone and web clients have the same exposure to an unannounced kill and has **not** read either tree. Ask each client rather than assuming — the two RN trees are separate codebases.
+
+**When this lands, say so on the thread and name the version.** The TV client has recorded at the declaration in its `src/player/progressPersistence.ts` and in its own `TODO/ACTIVE.md` that the local copy is to be removed when core publishes this; two implementations of this rule drifting across four clients is the thing to avoid.
+
 ---
 
 ## P2
@@ -1119,12 +1104,6 @@ All three are defects in what core ships, not in client discipline:
 **Waiting on:** core.
 
 Specified, not built. `GET /api/v1/playback/sessions/{id}` returns `engine_running` and `segments_ready` **only when an engine is present**, so their absence is the "reclaimed, needs a cold start" signal — one cheap round trip, and the same GET renews the 30-minute session timer without touching the 60 s pipeline clock. Promotion should expect a cold start rather than counting the promotion as failed.
-
-### ~~`find` cannot distinguish absence from partial failure~~ — BUILT on `develop` 2026-09-20, unreleased
-
-`find` takes an optional `onAbsence` callback, called only on the way to answering `undefined`, carrying `attempted`, `absent`, `failed` and `unanimous`. The return is unchanged, so every caller that does not care is untouched — the deliberate behaviour the entry defends (optional metadata must not be blocked by an unrelated node failure) stays exactly as it was.
-
-The caller that cares is the media profile: an absent one makes the chooser transcode everything, silently, so `readMediaProfile` now logs `media-profile-absent` at `debug` when every node answered absence, and `media-profile-absent-after-failure` at **`warn`** when it did not — with which nodes were absent and which failed. The decision is the same; what changed is that a capture can say whether it was made on a complete answer. One test, both halves, red when `unanimous` is stubbed true.
 
 ---
 
@@ -1252,7 +1231,7 @@ Each of these guards a rule that had already failed once somewhere, and none nee
 | A per-title fault on a facts read | P1 — `ClusterPlaybackFactsApi` demotes a node for one bad extent |
 | Degrade during failover; `close()` with a failover in flight | Low register — coordinator `1134-1140`, `698-718` |
 
-**~~What is blocking that work: there are three `FakePlayer` implementations.~~ MERGED on `develop` 2026-09-20, unreleased.** There is now one, `src/testing/FakePlayer.ts`, and both local copies are gone. The header records what the split cost — a round of "prove the test fails against the broken code" that ran green every time because the code it was meant to break was never the code under test, and a good test deleted on the strength of it.
+**~~What is blocking that work: there are three `FakePlayer` implementations.~~ MERGED, shipped in `0.18.0`.** There is now one, `src/testing/FakePlayer.ts`, and both local copies are gone. The header records what the split cost — a round of "prove the test fails against the broken code" that ran green every time because the code it was meant to break was never the code under test, and a good test deleted on the strength of it.
 
 **The two divergences the merge had to settle, neither of which any test named.** The runtime's copy recorded `play()` as a bare `PlaybackSource`, so its assertions could not see the position, the start-paused flag or the transition; nothing asserted on those, so the shared shape absorbed it with no test change. The other is a real behaviour difference: the runtime's `detach()` also stopped, the other two only counted. **Settled in favour of the interface** — `Player.detach` is documented as *"Final player destruction. This is resource-destructive."*, so a double whose `detach()` only counts lets a test pass where the real player would have torn the source down. The coordinator never calls `detach` (it deliberately leaves host ownership to `PlaybackRuntime`), so nothing there moved.
 
@@ -1337,6 +1316,17 @@ The cost is not local: a node holds a session's transcode entitlement for `sessi
 ---
 
 ## Verification outstanding — the `0.13.0` deferral has never reached a swap on a real node
+
+**It has now: verified live on 2026-09-23 by the web client, against core `0ac8f21`, fi-1 on server 0.53 with `session_idle` at 30 min, transcode HLS.** A 34.7-minute pause with 127 s buffered; nothing touched the session while paused.
+- **Resume:** the picture played on from the buffer at once. The first fragment 404 came 9.1 s later: `session-gone`, `source-reaped`, and a replacement deferred at `runwayMs 119892` against `leadTimeMs 26000`.
+- **The adapter's fatal 31 s later** was absorbed as `source-failure-superseded-by-replacement`. No failure screen.
+- **At `lead-time-reached`** (`runwayMs 25939`), core regenerated **on the same node**. The session was created in 1.6 s, the web handover completed in 1.28 s, and the cut went from 157.5 s on the old element to 2.8 s on the new, 100 ms apart, `readyState 4` throughout.
+- **No stall** in 1,257 visible samples.
+
+That closes *Re-verify the stall is gone* below. **Two caveats from the run:**
+- The tab was hidden from the resume click until 20:02:31, so the resume and the first 404 happened in a background tab; the rebuild and the cut were foregrounded.
+- At 19:40:31, mid-pause, routing logged `route-endpoint-failed` for fi-1 as unreachable, with no visible consequence. **Unexplained.** A throttled timer in a background tab expiring a request is one candidate, not a finding.
+
 
 **Core's half is complete and released in `0.13.0`, and the shipped account is in [COMPLETED.md](COMPLETED.md).** What is left here is verification nobody has been able to run and one cross-repo half: the web client's `fail-not-found` teardown change and the three-arm comparison. Neither is core's and neither blocks anyone else — see *Still to do* at the end of this section, which is the only part that is actually outstanding.
 
@@ -1426,7 +1416,7 @@ Fixed by refusing to probe at all while a replacement is held or being built: on
 
 Player closed 18 s into a hold. `session-stop` -> `session-stopped`, and verified against the node afterwards: `GET /api/v1/playback/sessions/44a2fc74…` -> `404`. Run 1's replacement is also gone, released by the failover path. The half Tom asked for works.
 
-### The adapter stops tearing down — IN SCOPE, built on both sides, one publish
+### The adapter stops tearing down — shipped in `0.18.0`; the *Still to do* list below is what is left
 
 **Tom, 2026-09-17:** *"There's no point in two NPM packages published when we already know there's an issue. Continue and work with Client until we have a clean NPM to publish that solves the problems."* So the sequencing below is reversed: this lands with the rest and there is one release, not two. **That also disposes of the coupling hazard entirely** — the danger was only ever in the two halves shipping apart, and now they cannot.
 
@@ -1450,13 +1440,13 @@ The client can supply it — `directPlayReadAheadMetrics` already carries `resid
 
 ### Still to do
 
-- **Re-verify the stall is gone.** Neither run reached a swap, so the 5.16 s is still only known to be fixed in a fake.
+- ~~**Re-verify the stall is gone.**~~ **Verified live 2026-09-23** — see the head of this section: in-place regeneration after a 34.7-minute pause, no stall in 1,257 samples.
 - The look-ahead question — whether a generation held for a minute is still being produced — remains unanswered for the same reason. Watch for `source-not-found-on-live-session` **after** `replacement-swapped-in`.
 - Nothing has met a node in the *node-unreachable* case. The client has a repro that collapses the thirty-minute wait — pause through the UI, `DELETE /api/v1/playback/sessions/<id>` on the owning node, resume — and verifies through a **temporary `file:` link to this tree**, then unlinks. Core's `dist` is built and current, so the link sees all of it today.
 - The web client's half is **written and proven live**, and its tree deliberately does not typecheck — four errors, all `SEGMENT_NOT_READY_STATUS` / `SOURCE_NOT_FOUND_STATUS` / `'not-found'` not existing in the registry copy of core. That is the honest state and it was waiting on a real version number, not on more work; `0.13.0` and `0.14.0` have both shipped since, so this is closed unless that tree says otherwise.
 - **A trap for whoever links next, which cost the client a cycle.** Vite pre-bundles dependencies into `node_modules/.vite/deps` and swapping the symlink underneath does **not** invalidate it: the browser threw `does not provide an export named 'SEGMENT_NOT_READY_STATUS'` against a cache built from the registry copy while `node -e` in the same directory resolved the linked tree correctly. `rm -rf node_modules/.vite` and `vite --force`. This is the "a swap can silently not happen" failure one layer below the one already on record.
 - The resume-time probe after a long pause. Optional, and correctness does not rest on it.
-- ~~`HISTORY.md`'s release table gets a row when this actually ships.~~ **Done** — `HISTORY.md:135` carries the `0.13.0` row. It is `0.13.1` and `0.14.0` that have none, and they should.
+- ~~`HISTORY.md`'s release table gets a row when this actually ships.~~ **Done** — the table now carries `0.13.0` through `0.18.0`, with the three never-published tags marked as such.
 
 **Method note worth keeping.** Every test here was seen red against the unfixed code before being kept, including the ones that assert an *absence* — those failed at `HEAD` because the probe they wait for never happens, rather than passing vacuously. That check was worth running: it is the trap `FakePlayer`'s comment was written about.
 
@@ -1466,26 +1456,23 @@ The client can supply it — `directPlayReadAheadMetrics` already carries `resid
 
 Verified, each real, none urgent. Grouped by area so a session cleaning one area can take the set.
 
-**Line numbers here were re-anchored against `develop` on 2026-09-19 and will rot again.** `PlaybackCoordinator.ts` grew from roughly 1,400 lines to 2,643 across `0.13.0` and `0.14.0`, and every citation into it moved by hundreds of lines while the defects themselves stayed exactly where they were. The ones below were re-read; a handful of the shorter files were not, and are marked where that is true. **Treat a line number as a hint and the symbol name as the address** — if they disagree, the symbol is right.
+**Six items that stood here as *FIXED on `develop`* shipped in `0.18.0` and are gone from this list; they are in COMPLETED. Line numbers here were re-anchored against `develop` on 2026-09-19 and will rot again.** `PlaybackCoordinator.ts` grew from roughly 1,400 lines to 2,643 across `0.13.0` and `0.14.0`, and every citation into it moved by hundreds of lines while the defects themselves stayed exactly where they were. The ones below were re-read; a handful of the shorter files were not, and are marked where that is true. **Treat a line number as a hint and the symbol name as the address** — if they disagree, the symbol is right.
 
 **Coordinator and playback**
-- ~~`PlaybackCoordinator.ts:1688` (and the silent direct promotion above it) — both promotion paths record the endpoint failure and then call `resolver.stop()` on the same node~~ **FIXED on `develop` 2026-09-20.** `PlaybackStopOptions.endpointAlreadyCharged` is the seam the entry said was missing: `ClusterPlaybackResolver.stop` neither records a failure nor keeps the provenance entry when it is set, so one observation charges the node once and a throwing DELETE cannot walk the cooldown ladder on its own. Both promotion paths pass it; three existing assertions moved to the new call shape.
 - `PlaybackCoordinator.ts:1542-1582` — `degrade()` does not check `failoverPromise`, so a degradation during failover POSTs a redundant standby on a third node. Churn, not a leak.
 - `failNow`'s `failoverPromise` branch is **shadowed**, found 2026-09-20 while covering it. `beginSourceFailover` independently refuses to start a second failover, and the whole 935-test suite passes with the `failNow` branch removed — its only unique effect on current code is its `debug` line, and a corner where `snapshot.session` and `serverSession` are both absent mid-failover, which nothing produces. **Keep both**: they are different intents that happen to coincide, and the `failNow` comment records a measured 82-second viewer loss. This entry exists so nobody removes `beginSourceFailover`'s guard believing `failNow` still covers it — it does, today, and only today. Its twin on the degradation channel is the entry above.
 - `testing/FakePlayer.ts` — `setVolume()` is declared with **no parameters** and discards the level, so no test anywhere can assert what was applied. The `setVolume` docblock records two occasions when applying a level was confused with persisting one, which makes an unobservable level the wrong gap to leave in the one shared double. **Not widened yet because `FakePlayer` ships on the `./testing` export**: adding a parameter turns `() => void` into `(volume: number) => void`, and a client calling `player.setVolume()` bare would stop typechecking. Do it with a release that carries a note, alongside `detach()` now stopping.
 - `PlaybackCoordinator.ts` — **`snapshot.instruction` goes stale on a viewer mode change.** Found 2026-09-20 while building the substitution detector, which had to route around it. `instructedPreferences` patches the report from `startInternal` and from `queueChosenInstruction` (the Auto path), and `applyDegradedInstruction` patches it on a step down — but a plain `update({ preferences: { mode } })` patches nothing. So after a viewer switches from transcode to remux the report still says `transcode`, with `chosenByViewer: false`. A host rendering the instruction notes shows the wrong mode and attributes it to the chooser. Small, real, and the reason `modeHonoured` compares against the node's echo rather than against this.
 - `PlaybackCoordinator.ts:1765` — the transcode standby window is keyed on `alternate.mode === 'transcode'`; if the entitlement is video-only, `transform.video === 'transcode'` is the precise test. The 8 s comment records the slot cost but not the quantity it must exceed.
 - `PlaybackCoordinator.ts:1712-1756` — there is a disposed/revision re-check after the awaited `prepare` (`:1726`) but none after the preflight that follows it.
-- ~~`PlaybackStatus.ts:12` — header says "only ever from `output.container`" while the code falls back to `output.format`.~~ **FIXED on `develop` 2026-09-20.** The header now says what the body does — the server's own account of what it produced, container or format, never the request.
 - `MachaPlaybackResolver.ts:332`, called at `:407` — `reconcileQualityCaps` runs on `resolve()` but not `update()` (`:430`, verified: one call site), against its own doc. The "skips remux" half is not obviously true of the body at `:335-340` and was not re-verified; check before acting on it.
-- `MediaTechnicalProfile.ts:21-23` — ~~dead ternary with identical branches~~ **FIXED on `develop` 2026-09-20**: both shapes spell `level` the same way, so the ternary chose between an expression and itself. Still open: `MachaPlaybackFactsApi.ts:45` passes `dolby_vision_profile: 0` through where the other normaliser treats 0 as "not probed".
+- `MachaPlaybackFactsApi.ts:45` passes `dolby_vision_profile: 0` through where the other normaliser treats 0 as "not probed". (The dead ternary beside it in `MediaTechnicalProfile.ts` shipped fixed in `0.18.0`.)
 
 **Cluster and routing**
 - `EndpointRegistry.ts:185` (`ABSOLUTE_AXES`, and the doc at `:174-177`) — sticky is checked before the both-cooling order, so a sticky node on a 30 s cooldown is walked before a non-sticky one on 0.5 s.
 - `EndpointRegistry.ts:49,72` — capacity never expires; `observedAt` is declared on both records, written, and read by nothing (verified 2026-09-20: the only two occurrences are the type fields).
 - `EndpointHealthMonitor.ts:136` + `EndpointRegistry.ts:495` — capacity keyed by `api_endpoint` string, so a typed IP versus an advertised hostname yields the same node twice and the in-use bootstrap entry never gets capacity.
 - ~~`EndpointRegistry.ts:713-715` — `notify()` does not isolate listeners~~ — **moved into the P1 health-loop item**, where it belongs with its twin.
-- ~~`EndpointHealthMonitor.ts:186-226` — no abort check after `stop()`~~ **FIXED on `develop` 2026-09-20.** `discoverClusterEndpoints` takes the signal and checks it after the status call, the same rule the cycle applies either side of the probe walk. Test red without it.
 - ~~`EndpointBandwidth.ts:17-20,124-126` vs `EndpointRegistry.ts:101,563` — restore re-enters at one sample, threshold is two~~ — **folded into *The throughput axis may never have ranked anything* in P1**, which is where it stops looking harmless. `EndpointRegistry.test.ts:266-269` pins the current behaviour.
 - `EndpointHealthMonitor.ts:69,164,235` vs `serverConnection.ts:41-44` — a proxy's bodiless 502/503/504 counts as reachable and clears the outage state forever.
 - `EndpointRegistry.ts:85` vs `EndpointHealthMonitor.ts:10` — the cooldown ladder (500 ms, 2 s) is uncalibrated against the 10 s probe interval; a probe-failed sticky node is "ready" 0.5 s later. Neither constant records the relation. *This is the same class `hlsWalk` and the stall budget were fixed for: assert the inequality, not the number.*
@@ -1497,11 +1484,8 @@ Verified, each real, none urgent. Grouped by area so a session cleaning one area
 - `src/connection/connectionConfiguration.ts`, `MachaManageApi.ts:32,71` — `cache: 'no-store'` relied on alone, against `platform-neutral.d.ts:108-125`. *Candidate cause for a client reporting stale node versions — candidate, not cause; nobody has verified it.*
 
 **State, runtime and docs**
-- ~~`state/continueWatching.ts:163` — the one store that validates only `Array.isArray`~~ **FIXED on `develop` 2026-09-20.** Entries are validated too, and a bad one is dropped rather than the list discarded: the rest of the history is still true, and refusing all of it costs the viewer more than the entry that is wrong.
 - `state/musicPlaylist.ts:26` — `MusicPlaylistStore` still exported after being superseded by `PlaylistStore`, which adopts its key on first read. Against the hard-cuts rule. **Delete it** — and note `0.11.0` proved the sequence for this: clients take a copy first if they have one, then core removes.
-- ~~`runtime/configuration.ts:165-183` — the self-healing write sits inside the read's `try`~~ **FIXED on `develop` 2026-09-20.** The tidy-up goes through `healEndpointValue`, which swallows its own failure: a full store refusing the rewrite no longer deletes endpoints the read had just parsed. Test red without it.
 - `runtime/configuration.ts:224` and `api/httpCompat.ts:103` — `normalizeUrl` and `normalizeBaseUrl` are the same four lines under two names. **Duplication to delete before it drifts, not a correctness bug** — verified across nine input shapes.
-- ~~`docs/examples/headless.mjs:63-68` passes `serverApi` to `EndpointHealthMonitor`, which has no such option.~~ **FIXED on `develop` 2026-09-20.** It passes `auth` instead, with a line saying why there is no `configuration` in a host that persists nothing.
 - ~~`README.md:100-103` — omits that throughput is fed only by a host-built `EndpointBandwidth` nothing in this package calls `record()` on~~ — **folded into the same P1 item.** The README line still needs fixing when that is settled.
 - **The hyphenated storage keys**, now that `macha.session.v1` has moved: `macha-client-id`, `macha-server-url`, `macha-bootstrap-endpoints-v1`, `macha-discovered-endpoints-v1`, `macha-server-endpoints-v1`, `macha-client-bandwidth:`. Two conventions is a defect, not a design. Each costs a forced re-read or a lost value to rename, so they move **when something else already forces that cost** — never on their own. `MACHA_STORAGE_KEYS` documents both meanwhile.
 

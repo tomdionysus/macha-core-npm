@@ -18,7 +18,7 @@ describe('title indexing', () => {
     expect(alphabetIndexKey('The X-Files')).toBe('X');
     expect(alphabetIndexKey('A Beautiful Mind')).toBe('B');
     expect(alphabetIndexKey('An Education')).toBe('E');
-    expect(alphabetIndexKey('The 100')).toBe('#');
+    expect(alphabetIndexKey('The 100')).toBe('other');
   });
 
   it('folds accented Latin initials into the alphabet', () => {
@@ -60,8 +60,8 @@ describe('grouping and ordering titles for an alphabet index', () => {
   });
 
   it('files anything not starting with a letter under #', () => {
-    expect(alphabetIndexKey('1917')).toBe('#');
-    expect(alphabetIndexKey('[REC]')).toBe('#');
+    expect(alphabetIndexKey('1917')).toBe('other');
+    expect(alphabetIndexKey('[REC]')).toBe('other');
   });
 
   it('keeps a title that is nothing but an article rather than emptying it', () => {
@@ -82,6 +82,6 @@ describe('grouping and ordering titles for an alphabet index', () => {
 
   it('reports only the buckets a library actually has', () => {
     const keys = availableAlphabetKeys([entryFor('Alien'), entryFor('1917'), entryFor('Aliens')]);
-    expect([...keys].sort()).toEqual(['#', 'A']);
+    expect([...keys].sort()).toEqual(['A', 'other']);
   });
 });

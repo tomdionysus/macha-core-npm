@@ -4,10 +4,6 @@ import { publishConnectionState } from '../runtime/events.js';
 export const SERVER_UNREACHABLE_EVENT = 'macha:server-unreachable';
 export const SERVER_REACHABLE_EVENT = 'macha:server-reachable';
 
-export const SERVER_UNREACHABLE_MESSAGE =
-  'All configured API endpoints are unreachable.';
-export const ENDPOINT_UNREACHABLE_MESSAGE =
-  'The Macha server cannot be reached. Check that the server is running and that the API address is correct.';
 
 /**
  * The route that answers whether a node is alive, without a session and
@@ -44,8 +40,12 @@ export const LIVENESS_PATH = '/api/v1/health';
 
 let clusterUnreachableReported = false;
 
+/**
+ * The request never reached Macha. A host recognises it by class and words it
+ * itself; the message is log text. Core writes no viewer text.
+ */
 export class MachaConnectionError extends Error {
-  constructor(message = ENDPOINT_UNREACHABLE_MESSAGE) {
+  constructor(message = 'No Macha endpoint answered the request.') {
     super(message);
     this.name = 'MachaConnectionError';
   }
@@ -84,7 +84,7 @@ export function serverUnreachable(): MachaConnectionError {
 export function reportClusterUnreachable(): void {
   if (clusterUnreachableReported) return;
   clusterUnreachableReported = true;
-  publishConnectionState({ type: 'unreachable', message: SERVER_UNREACHABLE_MESSAGE });
+  publishConnectionState({ type: 'unreachable' });
 }
 
 export function reportClusterReachable(): void {

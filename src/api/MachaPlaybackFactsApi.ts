@@ -88,7 +88,7 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
     const { body } = await readResponseBody(response);
     if (!response.ok) {
       const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-      throw new MachaApiError(`Macha playback facts failed: ${parsed.message}`, response.status, parsed.code);
+      throw new MachaApiError(`Macha playback facts failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
     }
 
     const record = body as { item_id?: string; media?: unknown[] } | undefined;

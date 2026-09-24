@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
+import { bootstrapEndpoints, EndpointRegistry, seedEndpoints } from './EndpointRegistry.js';
 import { discoverClusterEndpoints, EndpointHealthMonitor, persistConfirmedEndpoints, probeKnownEndpoints, identifyUnclaimedEndpoints} from './EndpointHealthMonitor.js';
 import { MachaClientConfiguration } from '../runtime/configuration.js';
 import { configureMachaHost, memoryStorage, resetMachaHost } from '../runtime/host.js';
@@ -777,3 +777,51 @@ describe('learning which node an address actually is', () => {
   });
 });
 
+describe('the remembered list across a restart where the remembered nodes are slow or the network is down', () => {
+  function restart(remembered: string[]) {
+    const storage = memoryStorage();
+    const configuration = new MachaClientConfiguration({ storage });
+    configuration.setDiscoveredEndpoints(remembered);
+    const registry = new EndpointRegistry(seedEndpoints({
+      configured: ['http://configured:7438'],
+      remembered: configuration.discoveredEndpoints(),
+    }));
+    return { configuration, registry };
+  }
+
+  it('seeds remembered nodes as discovered, and each address once', () => {
+    const seeds = seedEndpoints({
+      configured: ['http://a:7438'],
+      environment: ['http://page:7438', 'http://a:7438'],
+      remembered: ['http://b:7438', 'http://a:7438', 'http://page:7438'],
+    });
+    expect(seeds.map(({ baseUrl, source }) => [baseUrl, source])).toEqual([
+      ['http://a:7438', 'bootstrap'],
+      ['http://page:7438', 'environment'],
+      ['http://b:7438', 'discovered'],
+    ]);
+  });
+
+  it('keeps a remembered node that has not been probed yet', () => {
+    const { configuration, registry } = restart(['http://b:7438']);
+    registry.recordProbeSuccess('http://configured:7438');
+    persistConfirmedEndpoints(registry, configuration);
+    expect(configuration.discoveredEndpoints()).toEqual(['http://b:7438']);
+  });
+
+  it('keeps it through failures while nothing at all has answered, the Wi-Fi-still-coming-up case', () => {
+    const { configuration, registry } = restart(['http://b:7438']);
+    registry.recordProbeFailure('http://configured:7438');
+    registry.recordProbeFailure('http://b:7438');
+    persistConfirmedEndpoints(registry, configuration);
+    expect(configuration.discoveredEndpoints()).toEqual(['http://b:7438']);
+  });
+
+  it('drops it once it fails while another node answers', () => {
+    const { configuration, registry } = restart(['http://b:7438']);
+    registry.recordProbeSuccess('http://configured:7438');
+    registry.recordProbeFailure('http://b:7438');
+    persistConfirmedEndpoints(registry, configuration);
+    expect(configuration.discoveredEndpoints()).toEqual([]);
+  });
+});

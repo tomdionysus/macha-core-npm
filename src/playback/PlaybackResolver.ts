@@ -420,6 +420,24 @@ export interface PlaybackResolver {
    * candidate, or would come back in a different mode: a viewer asking for a
    * different node has not asked for a different transform.
    */
+  /**
+   * Wait until the node says this generation has produced something, for a
+   * player that cannot ride out a `segment_not_ready` hold.
+   *
+   * Read from the session route's `production.produced_ms`, which the node
+   * advances only when a whole segment is published -- never by touching the
+   * media. `produced` once it is above zero; `gone` when the node no longer
+   * holds the session; `unknown` when the node does not report production
+   * (direct play, a node older than 0.47.0) or said nothing within its own
+   * attempt budget. `unknown` means hand the source over as before.
+   */
+  awaitProduced?(session: PlaybackSession, signal?: AbortSignal): Promise<'produced' | 'gone' | 'unknown'>;
+  /**
+   * What starting a generation equivalent to `activeSession` would cost on this
+   * node, in milliseconds, from the resolver's own recent measurements.
+   * Undefined means unknown, never zero. See `EndpointRegistry.generationStartEstimate`.
+   */
+  startCostEstimate?(endpointId: string, activeSession: PlaybackSession): number | undefined;
   prepareOn?(
     endpointId: string,
     activeSession: PlaybackSession,

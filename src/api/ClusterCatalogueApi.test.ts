@@ -10,6 +10,38 @@ function response(value: unknown, status = 200): Response {
 describe('ClusterCatalogueApi', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('keeps a failed node marked down for artwork after its short retry cooldown has passed', () => {
+    // The registry's first cooldown is 0.5 s against a 10 s probe cycle, so a
+    // node that has just died reads retryable most of the time. Artwork must
+    // not lead with it until it has answered again.
+    let now = 1_000;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    registry.recordLatency('http://b', 3);
+    registry.recordFailure('http://b');
+    now += 5_000;
+    expect(registry.candidates().find((candidate) => candidate.endpoint.id === 'http://b')?.ready).toBe(true);
+    const b = new ClusterCatalogueApi(registry).artworkUrls('sha').find((source) => source.url.startsWith('http://b'));
+    expect(b?.ready).toBe(false);
+    expect(b?.latencyMs).toBeUndefined();
+
+    registry.recordSuccess('http://b');
+    expect(new ClusterCatalogueApi(registry).artworkUrls('sha').find((source) => source.url.startsWith('http://b'))?.ready).toBe(true);
+  });
+
+  it("carries each ready node's measured round trip on its artwork URLs, and none for a node cooling off", () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
+    registry.recordLatency('http://a', 90);
+    registry.recordLatency('http://b', 3);
+    registry.recordLatency('http://c', 1);
+    registry.recordFailure('http://c');
+    const byHost = Object.fromEntries(new ClusterCatalogueApi(registry).artworkUrls('sha')
+      .map((source) => [source.url.split('/api/')[0], source.latencyMs]));
+    expect(byHost).toEqual({ 'http://a': 90, 'http://b': 3, 'http://c': undefined });
+    const ready = Object.fromEntries(new ClusterCatalogueApi(registry).artworkUrls('sha')
+      .map((source) => [source.url.split('/api/')[0], source.ready]));
+    expect(ready).toEqual({ 'http://a': true, 'http://b': true, 'http://c': false });
+  });
+
   it('retries a safe read on the next bootstrap endpoint and makes it sticky', async () => {
     const fetchMock = vi.fn()
       .mockRejectedValueOnce(new TypeError('node A unreachable'))

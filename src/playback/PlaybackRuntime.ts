@@ -1,3 +1,4 @@
+import { MachaPlaybackError } from './MachaPlaybackResolver.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
@@ -7,6 +8,7 @@ import {
   PlaybackCoordinator,
   type PlaybackCoordinatorSnapshot,
   type PlaybackInstructionReport,
+  type PlaybackMoveOptions,
 } from './PlaybackCoordinator.js';
 import type {
   PlaybackPreferences,
@@ -83,9 +85,15 @@ export interface PlaybackRuntimeSnapshot {
 type LifecycleListener = (snapshot: PlaybackRuntimeSnapshot) => void;
 type PlaybackListener = (snapshot: PlaybackCoordinatorSnapshot | undefined) => void;
 
+/**
+ * `fatalError.code` when a host asks to play a catalogue item that is not a
+ * movie, episode or track. The host words it; the message is log text.
+ */
+export const NOT_PLAYABLE_CODE = 'not_playable';
+
 function requestError(media: MediaSummary): Error | undefined {
   if (media.kind !== 'movie' && media.kind !== 'episode' && media.kind !== 'track') {
-    return new Error('This catalogue item is not directly playable.');
+    return new MachaPlaybackError(`Catalogue ${media.kind} ${media.id} is not directly playable.`, undefined, NOT_PLAYABLE_CODE);
   }
   return undefined;
 }
@@ -347,6 +355,21 @@ export class PlaybackRuntime {
     if (this.lifecycle.phase === 'failed' && update.preferences) {
       void this.retry(update.preferences);
     }
+  }
+
+  /**
+   * Serve the current title from a node the viewer chose, without stopping.
+   *
+   * Forwarded because a host holds a runtime and never the coordinator, so
+   * `PlaybackCoordinator.moveTo` had no caller from any client. `false` when
+   * there is no generation to move — idle, or failed. A failed generation is
+   * already released, so moving it is a retry on another node, and a host
+   * spells that as `prefer(endpointId)` on the registry and then `retry()`;
+   * there is nothing here for a move to act on.
+   */
+  moveTo(endpointId: string, options?: PlaybackMoveOptions): Promise<boolean> {
+    if (this.coordinator) return this.coordinator.moveTo(endpointId, options);
+    return Promise.resolve(false);
   }
 
   retry(preferences?: PlaybackPreferencesUpdate): Promise<void> {

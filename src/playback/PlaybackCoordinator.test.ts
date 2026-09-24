@@ -3,6 +3,7 @@ import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
+import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
@@ -79,7 +80,7 @@ describe('PlaybackCoordinator transport invariants', () => {
 
     expect(coordinator.seek(300_000)).toBe(false);
 
-    expect(coordinator.getSnapshot().notice).toBe('This stream cannot seek.');
+    expect(coordinator.getSnapshot().notice).toEqual({ code: 'cannot-seek' });
     expect(coordinator.getSnapshot().intent.positionMs).toBe(7_000);
     expect(coordinator.getSnapshot().event.positionMs).toBe(7_000);
     expect(player.seekCalls).toEqual([]);
@@ -533,6 +534,185 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     // released after that rather than before it.
     expect(player.playCalls.length).toBeGreaterThan(playsBefore);
     expect(order).toEqual(['prepared', 'stopped:primary']);
+  });
+
+  describe('a move, across the window before the cut', () => {
+    // Measured on the web client 2026-09-23, fi-1 to gbni-1: the host kept the
+    // outgoing element presenting and fetching for 36 s after activation. Core
+    // had already deleted the session behind it, the element's 404s reached the
+    // reap path attributed to that session, and the reap path rebuilt it on the
+    // old node over the live one -- the viewer yanked back twenty seconds after
+    // a clean move, and the new node's only transcode slot leaked.
+    const onA = () => session({ sessionId: 'primary', mode: 'transcode', mediaId: 'macha:one', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const onB = () => session({
+      sessionId: 'moved', mode: 'transcode', mediaId: 'macha:one',
+      endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...onA().source, mediaId: 'macha:one', url: 'http://b/moved.m3u8' },
+    });
+    const regenerated = () => session({
+      sessionId: 'regenerated', mode: 'transcode', mediaId: 'macha:one',
+      endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      source: { ...onA().source, mediaId: 'macha:one', url: 'http://a/regenerated.m3u8' },
+    });
+    const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+
+    function moving() {
+      const player = new FakePlayer();
+      const api = resolver(onA()) as any;
+      api.prepareOn = vi.fn(async () => onB());
+      // What the node says after the move: the old session is gone once core
+      // has closed it, the moved one is alive.
+      const closed = new Set<string>();
+      api.stop.mockImplementation(async (id: string) => { closed.add(id); });
+      api.sessionAlive = vi.fn(async (id: string) => !closed.has(id));
+      api.regenerate = vi.fn(async () => regenerated());
+      api.failover = vi.fn(async () => regenerated());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      return { player, api, coordinator };
+    }
+
+    it('releases the session it moved away from at the cut, not at activation', async () => {
+      const { player, api, coordinator } = moving();
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+      await flush();
+      // The outgoing element is still on screen and still fetching.
+      expect(api.stop).not.toHaveBeenCalledWith('primary', expect.anything());
+
+      cut.resolve(true);
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', expect.anything()));
+      expect(api.stop).not.toHaveBeenCalledWith('moved', expect.anything());
+      await coordinator.close();
+    });
+
+    it('does not rebuild the session it moved away from when that element reports a 404 before the cut', async () => {
+      const { player, api, coordinator } = moving();
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+      await coordinator.moveTo('node-b');
+      // Force the field condition regardless of when the close lands: the
+      // outgoing session is gone on the node.
+      api.sessionAlive.mockImplementation(async (id: string) => id !== 'primary');
+
+      player.degrade(notFound());
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalled());
+      await flush();
+
+      // Asked about the generation core owns, which is alive -- and so did
+      // nothing on either side of the cut.
+      expect(api.sessionAlive).toHaveBeenLastCalledWith('moved');
+      expect(api.regenerate).not.toHaveBeenCalled();
+      expect(api.failover).not.toHaveBeenCalled();
+      cut.resolve(true);
+      await vi.waitFor(() => expect(coordinator.getSnapshot().session?.sessionId).toBe('moved'));
+      expect(api.stop).not.toHaveBeenCalledWith('moved', expect.anything());
+      await coordinator.close();
+    });
+
+    it('releases, rather than adopts, a replacement that lands for a generation a move has since replaced', async () => {
+      // The last line of defence: a regeneration already negotiating when the
+      // viewer moves must not overwrite the move and orphan its session.
+      const { player, api, coordinator } = moving();
+      const negotiating = deferred<PlaybackSession>();
+      api.regenerate = vi.fn(() => negotiating.promise);
+      await coordinator.start();
+      // Reaped for real, with no cover to defer against: build now.
+      api.sessionAlive.mockImplementation(async () => false);
+      player.degrade(notFound());
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+      negotiating.resolve(regenerated());
+      await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('regenerated', expect.anything()));
+      expect(coordinator.getSnapshot().session?.sessionId).toBe('moved');
+      expect(player.playCalls.at(-1)?.source.url).toBe('http://b/moved.m3u8');
+      await coordinator.close();
+    });
+  });
+
+  describe('a move that asks the node to start ahead of the viewer', () => {
+    // Measured on the web client 2026-09-23: gbni-1 took 8.5-12.3 s to a first
+    // fragment, and a generation asked for at the viewer's position begins that
+    // far behind them and never catches up at realtime. So a move asks for the
+    // viewer's position plus a lead, and a host that can hold plays the old
+    // source up to the new generation's start.
+    const onA = () => session({ sessionId: 'primary', mode: 'transcode', mediaId: 'macha:one', seekMs: 0, endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+
+    function leading(options: { holds: boolean; estimate?: number; positionMs: number }) {
+      const player = new FakePlayer();
+      player.holdsThroughLead = options.holds;
+      const api = resolver(onA()) as any;
+      api.startCostEstimate = vi.fn(() => options.estimate);
+      api.prepareOn = vi.fn(async (_endpointId: string, _active: PlaybackSession, _media: MediaSummary, _caps: PlaybackCapabilities, seekMs: number) => session({
+        sessionId: 'moved', mode: 'transcode', mediaId: 'macha:one', seekMs,
+        endpoint: { id: 'node-b', baseUrl: 'http://b' },
+        source: { ...onA().source, mediaId: 'macha:one', url: 'http://b/moved.m3u8' },
+      }));
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: options.positionMs });
+      return { player, api, coordinator };
+    }
+
+    it('asks for the viewer position plus the estimate and margin, and hands the player the viewer before the start', async () => {
+      const { player, api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 182_820 });
+      await coordinator.start();
+      const cut = deferred<boolean>();
+      player.playResult = cut.promise;
+
+      await expect(coordinator.moveTo('node-b')).resolves.toBe(true);
+
+      const lead = 12_300 + MOVE_LEAD_MARGIN_MS;
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(182_820 + lead);
+      // Negative: the viewer is a whole lead before this generation begins.
+      expect(player.playCalls.at(-1)?.positionMs).toBe(-lead);
+      expect(player.playCalls.at(-1)?.transition).toBe('continue');
+      // And no renegotiation back to the viewer's position, which would throw
+      // the lead away and pay a second full start on the target.
+      expect(api.update).not.toHaveBeenCalled();
+
+      cut.resolve(true);
+      await vi.waitFor(() => expect(coordinator.getSnapshot().session?.sessionId).toBe('moved'));
+      // The host cut when the viewer reached the generation's start, so that is
+      // where the readout lands, not a lead behind the picture.
+      expect(coordinator.getSnapshot().intent.positionMs).toBe(182_820 + lead);
+      await coordinator.close();
+    });
+
+    it("takes the host's lead over its own estimate", async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b', { leadMs: 20_000 });
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(120_000);
+      await coordinator.close();
+    });
+
+    it('gives a player that cannot hold the move it had before leads existed, whatever it is told', async () => {
+      const { player, api, coordinator } = leading({ holds: false, estimate: 12_300, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b', { leadMs: 20_000 });
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(100_000);
+      expect(player.playCalls.at(-1)?.positionMs).toBeGreaterThanOrEqual(0);
+      await coordinator.close();
+    });
+
+    it('asks for no lead where core has no evidence about that node', async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: undefined, positionMs: 100_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b');
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(100_000);
+      await coordinator.close();
+    });
+
+    it('asks for no lead that would reach past the end of the title', async () => {
+      const { api, coordinator } = leading({ holds: true, estimate: 12_300, positionMs: 590_000 });
+      await coordinator.start();
+      await coordinator.moveTo('node-b');
+      expect(api.prepareOn.mock.calls[0]?.[4]).toBe(590_000);
+      await coordinator.close();
+    });
   });
 
   it('declines a move to the node already serving, without asking anyone', async () => {
@@ -1842,6 +2022,130 @@ describe('a node that reaped the session it was serving', () => {
     },
   });
   const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
+
+  describe('a player that cannot ride a hold', () => {
+    // The Samsung build's native HLS element fails or stalls silently when its
+    // first segment answers `500 segment_not_ready`. It used to be protected by
+    // a bytes=0-0 probe of the media, which Tom ruled out; the node already
+    // says the same thing on the session route, as `production.produced_ms`.
+    const starting = () => session({
+      sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' },
+      production: { producedMs: 0, producingMs: 0, producedAgeMs: 0, producerParked: false },
+    });
+
+    function waiting(outcome: Promise<'produced' | 'gone' | 'unknown'>, needs = true) {
+      const player = new FakePlayer();
+      player.needsProducedSource = needs;
+      const api = reapedResolver(starting(), replacement());
+      api.awaitProduced = vi.fn(() => outcome);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      return { player, api, coordinator };
+    }
+
+    it('hands over the source only once the node says something has been produced', async () => {
+      const produced = deferred<'produced' | 'gone' | 'unknown'>();
+      const { player, api, coordinator } = waiting(produced.promise);
+      const started = coordinator.start();
+      await vi.waitFor(() => expect(api.awaitProduced).toHaveBeenCalledTimes(1));
+      expect(player.playCalls).toHaveLength(0);
+
+      produced.resolve('produced');
+      await started;
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+      await coordinator.close();
+    });
+
+    it('hands over as before when the node cannot say', async () => {
+      const { player, coordinator } = waiting(Promise.resolve('unknown'));
+      await coordinator.start();
+      await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+      await coordinator.close();
+    });
+
+    it('sends a generation that vanished before producing into the reaped-session recovery, not to the player', async () => {
+      const { player, api, coordinator } = waiting(Promise.resolve('gone'));
+      await coordinator.start();
+      await vi.waitFor(() => expect(api.sessionAlive).toHaveBeenCalledWith('s1'));
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalled());
+      expect(player.playCalls.some((call) => call.source.url === starting().source.url)).toBe(false);
+      expect(api.failover).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('never makes any other player wait', async () => {
+      const { player, api, coordinator } = waiting(new Promise(() => undefined), false);
+      await coordinator.start();
+      expect(player.playCalls).toHaveLength(1);
+      expect(api.awaitProduced).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+  });
+
+  describe('a fatal that says nothing about what failed', () => {
+    // Measured on the Android TV set 2026-09-23: expo-video's terminal error
+    // carries no status, so a reaped direct-play session arrived as `unknown`,
+    // and two reaps each charged a healthy local node and failed over across
+    // the internet. The session route can tell the two apart without anyone
+    // reading the message.
+    const unclassified = () => new PlaybackSourceError('Source error Response code: 404', 'unknown');
+
+    it('regenerates on the same node, uncharged, when the node says the session is gone', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).toHaveBeenCalledWith('s1');
+      expect(api.failover).not.toHaveBeenCalled();
+      expect(api.recordEndpointFailure).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('fails over and charges as before when the session is alive, because then the stream really failed', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      api.sessionAlive = vi.fn(async () => true);
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).toHaveBeenCalledWith('s1');
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('fails over when the node cannot answer, rather than reading silence as gone', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      api.sessionAlive = vi.fn(async () => { throw new Error('Session s1 liveness unanswered within 8000 ms.'); });
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.fail(unclassified());
+
+      await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+      expect(api.regenerate).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+
+    it('leaves an unclassified report on the degradation channel as it was', async () => {
+      const player = new FakePlayer();
+      const api = reapedResolver(onNodeA(), replacement());
+      const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+      await coordinator.start();
+
+      player.degrade(unclassified());
+
+      await vi.waitFor(() => expect(api.prepareAlternate).toHaveBeenCalledTimes(1));
+      expect(api.sessionAlive).not.toHaveBeenCalled();
+      await coordinator.close();
+    });
+  });
 
   it('asks the same node for a new generation instead of condemning it', async () => {
     const player = new FakePlayer();
@@ -3494,5 +3798,131 @@ describe('how long a standby is worth holding', () => {
     // A transcode standby holds the node's only video slot, so it is bounded
     // by contention rather than by engine reclamation.
     expect(alternateRecoveryWindowMs(sourced('transcode', 60_000))).toBe(8_000);
+  });
+});
+
+/**
+ * Tom, 2026-09-24: a player that cannot decode a copied stream falls back to a
+ * transcode on the same node, once, unless the viewer chose the mode. Found on
+ * the Android TV set: MPEG-4 Part 2 video in an AVI failed in the hardware
+ * decoder, and the failure moved node, which a decode failure follows.
+ */
+describe('a copied stream the player could not decode', () => {
+  const facts = async () => ({ profile: { mediaId: 'm1', format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+    { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false },
+    { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+  ] } });
+
+  function setup(initialPreferences?: PlaybackPreferencesUpdate) {
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(session({ mode: 'direct' }), async (update) => {
+      updates.push(update);
+      return session({ mode: 'transcode', preferences: { ...session().preferences, mode: 'transcode' } as PlaybackPreferences });
+    });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 0, initialPreferences, facts,
+    });
+    return { coordinator, player, updates };
+  }
+
+  it('asks the same node for a transcode of every copied stream, and says why', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.video).toBe('copy');
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', video: 'transcode', audio: 'transcode' });
+    expect(coordinator.getSnapshot().notice?.code).toBe('decode-fallback');
+    expect(coordinator.getSnapshot().instruction?.reasons).toContain('player-could-not-decode');
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+  });
+
+  it('ends playback as before when the viewer chose the mode at the start', async () => {
+    const { coordinator, player, updates } = setup({ mode: 'direct' });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(0);
+  });
+
+  it('and when the viewer switched to it partway through', async () => {
+    // The chooser picked the copy at the start, so an instruction exists; the
+    // viewer's later choice is what has to stop the fallback.
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'direct' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(1);
+  });
+
+  it('falls back once per playback, even if the chooser picks the copy again', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+    // "Decide for me" again: the chooser picks the copy it picked before.
+    coordinator.update({ preferences: { mode: 'choose' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(2));
+    expect(updates[1]?.preferences?.video).toBe('copy');
+
+    player.fail(new PlaybackSourceError('still cannot decode', 'unsupported'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(2);
+  });
+
+  it('leaves a node failure to the node path', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    player.fail(new PlaybackSourceError('fragment failed', 'stream'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError ?? coordinator.getSnapshot().preparingSource).toBeTruthy());
+    expect(updates).toHaveLength(0);
+  });
+});
+
+/**
+ * A change queued while the drain loop is finishing its last pass. The loop
+ * returns when it finds nothing pending and only marks itself stopped a
+ * microtask later, so a change queued in that gap saw a loop "running",
+ * started none, and was never applied. Seen 2026-09-24 as a "decide for me"
+ * lost behind a fallback's update.
+ */
+describe('a change queued as the previous one finishes', () => {
+  it('is applied, not stranded', async () => {
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(session({ mode: 'direct' }), async (update) => {
+      updates.push(update);
+      return session({ mode: 'transcode', preferences: { ...session().preferences, ...update.preferences } as PlaybackPreferences });
+    });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+    });
+    await coordinator.start();
+    // The loop activates the new source synchronously and returns on its next
+    // check; a microtask queued from inside that activation runs after the
+    // return and before the loop marks itself stopped.
+    const play = player.play.bind(player);
+    let queued = false;
+    player.play = (...args: Parameters<typeof player.play>) => {
+      if (updates.length === 1 && !queued) {
+        queued = true;
+        queueMicrotask(() => coordinator.update({ preferences: { maxHeight: 720 } }));
+      }
+      return play(...args);
+    };
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(2));
+    expect(updates[1]?.preferences?.maxHeight).toBe(720);
   });
 });

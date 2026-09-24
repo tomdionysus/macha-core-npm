@@ -186,10 +186,16 @@ describe('MachaUsersApi failures', () => {
     await expect(
       new MachaUsersApi('http://node.test').create({ username: 'alice', password: 'pw', roles: [] }),
     ).rejects.toMatchObject({
-      message: 'That username is already in use.',
+      detail: 'That username is already in use.',
       status: 409,
       code: 'username_taken',
     });
+  });
+
+  it('leaves detail empty when the server said nothing in words, rather than filling it', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'forbidden' } }), { status: 403, headers: { 'Content-Type': 'application/json' } })));
+    const error: unknown = await new MachaUsersApi('http://node.test').create({ username: 'a', password: 'b', roles: [] }).then(() => undefined, (caught: unknown) => caught);
+    expect(error).toMatchObject({ status: 403, code: 'forbidden', detail: undefined });
   });
 
   it('treats a dead session as a dead session, not a refusal', async () => {

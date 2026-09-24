@@ -9,9 +9,8 @@
 export type ConnectionStateKind = 'unreachable' | 'reachable';
 
 export interface ConnectionStateEvent {
+  /** The whole of the event. A host words it; core writes no viewer text. */
   type: ConnectionStateKind;
-  /** Present on `unreachable`; a human-readable reason to surface. */
-  message?: string;
 }
 
 export type ConnectionStateListener = (event: ConnectionStateEvent) => void;

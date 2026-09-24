@@ -4,7 +4,6 @@ import {
   reportClusterReachable,
   reportClusterUnreachable,
   serverUnreachable,
-  SERVER_UNREACHABLE_MESSAGE,
 } from './serverConnection.js';
 import { subscribeConnectionState } from '../runtime/events.js';
 
@@ -23,7 +22,7 @@ describe('cluster reachability notification', () => {
     reportClusterUnreachable();
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener.mock.calls[0]?.[0]).toEqual({ type: 'unreachable', message: SERVER_UNREACHABLE_MESSAGE });
+    expect(listener.mock.calls[0]?.[0]).toEqual({ type: 'unreachable' });
 
     reportClusterReachable();
     expect(listener.mock.calls[1]?.[0]).toEqual({ type: 'reachable' });

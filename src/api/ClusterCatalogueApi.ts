@@ -103,7 +103,16 @@ export class ClusterCatalogueApi implements CatalogueApi {
    * any node holding it serves the same bytes.
    */
   artworkUrls(id: string): ArtworkSource[] {
-    return this.router.registry.candidates().flatMap(({ endpoint }) => this.api(endpoint).artworkUrls(id));
+    // `ready` here means "nothing has failed since the last success", not the
+    // registry's retry window. That window is 0.5 s after a first failure and
+    // 2 s after a second, against a 10 s probe cycle, so a node that has just
+    // died reads ready most of the time for its first twenty seconds. Right
+    // for when to retry a request; wrong for which host leads every poster.
+    return this.router.registry.candidates().flatMap(({ endpoint, health, ready: retryable, latencyMs }) => {
+      const ready = retryable && health.consecutiveFailures === 0;
+      return this.api(endpoint).artworkUrls(id)
+        .map((source) => (ready && latencyMs !== undefined ? { ...source, ready, latencyMs } : { ...source, ready }));
+    });
   }
 
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem> {

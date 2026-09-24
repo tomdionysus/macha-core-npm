@@ -29,7 +29,13 @@ export type UsersApiErrorCode =
   | 'too_many_users';
 
 export class MachaUsersApiError extends Error {
-  constructor(message: string, public readonly status?: number, public readonly code?: string) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
+  ) {
     super(message);
     this.name = 'MachaUsersApiError';
   }
@@ -148,7 +154,7 @@ export class MachaUsersApi implements UsersApi {
       const { body, wasJson } = await readResponseBody(response);
       if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
       const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-      throw new MachaUsersApiError(parsed.message, response.status, parsed.code);
+      throw new MachaUsersApiError(`Macha users request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
     }
     if (response.status === 204) return undefined as T;
     return await readJsonBody<T>(response);

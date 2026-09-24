@@ -1,4 +1,6 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
+import { PRODUCED_POLL_INTERVAL_MS } from './streamProtocol.js';
+import { generationStartKind } from './generationStart.js';
 import {
   endpointFailure,
   isAccountSessionLimit,
@@ -149,16 +151,25 @@ function withServedSegmentContainer(
  * from the id instead, because closing or asking about a session is safe
  * whatever its state — mutating one is not.
  *
- * `detail` is what a host should show; `code` is what it should branch on.
+ * `code` is what a host branches on and words for itself; core writes no
+ * viewer text.
  */
+export const SESSION_PROVENANCE_UNKNOWN_CODE = 'session_provenance_unknown';
+
+/**
+ * `regenerate` was handed a generation whose node has since left the
+ * registry, so there is nowhere to rebuild it. Distinct from
+ * `SESSION_PROVENANCE_UNKNOWN_CODE`, where the id names no node at all. It was
+ * a bare `Error`, and the phone client, which drives the resolver directly,
+ * could tell the two apart only by core's wording.
+ */
+export const REGENERATION_ENDPOINT_GONE_CODE = 'regeneration_endpoint_gone';
+
 function unknownGeneration(sessionId: string): MachaPlaybackError {
   return new MachaPlaybackError(
     `Playback generation ${sessionId} has no endpoint provenance.`,
     undefined,
-    'session_provenance_unknown',
-    undefined,
-    undefined,
-    'This stream is no longer available. Start it again.',
+    SESSION_PROVENANCE_UNKNOWN_CODE,
   );
 }
 
@@ -319,11 +330,14 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
     const endpointId = failedSession.endpoint?.id;
-    const endpoint = endpointId === undefined
-      ? undefined
-      : this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
+    if (endpointId === undefined) throw unknownGeneration(failedSession.sessionId);
+    const endpoint = this.registry.candidates().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
     if (!endpoint) {
-      throw new Error(`Playback generation ${failedSession.sessionId} has no endpoint to regenerate on.`);
+      throw new MachaPlaybackError(
+        `Playback generation ${failedSession.sessionId} has no endpoint to regenerate on: ${endpointId} is no longer configured.`,
+        undefined,
+        REGENERATION_ENDPOINT_GONE_CODE,
+      );
     }
     // `warn`, like every other step of this recovery. At `info` these two
     // were the only blind spots on a path whose other lines are all visible,
@@ -565,6 +579,43 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * opportunistic — it is a viewer's instruction — so the error from a node
    * that refuses is allowed to propagate rather than being swallowed.
    */
+  async awaitProduced(session: PlaybackSession, signal?: AbortSignal): Promise<'produced' | 'gone' | 'unknown'> {
+    if (!session.production) return 'unknown';
+    if (session.production.producedMs > 0) return 'produced';
+    const owned = this.sessions.get(session.sessionId) ?? this.provenanceFromId(session.sessionId);
+    if (!owned) return 'unknown';
+    const budgetMs = generationAttemptBudgetMs(this.registry.playbackBudgets(owned.endpoint.id));
+    const started = machaHost().now();
+    for (;;) {
+      if (signal?.aborted) return 'unknown';
+      await new Promise<void>((resolve) => { setTimeout(resolve, PRODUCED_POLL_INTERVAL_MS); });
+      if (signal?.aborted) return 'unknown';
+      if (machaHost().now() - started > budgetMs) {
+        this.log.warn('produced-wait-exhausted', { sessionId: session.sessionId, endpointId: owned.endpoint.id, budgetMs });
+        return 'unknown';
+      }
+      let current: PlaybackSession | undefined;
+      try {
+        current = await owned.resolver.read(owned.nodeSessionId);
+      } catch {
+        // No answer this time is not an answer. The budget decides when to stop.
+        continue;
+      }
+      if (!current) return 'gone';
+      if (!current.production) return 'unknown';
+      if (current.production.producedMs > 0) return 'produced';
+    }
+  }
+
+  /**
+   * What starting a generation like `activeSession` would cost on this node,
+   * from core's own recent measurements there. Undefined means unknown.
+   */
+  startCostEstimate(endpointId: string, activeSession: PlaybackSession): number | undefined {
+    const kind = generationStartKind(activeSession);
+    return kind ? this.registry.generationStartEstimate(endpointId, kind) : undefined;
+  }
+
   async prepareOn(
     endpointId: string,
     activeSession: PlaybackSession,
@@ -577,6 +628,17 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     const known = this.registry.candidates().some((candidate) => candidate.endpoint.id === endpointId);
     if (!known) {
       this.log.info('move-declined', { reason: 'unknown-endpoint', endpointId });
+      return undefined;
+    }
+    // A node this client has just watched fail to keep up is not one to move
+    // a viewer onto. Media evidence only, and only a floor: below the stream's
+    // average rate it cannot carry it at all, peaks aside. Without evidence or
+    // a stated rate core says nothing and the move goes ahead, which is what
+    // happened before this check existed.
+    const bytesPerSecond = this.registry.mediaBytesPerSecond(endpointId);
+    const streamBitsPerSecond = servedBitsPerSecond(activeSession);
+    if (bytesPerSecond !== undefined && streamBitsPerSecond !== undefined && bytesPerSecond * 8 < streamBitsPerSecond) {
+      this.log.info('move-declined', { reason: 'insufficient-throughput', endpointId, bytesPerSecond, streamBitsPerSecond });
       return undefined;
     }
     // Everything but the chosen node. `create` walks `candidates(excluded)`,
@@ -1073,4 +1135,25 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     }
     return resolver;
   }
+}
+
+/**
+ * What a session serves, in bits per second, from what the node states: the
+ * source's rate for direct play, otherwise the sum of the served streams'
+ * rates. The node states no overall output rate, and states a transcoded
+ * video's rate only under a `max_bitrate` cap, so an HLS session with any
+ * served stream missing a rate answers undefined rather than a partial sum
+ * that would understate it.
+ */
+function servedBitsPerSecond(session: PlaybackSession): number | undefined {
+  if (session.mode === 'direct') return session.sourceInfo.bitrate > 0 ? session.sourceInfo.bitrate : undefined;
+  if (session.output.bitrate !== undefined && session.output.bitrate > 0) return session.output.bitrate;
+  const served = [session.output.video, session.output.audio].filter((stream) => stream !== undefined);
+  if (served.length === 0) return undefined;
+  let total = 0;
+  for (const stream of served) {
+    if (stream.bitrate === undefined || !(stream.bitrate > 0)) return undefined;
+    total += stream.bitrate;
+  }
+  return total;
 }

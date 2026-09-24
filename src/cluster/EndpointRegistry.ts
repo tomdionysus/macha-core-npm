@@ -1,6 +1,6 @@
 import { normalizeBaseUrl } from '../api/httpCompat.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
-import type { EndpointBandwidth } from './EndpointBandwidth.js';
+import type { EndpointBandwidth, TransferKind } from './EndpointBandwidth.js';
 
 export type EndpointSource = 'bootstrap' | 'environment' | 'discovered';
 
@@ -120,6 +120,34 @@ export interface EndpointPlaybackBudgets {
  * the comparator from stored evidence, which is how an afternoon of transcode
  * measurements got taken against the wrong node before anyone noticed.
  */
+/**
+ * What a generation start involves, which is what decides how long it takes.
+ *
+ * Kept apart because they differ by an order of magnitude on one node: a
+ * software HEVC re-encode against a stream copy is seconds against fractions
+ * of one. One figure per node would describe neither.
+ */
+export type GenerationStartKind = 'video-transcode' | 'video-copy' | 'remux';
+
+/** How many recent starts per node and kind make an estimate. */
+export const GENERATION_START_SAMPLES = 5;
+
+/**
+ * How long a start measurement stays evidence.
+ *
+ * A node's start cost moves with its load: another viewer's transcode on the
+ * same box is the difference between the two figures the web client measured
+ * on gbni-1. Old samples describe a load that has gone, so they are dropped
+ * rather than averaged in. Thirty minutes is a guess at "recent", not a server
+ * figure; nothing on the wire says how long contention lasts.
+ */
+export const GENERATION_START_EVIDENCE_TTL_MS = 30 * 60_000;
+
+interface GenerationStartSample {
+  ms: number;
+  at: number;
+}
+
 export type EndpointSelectionAxis =
   | 'availability'
   | 'sticky'
@@ -193,6 +221,25 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
 const THROUGHPUT_MIN_SAMPLES = 2;
 /** How much faster (or slower) a link must measure before throughput changes any decision. */
 const THROUGHPUT_MIN_RELATIVE_DIFFERENCE = 0.4;
+/**
+ * Media transfers needed before core will say a node cannot carry a stream.
+ *
+ * Higher than ranking's two on purpose, because a refusal costs more than a
+ * reordering. The first fragments over a cold connection are the slow ones:
+ * measured 2026-09-23, fi-1-site to gbni-1, the first fragments came at
+ * 0.28-0.57 MB/s against a 0.63 MB/s stream, and steady state settled near
+ * 1.6 MB/s. At the smoothing `EndpointBandwidth` applies, the first sample's
+ * weight after six is about a tenth. A guess, stated as one.
+ */
+export const MEDIA_THROUGHPUT_MIN_SAMPLES = 6;
+/**
+ * How recent the last media transfer must be to count. A node's link to this
+ * client is the thing being judged, and it is not the same link ten minutes
+ * later. It also means a node declined once is not declined for ever on the
+ * strength of evidence nobody is refreshing, since a declined node serves no
+ * media to update it. Client policy, a guess.
+ */
+export const MEDIA_THROUGHPUT_MAX_AGE_MS = 10 * 60_000;
 /**
  * Ranking thresholds, deliberately blunt for the same reason throughput's is:
  * ordering must not reshuffle on noise. Latency needs an absolute floor as
@@ -306,6 +353,44 @@ export function endpointId(baseUrl: string): string {
   return normalizeBaseUrl(baseUrl);
 }
 
+/**
+ * A registry's starting endpoints, labelled as the health cycle needs them.
+ *
+ * `configured`: what the viewer or build set, as `bootstrap`
+ * (`MachaClientConfiguration.bootstrapEndpoints()`). `environment`: addresses
+ * the host derives at runtime, such as the page's own origin. `remembered`:
+ * nodes reached in earlier runs, as `discovered`
+ * (`MachaClientConfiguration.discoveredEndpoints()`).
+ *
+ * **Remembered nodes must be `discovered`**, because `persistConfirmedEndpoints`
+ * rewrites the remembered list from `discovered` entries alone. Two of three
+ * clients seeded them as `bootstrap` or `environment`, and the first health
+ * cycle after a restart wrote the list back without them: a fallback that
+ * lasted exactly one start. Found on the Android TV set, 2026-09-24. One
+ * helper so no host has to know that.
+ *
+ * An address appears once, under the first list that names it.
+ */
+export function seedEndpoints(lists: {
+  configured: readonly string[];
+  remembered?: readonly string[];
+  environment?: readonly string[];
+}): MachaEndpoint[] {
+  const seeds: MachaEndpoint[] = [];
+  const taken = new Set<string>();
+  const add = (endpoints: MachaEndpoint[]) => {
+    for (const endpoint of endpoints) {
+      if (taken.has(endpoint.baseUrl)) continue;
+      taken.add(endpoint.baseUrl);
+      seeds.push(endpoint);
+    }
+  };
+  add(bootstrapEndpoints(lists.configured, 'bootstrap'));
+  add(bootstrapEndpoints(lists.environment ?? [], 'environment'));
+  add(bootstrapEndpoints(lists.remembered ?? [], 'discovered'));
+  return seeds;
+}
+
 export function bootstrapEndpoints(urls: readonly string[], source: EndpointSource = 'bootstrap'): MachaEndpoint[] {
   const unique = new Set<string>();
   const endpoints: MachaEndpoint[] = [];
@@ -359,6 +444,7 @@ export class EndpointRegistry {
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
   private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
+  private readonly generationStarts = new Map<string, GenerationStartSample[]>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
   /** So the abstention is reported once rather than on every probe cycle. */
@@ -417,6 +503,7 @@ export class EndpointRegistry {
     for (const id of this.latencySamples.keys()) if (!retained.has(id)) this.latencySamples.delete(id);
     for (const id of this.capacities.keys()) if (!retained.has(id)) this.capacities.delete(id);
     for (const id of this.playbackBudgetsById.keys()) if (!retained.has(id)) this.playbackBudgetsById.delete(id);
+    for (const key of this.generationStarts.keys()) if (!retained.has(key.slice(0, key.lastIndexOf('|')))) this.generationStarts.delete(key);
     this.bandwidth?.retain(retained);
     if (this.preferredId && !retained.has(this.preferredId)) this.preferredId = undefined;
     if (this.latencyAdvantageId && !retained.has(this.latencyAdvantageId)) {
@@ -782,11 +869,16 @@ export class EndpointRegistry {
    * qualifying catalogue read at all. Without this call that client ranks
    * endpoints with the throughput axis permanently dark, and nothing says so
    * beyond one `throughput-unavailable` line.
+   *
+   * **A host calls it with three arguments, and what it reports is media.**
+   * Media is the only evidence `mediaBytesPerSecond` reads, and so the only
+   * evidence on which a move declines a node. Core files its own JSON reads
+   * here as `'api'`.
    */
-  recordTransferByUrl(url: string, bytes: number, durationMs: number): void {
+  recordTransferByUrl(url: string, bytes: number, durationMs: number, kind: TransferKind = 'media'): void {
     if (!this.bandwidth) return;
     const endpoint = this.endpoints.find((candidate) => url.startsWith(`${candidate.baseUrl}/`) || url === candidate.baseUrl);
-    if (endpoint) this.bandwidth.record(endpoint.id, bytes, durationMs);
+    if (endpoint) this.bandwidth.record(endpoint.id, bytes, durationMs, kind);
   }
 
   /** Record a node's self-reported load, from the status call the health cycle already makes. */
@@ -825,6 +917,43 @@ export class EndpointRegistry {
   playbackBudgets(endpointIdValue: string): EndpointPlaybackBudgets | undefined {
     const value = this.playbackBudgetsById.get(endpointIdValue);
     return value ? { ...value } : undefined;
+  }
+
+  /**
+   * Record how long a generation start took on this node.
+   *
+   * **Nothing feeds this yet.** Core measured it with a `bytes=0-0` readiness
+   * probe until Tom ruled that out on 2026-09-23; where the figure comes from
+   * instead is with the server. Kept because it is where that figure lands and
+   * what `moveTo`'s estimate reads. Anything non-finite or negative is refused
+   * rather than stored, because it would become a lead.
+   */
+  recordGenerationStart(endpointIdValue: string, kind: GenerationStartKind, ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0) return;
+    const key = `${endpointIdValue}|${kind}`;
+    const samples = [...(this.generationStarts.get(key) ?? []), { ms, at: this.now() }];
+    this.generationStarts.set(key, samples.slice(-GENERATION_START_SAMPLES));
+  }
+
+  /**
+   * The longest recent start of this kind on this node, or undefined.
+   *
+   * **The longest, not the mean,** because the two ways of being wrong cost
+   * differently. Estimating long makes a move ask for a generation further
+   * ahead, which the outgoing source's runway pays for, and a move that cannot
+   * afford it declines. Estimating short makes the join start behind the viewer,
+   * and a node that produces at no better than realtime never catches up: the
+   * freeze this exists to prevent.
+   *
+   * **Undefined means unknown, never zero.** A node with no recent start of this
+   * kind gets no estimate, and a move there behaves as it did before this
+   * existed, because a figure borrowed from another node would be describing a
+   * different machine.
+   */
+  generationStartEstimate(endpointIdValue: string, kind: GenerationStartKind): number | undefined {
+    const cutoff = this.now() - GENERATION_START_EVIDENCE_TTL_MS;
+    const recent = (this.generationStarts.get(`${endpointIdValue}|${kind}`) ?? []).filter((sample) => sample.at >= cutoff);
+    return recent.length === 0 ? undefined : Math.max(...recent.map((sample) => sample.ms));
   }
 
   recordSuccess(endpointIdValue: string): void {
@@ -926,6 +1055,22 @@ export class EndpointRegistry {
     if (!this.bandwidth) return undefined;
     if (this.bandwidth.samples(endpointIdValue) < THROUGHPUT_MIN_SAMPLES) return undefined;
     return this.bandwidth.bytesPerSecond(endpointIdValue);
+  }
+
+  /**
+   * Media throughput from this client to that node, in bytes per second, only
+   * when enough recent media transfers back it. Undefined means core cannot
+   * say, which is never the same as slow.
+   *
+   * Media only: core's own JSON reads are timed around the parse and arrive
+   * only when a viewer browses, so they rank nodes but do not decide whether
+   * one can carry a stream.
+   */
+  mediaBytesPerSecond(endpointIdValue: string): number | undefined {
+    const estimate = this.bandwidth?.mediaEstimate(endpointIdValue);
+    if (!estimate || estimate.samples < MEDIA_THROUGHPUT_MIN_SAMPLES) return undefined;
+    if (estimate.ageMs > MEDIA_THROUGHPUT_MAX_AGE_MS) return undefined;
+    return estimate.bytesPerSecond;
   }
 
   /**

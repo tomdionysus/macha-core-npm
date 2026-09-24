@@ -33,6 +33,12 @@ The entry point depends on no test runner — plain classes, usable from Vitest,
 
 It reports that this source is the one now being presented — for a host that tears the old element down, the moment it is dispatched; for a host that prepares a replacement alongside, the moment it cuts. Until it resolves, the core goes on describing the source still playing. Never resolve on buffering completing: that stalls the failover timing that moves a viewer to a healthy node.
 
+### A negative position, and `holdsThroughLead`
+
+A node produces a generation sequentially from where it is asked to start, and a slow one takes seconds to reach a first fragment. So a viewer moved to another node at their own position arrives one start-cost behind the generation, and it never catches up. `moveTo` fixes that by asking the node to start *ahead* of the viewer, by core's own measured estimate for that node or by a lead you pass, and then the old source has to play on until the viewer reaches the new one.
+
+Only a host that can do that should say so. Set `holdsThroughLead: true` on your `Player` if, on a `continue` activation, you can keep the outgoing source presenting and fetching, load the incoming one from its own start, and cut when the viewer reaches it. You will then sometimes get a **negative** `positionMs` on `play()`: the viewer is that far before the generation's start. Resolve at the cut, as always. If you tear your element down on `play()`, leave it unset. You will never be handed a negative position, and a move behaves exactly as it did before leads existed.
+
 ### `localSeekCoverage()` and `seek()` share one coordinate system
 
 Both are source-generation-local: positions within the media the player currently holds, not positions in the title. Platforms disagree about timestamp origins and an HLS manifest may start at an arbitrary PTS, so normalise before exposing ranges. Get this wrong and seeks land in the wrong place, or the coordinator negotiates a new server session for a seek you could have served locally.
@@ -44,8 +50,8 @@ Throw or emit `PlaybackSourceError` with a `kind`:
 | kind | Means | Consequence |
 | --- | --- | --- |
 | `stream` | The bytes stopped arriving | Retried on another node |
-| `media` | The container or stream is broken | Not retried elsewhere |
-| `unsupported` | This decoder cannot play this | Not retried elsewhere |
+| `media` | The container or stream is broken, or would not decode | Not retried elsewhere; a copied stream is transcoded once on the same node, unless the viewer chose the mode |
+| `unsupported` | This decoder cannot play this | As `media` |
 | `not-found` | This node no longer has the source | Recovered without tearing down |
 | `not-ready` | The node has not produced this fragment yet | Not evidence; nothing is retried |
 | `unknown` | No evidence | Retried on another node |
@@ -122,6 +128,44 @@ The compile-time gate and a host's runtime are different facts. `npm run lint:pl
 - **Never sniff manifest versus progressive.** `PlaybackSource.isManifest` is `true` when `url` is a playlist to be parsed and `false` when it is media bytes to be decoded. Hand ExoPlayer an `.m3u8` without declaring it and it parses the playlist as a media file. Do not infer it from the extension or from `mode`; URL conventions are the server's to change.
 - **An HLS stream URL points at a master playlist.** A library player follows the indirection for you; a hand-rolled fetch-and-parse player must. The core passes `source.url` and `source.mimeType` through untouched and never parses a manifest.
 - **With two player engines, guard listeners in both directions.** A native host often needs one engine for video and another for music. Guarding only the newly active engine is not enough — an idle engine still reporting position 0 into shared state makes the progress bar oscillate. The core sees one `Player`; composing two behind it is the host's job.
+
+## Recovering without the coordinator
+
+`PlaybackCoordinator` does all of this for you. Read this section only if your host calls `ClusterPlaybackResolver` directly and recovers from player failures itself. The individual methods are documented where they are declared; this is the order to call them in, and it is the order the coordinator follows.
+
+### 1. Decide which generation the error is about, before anything else
+
+Drop an error that belongs to a source you have already replaced. This is the step a resolver-only host is most likely to skip, and skipping it is expensive.
+
+`sessionAlive(id)` answers `false` for a session **you released yourself**. The id names its node, core asks that node, and the node answers `404`, exactly as it does for a reaped session. So a late error from the source you just replaced, probed and regenerated, discards the replacement you finished a moment ago. Core lost 82 seconds of playable video to the same sequence on 2026-09-17, with every step doing what it was told.
+
+The error usually names no generation, and `expo-video` gives only a message. The attribution then has to come from your own bookkeeping: which source is presenting, and when you last replaced it. A short quiet period after `replace`, like a seek window, is one way. The coordinator drops an error when a replacement is already pending or has superseded the source the error came from.
+
+### 2. Ask the owning node whether it still holds the session
+
+`sessionAlive(currentId)`:
+
+- **`false`**: the node reaped the session and is itself fine. Go to step 3 and regenerate on it. Nothing is charged.
+- **`true`**: the node still holds the session. If the failure was a `not-found` on a fragment, the fragment is past the end of a live plan, and replacing the session fixes nothing; the coordinator stops there. For a fatal failure the node could not serve, fail over (step 4).
+- **Throws a `MachaConnectionError`**: the answer did not come within `SESSION_LIVENESS_TIMEOUT_MS` (8 s), or the node could not be reached. "Could not find out" is not "gone". Fail over.
+- **Throws with `playbackFailureCode(error) === SESSION_PROVENANCE_UNKNOWN_CODE`**: the resolver no longer holds the session, and the node the id names is no longer in the registry. That happens after a services rebuild gave you a fresh resolver, or for a session already released, once the node has left the cluster. The node is gone, so fail over (step 4). (A malformed id also lands here; one this resolver issued never is.)
+
+### 3. Regenerate on the same node
+
+`regenerate(session, media, capabilities, positionMs, preferences)` releases the old session and creates its replacement on the same node, keeping the carriage it was served with:
+
+- **Resolves**: present the new session, and remember the position you asked for.
+- **Rejects with `REGENERATION_ENDPOINT_GONE_CODE`**: that node has left the registry. Fail over; this is the case failover is for.
+- **Rejects with `SESSION_PROVENANCE_UNKNOWN_CODE`**: as in step 2. Fail over.
+- **Rejects otherwise**: fail over.
+
+**Bound it.** If you are about to regenerate at the same position (to the millisecond) as the last regeneration, the last one made no progress and another will not either. Fail over. The coordinator logs `session-regeneration-made-no-progress` and does the same.
+
+### 4. Fail over
+
+`failover` records the failure against the node, walks to another, and releases the session it abandons. Reach it only from the cases above that say so. A node that answered about a session, rather than failing to answer, has done nothing to be charged for.
+
+Read codes with `playbackFailureCode`, which walks the `cause` chain, never from `message`. Messages are log text.
 
 ## What to emit
 

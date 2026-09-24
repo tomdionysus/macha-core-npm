@@ -60,7 +60,7 @@ class FakeCatalogue implements CatalogueApi {
       title: 'Artist',
       effective_artwork: [{ role: 'cover', id: 'artist-effective-art', mime_type: 'image/jpeg' }],
     }));
-    if (id === 'album-1') return Promise.resolve(catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' }));
+    if (id === 'album-1') return Promise.resolve(catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album', year: 1999 }));
     if (id === 'movie-with-capability-url') return Promise.resolve(catalogueItem('movie-with-capability-url', 'movie', {
       title: 'Movie',
       artwork: [{ role: 'poster', id: 'signed-poster', mime_type: 'image/jpeg', url: '/api/v1/catalogue/artwork/signed-poster?exp=1&sig=abc' }],
@@ -138,7 +138,8 @@ describe('MachaMediaApi', () => {
     if (details.kind !== 'season' || !('episodes' in details)) throw new Error('expected season details');
     expect(details.episodes[0]).toEqual(expect.objectContaining({
       id: 'episode-1',
-      subtitle: 'S01E02',
+      seasonNumber: 1,
+      episodeNumber: 2,
       mediaIds: ['file:abc'],
       artwork: { thumbnail: { id: 'art123', mimeType: 'image/jpeg' } },
       releaseDate: undefined,
@@ -155,7 +156,8 @@ describe('MachaMediaApi', () => {
     expect(details.kind).toBe('episode');
     expect(details).toEqual(expect.objectContaining({
       id: 'episode-1',
-      subtitle: 'S01E02',
+      seasonNumber: 1,
+      episodeNumber: 2,
       playbackContext: {
         series: { id: 'show', title: 'Show' },
         season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
@@ -175,7 +177,7 @@ describe('MachaMediaApi', () => {
     expect(album.kind).toBe('album');
     if (album.kind !== 'album' || !('tracks' in album)) throw new Error('expected album details');
     expect(album.tracks.map((item) => item.id)).toEqual(['track-1', 'track-2']);
-    expect(album.tracks[0].subtitle).toBe('Track 1');
+    expect(album.tracks[0].trackNumber).toBe(1);
     expect(album.tracks[0].artwork).toEqual({ poster: { id: 'album-effective-art', mimeType: 'image/jpeg' } });
   });
 
@@ -186,7 +188,7 @@ describe('MachaMediaApi', () => {
       id: 'track-global',
       kind: 'track',
       parentId: 'album-1',
-      subtitle: 'Track 3',
+      trackNumber: 3,
       artwork: { poster: { id: 'global-effective-art', mimeType: 'image/jpeg' } },
     })]);
   });
@@ -463,5 +465,327 @@ describe('keeping an artwork URL byte-identical across an endpoint swap', () => 
     api.noteArtworkLoaded(artworkPath('http://proxy/node-b'));
 
     expect(api.artworkUrls(ref('http://proxy/node-a'))[0].url).toBe(artworkPath('http://proxy/node-b'));
+  });
+});
+
+/**
+ * Search hits carry the ancestry a detail page would give them. Asked for by
+ * the Android TV client on Tom's instruction: an episode found by search said
+ * "S01E02" and not which series.
+ */
+describe('search hits and their ancestry', () => {
+  class SearchCatalogue extends FakeCatalogue {
+    readonly fetched: string[] = [];
+    constructor(private readonly hits: CatalogueItem[], private readonly failing = new Set<string>()) { super(); }
+    override search(): Promise<CatalogueItem[]> { return Promise.resolve(this.hits); }
+    override get(id: string): Promise<CatalogueItem> {
+      this.fetched.push(id);
+      if (this.failing.has(id)) return Promise.reject(new Error('unavailable'));
+      return super.get(id);
+    }
+  }
+
+  const EPISODE_3 = catalogueItem('episode-3', 'episode', { parent_id: 'season-1', season_number: 1, episode_number: 3, title: 'Third' });
+  const SEASON = catalogueItem('season-1', 'season', { parent_id: 'show', season_number: 1, title: 'Season 1' });
+  const TRACK = catalogueItem('track-9', 'track', { parent_id: 'album-1', track_number: 9, title: 'Ninth' });
+
+  it('sends only the words a search keys on, and nothing when none are left', async () => {
+    class Recording extends SearchCatalogue {
+      readonly queries: string[] = [];
+      override search(query?: string): Promise<CatalogueItem[]> { this.queries.push(query ?? ''); return super.search(); }
+    }
+    const catalogue = new Recording([]);
+    const api = new MachaMediaApi(catalogue);
+    await api.search('The Matrix');
+    await expect(api.search('the')).resolves.toEqual([]);
+    await expect(api.search('a x')).resolves.toEqual([]);
+    expect(catalogue.queries).toEqual(['Matrix']);
+  });
+
+  describe('narrowed to categories', () => {
+    class Limited extends SearchCatalogue {
+      readonly limits: number[] = [];
+      override search(_query?: string, limit?: number): Promise<CatalogueItem[]> { this.limits.push(limit ?? -1); return super.search(); }
+    }
+    const MOVIE = catalogueItem('movie-1', 'movie', { title: 'Film' });
+    const ALBUM = catalogueItem('album-9', 'album', { title: 'Record' });
+
+    it('returns only the kinds asked for', async () => {
+      const api = new MachaMediaApi(new Limited([MOVIE, EPISODE_1, ALBUM, SEASON]));
+      expect((await api.search('xx', undefined, { categories: ['shows'] })).map((hit) => hit.id)).toEqual(['episode-1', 'season-1']);
+      expect((await api.search('xx', undefined, { categories: ['movies', 'music'] })).map((hit) => hit.id)).toEqual(['movie-1', 'album-9']);
+      expect((await api.search('xx')).map((hit) => hit.id)).toEqual(['movie-1', 'episode-1', 'album-9', 'season-1']);
+    });
+
+    it('asks nobody when no category is selected', async () => {
+      const catalogue = new Limited([MOVIE]);
+      await expect(new MachaMediaApi(catalogue).search('xx', undefined, { categories: [] })).resolves.toEqual([]);
+      expect(catalogue.limits).toEqual([]);
+    });
+
+    it('asks for more when a filter will discard some, and still returns a page of at most 50', async () => {
+      const many = Array.from({ length: 120 }, (_, i) => catalogueItem(`m${i}`, 'movie'));
+      const catalogue = new Limited(many);
+      const api = new MachaMediaApi(catalogue);
+      await api.search('xx');
+      const narrowed = await api.search('xx', undefined, { categories: ['movies'] });
+      expect(catalogue.limits).toEqual([50, 200]);
+      expect(narrowed).toHaveLength(50);
+    });
+
+    it('fetches no parent for a hit the filter discarded', async () => {
+      const catalogue = new Limited([MOVIE, EPISODE_1]);
+      await new MachaMediaApi(catalogue).search('xx', undefined, { categories: ['movies'] });
+      expect(catalogue.fetched).toEqual([]);
+    });
+  });
+
+  it('names the series on an episode, with the same context a season page gives', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1]));
+    const [hit] = await api.search('episode');
+    expect(hit.playbackContext).toEqual({
+      series: { id: 'show', title: 'Show' },
+      season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
+    });
+  });
+
+  it('names the series on a season', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([SEASON]));
+    const [hit] = await api.search('season');
+    expect((hit as { showId?: string }).showId).toBe('show');
+    expect(hit.playbackContext).toEqual({
+      series: { id: 'show', title: 'Show' },
+      season: { id: 'season-1', title: 'Season 1', seasonNumber: 1 },
+    });
+  });
+
+  it('fetches each ancestor once, and none that the search already returned', async () => {
+    const show = catalogueItem('show', 'show', { title: 'Show' });
+    const catalogue = new SearchCatalogue([show, EPISODE_1, EPISODE_3]);
+    const hits = await new MachaMediaApi(catalogue).search('show');
+    expect(catalogue.fetched).toEqual(['season-1']);
+    expect(hits.map((hit) => hit.playbackContext?.series.title)).toEqual([undefined, 'Show', 'Show']);
+  });
+
+  it('returns the hit as it was when an ancestor will not load, rather than failing the search', async () => {
+    const api = new MachaMediaApi(new SearchCatalogue([EPISODE_1, SEASON], new Set(['show'])));
+    const [episode, season] = await api.search('episode');
+    expect(episode.playbackContext).toBeUndefined();
+    expect(episode.episodeNumber).toBe(2);
+    expect(season.playbackContext).toBeUndefined();
+  });
+
+  it('gives a track its album and artist', async () => {
+    const [hit] = await new MachaMediaApi(new SearchCatalogue([TRACK])).search('ninth');
+    expect(hit.musicContext).toEqual(expect.objectContaining({
+      album: { id: 'album-1', title: 'Album', year: 1999 },
+      artist: { id: 'artist-1', title: 'Artist' },
+    }));
+  });
+});
+
+/**
+ * `musicContext` was declared "resolved by the media API" from 0.6.0 and
+ * nothing ever set it, so the phone client's Now Playing, queue and downloads
+ * never named an artist or album. Found 2026-09-24 while building search
+ * ancestry.
+ */
+describe('tracks name their album and artist', () => {
+  it('on an album page', async () => {
+    const details = await new MachaMediaApi(new FakeCatalogue()).details('album-1');
+    if (details.kind !== 'album' || !('tracks' in details)) throw new Error('expected album details');
+    expect(details.tracks.map((track) => track.musicContext)).toEqual([
+      { album: { id: 'album-1', title: 'Album', year: 1999 }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+      { album: { id: 'album-1', title: 'Album', year: 1999 }, artist: { id: 'artist-1', title: 'Artist' }, artwork: undefined },
+    ]);
+  });
+
+  it('in the whole-library track list', async () => {
+    class Listing extends FakeCatalogue {
+      override list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
+        if (kind === 'album' && parent === undefined) return Promise.resolve([catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' })]);
+        if (kind === 'artist' && parent === undefined) return Promise.resolve([catalogueItem('artist-1', 'artist', { title: 'Artist' })]);
+        return super.list(kind, parent);
+      }
+    }
+    const [track] = await new MachaMediaApi(new Listing()).tracks();
+    expect(track.musicContext?.album.title).toBe('Album');
+    expect(track.musicContext?.artist?.title).toBe('Artist');
+  });
+});
+
+/**
+ * Artwork from the node this viewer reaches fastest, chosen once and then kept.
+ * Measured 2026-09-24 from the fi-1 site: macnessa (~90 ms round trip) served
+ * every poster at 636 ms median cold while fi-1 on the LAN served the same
+ * signed URL in 65 ms. Stickiness kept whichever node served first, which was
+ * whichever answered the catalogue read.
+ */
+describe('choosing the artwork host by what it costs this viewer', () => {
+  const SIGNED_QUERY = `?exp=${Date.now() + 86_400_000}&sig=abc`;
+  const FAR = 'https://macnessa';
+  const NEAR = 'http://fi-1';
+
+  function catalogue(latency: Record<string, number | undefined>): CatalogueApi {
+    return {
+      status: async () => ({ ready: true } as CatalogueStatus),
+      list: async () => [],
+      get: async () => catalogueItem('x', 'movie'),
+      update: async (item) => item,
+      clearMetadata: async () => undefined,
+      search: async () => [],
+      putArtwork: async () => ({} as CatalogueArtwork),
+      artwork: async () => ({ size: 1, type: 'image/jpeg' } as Blob),
+      artworkUrls: (id) => Object.entries(latency).map(([node, latencyMs]) => ({
+        url: `${node}/api/v1/catalogue/artwork/${id}`,
+        requiresAuthorization: true,
+        ...(latencyMs === undefined ? {} : { latencyMs }),
+      })),
+      mediaProfile: async () => undefined,
+    };
+  }
+  const storage = () => {
+    const values = new Map<string, string>();
+    return {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+      removeItem: (key: string) => { values.delete(key); },
+    };
+  };
+  const signedBy = (host: string) => ({ id: 'sha-1', mimeType: 'image/jpeg', url: `${host}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}` });
+  const leadHost = (sources: { url: string }[]) => sources[0]?.url.split('/api/')[0];
+
+  it('leads with the materially nearer node, over the one that signed the URL', () => {
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), new ArtworkHostPreference(storage()));
+    const sources = api.artworkUrls(signedBy(FAR));
+    expect(leadHost(sources)).toBe(NEAR);
+    // Still the header-free capability first, now on the near node.
+    expect(sources[0]).toEqual({ url: `${NEAR}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`, requiresAuthorization: false });
+  });
+
+  it('moves off a stored preference once, when another node is materially nearer', () => {
+    const preference = new ArtworkHostPreference(storage());
+    preference.noteLoaded(`${FAR}/api/v1/catalogue/artwork/sha-0`);
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('does not move for a small difference, so two nearby nodes never trade places', () => {
+    const preference = new ArtworkHostPreference(storage());
+    preference.noteLoaded(`${FAR}/api/v1/catalogue/artwork/sha-0`);
+    const api = new MachaMediaApi(catalogue({ [FAR]: 40, [NEAR]: 3 }), preference);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(FAR);
+  });
+
+  it('decides nothing without evidence, and decides once it has some', () => {
+    const preference = new ArtworkHostPreference(storage());
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: undefined, [NEAR]: undefined }), preference).artworkUrls(signedBy(FAR)))).toBe(FAR);
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('decides once per run: later readings do not move it again', () => {
+    const preference = new ArtworkHostPreference(storage());
+    new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR));
+    // The link has changed since, but a second switch would re-download every poster again.
+    expect(leadHost(new MachaMediaApi(catalogue({ [FAR]: 3, [NEAR]: 90 }), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('is not undone by a poster from the old host finishing late', () => {
+    const preference = new ArtworkHostPreference(storage());
+    const api = new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference);
+    api.artworkUrls(signedBy(FAR));
+    api.noteArtworkLoaded(`${FAR}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('never leads with a chosen host while it is in cooldown, and leads with it again once it recovers', () => {
+    const preference = new ArtworkHostPreference(storage());
+    new MachaMediaApi(catalogue({ [FAR]: 90, [NEAR]: 3 }), preference).artworkUrls(signedBy(FAR));
+
+    const withNear = (ready: boolean): CatalogueApi => ({
+      ...catalogue({}),
+      artworkUrls: (id) => [
+        { url: `${FAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: true, latencyMs: 90 },
+        { url: `${NEAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready },
+      ],
+    });
+    expect(leadHost(new MachaMediaApi(withNear(false), preference).artworkUrls(signedBy(FAR)))).toBe(FAR);
+    // Kept, not forgotten: its cache is warm the moment it is back.
+    expect(leadHost(new MachaMediaApi(withNear(true), preference).artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+
+  it('moves a stored preference off a host that is down at the next run', () => {
+    const shared = storage();
+    const before = new ArtworkHostPreference(shared);
+    before.noteLoaded(`${NEAR}/api/v1/catalogue/artwork/sha-0`);
+    const restarted = new ArtworkHostPreference(shared);
+    const api = new MachaMediaApi({
+      ...catalogue({}),
+      artworkUrls: (id) => [
+        { url: `${FAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: true, latencyMs: 90 },
+        { url: `${NEAR}/api/v1/catalogue/artwork/${id}`, requiresAuthorization: true, ready: false },
+      ],
+    }, restarted);
+    expect(leadHost(api.artworkUrls(signedBy(NEAR)))).toBe(FAR);
+    expect(restarted.get()).toBe(FAR);
+  });
+
+  it('keeps following success when it chose not to switch', () => {
+    // Nothing deliberate to protect, so the old behaviour stands.
+    const preference = new ArtworkHostPreference(storage());
+    const api = new MachaMediaApi(catalogue({ [FAR]: 10, [NEAR]: 8 }), preference);
+    api.artworkUrls(signedBy(FAR));
+    api.noteArtworkLoaded(`${NEAR}/api/v1/catalogue/artwork/sha-1`);
+    expect(leadHost(api.artworkUrls(signedBy(FAR)))).toBe(NEAR);
+  });
+});
+
+/** An album carries its artist as data; how a card words it is the client's. */
+describe('an album names its artist', () => {
+  class Library extends FakeCatalogue {
+    constructor(private readonly artistsFail = false) { super(); }
+    override list(kind?: CatalogueKind, parent?: string): Promise<CatalogueItem[]> {
+      if (kind === 'album' && parent === undefined) {
+        return Promise.resolve([
+          catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album', year: 1999 }),
+          catalogueItem('orphan', 'album', { title: 'Orphan' }),
+        ]);
+      }
+      if (kind === 'artist' && parent === undefined) {
+        return this.artistsFail ? Promise.reject(new Error('unavailable')) : Promise.resolve([catalogueItem('artist-1', 'artist', { title: 'Artist' })]);
+      }
+      return super.list(kind, parent);
+    }
+    override search(): Promise<CatalogueItem[]> {
+      return Promise.resolve([catalogueItem('album-1', 'album', { parent_id: 'artist-1', title: 'Album' })]);
+    }
+  }
+
+  it('in the album list and on Home, leaving an album with no artist as it was', async () => {
+    const api = new MachaMediaApi(new Library());
+    expect((await api.albums()).map((album) => album.musicContext?.artist?.title)).toEqual(['Artist', undefined]);
+    expect((await api.home()).albums.map((album) => album.musicContext?.artist?.title)).toEqual(['Artist', undefined]);
+  });
+
+  it('keeps the year on the item for a card that wants both lines', async () => {
+    const [album] = await new MachaMediaApi(new Library()).albums();
+    expect(album.year).toBe(1999);
+  });
+
+  it('still lists the albums when the artists will not load', async () => {
+    const albums = await new MachaMediaApi(new Library(true)).albums();
+    expect(albums.map((album) => [album.id, album.musicContext])).toEqual([['album-1', undefined], ['orphan', undefined]]);
+  });
+
+  it('on the album page and in search', async () => {
+    const api = new MachaMediaApi(new Library());
+    expect((await api.details('album-1')).musicContext?.artist?.title).toBe('Artist');
+    expect((await api.search('album'))[0]?.musicContext?.artist?.title).toBe('Artist');
+  });
+
+  it("and on the artist's own page; whether to show it there is the client's call", async () => {
+    const details = await new MachaMediaApi(new Library()).details('artist-1');
+    if (details.kind !== 'artist' || !('albums' in details)) throw new Error('expected artist details');
+    expect(details.albums[0]?.musicContext?.artist?.title).toBe('Artist');
   });
 });

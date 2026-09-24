@@ -1,13 +1,16 @@
 import { canonicalContainers } from './choosePlaybackInstruction.js';
-import type { PlaybackSession, PlaybackStreamInfo, PlaybackTransform } from './PlaybackResolver.js';
-
-const CONTAINER_LABELS: Record<string, string> = {
-  fmp4: 'FMP4',
-  mpegts: 'MPEG-TS',
-};
+import type {
+  PlaybackOutputAudioInfo,
+  PlaybackOutputVideoInfo,
+  PlaybackSession,
+  PlaybackStreamInfo,
+  PlaybackTransform,
+} from './PlaybackResolver.js';
 
 /**
- * The container actually served, as the panel should show it.
+ * The container actually served, as the server named it, lower-cased: for
+ * example `fmp4`, `mpegts`, or a source container such as `matroska` for a
+ * direct session.
  *
  * Only ever from what the server says it produced — `output.container`, or
  * `output.format` where the node could not name a container. Never from the
@@ -15,7 +18,7 @@ const CONTAINER_LABELS: Record<string, string> = {
  * wearing the clothes of the thing we got, and the entire value of this field
  * is telling those two apart — a segment-container preference that the node
  * quietly ignored looks identical to one it honoured until something reports
- * back. Absent means absent: no text rather than a default.
+ * back. Absent means absent, never a default.
  */
 function servedContainer(session: PlaybackSession): string | undefined {
   // `output.format` is the fallback, not a default: it is still the server
@@ -24,90 +27,21 @@ function servedContainer(session: PlaybackSession): string | undefined {
   // report `container: ""` with `format: "avi"`. If that is fixed server-side
   // the fallback simply stops being reached.
   const container = session.output.container?.trim() || session.output.format?.trim();
-  if (!container) return undefined;
-  const key = container.toLowerCase();
-  return CONTAINER_LABELS[key] ?? key.toUpperCase();
-}
-
-function formatBitrate(bitrate?: number): string {
-  if (!bitrate) return '';
-  return bitrate >= 1_000_000 ? `${(bitrate / 1_000_000).toFixed(1)} Mb/s` : `${Math.round(bitrate / 1000)} kb/s`;
-}
-
-function formatChannels(channels?: number): string {
-  if (!channels) return '';
-  if (channels === 1) return 'mono';
-  if (channels === 2) return 'stereo';
-  if (channels === 6) return '5.1';
-  if (channels === 8) return '7.1';
-  return `${channels}ch`;
-}
-
-function formatSampleRate(sampleRate?: number): string {
-  if (!sampleRate) return '';
-  return sampleRate >= 1_000 ? `${Number((sampleRate / 1_000).toFixed(1))} kHz` : `${sampleRate} Hz`;
+  return container ? container.toLowerCase() : undefined;
 }
 
 function selectedStream(session: PlaybackSession, type: 'video' | 'audio' | 'subtitle', index: number): PlaybackStreamInfo | undefined {
   return session.sourceInfo.streams.find((stream) => stream.type === type && stream.index === index);
 }
 
-function sourceVideoParts(session: PlaybackSession, video: PlaybackStreamInfo): string[] {
-  const parts = [video.codec.toUpperCase()];
-  if (video.width && video.height) parts.push(`${video.width}×${video.height}`);
-  const bitrate = formatBitrate(video.bitrate || session.sourceInfo.bitrate);
-  if (bitrate) parts.push(bitrate);
-  return parts;
-}
-
-function outputVideoParts(session: PlaybackSession): string[] {
-  const output = session.output.video;
-  if (!output) return [];
-  const parts: string[] = [];
-  if (output.codec) parts.push(output.codec.toUpperCase());
-  if (output.width && output.height) parts.push(`${output.width}×${output.height}`);
-  const bitrate = formatBitrate(output.bitrate ?? session.output.bitrate);
-  if (bitrate) parts.push(bitrate);
-  return parts;
-}
-
-function audioParts(stream: PlaybackStreamInfo): string[] {
-  const parts: string[] = [];
-  if (stream.language) parts.push(stream.language.toUpperCase());
-  parts.push(stream.codec.toUpperCase());
-  const channels = formatChannels(stream.channels);
-  const sampleRate = formatSampleRate(stream.sampleRate);
-  if (channels) parts.push(channels);
-  if (sampleRate) parts.push(sampleRate);
-  if (stream.bitDepth) parts.push(`${stream.bitDepth}-bit`);
-  const bitrate = formatBitrate(stream.bitrate);
-  if (bitrate) parts.push(bitrate);
-  return parts;
-}
-
-function subtitleParts(stream: PlaybackStreamInfo): string[] {
-  const parts = [stream.language ? stream.language.toUpperCase() : 'UND', stream.codec.toUpperCase()];
-  if (stream.forced) parts.push('FORCED');
-  return parts;
-}
-
-function outputAudioParts(session: PlaybackSession): string[] {
-  const output = session.output.audio;
-  if (!output) return [];
-  const parts: string[] = [];
-  if (output.codec) parts.push(output.codec.toUpperCase());
-  const channels = formatChannels(output.channels);
-  const sampleRate = formatSampleRate(output.sampleRate);
-  if (channels) parts.push(channels);
-  if (sampleRate) parts.push(sampleRate);
-  if (output.bitDepth) parts.push(`${output.bitDepth}-bit`);
-  const bitrate = formatBitrate(output.bitrate);
-  if (bitrate) parts.push(bitrate);
-  return parts;
-}
+/**
+ * How a session whose selected streams are all copied reached the viewer:
+ * `direct`, the file handed over, or `remux`, the same streams rewrapped.
+ */
+export type PlaybackDelivery = 'direct' | 'remux';
 
 /**
- * DIRECT or REMUX, from what was served rather than what was asked for.
+ * Direct or remux, from what was served rather than what was asked for.
  *
  * Only called when every selected stream is copied, so the question is
  * narrow: was the viewer handed the file, or something built from it?
@@ -123,7 +57,7 @@ function outputAudioParts(session: PlaybackSession): string[] {
  * session's stream mime type, which the server sets from the same plan the
  * mode comes from. What recommends it is that the player picks its loading
  * path from that same value, so a wrong one breaks playback loudly instead of
- * letting the badge lie quietly. Nothing reachable from a session object is
+ * letting the readout lie quietly. Nothing reachable from a session object is
  * truly independent of the server; this is the field that cannot be wrong on
  * its own.
  *
@@ -132,29 +66,49 @@ function outputAudioParts(session: PlaybackSession): string[] {
  * back to the session mode for nodes that do not report the field, which is
  * the requested mode and was the only thing available before 0.33.1.
  */
-function copyModeLabel(session: PlaybackSession): string {
-  if (session.source.isManifest) return 'REMUX';
+function copyDelivery(session: PlaybackSession): PlaybackDelivery {
+  if (session.source.isManifest) return 'remux';
   const served = session.output.container?.trim().toLowerCase();
-  if (!served) return session.mode === 'direct' ? 'DIRECT' : 'REMUX';
+  if (!served) return session.mode === 'direct' ? 'direct' : 'remux';
   const source = session.sourceInfo.container ?? session.sourceInfo.format;
   const sourceFamily = canonicalContainers(source);
   const servedFamily = canonicalContainers(served);
   const unchanged = sourceFamily !== undefined && sourceFamily === servedFamily;
-  return unchanged ? 'DIRECT' : 'REMUX';
+  return unchanged ? 'direct' : 'remux';
 }
 
+/**
+ * What the server says it is doing to each selected stream, as data. Core
+ * writes no viewer text (Tom, 2026-09-24): a host formats every field.
+ */
 export interface PlaybackStatusDescription {
+  /** The origin serving the picture: scheme, host and port only, or `same-origin`. */
   endpoint?: string;
-  /**
-   * The container the server says it served — `MPEG-TS`, `FMP4`, or a source
-   * container such as `MATROSKA` for a direct session. Undefined when the
-   * node did not report one; render nothing in that case rather than a
-   * default, so an unanswering node stays visibly distinct from an answer.
-   */
+  /** See `servedContainer`. Undefined when the node did not report one. */
   container?: string;
-  video?: string;
-  audio?: string;
-  subtitle?: string;
+  /**
+   * Set when every selected stream is copied, and then the session as a whole
+   * is the thing to name, not each stream. Undefined when anything is
+   * transcoded; the per-stream `transform` says which.
+   */
+  delivery?: PlaybackDelivery;
+  video?: {
+    transform: PlaybackTransform;
+    source: PlaybackStreamInfo;
+    /** The whole source's bitrate, for a video stream that states none of its own. */
+    sourceBitrate?: number;
+    /** Present for a transcode where the server reported what it produces. */
+    output?: PlaybackOutputVideoInfo;
+    /** The whole output's bitrate, where the video output states none of its own. */
+    outputBitrate?: number;
+  };
+  audio?: {
+    transform: PlaybackTransform;
+    source: PlaybackStreamInfo;
+    output?: PlaybackOutputAudioInfo;
+  };
+  /** The selected subtitle stream, only when subtitles are enabled. */
+  subtitle?: PlaybackStreamInfo;
 }
 
 function safeOrigin(value: string | undefined, base?: string): string | undefined {
@@ -174,9 +128,7 @@ function safeOrigin(value: string | undefined, base?: string): string | undefine
  * are usually identical; when they diverge it is because a Direct Play
  * failover silently moved the transfer to another node while session
  * bookkeeping stayed put, and the origin serving the picture is the one worth
- * showing. That divergence still reads on the panel — the URL simply changes —
- * without spending a line on labels to announce a distinction that holds for
- * seconds at a time.
+ * reporting.
  *
  * Credentials never appear: `safeOrigin` reduces to scheme, host and port, so
  * a capability query string or embedded userinfo cannot reach the screen.
@@ -191,9 +143,9 @@ function endpointDescription(session: PlaybackSession, activeStreamOrigin?: stri
 /**
  * Describe what the server says it is doing to each selected stream.
  *
- * Source and output metadata are both server-authoritative. The mode is the
- * resolved session mode; per-stream transform fields describe mixed cases such
- * as copied video with transcoded audio.
+ * Source and output metadata are both server-authoritative. The per-stream
+ * transform fields describe mixed cases such as copied video with transcoded
+ * audio; `delivery` describes the case where nothing was transcoded.
  */
 export function describePlaybackSession(session?: PlaybackSession, activeStreamOrigin?: string): PlaybackStatusDescription | undefined {
   if (!session) return undefined;
@@ -210,47 +162,33 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
 
   // When every selected stream is copied, no per-stream operation happened
   // that is worth naming per stream: the session as a whole is either the file
-  // handed over untouched (DIRECT) or the same streams rewrapped in a new
-  // container (REMUX). Saying "AUDIO COPY" for a direct hand-off describes an
-  // operation the server never performed — it did not copy a stream anywhere,
-  // it sent the file. The distinction is not pedantry: "copy" is what makes
-  // remux and a copied-video transcode legible, and spending the word on
-  // direct play too is what stopped it meaning anything.
-  //
-  // Per-stream labels therefore belong to the mixed cases, which is exactly
-  // where the streams differ from one another and the reader needs telling
-  // which is which.
-  const streamCopiedOrAbsent = (transform: PlaybackTransform) => transform === 'copy' || transform === 'omit';
-  const wholeSessionLabel = streamCopiedOrAbsent(session.transform.video)
-    && streamCopiedOrAbsent(session.transform.audio)
-    ? copyModeLabel(session)
-    : undefined;
+  // handed over untouched or the same streams rewrapped in a new container.
+  // Calling a direct hand-off a stream copy describes an operation the server
+  // never performed — it did not copy a stream anywhere, it sent the file.
+  const copiedOrAbsent = (transform: PlaybackTransform) => transform === 'copy' || transform === 'omit';
+  if (copiedOrAbsent(session.transform.video) && copiedOrAbsent(session.transform.audio)) {
+    result.delivery = copyDelivery(session);
+  }
 
   if (video && session.transform.video !== 'omit') {
-    const source = sourceVideoParts(session, video);
-    const output = outputVideoParts(session);
-    if (session.transform.video === 'transcode') {
-      const sourceDescription = ['VIDEO TRANSCODE', 'SOURCE', ...source].join(' · ');
-      result.video = output.length ? `${sourceDescription} → ${output.join(' · ')}` : sourceDescription;
-    } else {
-      result.video = [wholeSessionLabel ?? 'VIDEO COPY', ...source].join(' · ');
-    }
+    result.video = {
+      transform: session.transform.video,
+      source: video,
+      sourceBitrate: session.sourceInfo.bitrate || undefined,
+      output: session.transform.video === 'transcode' ? session.output.video : undefined,
+      outputBitrate: session.output.bitrate,
+    };
   }
 
   if (audio && session.transform.audio !== 'omit') {
-    const source = audioParts(audio);
-    const output = outputAudioParts(session);
-    if (session.transform.audio === 'transcode') {
-      const sourceDescription = ['AUDIO TRANSCODE', 'SOURCE', ...source].join(' · ');
-      result.audio = output.length ? `${sourceDescription} → ${output.join(' · ')}` : sourceDescription;
-    } else {
-      result.audio = [wholeSessionLabel ?? 'AUDIO COPY', ...source].join(' · ');
-    }
+    result.audio = {
+      transform: session.transform.audio,
+      source: audio,
+      output: session.transform.audio === 'transcode' ? session.output.audio : undefined,
+    };
   }
 
-  if (subtitle) {
-    result.subtitle = ['SUBTITLES', ...subtitleParts(subtitle)].join(' · ');
-  }
+  if (subtitle) result.subtitle = subtitle;
 
   return result;
 }

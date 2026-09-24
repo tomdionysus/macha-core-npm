@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MachaPlaybackError } from '../playback/MachaPlaybackResolver.js';
-import { endpointFailure, failureBlamesEndpoint, playbackFailureDetail, isAccountSessionLimit, isPerTitleFailure, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, playbackFailureDetail, isAccountSessionLimit, isPerTitleFailure, MachaClusterRouteError, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
   it('does not treat one title’s pipeline failure as node health evidence', () => {
@@ -252,5 +252,15 @@ describe('the sentence a viewer can be shown', () => {
     const outer = new Error('outer') as Error & { cause?: unknown };
     outer.cause = outer;
     expect(playbackFailureDetail(outer)).toBeUndefined();
+  });
+});
+
+describe('unreachableEndpointFailure on the error a routed call throws', () => {
+  it('reads an exhausted walk by its own unreachable field', () => {
+    // An exhausted walk throws MachaClusterRouteError, never a connection
+    // error, so a host asking this of a routed failure was always told no
+    // (the phone client, 2026-09-24: both offline fallbacks dead in the app).
+    expect(unreachableEndpointFailure(new MachaClusterRouteError(['a', 'b'], true))).toBe(true);
+    expect(unreachableEndpointFailure(new MachaClusterRouteError(['a', 'b'], false))).toBe(false);
   });
 });

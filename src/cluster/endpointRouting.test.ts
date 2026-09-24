@@ -82,7 +82,7 @@ describe('ClusterEndpointRouter', () => {
   it('reports every exhausted endpoint instead of implying only the final node was tried', async () => {
     const router = new ClusterEndpointRouter(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
     await expect(router.request(async () => { throw new TypeError('unavailable'); }))
-      .rejects.toThrow('All configured API endpoints are unreachable.');
+      .rejects.toMatchObject({ unreachable: true });
   });
 
   it('does not describe reachable nodes returning API errors as unreachable', async () => {

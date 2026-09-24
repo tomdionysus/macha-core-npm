@@ -48,6 +48,10 @@ export class FakePlayer implements Player {
   stopCalls = 0;
   pauseCalls = 0;
   resumeCalls = 0;
+  /** Set by a test to stand in for a host that can hold through a lead. */
+  holdsThroughLead?: boolean;
+  /** Set by a test to stand in for a player that cannot ride a hold. */
+  needsProducedSource?: boolean;
   playCalls: FakePlayerPlayCall[] = [];
   prepareCalls: MediaTechnicalProfile[] = [];
   seekCalls: number[] = [];

@@ -168,10 +168,23 @@ export function persistConfirmedEndpoints(
   registry: EndpointRegistry,
   configuration: MachaClientConfiguration,
 ): void {
-  const confirmed = registry.snapshot()
-    .filter(({ endpoint, health }) => endpoint.source === 'discovered' && health.lastSuccessAt !== undefined)
-    .map(({ endpoint }) => endpoint.baseUrl);
+  const snapshot = registry.snapshot();
   const current = configuration.discoveredEndpoints();
+  const remembered = new Set(current);
+  // Before anything at all has answered this run, a failure is not evidence
+  // against a remembered node: the likelier fault is the network, a set whose
+  // Wi-Fi is still coming up. Rewriting then would forget every remembered
+  // node exactly when the configured one is down and they are the fallback.
+  const anyAnswered = snapshot.some(({ health }) => health.lastSuccessAt !== undefined);
+  const confirmed = snapshot
+    .filter(({ endpoint, health }) => endpoint.source === 'discovered' && (
+      health.lastSuccessAt !== undefined
+      // Remembered and still in the registry: kept until it actually fails
+      // while something else answers. A node the cluster no longer lists has
+      // left the registry, and so leaves this list.
+      || (remembered.has(endpoint.baseUrl) && (!anyAnswered || health.lastFailureAt === undefined))
+    ))
+    .map(({ endpoint }) => endpoint.baseUrl);
   if (confirmed.length === current.length && confirmed.every((url, index) => url === current[index])) return;
   configuration.setDiscoveredEndpoints(confirmed);
 }

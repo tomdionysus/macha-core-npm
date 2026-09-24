@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ClusterStartupStatus } from './ClusterStatusApi.js';
-import { startupPhaseLabel, startupReadyCount, startupSubsystems } from './startupStatus.js';
+import { startupPhase, startupReadyCount, startupSubsystems } from './startupStatus.js';
 
 const recovering: ClusterStartupStatus = {
   phase: 'recovering',
@@ -17,9 +17,9 @@ const recovering: ClusterStartupStatus = {
   error: null,
 };
 
-describe('startup status presentation', () => {
+describe('startup status', () => {
   it('keeps connectivity/API readiness separate from backend recovery', () => {
-    expect(startupPhaseLabel(recovering)).toBe('Recovering');
+    expect(startupPhase(recovering)).toBe('recovering');
     expect(startupReadyCount(recovering)).toBe(3);
     expect(startupSubsystems(recovering)).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'api', state: 'ready' }),
@@ -29,26 +29,27 @@ describe('startup status presentation', () => {
     ]));
   });
 
-  it('labels a failed startup without losing subsystem detail', () => {
+  it('reports a failed startup without losing subsystem detail', () => {
     const failed = { ...recovering, phase: 'failed' as const, error: 'metadata recovery failed' };
-    expect(startupPhaseLabel(failed)).toBe('Startup failed');
+    expect(startupPhase(failed)).toBe('failed');
+    expect(startupSubsystems(failed).every((subsystem) => !('label' in subsystem))).toBe(true);
     expect(startupSubsystems(failed)).toHaveLength(8);
   });
 });
 
 describe('naming the phase a node is in', () => {
-  const at = (phase: string) => startupPhaseLabel({ phase } as unknown as ClusterStartupStatus);
+  const at = (phase: string) => startupPhase({ phase } as unknown as ClusterStartupStatus);
 
   it('names each phase the server states', () => {
-    expect(at('ready')).toBe('Ready');
-    expect(at('recovering')).toBe('Recovering');
-    expect(at('failed')).toBe('Startup failed');
+    expect(at('ready')).toBe('ready');
+    expect(at('recovering')).toBe('recovering');
+    expect(at('failed')).toBe('failed');
   });
 
-  it('calls a phase it has never heard of "Starting"', () => {
-    // A server adding a phase must not produce a blank label on an old
-    // client. "Starting" is the safe reading: something is in progress.
-    expect(at('reindexing')).toBe('Starting');
-    expect(at('')).toBe('Starting');
+  it('reads a phase it has never heard of as starting', () => {
+    // A server adding a phase must not leave an old client with nothing to
+    // say. Starting is the safe reading: something is in progress.
+    expect(at('reindexing')).toBe('starting');
+    expect(at('')).toBe('starting');
   });
 });

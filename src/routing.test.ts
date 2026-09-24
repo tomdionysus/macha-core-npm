@@ -20,6 +20,9 @@ describe('routes', () => {
     expect(routes.musicTracks).toBe('/music/tracks');
     expect(routes.musicPlaylist).toBe('/music/playlist');
     expect(routes.ingest).toBe('/ingest');
+    expect(routes.ingestTorrents).toBe('/ingest/torrents');
+    expect(routes.ingestTorrent('job:1')).toBe('/ingest/torrents/job%3A1');
+    expect(routes.ingestFiles).toBe('/ingest/files');
     expect(routes.status).toBe('/status');
     expect(routes.statusClient).toBe('/status/client');
     expect(routes.statusConnectivity).toBe('/status/connectivity');
@@ -27,6 +30,8 @@ describe('routes', () => {
     expect(routes.statusNode('node:one')).toBe('/status/nodes/node%3Aone');
     expect(routes.manage).toBe('/manage');
     expect(routes.manageFiles).toBe('/manage/files');
+    expect(routes.manageUnmatched).toBe('/manage/unmatched');
+    expect(routes.manageUnmatchedFile('file:1')).toBe('/manage/unmatched/file%3A1');
     expect(routes.manageUsers).toBe('/manage/users');
     expect(routes.login).toBe('/login');
     expect(routes.account).toBe('/account');

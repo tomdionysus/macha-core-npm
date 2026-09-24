@@ -61,15 +61,17 @@ export interface PlaybackHierarchyContext {
 }
 
 /**
- * Album and artist ancestry for a track.
+ * Album and artist ancestry for a track, or an album's own artist.
  *
- * Resolved once by the media API rather than by callers, because a track row
- * has to name its album and draw its cover without the caller knowing how to
- * walk the catalogue upwards. The artwork is the album's, used wherever a
- * track carries none of its own.
+ * Resolved once by the media API rather than by callers, because a row has to
+ * name its album and artist and draw its cover without the caller knowing how
+ * to walk the catalogue upwards. On an album, `album` is the album itself. The
+ * artwork is the album's, used wherever a track carries none of its own.
+ * Data only: how a client words the album, artist and year is its own.
  */
 export interface MusicHierarchyContext {
-  album: { id: string; title: string };
+  /** `year` is the album's release year, absent when the catalogue has none. */
+  album: { id: string; title: string; year?: number };
   artist?: { id: string; title: string };
   artwork?: ArtworkRef;
 }
@@ -78,7 +80,6 @@ export interface MediaSummary {
   id: string;
   kind: MediaKind;
   title: string;
-  subtitle?: string;
   year?: number;
   synopsis?: string;
   artwork?: Artwork;

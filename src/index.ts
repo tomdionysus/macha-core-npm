@@ -54,6 +54,7 @@ export * from './api/ClusterManageApi.js';
 export * from './api/ClusterServerApi.js';
 export * from './api/ClusterStatusApi.js';
 export * from './api/ClusterStatusRouter.js';
+export * from './api/episodeNeighbours.js';
 export * from './api/errorEnvelope.js';
 export * from './api/httpCompat.js';
 export * from './api/MachaAcquisitionApi.js';
@@ -83,9 +84,9 @@ export * from './cluster/endpointRouting.js';
 
 // --------------------------------------------------------------- playback
 export * from './playback/BufferedTimeline.js';
-export * from './playback/formatDuration.js';
 export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/ClusterPlaybackResolver.js';
+export * from './playback/generationStart.js';
 export * from './playback/hlsWalk.js';
 export * from './playback/MachaPlaybackResolver.js';
 export * from './playback/MediaTechnicalProfile.js';
@@ -103,6 +104,7 @@ export * from './state/continueWatchingMigration.js';
 export * from './state/musicPlaylist.js';
 export * from './state/playlist.js';
 export * from './state/playbackQueue.js';
+export * from './state/progressWrite.js';
 export * from './state/storage.js';
 
 // --------------------------------------------------------------- platform
@@ -117,7 +119,10 @@ export * from './connection/connectionConfiguration.js';
 // ------------------------------------------------------- routing and sort
 export * from './routing.js';
 export * from './playbackRoute.js';
+export * from './mediaSort.js';
 export * from './recentMedia.js';
+export * from './searchCategories.js';
+export * from './searchTerms.js';
 export * from './titleIndex.js';
 
 // ------------------------------------------------------------ diagnostics

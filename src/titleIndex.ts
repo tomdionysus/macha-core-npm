@@ -1,13 +1,26 @@
 import type { MediaSummary } from './types.js';
 
+/**
+ * The keys of an alphabet-jump strip, in order. `other` holds every title
+ * that does not start with A-Z once its leading article is stripped and its
+ * accents folded. How a host shows it (a `#`, say) is its own: core writes no
+ * viewer text (Tom, 2026-09-24).
+ */
 export const ALPHABET_INDEX = [
-  '#',
+  'other',
   'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
   'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
 ] as const;
 export type AlphabetIndexKey = (typeof ALPHABET_INDEX)[number];
 
-const LEADING_ARTICLE = /^(?:the|an|a)\s+/i;
+/**
+ * The words a title is ordered without, when leading. Search drops them
+ * wherever they appear in a query, by Tom's ruling of 2026-09-24, so ordering
+ * and search cannot disagree about which words are ignored.
+ */
+export const IGNORED_TITLE_WORDS: readonly string[] = ['the', 'an', 'a'];
+
+const LEADING_ARTICLE = new RegExp(`^(?:${IGNORED_TITLE_WORDS.join('|')})\\s+`, 'i');
 const COMBINING_MARKS = /\p{M}/gu;
 const TITLE_COLLATOR = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
 const ALPHABET_ORDER = new Map<AlphabetIndexKey, number>(ALPHABET_INDEX.map((key, index) => [key, index]));
@@ -28,7 +41,7 @@ function foldedInitial(title: string): string {
 
 export function alphabetIndexKey(title: string): AlphabetIndexKey {
   const initial = foldedInitial(title);
-  return /^[A-Z]$/.test(initial) ? initial as AlphabetIndexKey : '#';
+  return /^[A-Z]$/.test(initial) ? initial as AlphabetIndexKey : 'other';
 }
 
 export function compareIndexedTitles(a: string, b: string): number {
