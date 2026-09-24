@@ -46,6 +46,9 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
+### Release candidate, 2026-09-24 — FROZEN, waiting on Tom's word and version
+`develop` at `d7aa96d`, `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. `f235a99` after it is README only. All three clients were told of the freeze and the candidate. Proposed version: **`0.19.0`**, because it is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced). Procedure: `npm version 0.19.0 --no-git-tag-version`, commit, merge to `main`, annotated bare-semver tag, push, `npm publish`, `git checkout develop`, build last. Then tell every client, which will each verify `main` against the registry copy.
+
 ### Core writes no viewer text — Tom, 2026-09-24
 **Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
 - An error's `message` is log text.
@@ -61,7 +64,8 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 - `5973dc5`: resolver-level recovery is documented.
 
 - `e840d72`: a copied stream the player cannot decode falls back to a transcode on the same node, once, never over a mode the viewer chose (Tom's ruling). The viewer's mid-playback mode choice is now recorded, and the copy-refused fallback respects it too. It needs the Android TV client to report decoder errors as `media`; they arrive as `unknown` today.
-- **Seen while testing it, not investigated:** a `choose` issued while another mode change is still in flight did not reach the resolver; it applied once the first had settled. It may be how `queueMutation` merges a chooser decision into a pending change. Look before trusting a quick viewer toggle.
+- **Decode fallback verified on the Android TV set 2026-09-24:** Classroom 216 (AVI, MPEG-4 Part 2) in Auto; the instruction listed `player-could-not-decode`, and it transcoded from 10.35.1.50 and resumed where it stopped.
+- `d7aa96d`: a change queued while the previous one was finishing was never applied. The loop was marked stopped a microtask after its last check. This is what lost the `choose` seen while testing the fallback, and it predated today.
 - `47812f7`: a fresh mint on a registry with no evidence first probes the health route, hedged, and mints on the first node to answer, so a dead node costs a 1 s hedge where it cost the 8 s timeout. The mint tests now answer by URL.
 
 **Which servers core may use — Tom, 2026-09-24:** only those that come from clients (configured) or from the servers themselves (advertised membership, including the saved remembered list). **Current behaviour is correct; do not change it.**
