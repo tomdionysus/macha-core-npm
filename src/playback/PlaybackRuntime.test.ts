@@ -3,6 +3,7 @@ import type { Platform, Player } from '../platform/Platform.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackSource } from '../types.js';
 import type { PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackStopOptions, PlaybackUpdate } from './PlaybackResolver.js';
 import { PlaybackRuntime } from './PlaybackRuntime.js';
+import { NOT_PLAYABLE_CODE } from './PlaybackRuntime.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 
 function deferred<T>() {
@@ -410,7 +411,7 @@ describe('PlaybackRuntime ownership state machine', () => {
     await runtime.play({ media: album, startPositionMs: 0, returnTo: '/music/albums/A' });
 
     expect(runtime.getSnapshot().phase).toBe('failed');
-    expect(runtime.getSnapshot().fatalError?.message).toContain('not directly playable');
+    expect(runtime.getSnapshot().fatalError).toMatchObject({ code: NOT_PLAYABLE_CODE });
     expect(api.resolve).not.toHaveBeenCalled();
     expect(api.stop).not.toHaveBeenCalled();
   });

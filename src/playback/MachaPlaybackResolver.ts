@@ -842,7 +842,23 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       parsed.code,
       retryAfterMs(response.headers.get('retry-after')),
       parsed.reason,
-      parsed.message,
+      serverSentence(body),
     );
   }
+}
+
+/**
+ * The server's own sentence, and nothing core made up in its place. The
+ * parsed envelope falls back to the status line or a dump of the body so a
+ * log always has something; `detail` is for a viewer, and core writes no
+ * viewer text, so it is only ever what the server said.
+ */
+function serverSentence(body: unknown): string | undefined {
+  if (typeof body === 'string') return body.trim() || undefined;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const record = body as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : undefined);
+  // `{ error: "..." }` with no message is the legacy human-message shape;
+  // with a message beside it, `error` is the machine code.
+  return text(record.message) ?? text(record.detail) ?? (text(record.message) ? undefined : text(record.error));
 }

@@ -151,7 +151,8 @@ function withServedSegmentContainer(
  * from the id instead, because closing or asking about a session is safe
  * whatever its state — mutating one is not.
  *
- * `detail` is what a host should show; `code` is what it should branch on.
+ * `code` is what a host branches on and words for itself; core writes no
+ * viewer text.
  */
 export const SESSION_PROVENANCE_UNKNOWN_CODE = 'session_provenance_unknown';
 
@@ -169,9 +170,6 @@ function unknownGeneration(sessionId: string): MachaPlaybackError {
     `Playback generation ${sessionId} has no endpoint provenance.`,
     undefined,
     SESSION_PROVENANCE_UNKNOWN_CODE,
-    undefined,
-    undefined,
-    'This stream is no longer available. Start it again.',
   );
 }
 
@@ -339,9 +337,6 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         `Playback generation ${failedSession.sessionId} has no endpoint to regenerate on: ${endpointId} is no longer configured.`,
         undefined,
         REGENERATION_ENDPOINT_GONE_CODE,
-        undefined,
-        undefined,
-        'This stream is no longer available. Start it again.',
       );
     }
     // `warn`, like every other step of this recovery. At `info` these two

@@ -1,3 +1,4 @@
+import { MachaPlaybackError } from './MachaPlaybackResolver.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
@@ -84,9 +85,15 @@ export interface PlaybackRuntimeSnapshot {
 type LifecycleListener = (snapshot: PlaybackRuntimeSnapshot) => void;
 type PlaybackListener = (snapshot: PlaybackCoordinatorSnapshot | undefined) => void;
 
+/**
+ * `fatalError.code` when a host asks to play a catalogue item that is not a
+ * movie, episode or track. The host words it; the message is log text.
+ */
+export const NOT_PLAYABLE_CODE = 'not_playable';
+
 function requestError(media: MediaSummary): Error | undefined {
   if (media.kind !== 'movie' && media.kind !== 'episode' && media.kind !== 'track') {
-    return new Error('This catalogue item is not directly playable.');
+    return new MachaPlaybackError(`Catalogue ${media.kind} ${media.id} is not directly playable.`, undefined, NOT_PLAYABLE_CODE);
   }
   return undefined;
 }

@@ -21,6 +21,30 @@ export interface PlaybackIntent {
   paused: boolean;
 }
 
+/**
+ * Why the coordinator is telling the host something, for the host to word:
+ * - `copy-refused`: the node could not copy the source streams, so it is
+ *   converting them (the instruction's reasons carry `executor-refused-copy`);
+ * - `cannot-seek`: a seek was refused because this stream cannot seek;
+ * - `not-ready`: an update or a move was asked for before a session existed;
+ * - `instruction-failed`: re-choosing how to play failed; `error` says why;
+ * - `subtitles-loading`: a subtitle change is being applied;
+ * - `update-failed`: a change to the running generation failed; `error` says why.
+ */
+export type PlaybackNoticeCode =
+  | 'copy-refused'
+  | 'cannot-seek'
+  | 'not-ready'
+  | 'instruction-failed'
+  | 'subtitles-loading'
+  | 'update-failed';
+
+export interface PlaybackNotice {
+  code: PlaybackNoticeCode;
+  /** The failure behind it, for the two codes that have one. Its message is log text, not viewer text. */
+  error?: Error;
+}
+
 export interface PlaybackCoordinatorSnapshot {
   intent: PlaybackIntent;
   event: PlaybackEvent;
@@ -47,7 +71,11 @@ export interface PlaybackCoordinatorSnapshot {
    * classify without parsing prose.
    */
   fatalError?: Error;
-  notice?: string;
+  /**
+   * Something the viewer may want told, as a code. Core writes no viewer
+   * text (Tom, 2026-09-24); the host words each code, or shows nothing.
+   */
+  notice?: PlaybackNotice;
   /**
    * How this generation's instruction was arrived at, so a host can show it.
    *
@@ -1175,7 +1203,7 @@ export class PlaybackCoordinator {
         chosenByViewer: false,
         withoutFacts: this.snapshot.instruction?.withoutFacts ?? false,
       },
-      notice: 'This node could not copy the original streams, so they are being converted.',
+      notice: { code: 'copy-refused' },
     });
   }
 
@@ -1378,7 +1406,7 @@ export class PlaybackCoordinator {
     // would never reach: real positions were ignored, `seekBy` built on the
     // phantom, and a failover asked the next node to start there.
     if (session && !session.options.canSeek) {
-      this.patchSnapshot({ notice: 'This stream cannot seek.' });
+      this.patchSnapshot({ notice: { code: 'cannot-seek' } });
       return false;
     }
     // A pending replacement is built *now* rather than discarded, and both
@@ -1504,7 +1532,7 @@ export class PlaybackCoordinator {
     if (this.disposed) return;
     const session = this.snapshot.session;
     if (!session) {
-      this.patchSnapshot({ notice: 'Playback options are still loading.' });
+      this.patchSnapshot({ notice: { code: 'not-ready' } });
       return;
     }
 
@@ -1578,7 +1606,7 @@ export class PlaybackCoordinator {
     if (this.disposed) return false;
     const session = this.snapshot.session;
     if (!session) {
-      this.patchSnapshot({ notice: 'Playback is still loading.' });
+      this.patchSnapshot({ notice: { code: 'not-ready' } });
       return false;
     }
     if (session.endpoint?.id === endpointId) return false;
@@ -1719,7 +1747,7 @@ export class PlaybackCoordinator {
       this.update({ ...update, preferences });
     } catch (error) {
       this.log.warn('instruction-rechoose-failed', { mediaId: this.options.media.id, error });
-      this.patchSnapshot({ notice: 'Could not work out how to play this here.' });
+      this.patchSnapshot({ notice: { code: 'instruction-failed', error: asError(error) } });
     }
   }
 
@@ -1736,7 +1764,7 @@ export class PlaybackCoordinator {
     this.patchSnapshot({
       preparingSource: true,
       pendingPreferences: mergePreferences(this.snapshot.pendingPreferences, next.update.preferences),
-      notice: next.reason === 'subtitle' ? 'Loading subtitles…' : undefined,
+      notice: next.reason === 'subtitle' ? { code: 'subtitles-loading' } : undefined,
     });
     this.mutationRevision += 1;
     if (!this.mutationLoop) {
@@ -1899,7 +1927,7 @@ export class PlaybackCoordinator {
           update,
           error,
         });
-        this.patchSnapshot({ notice: error instanceof Error ? error.message : String(error) });
+        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error) } });
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;

@@ -307,13 +307,16 @@ export function playbackFailureCode(error: unknown): string | undefined {
  * Is this the account's own session cap refusing, rather than anything about
  * the node or the title?
  *
- * Named because it is the one failure a host can give a viewer a genuinely
- * useful sentence for — *"another screen on this account is playing"* — and
- * because the alternative is four clients each matching on a code string that
- * is core's to track, not theirs.
+ * Named because it is the one failure a host can tell a viewer something
+ * genuinely useful about, in its own words, and because the alternative is
+ * four clients each matching on a code string that is core's to track, not
+ * theirs.
  */
 /**
- * The sentence a viewer can be shown, wherever it ended up in the chain.
+ * The server's own sentence about this failure, wherever it ended up in the
+ * chain. Only ever the server's: core writes no viewer text (Tom,
+ * 2026-09-24), so a host words every failure from `playbackFailureCode` and
+ * `playbackFailureStatus`, and may show this where the server said something.
  *
  * **The third accessor, and it exists for the same reason as the other two.**
  * `playbackFailureCode` and `playbackFailureStatus` were added because hosts
@@ -334,8 +337,8 @@ export function playbackFailureCode(error: unknown): string | undefined {
  * Returns the **innermost** stated detail, which is the opposite of
  * `playbackFailureCode`: the outermost layer is the one that classified the
  * failure, but the innermost is the one that knows what happened. `undefined`
- * means no layer stated a viewer-facing sentence, and a host should then say
- * something of its own rather than fall back to `.message`.
+ * means the server said nothing, and a host should then say something of its
+ * own rather than fall back to `.message`, which is log text.
  *
  * Cycle-safe by the same rule as its neighbours.
  */

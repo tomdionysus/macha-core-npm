@@ -80,7 +80,7 @@ describe('PlaybackCoordinator transport invariants', () => {
 
     expect(coordinator.seek(300_000)).toBe(false);
 
-    expect(coordinator.getSnapshot().notice).toBe('This stream cannot seek.');
+    expect(coordinator.getSnapshot().notice).toEqual({ code: 'cannot-seek' });
     expect(coordinator.getSnapshot().intent.positionMs).toBe(7_000);
     expect(coordinator.getSnapshot().event.positionMs).toBe(7_000);
     expect(player.seekCalls).toEqual([]);

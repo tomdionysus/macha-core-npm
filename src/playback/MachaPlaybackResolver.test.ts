@@ -124,6 +124,22 @@ describe('MachaPlaybackResolver', () => {
     expect(headers.get('Macha-Viewer-Session')).toBeNull();
   });
 
+  it("puts only the server's own sentence in detail, never text core made up", async () => {
+    // Core writes no viewer text (Tom, 2026-09-24). The status line and a body
+    // dump still reach the log through the message; detail stays empty.
+    const reject = async (body: BodyInit | null, contentType = 'application/json') => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(body, { status: 503, statusText: 'Service Unavailable', headers: { 'Content-Type': contentType } })));
+      const error: unknown = await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'direct' }).then(() => undefined, (caught: unknown) => caught);
+      return error as { detail?: string; message: string };
+    };
+    expect((await reject(JSON.stringify({ error: 'busy', message: 'The node is busy.' }))).detail).toBe('The node is busy.');
+    expect((await reject(JSON.stringify({ error: 'Legacy human text' }))).detail).toBe('Legacy human text');
+    const bare = await reject(null);
+    expect(bare.detail).toBeUndefined();
+    expect(bare.message).toContain('503');
+    expect((await reject(JSON.stringify({ unexpected: { shape: true } }))).detail).toBeUndefined();
+  });
+
   it('treats a non-conforming session profile_pending response as an endpoint failure without polling', async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(new Response(
       JSON.stringify({ error: 'profile_pending', message: 'media profile is not available yet' }),
