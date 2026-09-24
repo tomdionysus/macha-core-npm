@@ -1820,14 +1820,26 @@ export class PlaybackCoordinator {
       notice: next.reason === 'subtitle' ? { code: 'subtitles-loading' } : undefined,
     });
     this.mutationRevision += 1;
-    if (!this.mutationLoop) {
-      this.mutationLoop = this.drainMutations().finally(() => {
-        this.mutationLoop = undefined;
-        if (!this.disposed && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
-          this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
-        }
-      });
-    }
+    this.startMutationLoop();
+  }
+
+  private startMutationLoop(): void {
+    if (this.mutationLoop) return;
+    this.mutationLoop = this.drainMutations().finally(() => {
+      this.mutationLoop = undefined;
+      // The loop returns when it finds nothing pending, and is only marked
+      // stopped here, a microtask later. A change queued in between saw a loop
+      // still "running", started none, and was never applied, while the line
+      // below then cleared the flag that said it was coming. Seen as a
+      // "decide for me" lost behind a fallback's update, 2026-09-24.
+      if (!this.disposed && this.pendingMutation) {
+        this.startMutationLoop();
+        return;
+      }
+      if (!this.disposed && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
+        this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
+      }
+    });
   }
 
   private scheduleSeekMutation(next: PendingMutation): void {

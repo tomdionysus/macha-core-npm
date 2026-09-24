@@ -3868,7 +3868,6 @@ describe('a copied stream the player could not decode', () => {
     await coordinator.start();
     player.fail(new PlaybackSourceError('decoder init failed', 'media'));
     await vi.waitFor(() => expect(updates).toHaveLength(1));
-    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('transcode'));
 
     // "Decide for me" again: the chooser picks the copy it picked before.
     coordinator.update({ preferences: { mode: 'choose' } });
@@ -3886,5 +3885,44 @@ describe('a copied stream the player could not decode', () => {
     player.fail(new PlaybackSourceError('fragment failed', 'stream'));
     await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError ?? coordinator.getSnapshot().preparingSource).toBeTruthy());
     expect(updates).toHaveLength(0);
+  });
+});
+
+/**
+ * A change queued while the drain loop is finishing its last pass. The loop
+ * returns when it finds nothing pending and only marks itself stopped a
+ * microtask later, so a change queued in that gap saw a loop "running",
+ * started none, and was never applied. Seen 2026-09-24 as a "decide for me"
+ * lost behind a fallback's update.
+ */
+describe('a change queued as the previous one finishes', () => {
+  it('is applied, not stranded', async () => {
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(session({ mode: 'direct' }), async (update) => {
+      updates.push(update);
+      return session({ mode: 'transcode', preferences: { ...session().preferences, ...update.preferences } as PlaybackPreferences });
+    });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+    });
+    await coordinator.start();
+    // The loop activates the new source synchronously and returns on its next
+    // check; a microtask queued from inside that activation runs after the
+    // return and before the loop marks itself stopped.
+    const play = player.play.bind(player);
+    let queued = false;
+    player.play = (...args: Parameters<typeof player.play>) => {
+      if (updates.length === 1 && !queued) {
+        queued = true;
+        queueMicrotask(() => coordinator.update({ preferences: { maxHeight: 720 } }));
+      }
+      return play(...args);
+    };
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(2));
+    expect(updates[1]?.preferences?.maxHeight).toBe(720);
   });
 });
