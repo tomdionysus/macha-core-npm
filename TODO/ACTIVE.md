@@ -54,6 +54,12 @@ All three clients verified the candidate through the link before release (web 54
 - the phone waits on the A85 returning to ADB;
 - the web client's own release question, node moves waiting on its handover P0, is with Tom.
 
+### Choosing among an item's files is the client's — Tom, 2026-09-24
+Built in `284e52e`, after `0.19.0`. The facts supplier returns every file, the coordinator picks the best by the server's old ranking, and the choice is sent as `media_id` and restated on every replacement.
+- **Open:** a multi-file item with no facts, or with a viewer-chosen mode, names no file.
+- The server proposes refusing a create without `media_id` on such an item (`media_choice_required`), which is not approved. Before it ships, Tom rules what core sends in those two cases. The obvious candidate is to still run the chooser over the files for the viewer's mode.
+- The web client moves `App.tsx`'s facts supplier to the whole list.
+
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
 - **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
