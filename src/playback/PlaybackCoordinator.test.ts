@@ -3982,6 +3982,31 @@ describe('an item with several files', () => {
     expect(coordinator.getSnapshot().instruction?.mediaId).toBe('h264-file');
   });
 
+  it('still picks the file when the viewer chose the mode: under direct, one it plays directly', async () => {
+    // Tom, 2026-09-25: on direct play, something still has to pick which file.
+    const api = resolver(session({ mode: 'direct' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['hevc-file', 'h264-file'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+      facts: async () => [file('hevc-file', 'hevc'), file('h264-file', 'h264')] as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'h264-file' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'h264-file' });
+  });
+
+  it('asks for no facts when the viewer chose the mode on a single-file item', async () => {
+    const facts = vi.fn(async () => undefined);
+    const api = resolver(session({ mode: 'direct' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['only'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' }, facts,
+    });
+    await coordinator.start();
+    expect(facts).not.toHaveBeenCalled();
+    expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('only');
+  });
+
   it('takes the first of equals, as stored order had it', async () => {
     const { api, coordinator } = start([file('a', 'h264'), file('b', 'h264')], ['a', 'b']);
     await coordinator.start();

@@ -1083,12 +1083,20 @@ export class PlaybackCoordinator {
     capabilities: PlaybackCapabilities,
   ): Promise<PlaybackPreferencesUpdate> {
     if (preferences.mode !== undefined && preferences.mode !== 'choose') {
+      // The viewer chose how to play; which file is still core's to choose
+      // (Tom, 2026-09-25: "on direct play, something still has to pick which
+      // media to direct play"). The ranking's best file is the one that plays
+      // with least conversion, so under the viewer's direct it is a file this
+      // device plays directly, where the item has one. Facts are fetched only
+      // for an item with several files; one file names itself.
+      const mediaId = preferences.mediaId ?? await this.fileForViewerMode(capabilities);
       this.patchSnapshot({ instruction: {
         mode: preferences.mode, video: preferences.video, audio: preferences.audio,
         container: preferences.container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+        ...(mediaId ? { mediaId } : {}),
       } });
-      return preferences;
+      return mediaId ? { ...preferences, mediaId } : preferences;
     }
 
     const facts = await this.facts();
@@ -1188,6 +1196,15 @@ export class PlaybackCoordinator {
         { ...preferences, ...instructionPreferences(degraded) },
       );
     }
+  }
+
+  /** The file to play under a mode the viewer chose; see `instructedPreferences`. */
+  private async fileForViewerMode(capabilities: PlaybackCapabilities): Promise<string | undefined> {
+    const mediaIds = this.options.media.mediaIds;
+    if (mediaIds.length <= 1) return mediaIds[0];
+    const facts = await this.facts();
+    if (!facts) return undefined;
+    return chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds)?.mediaId;
   }
 
   /**
