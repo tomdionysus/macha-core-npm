@@ -20,6 +20,30 @@ export interface TorrentStatus {
   search_enabled: boolean;
 }
 
+/**
+ * Why an ingest job is blocked or failed, from server 0.56.0. Codes are what a
+ * client acts on and words; `error` is the server's English for people.
+ * Blocked: the source is in a state the job is waiting on. Failed: the job
+ * stopped. `import_failed` is also what jobs recorded before 0.56.0 carry. A
+ * newer server may send a code not listed here, so a client needs a fallback.
+ */
+export type IngestJobErrorCode =
+  | 'source_unavailable' | 'source_not_regular' | 'source_scan_interrupted' | 'source_changed_during_scan'
+  | 'source_disappeared' | 'source_changed' | 'source_unreadable' | 'source_seek_failed' | 'source_short_read'
+  | 'source_is_symlink' | 'no_supported_media' | 'destination_parent_not_directory' | 'partial_not_file'
+  | 'destination_conflict' | 'namespace_short_write' | 'size_mismatch' | 'metadata_unavailable'
+  | 'filesystem_error' | 'import_failed';
+
+/**
+ * Why a torrent job failed or is blocked, from server 0.56.0. A torrent whose
+ * ingest failed carries the ingest's own code, else `ingest_failed`; while
+ * importing it mirrors its ingest's code. `staging_full` is blocked.
+ * `torrent_failed` is what jobs recorded before 0.56.0 carry.
+ */
+export type TorrentJobErrorCode =
+  | 'restore_failed' | 'ingest_missing' | 'ingest_cancelled' | 'torrent_error' | 'staging_full'
+  | 'ingest_submit_failed' | 'ingest_failed' | 'torrent_failed' | IngestJobErrorCode;
+
 export interface IngestJob {
   id: string;
   source_type: string;
@@ -39,7 +63,10 @@ export interface IngestJob {
   current_destination: string | null;
   created_unix_ms: number;
   updated_unix_ms: number;
+  /** The server's English, for people. Act on `error_code`. */
   error: string | null;
+  /** Null when none. Absent on a node older than 0.56.0. */
+  error_code?: IngestJobErrorCode | (string & {}) | null;
 }
 
 // Post-import cataloguing of what the torrent delivered, reported per job by
@@ -78,7 +105,10 @@ export interface TorrentJob {
   node_id?: string;
   created_unix_ms: number;
   updated_unix_ms: number;
+  /** The server's English, for people. Act on `error_code`. */
   error: string | null;
+  /** Null when none. Absent on a node older than 0.56.0. */
+  error_code?: TorrentJobErrorCode | (string & {}) | null;
 }
 
 export interface AcquisitionSnapshot {

@@ -31,6 +31,27 @@ describe('MachaAcquisitionApi', () => {
     expect(options.headers).toMatchObject({ Authorization: 'Bearer secret', Accept: 'application/json' });
   });
 
+  it("carries a failed placement's reason and code, from server 0.56.0", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      status: 'placement_failed',
+      error: { code: 'placement_failed', message: 'node did not accept the torrent', reason: 'node_refused' },
+    }, 409)));
+    await expect(new MachaAcquisitionApi('http://macha:8080').submitMagnet('magnet:?xt=urn:btih:abc'))
+      .rejects.toMatchObject({ status: 409, code: 'placement_failed', reason: 'node_refused', detail: 'node did not accept the torrent' });
+  });
+
+  it("reads 0.56.0 job envelopes with the new status key and each job's error_code", async () => {
+    const job = { id: 'j1', error: 'no media found', error_code: 'no_supported_media' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok', enabled: true, staging: { path: '/stage', limit_bytes: 100, disk_bytes: 10, reserved_bytes: 5, accounted_bytes: 15 } }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok', enabled: true, build_available: true, search_enabled: false }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok', jobs: [job] }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok', jobs: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const snapshot = await new MachaAcquisitionApi('http://macha:8080').snapshot();
+    expect(snapshot.ingestJobs[0]?.error_code).toBe('no_supported_media');
+  });
+
   it('says which array a job envelope is missing rather than failing at .map', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ enabled: true, staging: { path: '/stage', limit_bytes: 100, disk_bytes: 10, reserved_bytes: 5, accounted_bytes: 15 } }))

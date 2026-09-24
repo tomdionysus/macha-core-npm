@@ -1,11 +1,20 @@
 import type { CatalogueKind } from './CatalogueApi.js';
 
+/**
+ * What cataloguing a file came to, as a code from server 0.56.0. A node older
+ * than that sends an English sentence here instead, and a newer one may send
+ * a code not listed, so a client needs a fallback either way.
+ */
+export type CatalogueHintResult =
+  | 'matched' | 'outside_catalogue_roots' | 'not_media_file' | 'no_media_candidate' | 'no_provider_match'
+  | 'already_stored' | 'profile_prepared' | 'media_not_live' | 'manual_existing_item' | 'manual_metadata';
+
 export interface UnmatchedFile {
   id: string;
   path: string;
   provider: string | null;
   media_id: string | null;
-  result: string;
+  result: CatalogueHintResult | (string & {});
   attempts: number;
   updated_unix_ms: number;
   size: number;

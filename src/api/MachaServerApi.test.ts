@@ -58,8 +58,26 @@ describe('MachaServerApi', () => {
     await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({
       playbackAvailable: false,
       httpStatus: 503,
-      message: 'playback is disabled',
+      code: 'playback_unavailable',
+      detail: 'playback is disabled',
     }));
+  });
+
+  it("reads 0.56.0's status code on success, and writes no text of core's own", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'ok', enabled: true }), { status: 200 })));
+    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ code: 'ok', detail: null }));
+
+    // A bare 503 with no body words: core used to put "503 Service Unavailable"
+    // here for a host to show. It now says nothing and a host words the status.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 503, statusText: 'Service Unavailable' })));
+    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ httpStatus: 503, code: null, detail: null }));
+  });
+
+  it('reads the 0.56.0 error envelope: top-level status, error.code and error.message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      status: 'playback_unavailable', error: { code: 'playback_unavailable', message: 'playback is disabled' },
+    }), { status: 503 })));
+    await expect(new MachaServerApi('').status()).resolves.toEqual(expect.objectContaining({ code: 'playback_unavailable', detail: 'playback is disabled' }));
   });
 
   it('leaves the version unknown when the server does not report one', async () => {

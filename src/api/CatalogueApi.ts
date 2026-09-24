@@ -48,6 +48,8 @@ export interface CatalogueStatus {
   local_artwork_objects: number;
   last_sync_unix_ms: number;
   error: string | null;
+  /** `converging` or `unavailable` when not ready, else null. Absent before 0.56.0. */
+  error_code?: 'converging' | 'unavailable' | (string & {}) | null;
 }
 
 export interface CatalogueMediaStreamProfile {

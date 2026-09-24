@@ -23,6 +23,13 @@ export class MachaAcquisitionApiError extends Error {
     public readonly code?: string,
     /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
     public readonly detail?: string,
+    /**
+     * Which way the request failed, where the server says, from 0.56.0. On
+     * `placement_failed` (409): `node_not_member`, `node_refused`,
+     * `node_unreachable`, `node_did_not_start`, `missing_uri`, `add_failed`,
+     * or the target node's own code.
+     */
+    public readonly reason?: string,
   ) {
     super(message);
     this.name = 'MachaAcquisitionApiError';
@@ -130,6 +137,6 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     const { body, wasJson } = await readResponseBody(response);
     if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
     const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-    throw new MachaAcquisitionApiError(`Macha acquisition request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
+    throw new MachaAcquisitionApiError(`Macha acquisition request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail, parsed.reason);
   }
 }

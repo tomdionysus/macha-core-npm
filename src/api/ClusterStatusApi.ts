@@ -14,6 +14,8 @@ export type StartupSubsystemState = 'starting' | 'recovering' | 'ready' | 'faile
 
 export interface ClusterStartupStatus {
   phase: StartupPhase;
+  /** `recovery_failed` when startup failed, else null. Absent before 0.56.0. */
+  error_code?: 'recovery_failed' | (string & {}) | null;
   control_plane: StartupSubsystemState;
   api: StartupSubsystemState;
   data_storage: StartupSubsystemState;
@@ -208,13 +210,22 @@ export interface UpnpConnectivityStatus {
   lease_seconds: number;
   igd_status: number;
   error: string | null;
+  /** Null when none. Absent before 0.56.0. */
+  error_code?: UpnpErrorCode | (string & {}) | null;
 }
+
+/** Why UPnP port mapping is not working, from server 0.56.0. */
+export type UpnpErrorCode =
+  | 'igd_not_connected' | 'port_mapped_elsewhere' | 'mapping_verification_failed'
+  | 'add_mapping_failed' | 'discovery_failed' | 'support_not_built';
 
 export interface ExternalIpConnectivityStatus {
   enabled: boolean;
   attempted: boolean;
   address: string | null;
   error: string | null;
+  /** `lookup_failed`, else null. Absent before 0.56.0. */
+  error_code?: 'lookup_failed' | (string & {}) | null;
 }
 
 export interface PublicConnectivityCheckStatus {
@@ -262,6 +273,8 @@ export interface ConnectivityResult {
   node_id: string;
   reachable: boolean;
   error?: string;
+  /** `rpc_failed` beside an error, from 0.56.0. */
+  error_code?: 'rpc_failed' | (string & {});
 }
 
 export interface ConnectivityCheck {

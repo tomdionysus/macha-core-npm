@@ -153,6 +153,27 @@ describe('MachaCatalogueApi', () => {
     await expect(api.mediaProfile('macha:pending-204')).resolves.toBeUndefined();
   });
 
+  it("reads the node's own 202 while it prepares the profile as not ready yet", async () => {
+    // The shape the server actually sends (catalogue_api.cpp, since 0.22):
+    // `202 { status: "pending", media_id }`. Core read it as an invalid
+    // profile, a 502, until 0.56.0's review found it.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(
+      { status: 'pending', media_id: 'macha:abc' }, { status: 202, headers: { 'Retry-After': '1' } },
+    )));
+    await expect(new MachaCatalogueApi('http://node.test').mediaProfile('macha:abc')).resolves.toBeUndefined();
+  });
+
+  it("parses a 0.56.0 profile carrying the new top-level status: 'ok'", async () => {
+    const profile = { status: 'ok', schema_version: 2, media_id: 'macha:abc', format: 'mp4', duration_ms: 1, bitrate: 1, streams: [] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(profile)));
+    await expect(new MachaCatalogueApi('http://node.test').mediaProfile('macha:abc')).resolves.toMatchObject({ media_id: 'macha:abc' });
+  });
+
+  it("reads a 0.56.0 list, whose envelope gains status: 'ok' before items", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', items: [item] })));
+    await expect(new MachaCatalogueApi('http://node.test').list('show')).resolves.toHaveLength(1);
+  });
+
   it('rejects a profile whose immutable identity does not match the request', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
       schema_version: 1, media_id: 'macha:other', format: 'mp4', duration_ms: 1, bitrate: 1, streams: [],
