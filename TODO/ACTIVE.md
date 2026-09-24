@@ -53,7 +53,13 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - Server text passes through untouched.
 - All three clients were sent the full replacement list.
 
-Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Left pending Tom:** `formatPlaybackTime` (numbers only) and the `#` bucket in `ALPHABET_INDEX`.
+Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. `formatPlaybackTime` is gone, and the alphabet index's catch-all key is `other` where it was `#` (`f75b2bd`, Tom's word, after the server confirmed nothing it plans touches titles or indexing).
+
+**The server's coming API work, not yet versioned, after its torrent fix.** Core adopts each as it ships.
+- **The search kind filter.**
+- **"Codes are primary":** every response carries a snake_case code, success included. Errors and warnings carry a code plus an English message, never the message alone. Codes are coming beside text-only fields: ingest and torrent job errors, `placement_failed`, the cluster torrent add result, the catalogue hint error, and status diagnostics. The hint result becomes a code. The shape of success responses is not designed yet.
+- **People (directors, cast) on catalogue items.**
+The server's error envelope has no `detail` field: it is `error.code`, `error.message` and `error.reason`. Core's `detail` is core's own name for the server's message.
 
 ### What the link week taught, kept because it still governs `develop`
 
