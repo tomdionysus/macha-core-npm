@@ -149,7 +149,8 @@ export interface ArtworkSource {
    */
   latencyMs?: number;
   /**
-   * False when the node behind this URL is in failure cooldown. Absent means
+   * False when the last thing heard from the node behind this URL was a
+   * failure, whether or not its retry cooldown has passed. Absent means
    * nothing is known, which a single-node API is, and is treated as usable.
    * `ArtworkHostPreference.order` never promotes a host marked false.
    */

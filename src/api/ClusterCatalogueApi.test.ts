@@ -10,6 +10,24 @@ function response(value: unknown, status = 200): Response {
 describe('ClusterCatalogueApi', () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it('keeps a failed node marked down for artwork after its short retry cooldown has passed', () => {
+    // The registry's first cooldown is 0.5 s against a 10 s probe cycle, so a
+    // node that has just died reads retryable most of the time. Artwork must
+    // not lead with it until it has answered again.
+    let now = 1_000;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    registry.recordLatency('http://b', 3);
+    registry.recordFailure('http://b');
+    now += 5_000;
+    expect(registry.candidates().find((candidate) => candidate.endpoint.id === 'http://b')?.ready).toBe(true);
+    const b = new ClusterCatalogueApi(registry).artworkUrls('sha').find((source) => source.url.startsWith('http://b'));
+    expect(b?.ready).toBe(false);
+    expect(b?.latencyMs).toBeUndefined();
+
+    registry.recordSuccess('http://b');
+    expect(new ClusterCatalogueApi(registry).artworkUrls('sha').find((source) => source.url.startsWith('http://b'))?.ready).toBe(true);
+  });
+
   it("carries each ready node's measured round trip on its artwork URLs, and none for a node cooling off", () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
     registry.recordLatency('http://a', 90);
