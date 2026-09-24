@@ -148,7 +148,7 @@ The error usually names no generation, and `expo-video` gives only a message. Th
 - **`false`**: the node reaped the session and is itself fine. Go to step 3 and regenerate on it. Nothing is charged.
 - **`true`**: the node still holds the session. If the failure was a `not-found` on a fragment, the fragment is past the end of a live plan, and replacing the session fixes nothing; the coordinator stops there. For a fatal failure the node could not serve, fail over (step 4).
 - **Throws a `MachaConnectionError`**: the answer did not come within `SESSION_LIVENESS_TIMEOUT_MS` (8 s), or the node could not be reached. "Could not find out" is not "gone". Fail over.
-- **Throws with `playbackFailureCode(error) === SESSION_PROVENANCE_UNKNOWN_CODE`**: the id names no node, so it is not a handle this resolver issued. Stop. There is nothing to recover and nothing to charge.
+- **Throws with `playbackFailureCode(error) === SESSION_PROVENANCE_UNKNOWN_CODE`**: the resolver no longer holds the session, and the node the id names is no longer in the registry. That happens after a services rebuild gave you a fresh resolver, or for a session already released, once the node has left the cluster. The node is gone, so fail over (step 4). (A malformed id also lands here; one this resolver issued never is.)
 
 ### 3. Regenerate on the same node
 
@@ -156,7 +156,7 @@ The error usually names no generation, and `expo-video` gives only a message. Th
 
 - **Resolves**: present the new session, and remember the position you asked for.
 - **Rejects with `REGENERATION_ENDPOINT_GONE_CODE`**: that node has left the registry. Fail over; this is the case failover is for.
-- **Rejects with `SESSION_PROVENANCE_UNKNOWN_CODE`**: as in step 2. Stop.
+- **Rejects with `SESSION_PROVENANCE_UNKNOWN_CODE`**: as in step 2. Fail over.
 - **Rejects otherwise**: fail over.
 
 **Bound it.** If you are about to regenerate at the same position (to the millisecond) as the last regeneration, the last one made no progress and another will not either. Fail over. The coordinator logs `session-regeneration-made-no-progress` and does the same.
