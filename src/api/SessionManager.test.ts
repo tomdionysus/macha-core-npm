@@ -439,6 +439,25 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer cached-token');
   });
 
+  it('keeps a good cached session when no node answers, rather than minting a refused one', async () => {
+    // Measured 2026-09-24: with two nodes down the web client lost its
+    // signed-in session. Validation that no node answered read as "rejected",
+    // the anonymous mint on an account-only cluster was refused, and the
+    // viewer holding a good 30-day token was sent to sign in.
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode');
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockRejectedValue(new MachaConnectionError('nobody answered'));
+    const storage = new MemoryStorage();
+    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS, roles: ['media_viewer'], username: 'alice' }));
+    const manager = new SessionManager(storage);
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(mint).not.toHaveBeenCalled();
+    expect(manager.roles).toEqual(['media_viewer']);
+    expect(manager.lastMintFailure).toBeUndefined();
+  });
+
   it('takes the roles from whichever request already had them', async () => {
     // Roles arrive with the token on every path: the mint response states
     // them, and so does the record returned by validating a cached token. So

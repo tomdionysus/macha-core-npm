@@ -695,7 +695,14 @@ export class SessionManager implements AuthenticatedFetch {
         try {
           record = await validateSessionAnyNode(registry, cached.token);
         } catch {
-          record = undefined;
+          // No node answered. The cached session is inside its lifetime and
+          // nothing has said it is bad, so keep it: a request it cannot make
+          // is answered 401 and re-mints through the ordinary path. Minting
+          // here instead sent a viewer with a good token to sign in whenever
+          // the cluster was briefly out of reach (web client, 2026-09-24).
+          if (this.abandoned(generation)) return;
+          this.adopt(cached, generation);
+          return;
         }
         if (this.abandoned(generation)) return;
         if (record) {

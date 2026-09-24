@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mintSession, mintSessionAnyNode, revokeSessionAnyNode, SessionAuthError, validateSessionAnyNode } from './SessionAuth.js';
+import { mintSession, mintSessionAnyNode, revokeSessionAnyNode, SESSION_HEDGE_MS, SessionAuthError, validateSessionAnyNode } from './SessionAuth.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
 import { MachaConnectionError } from './serverConnection.js';
@@ -207,10 +207,51 @@ describe('a node that accepts the connection and never answers', () => {
     vi.stubGlobal('fetch', vi.fn(blackHoled()));
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test']));
 
-    const request = validateSessionAnyNode(registry, 'cached');
+    const outcome = validateSessionAnyNode(registry, 'cached').then(() => 'resolved', (error: unknown) => error);
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
 
-    await expect(request).resolves.toBeUndefined();
+    // Unanswered is not rejected: a caller must not discard a good token for it.
+    expect(await outcome).toBeInstanceOf(MachaConnectionError);
+  });
+});
+
+describe('validating a cached token across several nodes', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  const record = () => new Response(JSON.stringify({ roles: ['media_viewer'], expires_unix_ms: 9 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  it('asks the next node after the hedge, not after the first times out', async () => {
+    // Measured 2026-09-24: two dead nodes cost 8.2 s and 8.0 s before the
+    // third answered in 0.52 s.
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).startsWith('http://b.test') ? Promise.resolve(record()) : blackHoled()(url, init)));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    const outcome = validateSessionAnyNode(registry, 'cached');
+    await vi.advanceTimersByTimeAsync(SESSION_HEDGE_MS);
+
+    await expect(outcome).resolves.toMatchObject({ roles: ['media_viewer'] });
+    // The node still being asked when the answer came was cancelled, not charged.
+    expect(registry.snapshot().find(({ endpoint }) => endpoint.id === 'http://a.test')?.health.consecutiveFailures).toBe(0);
+  });
+
+  it('moves on at once when a node fails outright, and charges it', async () => {
+    const fetchMock = vi.fn((url: string) => (String(url).startsWith('http://b.test') ? Promise.resolve(record()) : Promise.reject(new TypeError('refused'))));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(validateSessionAnyNode(registry, 'cached')).resolves.toMatchObject({ roles: ['media_viewer'] });
+    expect(registry.snapshot().find(({ endpoint }) => endpoint.id === 'http://a.test')?.health.consecutiveFailures).toBe(1);
+  });
+
+  it('stops at a refusal, which is the answer for the whole cluster', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
+
+    await expect(validateSessionAnyNode(registry, 'cached')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
