@@ -60,6 +60,8 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 - `33fa8b5`: `TorrentJob.catalogue` is optional.
 - `5973dc5`: resolver-level recovery is documented.
 
+- `e840d72`: a copied stream the player cannot decode falls back to a transcode on the same node, once, never over a mode the viewer chose (Tom's ruling). The viewer's mid-playback mode choice is now recorded, and the copy-refused fallback respects it too. It needs the Android TV client to report decoder errors as `media`; they arrive as `unknown` today.
+- **Seen while testing it, not investigated:** a `choose` issued while another mode change is still in flight did not reach the resolver; it applied once the first had settled. It may be how `queueMutation` merges a chooser decision into a pending change. Look before trusting a quick viewer toggle.
 - `47812f7`: a fresh mint on a registry with no evidence first probes the health route, hedged, and mints on the first node to answer, so a dead node costs a 1 s hedge where it cost the 8 s timeout. The mint tests now answer by URL.
 
 **ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
