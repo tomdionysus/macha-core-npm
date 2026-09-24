@@ -404,9 +404,11 @@ describe('SessionManager', () => {
     vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
-    // Its own empty storage. The shared default could hold a session another
-    // test cached, which sent this one to validate against the unresolvable
-    // http://a for real, and under a full-suite load that outlasted the wait.
+    // The second start finds token-a cached by the first and validates it.
+    // Unmocked, that was a real request to the unresolvable http://b, whose
+    // DNS failure under a full-suite load outlasted the wait. Refused here, so
+    // the restart mints, which is the path this test is about.
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue(undefined);
     const manager = new SessionManager(new MemoryStorage());
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
