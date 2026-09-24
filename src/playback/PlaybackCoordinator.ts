@@ -12,7 +12,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, segmentContainer, transcodeUndecodable, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { chooseAmongFiles, degradeInstruction, segmentContainer, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -568,18 +568,12 @@ function rangeContainsPosition(
 /** What `facts` may return: one file's facts, or one entry per file of the item. */
 export type PlaybackFacts = PlaybackDecisionFacts | readonly PlaybackMediaFacts[];
 
-/** One file's facts, and which file, where known. */
-type FileFacts = PlaybackDecisionFacts & { mediaId?: string };
-
 /** Nothing usable when the list is empty. */
 function filesFrom(supplied: PlaybackFacts | undefined): readonly FileFacts[] | undefined {
   if (supplied === undefined) return undefined;
   const files = Array.isArray(supplied) ? supplied as readonly PlaybackMediaFacts[] : [supplied as PlaybackDecisionFacts];
   return files.length > 0 ? files : undefined;
 }
-
-/** The server's own ranking, when it chose: direct, then remux, then transcode. */
-const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode: 2 };
 
 function instructionPreferences(instruction: PlaybackInstruction): PlaybackPreferencesUpdate {
   return {
@@ -1135,16 +1129,9 @@ export class PlaybackCoordinator {
     // Every file, and the one that plays best, ranked as the server itself
     // ranked them before the choice was the client's: direct, then remux, then
     // transcode, and stored order between equals.
-    const choices = facts.map((file, index) => ({
-      file, index,
-      instruction: choosePlaybackInstruction(file.profile, capabilities, {
-        overrides: this.options.policyOverrides,
-        operations: file.operations,
-      }),
-    }));
-    const best = choices.reduce((a, b) => (MODE_RANK[b.instruction.mode] < MODE_RANK[a.instruction.mode] ? b : a));
-    const instruction = best.instruction;
-    const chosenMediaId = best.file.mediaId ?? this.onlyMediaId();
+    const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, this.options.media.mediaIds)!;
+    const instruction = choice.instruction;
+    const chosenMediaId = choice.mediaId;
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1201,12 +1188,6 @@ export class PlaybackCoordinator {
         { ...preferences, ...instructionPreferences(degraded) },
       );
     }
-  }
-
-  /** The item's file when it has exactly one, which names itself. */
-  private onlyMediaId(): string | undefined {
-    const ids = this.options.media.mediaIds;
-    return ids.length === 1 ? ids[0] : undefined;
   }
 
   /**

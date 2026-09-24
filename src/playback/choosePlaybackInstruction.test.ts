@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalContainers, choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
+import { canonicalContainers, chooseAmongFiles, choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 
 // The Samsung Tizen 3 set, as the TV actually advertises it.
@@ -500,5 +500,29 @@ describe('preferSegmentContainer', () => {
     });
     expect(decision).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode', container: 'mpegts' });
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
+  });
+});
+
+describe('chooseAmongFiles', () => {
+  const caps = { platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [] } as PlaybackCapabilities;
+  const file = (mediaId: string | undefined, codec: string) => ({
+    ...(mediaId ? { mediaId } : {}),
+    profile: { mediaId: mediaId ?? 'x', format: 'mov,mp4', container: 'mp4', durationMs: 1, bitrate: 1, streams: [
+      { index: 0, type: 'video' as const, codec, profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  it('plays the best file, ties to stored order', () => {
+    expect(chooseAmongFiles([file('a', 'hevc'), file('b', 'h264'), file('c', 'h264')], caps)).toMatchObject({ mediaId: 'b', index: 1, instruction: { mode: 'direct' } });
+  });
+
+  it('names an only file from the item when the facts carry no id, and nothing it cannot know', () => {
+    expect(chooseAmongFiles([file(undefined, 'h264')], caps, {}, ['only'])?.mediaId).toBe('only');
+    expect(chooseAmongFiles([file(undefined, 'h264')], caps, {}, ['a', 'b'])?.mediaId).toBeUndefined();
+  });
+
+  it('is undefined for no files', () => {
+    expect(chooseAmongFiles([], caps)).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import type { MediaTechnicalProfile, MediaTechnicalStream, PlaybackCapabilities, PlaybackMode } from '../types.js';
-import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
+import type { PlaybackDecisionFacts, PlaybackOperations } from '../api/PlaybackFactsApi.js';
 
 export type StreamInstruction = 'copy' | 'transcode';
 export type SegmentContainer = 'fmp4' | 'mpegts';
@@ -478,4 +478,43 @@ export function degradeInstruction(instruction: PlaybackInstruction): PlaybackIn
     return { ...instruction, mode: 'transcode', video: 'transcode', reasons };
   }
   return undefined;
+}
+
+/** One file's facts, and which file, where the facts say. */
+export type FileFacts = PlaybackDecisionFacts & { mediaId?: string };
+
+/** The file to play, the instruction for it, and where it stood in the list. */
+export interface FileChoice {
+  instruction: PlaybackInstruction;
+  /** Undefined when the facts name no file and the item has more than one. */
+  mediaId?: string;
+  index: number;
+}
+
+/** The server's own ranking, from when it chose: direct, then remux, then transcode. */
+const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode: 2 };
+
+/**
+ * Which of an item's files to play, and how. Choosing among an item's files
+ * is the client's decision (Tom, 2026-09-24), and this is the one ranking every
+ * client uses, the coordinator included: an instruction for each file, then
+ * the best by mode, with ties to stored order, as the server ranked them. A
+ * file whose facts carry no id is named from `mediaIds` when the item has
+ * exactly one. Undefined for an empty list.
+ */
+export function chooseAmongFiles(
+  files: readonly FileFacts[],
+  capabilities: PlaybackCapabilities,
+  options: { overrides?: ChooseInstructionOptions['overrides'] } = {},
+  mediaIds: readonly string[] = [],
+): FileChoice | undefined {
+  let best: FileChoice | undefined;
+  files.forEach((file, index) => {
+    const instruction = choosePlaybackInstruction(file.profile, capabilities, { overrides: options.overrides, operations: file.operations });
+    if (!best || MODE_RANK[instruction.mode] < MODE_RANK[best.instruction.mode]) {
+      best = { instruction, mediaId: file.mediaId, index };
+    }
+  });
+  if (best && best.mediaId === undefined && mediaIds.length === 1) best = { ...best, mediaId: mediaIds[0] };
+  return best;
 }
