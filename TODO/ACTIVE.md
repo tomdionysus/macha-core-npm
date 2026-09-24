@@ -64,6 +64,11 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 - **Seen while testing it, not investigated:** a `choose` issued while another mode change is still in flight did not reach the resolver; it applied once the first had settled. It may be how `queueMutation` merges a chooser decision into a pending change. Look before trusting a quick viewer toggle.
 - `47812f7`: a fresh mint on a registry with no evidence first probes the health route, hedged, and mints on the first node to answer, so a dead node costs a 1 s hedge where it cost the 8 s timeout. The mint tests now answer by URL.
 
+**Which servers core may use — Tom, 2026-09-24:** only those that come from clients (configured) or from the servers themselves (advertised membership, including the saved remembered list). **Current behaviour is correct; do not change it.**
+- A removed server cannot be told apart without asking a current member: `/api/v1/status` needs a token, and `/api/v1/health` carries no cluster identity or membership.
+- Core keeps only `online` nodes from any member's answer and drops remembered ones it omits.
+- The Android TV client relayed a stricter-sounding version, "ABSOLUTELY NOT pick up old servers"; asked directly, Tom confirmed the above.
+
 **ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
 
 **Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
