@@ -6,7 +6,7 @@ import { FakePlayer } from '../testing/FakePlayer.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
+import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
   alternateRecoveryWindowMs,
 } from './PlaybackCoordinator.js';
 
@@ -4148,5 +4148,19 @@ describe('against a node that chooses nothing', () => {
     const { api, coordinator } = start({ resolve: async () => { throw refusal; } });
     await coordinator.start().catch(() => undefined);
     expect(api.resolve).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('preparePlaybackPatch, for a host that PATCHes without the coordinator', () => {
+  it('names the device container and the default audio stream on a change into a transcode', () => {
+    const streams = [
+      { index: 0, type: 'video', codec: 'h264', language: '', default: true },
+      { index: 1, type: 'audio', codec: 'aac', language: 'eng', default: false },
+      { index: 2, type: 'audio', codec: 'aac', language: 'fre', default: true },
+    ];
+    const direct = session({ mode: 'direct', sourceInfo: { path: '/m', format: 'matroska', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const prepared = preparePlaybackPatch({ preferences: { mode: 'transcode' } }, direct, capabilities());
+    expect(prepared.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2 });
   });
 });

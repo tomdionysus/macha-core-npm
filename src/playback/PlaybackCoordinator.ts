@@ -812,6 +812,27 @@ export function restatePreferencesClearedByMode(
  * streams, which the node reported for this very file; a stream the session
  * already plays is restated rather than chosen again.
  */
+/**
+ * A PATCH as the node 0.58.0 needs it, for a host that calls
+ * `PlaybackResolver.update` itself rather than through the coordinator: the
+ * device's segment container on a change into remux or transcode, where the
+ * update names none, and the streams from `namedStreamsForPatch`. The
+ * coordinator does the same on its own updates.
+ */
+export function preparePlaybackPatch(
+  update: PlaybackUpdate,
+  session: PlaybackSession,
+  capabilities: PlaybackCapabilities,
+  overrides?: PlaybackPolicyOverrides,
+): PlaybackUpdate {
+  const mode = update.preferences?.mode;
+  const container = (mode === 'remux' || mode === 'transcode') && update.preferences?.container === undefined
+    ? segmentContainer(capabilities, overrides).container
+    : undefined;
+  const withContainer = container ? { ...update, preferences: { ...update.preferences, container } } : update;
+  return namedStreamsForPatch(withContainer, session);
+}
+
 function namedStreamsForPatch(update: PlaybackUpdate, session: PlaybackSession): PlaybackUpdate {
   const preferences = update.preferences;
   if (!preferences || session.sourceInfo.streams.length === 0) return update;
