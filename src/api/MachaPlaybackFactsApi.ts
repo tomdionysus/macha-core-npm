@@ -3,6 +3,7 @@ import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import { MachaApiError } from './MachaCatalogueApi.js';
 import type { MediaTechnicalProfile, MediaTechnicalStream } from '../types.js';
+import { defaultStream } from '../playback/choosePlaybackInstruction.js';
 import type { PlaybackFactsApi, PlaybackMediaFacts, PlaybackOperations } from './PlaybackFactsApi.js';
 
 interface WireFactsStream {
@@ -23,6 +24,8 @@ interface WireFactsStream {
   color_transfer?: string;
   dolby_vision_profile?: number;
   dolby_vision_compatibility?: number;
+  /** From server 0.57.1; see `MediaTechnicalStream.copyInto`. */
+  copy_into?: { fmp4?: boolean; mpegts?: boolean };
 }
 
 function mapStream(stream: WireFactsStream): MediaTechnicalStream {
@@ -44,6 +47,9 @@ function mapStream(stream: WireFactsStream): MediaTechnicalStream {
     colorTransfer: stream.color_transfer || undefined,
     dolbyVisionProfile: stream.dolby_vision_profile,
     dolbyVisionCompatibility: stream.dolby_vision_compatibility,
+    ...(stream.copy_into && typeof stream.copy_into === 'object'
+      ? { copyInto: { fmp4: stream.copy_into.fmp4 === true, mpegts: stream.copy_into.mpegts === true } }
+      : {}),
   };
 }
 
@@ -52,15 +58,22 @@ function streamPair(field: unknown): { video: boolean; audio: boolean } {
   return { video: pair.video === true, audio: pair.audio === true };
 }
 
-function mapOperations(value: unknown): PlaybackOperations {
+function mapOperations(value: unknown, streams: readonly MediaTechnicalStream[]): PlaybackOperations {
   const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  // Server 0.57.1 moved copy support onto each stream and dropped the pair
+  // from `operations`. The pair is then the default streams' answer, which is
+  // what an older node's pair meant, so a consumer reading `operations` sees
+  // one shape from either. The chooser reads the stream's own answer first.
+  const video = defaultStream(streams, 'video');
+  const audio = defaultStream(streams, 'audio');
+  const fromStreams = (key: 'fmp4' | 'mpegts') => ({ video: video?.copyInto?.[key] === true, audio: audio?.copyInto?.[key] === true });
   // Absent reads as "cannot", not "can". This gates instructions, so an
   // unknown answer must never be optimistic — the whole point is to stop
   // asking for something the node will refuse.
   return {
     direct: record.direct === true,
-    copyIntoFmp4: streamPair(record.copy_into_fmp4),
-    copyIntoMpegts: streamPair(record.copy_into_mpegts),
+    copyIntoFmp4: record.copy_into_fmp4 !== undefined ? streamPair(record.copy_into_fmp4) : fromStreams('fmp4'),
+    copyIntoMpegts: record.copy_into_mpegts !== undefined ? streamPair(record.copy_into_mpegts) : fromStreams('mpegts'),
     transcodeVideo: record.transcode_video === true,
     transcodeAudio: record.transcode_audio === true,
   };
@@ -116,7 +129,7 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
         path: typeof item.path === 'string' ? item.path : undefined,
         sizeBytes: profile.sizeBytes,
         profile,
-        operations: mapOperations(item.operations),
+        operations: mapOperations(item.operations, profile.streams),
       }];
     });
   }

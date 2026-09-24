@@ -1,8 +1,9 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
-import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
+import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
+import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -12,7 +13,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
-import { chooseAmongFiles, degradeInstruction, segmentContainer, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { chooseAmongFiles, degradeInstruction, segmentContainer, streamsToName, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -592,7 +593,12 @@ function instructionPreferences(instruction: PlaybackInstruction): PlaybackPrefe
  * should mask.
  */
 function isExecutorRefusal(error: unknown): boolean {
-  return !!error && typeof error === 'object' && (error as { status?: unknown }).status === 400;
+  if (!error || typeof error !== 'object' || (error as { status?: unknown }).status !== 400) return false;
+  // A choice left open, or one the node cannot honour, is a question about
+  // the request, not a refusal to perform it: stepping down the mode would
+  // answer a different question and hide the real one.
+  const code = (error as { code?: unknown }).code;
+  return code !== CHOICE_REQUIRED_CODE && code !== CHOICE_NOT_AVAILABLE_CODE;
 }
 
 function mergePreferences(
@@ -701,6 +707,7 @@ function completePreferences(session: PlaybackSession): PlaybackPreferencesUpdat
     mode: session.preferences.mode,
     maxHeight: session.preferences.maxHeight,
     maxBitrate: session.preferences.maxBitrate,
+    videoStream: session.preferences.videoStream ?? undefined,
     audioStream: session.preferences.audioStream,
     subtitleStream: session.preferences.subtitleStream,
     audioLanguage: session.preferences.audioLanguage,
@@ -1089,14 +1096,24 @@ export class PlaybackCoordinator {
       // with least conversion, so under the viewer's direct it is a file this
       // device plays directly, where the item has one. Facts are fetched only
       // for an item with several files; one file names itself.
-      const mediaId = preferences.mediaId ?? await this.fileForViewerMode(capabilities);
+      //
+      // From server 0.57.1 the node chooses nothing else either: a remux or a
+      // transcode names its container, and a file with several video or audio
+      // streams names the one to play. The container is the device's; the
+      // streams come from the file's facts where there are any, and a node
+      // that still finds a choice open says which (`choice_required`), which
+      // the resolver answers.
+      const { mediaId, profile } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
+      const container = preferences.container
+        ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
+      const streams = profile ? streamsToName(profile, preferences.mode, preferences) : {};
       this.patchSnapshot({ instruction: {
         mode: preferences.mode, video: preferences.video, audio: preferences.audio,
-        container: preferences.container,
+        container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
         ...(mediaId ? { mediaId } : {}),
       } });
-      return mediaId ? { ...preferences, mediaId } : preferences;
+      return { ...preferences, ...streams, ...(container ? { container } : {}), ...(mediaId ? { mediaId } : {}) };
     }
 
     const facts = await this.facts();
@@ -1141,6 +1158,7 @@ export class PlaybackCoordinator {
     const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, this.options.media.mediaIds)!;
     const instruction = choice.instruction;
     const chosenMediaId = choice.mediaId ?? this.noFactsMediaId();
+    const streams = streamsToName(facts[choice.index]!.profile, instruction.mode, preferences);
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1151,6 +1169,7 @@ export class PlaybackCoordinator {
       reasons: instruction.reasons,
       chosenMediaId,
       files: facts.length,
+      ...streams,
     });
     this.chosenInstruction = instruction;
     this.patchSnapshot({ instruction: {
@@ -1160,7 +1179,7 @@ export class PlaybackCoordinator {
       chosenByViewer: false, withoutFacts: false,
       ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
-    return { ...preferences, ...instructionPreferences(instruction), ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
+    return { ...preferences, ...instructionPreferences(instruction), ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
   }
 
   /**
@@ -1199,15 +1218,26 @@ export class PlaybackCoordinator {
     }
   }
 
-  /** The file to play under a mode the viewer chose; see `instructedPreferences`. */
-  private async fileForViewerMode(capabilities: PlaybackCapabilities): Promise<string | undefined> {
+  /**
+   * The file to play under a mode the viewer chose, and its profile where
+   * facts gave one; see `instructedPreferences`. Facts are fetched for an item
+   * with several files, to rank them, and for any mode but direct, to name
+   * streams; a direct play of an item's only file needs none.
+   */
+  private async fileForViewerMode(
+    mode: PlaybackMode,
+    named: string | undefined,
+    capabilities: PlaybackCapabilities,
+  ): Promise<{ mediaId?: string; profile?: MediaTechnicalProfile }> {
     const mediaIds = this.options.media.mediaIds;
-    if (mediaIds.length <= 1) return mediaIds[0];
+    if (mode === 'direct' && (named !== undefined || mediaIds.length <= 1)) return { mediaId: named ?? mediaIds[0] };
     const facts = await this.facts();
-    // Without facts there is nothing to rank, and the server is to stop
-    // choosing for us, so the first file stands in (see `noFactsMediaId`).
-    if (!facts) return this.noFactsMediaId();
-    return chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds)?.mediaId ?? this.noFactsMediaId();
+    // Without facts there is nothing to rank, and the server no longer
+    // chooses for us, so the first file stands in (see `noFactsMediaId`).
+    if (!facts) return { mediaId: named ?? this.noFactsMediaId() };
+    if (named !== undefined) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile };
+    const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds);
+    return { mediaId: choice?.mediaId ?? this.noFactsMediaId(), profile: choice ? facts[choice.index]?.profile : undefined };
   }
 
   /**

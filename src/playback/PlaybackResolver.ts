@@ -114,6 +114,8 @@ export interface PlaybackPreferences {
   mode: PlaybackMode;
   maxHeight: number | null;
   maxBitrate: number | null;
+  /** Echoed from server 0.57.1; absent from an older node, which does not take it. */
+  videoStream?: number | null;
   audioStream: number | null;
   subtitleStream: number | null;
   audioLanguage: string;
@@ -240,6 +242,13 @@ export interface PlaybackPreferencesUpdate {
    * update; switching file mid-session is `PlaybackUpdate.mediaId`.
    */
   mediaId?: string;
+  /**
+   * Which video stream, when the file has several. From server 0.57.1 a node
+   * chooses no stream: with several video or audio streams and none named it
+   * refuses with `choice_required`. The coordinator names them; see
+   * `streamsToName`. A 0.57.0 node ignores this field.
+   */
+  videoStream?: number;
   /** Per-stream instruction, overriding the `mode` shorthand when given. */
   video?: 'copy' | 'transcode';
   audio?: 'copy' | 'transcode';

@@ -77,3 +77,37 @@ describe('MachaPlaybackFactsApi', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('MachaPlaybackFactsApi against server 0.57.1', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const streams = [
+    { index: 0, type: 'video', codec: 'hevc', default: true, copy_into: { fmp4: true, mpegts: true } },
+    { index: 1, type: 'audio', codec: 'opus', copy_into: { fmp4: true, mpegts: false } },
+    { index: 2, type: 'audio', codec: 'mp3', default: true, copy_into: { fmp4: false, mpegts: true } },
+  ];
+
+  it("reads each stream's own copy support", async () => {
+    respond({ media: [{ ...entry, streams, operations: { direct: true, transcode_video: true, transcode_audio: true } }] });
+    const [facts] = await new MachaPlaybackFactsApi('http://node.test').facts({ mediaId: 'macha:abc' });
+    expect(facts?.profile.streams.map((stream) => stream.copyInto)).toEqual([
+      { fmp4: true, mpegts: true }, { fmp4: true, mpegts: false }, { fmp4: false, mpegts: true },
+    ]);
+  });
+
+  it('answers the operations pair for the default streams when the node no longer sends it', async () => {
+    // The pair meant the default streams on an older node; the default audio
+    // here is the MP3, not the first-listed Opus.
+    respond({ media: [{ ...entry, streams, operations: { direct: true } }] });
+    const [facts] = await new MachaPlaybackFactsApi('http://node.test').facts({ mediaId: 'macha:abc' });
+    expect(facts?.operations.copyIntoFmp4).toEqual({ video: true, audio: false });
+    expect(facts?.operations.copyIntoMpegts).toEqual({ video: true, audio: true });
+  });
+
+  it("leaves a stream's copy support absent from an older node", async () => {
+    respond({ media: [{ ...entry, operations: { direct: true, copy_into_fmp4: { video: true, audio: true } } }] });
+    const [facts] = await new MachaPlaybackFactsApi('http://node.test').facts({ mediaId: 'macha:abc' });
+    expect(facts?.profile.streams[0]).not.toHaveProperty('copyInto');
+    expect(facts?.operations.copyIntoFmp4).toEqual({ video: true, audio: true });
+  });
+});

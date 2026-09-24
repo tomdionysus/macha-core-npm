@@ -4036,3 +4036,68 @@ describe('an item with several files', () => {
     expect(several.api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
   });
 });
+
+/**
+ * Server 0.57.1 chooses nothing: a remux or transcode names its container,
+ * and a file with several video or audio streams names the one to play.
+ */
+describe('against a node that chooses nothing', () => {
+  const twoAudio = (container = 'matroska') => [{
+    mediaId: 'm1',
+    profile: { mediaId: 'm1', format: container, container, durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: 'eng', default: false, forced: false },
+      { index: 2, type: 'audio' as const, codec: 'aac', profile: '', language: 'fre', default: true, forced: false },
+    ] },
+  }];
+
+  function start(options: { initialPreferences?: PlaybackPreferencesUpdate; resolve?: (...args: any[]) => Promise<PlaybackSession> } = {}) {
+    const api = resolver(session({ mode: 'remux' }));
+    if (options.resolve) api.resolve.mockImplementation(options.resolve);
+    const facts = vi.fn(async () => twoAudio() as never);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts,
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { api, coordinator, facts };
+  }
+
+  it('names the default audio stream where there are several, and no video stream where there is one', async () => {
+    const { api, coordinator } = start();
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ mode: 'remux', audioStream: 2, container: 'fmp4' });
+    expect(sent.videoStream).toBeUndefined();
+  });
+
+  it('leaves the stream to a language exactly one stream has', async () => {
+    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'eng' } });
+    await coordinator.start();
+    expect((api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate).audioStream).toBeUndefined();
+  });
+
+  it("names the container and streams under a mode the viewer chose, even for an item's only file", async () => {
+    const { api, coordinator, facts } = start({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    expect(facts).toHaveBeenCalled();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2, mediaId: 'm1' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, container: 'fmp4' });
+  });
+
+  it('does not step the mode down over a choice the node says is open', async () => {
+    // choice_required is a question about the request, not a refusal to
+    // perform it; a transcode would ask the same question again.
+    const refusal = Object.assign(new Error('choose an audio stream'), { status: 400, code: 'choice_required' });
+    const { api, coordinator } = start({ resolve: async () => { throw refusal; } });
+    await coordinator.start().catch(() => undefined);
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('still steps down once over a plain refusal', async () => {
+    const refusal = Object.assign(new Error('cannot copy'), { status: 400 });
+    const { api, coordinator } = start({ resolve: async () => { throw refusal; } });
+    await coordinator.start().catch(() => undefined);
+    expect(api.resolve).toHaveBeenCalledTimes(2);
+  });
+});

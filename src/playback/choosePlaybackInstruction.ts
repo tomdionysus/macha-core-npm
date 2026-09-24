@@ -275,15 +275,27 @@ export function segmentContainer(
  * takes AV1 and Opus that MPEG-TS refuses. Asking `copyIntoFmp4` about a
  * MPEG-TS session would answer a question nobody asked.
  *
+ * From server 0.57.1 each stream answers for itself, and that answer wins: the
+ * node's `operations` pair spoke only for the first video and audio stream,
+ * which is not the one played when another is named. An older node's pair
+ * answers where a stream carries nothing.
+ *
  * With no facts at all, assume the node can copy — the chooser's behaviour
  * before the facts endpoint existed, and the 400 is the loud, recoverable leg.
  */
 function copyInto(
   container: SegmentContainer | undefined,
   operations: PlaybackOperations | undefined,
+  video: MediaTechnicalStream | undefined,
+  audio: MediaTechnicalStream | undefined,
 ): { video: boolean; audio: boolean } {
-  if (!operations) return { video: true, audio: true };
-  return container === 'mpegts' ? operations.copyIntoMpegts : operations.copyIntoFmp4;
+  const key = container === 'mpegts' ? 'mpegts' : 'fmp4';
+  const pair = !operations ? { video: true, audio: true }
+    : container === 'mpegts' ? operations.copyIntoMpegts : operations.copyIntoFmp4;
+  return {
+    video: video?.copyInto ? video.copyInto[key] : pair.video,
+    audio: audio?.copyInto ? audio.copyInto[key] : pair.audio,
+  };
 }
 
 export interface ChooseInstructionOptions {
@@ -333,10 +345,10 @@ export function choosePlaybackInstruction(
 
   const video = options.videoStream !== undefined
     ? streams.find((s) => s.index === options.videoStream)
-    : streams.find((s) => s.type === 'video');
+    : defaultStream(streams, 'video');
   const audio = options.audioStream !== undefined
     ? streams.find((s) => s.index === options.audioStream)
-    : streams.find((s) => s.type === 'audio' && s.default) ?? streams.find((s) => s.type === 'audio');
+    : defaultStream(streams, 'audio');
 
   const { container, preferred: containerPreferred } = segmentContainer(capabilities, overrides);
   if (containerPreferred) reasons.push('host-policy-prefers-container');
@@ -377,7 +389,7 @@ export function choosePlaybackInstruction(
 
   // The streams themselves are fine — only the wrapper, or one track, is not.
   // Copying the video is the whole point of the per-stream instruction.
-  const executorCanCopy = copyInto(container, operations);
+  const executorCanCopy = copyInto(container, operations, video, audio);
 
   if (!videoObjection) {
     // ...unless HLS delivery uses a different decoder that cannot take it.
@@ -517,4 +529,47 @@ export function chooseAmongFiles(
   });
   if (best && best.mediaId === undefined && mediaIds.length === 1) best = { ...best, mediaId: mediaIds[0] };
   return best;
+}
+
+/**
+ * The stream of a type core plays when nothing names one: the stream flagged
+ * default, else the first. From server 0.57.1 the node chooses no stream, so
+ * this rule is core's, and it is the same rule the node used to apply.
+ */
+export function defaultStream(streams: readonly MediaTechnicalStream[], type: 'video' | 'audio'): MediaTechnicalStream | undefined {
+  const ofType = streams.filter((stream) => stream.type === type);
+  return ofType.find((stream) => stream.default) ?? ofType[0];
+}
+
+/**
+ * The streams to name so a node has nothing to choose: the video stream when
+ * the file has several, and the audio stream when it has several and the
+ * preferences leave the choice open. An audio language exactly one stream has
+ * is an answer the node takes, so it is left to it; a language several share,
+ * or none has, is not, and the default stream (among the matches, where there
+ * are any) is named instead. Nothing for `direct`, which serves the file
+ * untouched and lets the player pick its tracks.
+ */
+export function streamsToName(
+  profile: MediaTechnicalProfile,
+  mode: PlaybackMode,
+  preferences: { videoStream?: number | null; audioStream?: number | null; audioLanguage?: string },
+): { videoStream?: number; audioStream?: number } {
+  if (mode === 'direct') return {};
+  const out: { videoStream?: number; audioStream?: number } = {};
+  const videos = profile.streams.filter((stream) => stream.type === 'video');
+  if (videos.length > 1 && (preferences.videoStream === undefined || preferences.videoStream === null)) {
+    const chosen = defaultStream(profile.streams, 'video');
+    if (chosen) out.videoStream = chosen.index;
+  }
+  const audios = profile.streams.filter((stream) => stream.type === 'audio');
+  if (audios.length > 1 && (preferences.audioStream === undefined || preferences.audioStream === null)) {
+    const language = preferences.audioLanguage?.trim().toLowerCase();
+    const matches = language ? audios.filter((stream) => stream.language.toLowerCase() === language) : [];
+    if (matches.length !== 1) {
+      const chosen = matches.length > 1 ? defaultStream(matches, 'audio') : defaultStream(profile.streams, 'audio');
+      if (chosen) out.audioStream = chosen.index;
+    }
+  }
+  return out;
 }

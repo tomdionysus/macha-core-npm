@@ -22,6 +22,13 @@ export interface ParsedErrorEnvelope {
    * answer differently.
    */
   reason?: string;
+  /**
+   * From server 0.57.1, on `choice_required` and `choice_not_available`: what
+   * has to be named (`video_stream`, `audio_stream`, `subtitle_stream` or
+   * `container`) and the candidates (stream indexes, or the container names).
+   */
+  choice?: string;
+  choices?: Array<number | string>;
 }
 
 function asRecord(value: unknown): ErrorRecord | undefined {
@@ -93,5 +100,11 @@ export function parseErrorEnvelope(body: unknown, fallback: string): ParsedError
     ?? nonEmptyString(envelope.detail)
     ?? (nonEmptyString(envelope.message) ? undefined : nonEmptyString(envelope.error));
 
-  return { message, detail, code, reason };
+  const choice = nonEmptyString(structuredError?.choice) ?? nonEmptyString(envelope.choice);
+  const rawChoices = structuredError?.choices ?? envelope.choices;
+  const choices = Array.isArray(rawChoices)
+    ? rawChoices.filter((entry): entry is number | string => typeof entry === 'number' || typeof entry === 'string')
+    : undefined;
+
+  return { message, detail, code, reason, ...(choice ? { choice } : {}), ...(choices ? { choices } : {}) };
 }

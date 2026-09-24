@@ -240,6 +240,25 @@ describe('executor operations as an input', () => {
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
   });
 
+  it("takes a stream's own copy answer over the pair, from server 0.57.1", () => {
+    // The pair spoke for the first streams only; the stream that plays says
+    // for itself, in either direction.
+    const refusing = { ...eac3, copyInto: { fmp4: false, mpegts: true } };
+    const refused = choosePlaybackInstruction(
+      profile('matroska', [h264, refusing]), samsung,
+      { operations: { ...canDoEverything, copyIntoMpegts: noMpegtsCopy } },
+    );
+    expect(refused).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
+    expect(refused.reasons).toContain('executor-cannot-copy-audio');
+
+    const accepting = { ...eac3, copyInto: { fmp4: true, mpegts: false } };
+    const accepted = choosePlaybackInstruction(
+      profile('matroska', [h264, accepting]), samsung,
+      { operations: { ...canDoEverything, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: noMpegtsCopy } },
+    );
+    expect(accepted.reasons).not.toContain('executor-cannot-copy-audio');
+  });
+
   it('does not instruct direct when the node says it cannot', () => {
     const decision = choosePlaybackInstruction(
       profile('mov,mp4', [h264, aac]), samsung,

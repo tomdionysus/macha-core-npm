@@ -91,7 +91,9 @@ describe('MachaPlaybackResolver', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url.split('?')[0]).toBe('http://node.test/api/v1/playback/sessions');
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer secret');
-    expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({ item_id: 'movie:test' }));
+    // Server 0.57.1 plays files, not titles, and refuses item_id outright.
+    expect(JSON.parse(String(init.body))).not.toHaveProperty('item_id');
+    expect(JSON.parse(String(init.body))).toMatchObject({ media_id: media.mediaIds[0] });
     // Capabilities are not sent at all. The server never acted on them, so
     // asking implied a check that did not exist; the instruction is now the
     // entire contract.
@@ -118,7 +120,8 @@ describe('MachaPlaybackResolver', () => {
     await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
 
     const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>);
-    expect(bodies[0]).toMatchObject({ item_id: media.id, media_id: 'macha:file-2' });
+    expect(bodies[0]).toMatchObject({ media_id: 'macha:file-2' });
+    expect(bodies[0]).not.toHaveProperty('item_id');
     expect(bodies[0]?.preferences).not.toHaveProperty('media_id');
     // The server is to stop choosing among an item's files, so a create never
     // goes without one.
@@ -272,9 +275,11 @@ describe('MachaPlaybackResolver', () => {
     await resolver.resolve(media, capabilities, 42_000, { mode: 'transcode', maxHeight: 720 });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // A transcode always names its container from server 0.57.1; with none
+    // stated, the device's own preference.
     expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
       seek_ms: 42_000,
-      preferences: { mode: 'transcode', max_height: 720 },
+      preferences: { mode: 'transcode', max_height: 720, container: 'fmp4' },
     }));
   });
 
@@ -651,5 +656,53 @@ describe('asking a node whether a session is alive', () => {
     const resolver = new MachaPlaybackResolver('http://node.test');
     expect(await resolver.sessionAlive('s1')).toBe(false);
     expect(await resolver.sessionAlive('s1')).toBe(true);
+  });
+});
+
+describe('MachaPlaybackResolver against a node that chooses nothing (server 0.57.1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const choiceRequired = (choice: string, choices: Array<number | string>) => jsonResponse({
+    error: { code: 'choice_required', message: `name a ${choice}`, choice, choices },
+  }, 400);
+
+  it('answers an open choice once with the first the node offers, as a new request', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(choiceRequired('audio_stream', [1, 2]))
+      .mockResolvedValueOnce(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'remux' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchMock.mock.calls as Array<[string, RequestInit]>;
+    expect(JSON.parse(String(second![1].body)).preferences).toMatchObject({ mode: 'remux', audio_stream: 1 });
+    const key = (url: string) => new URL(url, 'http://node.test').searchParams.get('idempotency_key');
+    expect(key(second![0])).toBeTruthy();
+    expect(key(second![0])).not.toBe(key(first![0]));
+  });
+
+  it('asks each kind of choice once, and gives the error up rather than loop', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(choiceRequired('audio_stream', [1, 2]))
+      .mockResolvedValueOnce(choiceRequired('audio_stream', [1, 2]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'remux' }))
+      .rejects.toMatchObject({ code: 'choice_required', choice: 'audio_stream', choices: [1, 2] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a session that no longer carries item_id, media_ids or can_switch_media', async () => {
+    const wire = sessionResponse() as Record<string, any>;
+    delete wire.item_id;
+    const { media_ids: _ids, can_switch_media: _switch, ...options } = wire.options;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ ...wire, options }, 201)));
+
+    const session = await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'remux' });
+
+    expect(session.options.mediaIds).toEqual([]);
+    expect(session.options.canSwitchMedia).toBe(false);
+    expect(session.mediaId).toBe('file:abc');
   });
 });

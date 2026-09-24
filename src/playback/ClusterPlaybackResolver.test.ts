@@ -623,13 +623,14 @@ describe('the carriage a replacement generation asks for', () => {
     expect(await failoverFrom('fmp4', { mode: 'remux', container: 'mpegts' })).toMatchObject({ container: 'mpegts' });
   });
 
-  it('asks for nothing when the node reported no container', async () => {
-    // No grounds to choose one, so today's behaviour is the right no-op.
-    expect(await failoverFrom(undefined)).not.toHaveProperty('container');
+  it("asks for the device's own container when the node reported none", async () => {
+    // From server 0.57.1 a remux names its container; there is no node default
+    // to fall back on. The served one is unknown, so the device's preference.
+    expect(await failoverFrom(undefined)).toMatchObject({ container: 'fmp4' });
   });
 
-  it('asks for nothing when the node reported a container it does not recognise', async () => {
-    expect(await failoverFrom('matroska')).not.toHaveProperty('container');
+  it("asks for the device's own when the node reported one it does not recognise", async () => {
+    expect(await failoverFrom('matroska')).toMatchObject({ container: 'fmp4' });
   });
 
   it('leaves a direct generation alone, which has no carriage to choose', async () => {

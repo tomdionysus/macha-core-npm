@@ -242,6 +242,12 @@ export interface PlaybackCapabilities {
 export interface MediaTechnicalStream {
   index: number;
   type: 'video' | 'audio' | 'subtitle' | 'other';
+  /**
+   * Whether the node can copy this stream into each HLS container, from
+   * server 0.57.1, where it moved from `operations` onto each stream. Absent
+   * from an older node, where `operations` answers for the default stream.
+   */
+  copyInto?: { fmp4: boolean; mpegts: boolean };
   codec: string;
   profile: string;
   language: string;

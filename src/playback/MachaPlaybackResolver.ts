@@ -1,5 +1,6 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, mergeRequestHeaders, normalizeBaseUrl, queryString } from '../api/httpCompat.js';
 import { MachaConnectionError } from '../api/serverConnection.js';
+import { segmentContainer } from './choosePlaybackInstruction.js';
 import type { PlaybackProduction } from './streamProtocol.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
@@ -104,6 +105,8 @@ interface WireSession {
     mode: PlaybackMode;
     max_height: number | null;
     max_bitrate: number | null;
+    /** From server 0.57.1. */
+    video_stream?: number | null;
     audio_stream: number | null;
     subtitle_stream: number | null;
     audio_language: string;
@@ -178,12 +181,14 @@ interface WireSession {
   options: {
     modes: PlaybackMode[];
     quality_heights: number[];
-    media_ids: string[];
+    /** Removed in server 0.57.1: a session is bound to one file. */
+    media_ids?: string[];
     audio_streams: WireStream[];
     subtitle_streams: WireStream[];
     can_seek: boolean;
     can_change_quality: boolean;
-    can_switch_media: boolean;
+    /** Removed in server 0.57.1. */
+    can_switch_media?: boolean;
   };
 }
 
@@ -226,6 +231,43 @@ export class MachaPlaybackError extends Error {
   ) {
     super(message);
   }
+
+  /** From server 0.57.1: what has to be named; see `ParsedErrorEnvelope.choice`. */
+  choice?: string;
+  /** The candidates for `choice`: stream indexes, or container names. */
+  choices?: Array<number | string>;
+}
+
+/** Server 0.57.1's code when a choice was left open. */
+export const CHOICE_REQUIRED_CODE = 'choice_required';
+/** Server 0.57.1's code when a choice names something the media lacks. */
+export const CHOICE_NOT_AVAILABLE_CODE = 'choice_not_available';
+
+/**
+ * The preferences with an open choice answered by its first candidate, or
+ * undefined when the error is not one core answers or the choice was already
+ * answered once.
+ */
+function answeredChoice(
+  error: unknown,
+  sent: PlaybackPreferencesUpdate,
+  capabilities: PlaybackCapabilities,
+  answered: Set<string>,
+): { preferences: PlaybackPreferencesUpdate; named: number | string } | undefined {
+  if (!(error instanceof MachaPlaybackError) || error.code !== CHOICE_REQUIRED_CODE || !error.choice) return undefined;
+  if (answered.has(error.choice)) return undefined;
+  answered.add(error.choice);
+  const first = error.choices?.[0];
+  if (error.choice === 'container') {
+    const container = segmentContainer(capabilities).container
+      ?? (first === 'fmp4' || first === 'mpegts' ? first : undefined);
+    if (!container) return undefined;
+    return { preferences: { ...sent, container }, named: container };
+  }
+  if (typeof first !== 'number') return undefined;
+  if (error.choice === 'video_stream') return { preferences: { ...sent, videoStream: first }, named: first };
+  if (error.choice === 'audio_stream') return { preferences: { ...sent, audioStream: first }, named: first };
+  return undefined;
 }
 
 function retryAfterMs(value: string | null): number {
@@ -417,6 +459,7 @@ function wirePreferences(preferences?: PlaybackPreferencesUpdate): Record<string
   if (preferences.mode !== undefined) out.mode = preferences.mode;
   if (preferences.maxHeight !== undefined) out.max_height = preferences.maxHeight;
   if (preferences.maxBitrate !== undefined) out.max_bitrate = preferences.maxBitrate;
+  if (preferences.videoStream !== undefined) out.video_stream = preferences.videoStream;
   if (preferences.audioStream !== undefined) out.audio_stream = preferences.audioStream;
   if (preferences.subtitleStream !== undefined) out.subtitle_stream = preferences.subtitleStream;
   if (preferences.audioLanguage !== undefined) out.audio_language = preferences.audioLanguage;
@@ -494,42 +537,61 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       seekMs: seekMs ?? 0,
       requestedPreferences: preferences,
     });
-    const body: Record<string, unknown> = {
-      item_id: media.id,
-      preferences: wirePreferences(reconcileQualityCaps({
-        ...preferences,
-        mode: requiredMode(preferences?.mode),
-      })),
-    };
-    if (seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(seekMs));
-    // The file the client chose. With it the node plays exactly that file;
-    // without it, a node older than the server's change ranks the item's files
-    // itself, which is the decision that is the client's.
-    if (preferences?.mediaId) {
-      body.media_id = preferences.mediaId;
-    } else if (media.mediaIds.length > 0) {
-      // A caller that chose no file, such as a host driving the resolver
-      // directly. The server is to stop choosing and refuse a create that names
-      // none on a multi-file item, so name the first rather than fail; loudly,
-      // because a host should choose (see `chooseAmongFiles`).
-      body.media_id = media.mediaIds[0];
-      if (media.mediaIds.length > 1) this.log.warn('media-unchosen-defaulted', { itemId: media.id, mediaId: media.mediaIds[0], files: media.mediaIds.length });
+    // No item_id: from server 0.57.1 a title is not playable as such, its
+    // files are, and naming the item is refused (item_id_not_accepted). A
+    // 0.57.0 node plays the named media_id and needs no item either.
+    const mode = requiredMode(preferences?.mode);
+    // From 0.57.1 a remux or transcode names its segment container; the node
+    // no longer defaults to fMP4. The coordinator always names one; a host
+    // driving this directly gets the device's own preference.
+    const container = preferences?.container
+      ?? (mode === 'remux' || mode === 'transcode' ? segmentContainer(capabilities).container : undefined);
+    let sent: PlaybackPreferencesUpdate = { ...preferences, mode, ...(container ? { container } : {}) };
+    let key = idempotencyKey;
+    // A choice the node refuses to make (0.57.1) is made here, once per kind:
+    // the first candidate it lists. The coordinator names streams from the
+    // facts before asking, so this is the safety net for a host driving the
+    // resolver directly, or a start with no facts. Logged, because a host
+    // should choose.
+    const answered = new Set<string>();
+    for (;;) {
+      const body: Record<string, unknown> = { preferences: wirePreferences(reconcileQualityCaps(sent)) };
+      if (seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(seekMs));
+      // The file the client chose. With it the node plays exactly that file.
+      if (sent.mediaId) {
+        body.media_id = sent.mediaId;
+      } else if (media.mediaIds.length > 0) {
+        // A caller that chose no file, such as a host driving the resolver
+        // directly. The server chooses nothing, so name the first rather than
+        // fail; loudly, because a host should choose (see `chooseAmongFiles`).
+        body.media_id = media.mediaIds[0];
+        if (media.mediaIds.length > 1) this.log.warn('media-unchosen-defaulted', { itemId: media.id, mediaId: media.mediaIds[0], files: media.mediaIds.length });
+      }
+      // Session admission deliberately has no profile preflight: immutable
+      // profiles are advisory metadata and must not enter the viewer's critical
+      // path. A non-conforming server response is surfaced immediately so the
+      // cluster resolver can recover on another endpoint rather than polling it.
+      try {
+        const wire = await this.request<WireSession>(
+          `/api/v1/playback/sessions?${queryString([['idempotency_key', key]])}`,
+          {
+            method: 'POST',
+            body: JSON.stringify(body),
+            signal,
+          },
+        );
+        const session = this.mapSession(wire);
+        this.log.info('session-created', this.sessionSummary(session));
+        return session;
+      } catch (error) {
+        const next = answeredChoice(error, sent, capabilities, answered);
+        if (!next) throw error;
+        this.log.warn('stream-unchosen-defaulted', { itemId: media.id, choice: (error as MachaPlaybackError).choice, named: next.named });
+        sent = next.preferences;
+        // A refused create made nothing, so the retry is a new request.
+        key = newPlaybackIdempotencyKey();
+      }
     }
-    // Session admission deliberately has no profile preflight: immutable
-    // profiles are advisory metadata and must not enter the viewer's critical
-    // path. A non-conforming server response is surfaced immediately so the
-    // cluster resolver can recover on another endpoint rather than polling it.
-    const wire = await this.request<WireSession>(
-      `/api/v1/playback/sessions?${queryString([['idempotency_key', idempotencyKey]])}`,
-      {
-        method: 'POST',
-        body: JSON.stringify(body),
-        signal,
-      },
-    );
-    const session = this.mapSession(wire);
-    this.log.info('session-created', this.sessionSummary(session));
-    return session;
   }
 
   async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
@@ -644,12 +706,12 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       // Always expose it alongside the server-derived Remux/Transcode choices.
       modes: ['direct', ...wire.options.modes.filter((mode) => mode !== 'direct')],
       qualityHeights: wire.options.quality_heights,
-      mediaIds: wire.options.media_ids,
+      mediaIds: wire.options.media_ids ?? [],
       audioStreams: wire.options.audio_streams.map(mapStream),
       subtitleStreams: wire.options.subtitle_streams.map(mapStream),
       canSeek: wire.options.can_seek,
       canChangeQuality: wire.options.can_change_quality,
-      canSwitchMedia: wire.options.can_switch_media,
+      canSwitchMedia: wire.options.can_switch_media ?? false,
     };
     const source: PlaybackSource = {
       mediaId: wire.media_id,
@@ -679,6 +741,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         mode: wire.preferences.mode,
         maxHeight: wire.preferences.max_height,
         maxBitrate: wire.preferences.max_bitrate,
+        videoStream: wire.preferences.video_stream ?? null,
         audioStream: wire.preferences.audio_stream,
         subtitleStream: wire.preferences.subtitle_stream,
         audioLanguage: wire.preferences.audio_language,
@@ -849,7 +912,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       statusText: response.statusText,
       body,
     });
-    throw new MachaPlaybackError(
+    const error = new MachaPlaybackError(
       `Macha playback request failed: ${parsed.message}`,
       response.status,
       parsed.code,
@@ -857,5 +920,8 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       parsed.reason,
       parsed.detail,
     );
+    if (parsed.choice) error.choice = parsed.choice;
+    if (parsed.choices) error.choices = parsed.choices;
+    throw error;
   }
 }

@@ -56,9 +56,16 @@ All three clients verified the candidate through the link before release (web 54
 
 ### Choosing among an item's files is the client's — Tom, 2026-09-24
 Built in `284e52e`, after `0.19.0`. The facts supplier returns every file, the coordinator picks the best by the server's old ranking, and the choice is sent as `media_id` and restated on every replacement.
-- **Open:** a multi-file item with no facts, or with a viewer-chosen mode, names no file.
-- The server proposes refusing a create without `media_id` on such an item (`media_choice_required`), which is not approved. Before it ships, Tom rules what core sends in those two cases. The obvious candidate is to still run the chooser over the files for the viewer's mode.
+- Closed since: a viewer-chosen mode runs the chooser over the files (`580473f`), and no facts names the item's first file (`b94b468`).
 - The web client moves `App.tsx`'s facts supplier to the whole list.
+
+### Server 0.57.1: the server chooses nothing — live on fi-1 and gbni-1, 2026-09-25
+Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accepted` on every create, as Tom accepted.
+- Create sends `media_id` and never `item_id`. Remux and transcode always carry a container: the host's preferred segment container.
+- Core names the video stream or the audio stream wherever a file has several. The rule is the viewer's choice first. Next comes a language that exactly one stream has, which is left to the node. Otherwise core names the default-flagged stream, and failing that the first. The rule is `streamsToName`.
+- Each stream now carries its own `copy_into`, and it wins over the `operations` pair. An older node's pair is still read.
+- A `choice_required` still left open is answered once per kind, with the first choice the node offers, and logged as `stream-unchosen-defaulted`. `choice_required` and `choice_not_available` are never treated as an executor refusal, so they never step the mode down.
+- Next: the clients test against the live nodes on core `develop`, and then a core release.
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
