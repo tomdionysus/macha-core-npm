@@ -13,7 +13,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
-import { chooseAmongFiles, degradeInstruction, segmentContainer, streamsToName, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { chooseAmongFiles, degradeInstruction, segmentContainer, streamsToName, withoutLanguages, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -48,6 +48,32 @@ export interface PlaybackNotice {
   code: PlaybackNoticeCode;
   /** The failure behind it, for the two codes that have one. Its message is log text, not viewer text. */
   error?: Error;
+  /**
+   * What the node said when it refused, where it said anything: the HTTP
+   * status and error code, and for `choice_required` / `choice_not_available`
+   * which choice and its candidates. Data for a host to word; see
+   * `CHOICE_REQUIRED_CODE`.
+   */
+  refusal?: PlaybackRefusal;
+}
+
+export interface PlaybackRefusal {
+  status?: number;
+  code?: string;
+  choice?: string;
+  choices?: Array<number | string>;
+}
+
+function refusalOf(error: unknown): PlaybackRefusal | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const { status, code, choice, choices } = error as { status?: unknown; code?: unknown; choice?: unknown; choices?: unknown };
+  const refusal: PlaybackRefusal = {
+    ...(typeof status === 'number' ? { status } : {}),
+    ...(typeof code === 'string' ? { code } : {}),
+    ...(typeof choice === 'string' ? { choice } : {}),
+    ...(Array.isArray(choices) ? { choices: choices as Array<number | string> } : {}),
+  };
+  return Object.keys(refusal).length > 0 ? refusal : undefined;
 }
 
 export interface PlaybackCoordinatorSnapshot {
@@ -774,6 +800,51 @@ export function restatePreferencesClearedByMode(
 }
 
 /**
+ * Name the streams a PATCH would otherwise leave the node to choose.
+ *
+ * From server 0.58.0 a PATCH is held to the same choices as a create. A
+ * session begun as `direct` named no stream, since the player picks its own
+ * tracks there, so a change into a remux or transcode (the decode fallback,
+ * or the viewer's own) must now name them: refused otherwise, with
+ * `choice_required`, on every file with several audio streams. The same goes
+ * for a language the viewer picks mid-play, which the node refuses outright
+ * where the file lacks it. The streams come from the session's own source
+ * streams, which the node reported for this very file; a stream the session
+ * already plays is restated rather than chosen again.
+ */
+function namedStreamsForPatch(update: PlaybackUpdate, session: PlaybackSession): PlaybackUpdate {
+  const preferences = update.preferences;
+  if (!preferences || session.sourceInfo.streams.length === 0) return update;
+  const mode = preferences.mode !== undefined && preferences.mode !== 'choose' ? preferences.mode : session.mode;
+  const changesMode = preferences.mode !== undefined && preferences.mode !== 'choose';
+  const changesLanguage = preferences.audioLanguage !== undefined || preferences.subtitleLanguage !== undefined;
+  if (!changesMode && !changesLanguage) return update;
+  const current = session.preferences;
+  const kept = (index: number | null | undefined) => (index !== null && index !== undefined && index >= 0 ? index : undefined);
+  const wanted = {
+    videoStream: preferences.videoStream ?? kept(current.videoStream),
+    // A language the viewer just picked replaces the stream it chose before.
+    audioStream: preferences.audioStream ?? (preferences.audioLanguage !== undefined ? undefined : kept(current.audioStream)),
+    subtitleStream: preferences.subtitleStream ?? (preferences.subtitleLanguage !== undefined ? undefined : kept(current.subtitleStream)),
+    audioLanguage: preferences.audioLanguage ?? (current.audioLanguage || undefined),
+    subtitleLanguage: preferences.subtitleLanguage ?? (current.subtitleLanguage || undefined),
+  };
+  const named = streamsToName(technicalProfileFromSession(session), mode, wanted);
+  const restated: PlaybackPreferencesUpdate = { ...withoutLanguages(preferences) };
+  // A subtitle-only change keeps the picture and sound as they are on the
+  // node (its subtitle fast path), so nothing else is restated into it.
+  if (changesMode || preferences.audioLanguage !== undefined) {
+    if (wanted.videoStream !== undefined || named.videoStream !== undefined) restated.videoStream = wanted.videoStream ?? named.videoStream;
+    if (wanted.audioStream !== undefined || named.audioStream !== undefined) restated.audioStream = wanted.audioStream ?? named.audioStream;
+  }
+  if (preferences.subtitleStream !== undefined || named.subtitleStream !== undefined || preferences.subtitleLanguage !== undefined) {
+    // A subtitle language the file lacks is no subtitles.
+    restated.subtitleStream = preferences.subtitleStream ?? named.subtitleStream ?? (preferences.subtitleLanguage !== undefined ? null : undefined);
+  }
+  return { ...update, preferences: restated };
+}
+
+/**
  * Restate the segment container on any transformed generation being created
  * or replaced.
  *
@@ -1089,6 +1160,7 @@ export class PlaybackCoordinator {
     preferences: PlaybackPreferencesUpdate,
     capabilities: PlaybackCapabilities,
   ): Promise<PlaybackPreferencesUpdate> {
+    this.capabilitiesSeen = capabilities;
     if (preferences.mode !== undefined && preferences.mode !== 'choose') {
       // The viewer chose how to play; which file is still core's to choose
       // (Tom, 2026-09-25: "on direct play, something still has to pick which
@@ -1106,14 +1178,17 @@ export class PlaybackCoordinator {
       const { mediaId, profile } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
       const container = preferences.container
         ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
-      const streams = profile ? streamsToName(profile, preferences.mode, preferences) : {};
+      const streams = profile ? streamsToName(profile, preferences.mode, preferences) : undefined;
       this.patchSnapshot({ instruction: {
         mode: preferences.mode, video: preferences.video, audio: preferences.audio,
         container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
         ...(mediaId ? { mediaId } : {}),
       } });
-      return { ...preferences, ...streams, ...(container ? { container } : {}), ...(mediaId ? { mediaId } : {}) };
+      // With facts the languages are resolved into `streams`, and sent as
+      // indexes; without, they go as given and the resolver drops one the
+      // node refuses.
+      return { ...(streams ? withoutLanguages(preferences) : preferences), ...streams, ...(container ? { container } : {}), ...(mediaId ? { mediaId } : {}) };
     }
 
     const facts = await this.facts();
@@ -1179,7 +1254,7 @@ export class PlaybackCoordinator {
       chosenByViewer: false, withoutFacts: false,
       ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
-    return { ...preferences, ...instructionPreferences(instruction), ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
+    return { ...withoutLanguages(preferences), ...instructionPreferences(instruction), ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
   }
 
   /**
@@ -1250,6 +1325,9 @@ export class PlaybackCoordinator {
   private noFactsMediaId(): string | undefined {
     return this.options.media.mediaIds[0];
   }
+
+  /** The capabilities the last instruction was formed for; see `drainMutations`. */
+  private capabilitiesSeen?: PlaybackCapabilities;
 
   /**
    * The viewer named the mode themselves, so nothing here may quietly change
@@ -2025,11 +2103,18 @@ export class PlaybackCoordinator {
       const positioned = pending.reason === 'subtitle' || !current.options.canSeek
         ? pending.update
         : { ...pending.update, seekMs: this.snapshot.intent.positionMs };
-      const update = restatePreferencesClearedByMode(
-        positioned,
-        current,
-        this.snapshot.instruction?.container,
-      );
+      // A generation begun as direct asked for no container, and from server
+      // 0.58.0 a remux or transcode must name one, so a change into either
+      // names the device's own.
+      const changedMode = positioned.preferences?.mode;
+      const capabilities = this.capabilitiesSeen
+        ?? ((changedMode === 'remux' || changedMode === 'transcode') && !this.snapshot.instruction?.container
+          ? await this.options.capabilities() : undefined);
+      const requestedContainer = this.snapshot.instruction?.container
+        ?? ((changedMode === 'remux' || changedMode === 'transcode') && positioned.preferences?.container === undefined && capabilities
+          ? segmentContainer(capabilities, this.options.policyOverrides).container
+          : undefined);
+      const update = namedStreamsForPatch(restatePreferencesClearedByMode(positioned, current, requestedContainer), current);
       const requestedPositionMs = update.seekMs ?? this.snapshot.intent.positionMs;
       const requestedPositionRevision = this.positionRevision;
       const startedAt = machaHost().now();
@@ -2104,7 +2189,8 @@ export class PlaybackCoordinator {
           update,
           error,
         });
-        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error) } });
+        const refusal = refusalOf(error);
+        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error), ...(refusal ? { refusal } : {}) } });
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;

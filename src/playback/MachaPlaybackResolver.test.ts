@@ -693,6 +693,31 @@ describe('MachaPlaybackResolver against a node that chooses nothing (server 0.58
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('drops a language the media lacks and asks again, rather than fail the play', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'choice_not_available', message: 'no audio stream in language jpn', choice: 'audio_stream', choices: [1, 2] } }, 400))
+      .mockResolvedValueOnce(jsonResponse(sessionResponse(), 201));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, undefined, { mode: 'remux', audioLanguage: 'jpn', subtitleLanguage: 'eng' });
+
+    const second = JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body));
+    expect(second.preferences).not.toHaveProperty('audio_language');
+    expect(second.preferences).toMatchObject({ subtitle_language: 'eng' });
+  });
+
+  it('answers an open choice on a PATCH too', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'choice_required', message: 'name one', choice: 'container', choices: ['fmp4', 'mpegts'] } }, 400))
+      .mockResolvedValueOnce(jsonResponse(sessionResponse(), 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await new MachaPlaybackResolver('http://node.test').update('session-1', { preferences: { mode: 'transcode' } });
+
+    const second = JSON.parse(String((fetchMock.mock.calls[1] as [string, RequestInit])[1].body));
+    expect(second.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4' });
+  });
+
   it('reads a session that no longer carries item_id, media_ids or can_switch_media', async () => {
     const wire = sessionResponse() as Record<string, any>;
     delete wire.item_id;

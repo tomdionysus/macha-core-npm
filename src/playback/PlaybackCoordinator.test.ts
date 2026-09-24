@@ -4071,10 +4071,46 @@ describe('against a node that chooses nothing', () => {
     expect(sent.videoStream).toBeUndefined();
   });
 
-  it('leaves the stream to a language exactly one stream has', async () => {
-    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'eng' } });
+  it("names the one stream in the viewer's language, and sends the stream rather than the language", async () => {
+    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'ENG' } });
     await coordinator.start();
-    expect((api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate).audioStream).toBeUndefined();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent.audioStream).toBe(1);
+    expect(sent).not.toHaveProperty('audioLanguage');
+  });
+
+  it('sends no language the file lacks, which the node would refuse outright', async () => {
+    // Until 0.58.0 the node fell back to the default track; now it answers
+    // choice_not_available, and the title does not play.
+    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'jpn', subtitleLanguage: 'deu' } });
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ audioStream: 2 });
+    expect(sent).not.toHaveProperty('audioLanguage');
+    expect(sent).not.toHaveProperty('subtitleLanguage');
+    expect(sent.subtitleStream ?? null).toBeNull();
+  });
+
+  it('names the container and the audio stream on a change from direct into a transcode', async () => {
+    // The web client's failure on 0.58.0: a session begun direct names
+    // neither, and the PATCH into a transcode was refused, so the title
+    // started and then stopped.
+    const streams = twoAudio()[0]!.profile.streams.map((stream) => ({ ...stream, profile: '', language: stream.language }));
+    const direct = session({ mode: 'direct', sourceInfo: { path: '/movie', format: 'matroska', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(direct, async (update) => { updates.push(update); return direct; });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => ({ ...capabilities(), containers: ['matroska', 'mp4'] }), initialPositionMs: 0,
+      facts: async () => twoAudio() as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct' });
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2 });
   });
 
   it("names the container and streams under a mode the viewer chose, even for an item's only file", async () => {
@@ -4083,6 +4119,19 @@ describe('against a node that chooses nothing', () => {
     expect(facts).toHaveBeenCalled();
     expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2, mediaId: 'm1' });
     expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, container: 'fmp4' });
+  });
+
+  it("carries the node's refusal on update-failed, as data for the host to word", async () => {
+    const refusal = Object.assign(new Error('name one'), { status: 400, code: 'choice_required', choice: 'audio_stream', choices: [1, 2] });
+    const api = resolver(session({ mode: 'direct' }), async () => { throw refusal; });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().notice?.code).toBe('update-failed'));
+    expect(coordinator.getSnapshot().notice?.refusal).toEqual({ status: 400, code: 'choice_required', choice: 'audio_stream', choices: [1, 2] });
   });
 
   it('does not step the mode down over a choice the node says is open', async () => {

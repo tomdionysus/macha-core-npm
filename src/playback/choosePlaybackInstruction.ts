@@ -542,34 +542,75 @@ export function defaultStream(streams: readonly MediaTechnicalStream[], type: 'v
 }
 
 /**
- * The streams to name so a node has nothing to choose: the video stream when
- * the file has several, and the audio stream when it has several and the
- * preferences leave the choice open. An audio language exactly one stream has
- * is an answer the node takes, so it is left to it; a language several share,
- * or none has, is not, and the default stream (among the matches, where there
- * are any) is named instead. Nothing for `direct`, which serves the file
- * untouched and lets the player pick its tracks.
+ * The streams to name so a node has nothing to choose, from the file's facts.
+ *
+ * From server 0.58.0 a node refuses any choice it would otherwise make, and a
+ * language is no exception: one no stream has is `choice_not_available`, and
+ * one several share is `choice_required`, for audio and subtitles alike and
+ * even under `direct`. Until 0.58.0 it fell back to the default track, so a
+ * viewer's language preference was safe to send whatever the file held. It no
+ * longer is, and core resolves it here, against the same exact, case-blind
+ * match the node makes. A caller sends these indexes in place of the
+ * languages; see `withoutLanguages`.
+ *
+ * - video: the default stream, where a remux or transcode has several and
+ *   none is named;
+ * - audio: the named stream; else the one stream in the viewer's language, or
+ *   the default among several in it; else, for a remux or transcode of a file
+ *   with several, the default stream. `direct` names nothing then, since the
+ *   player picks its own tracks;
+ * - subtitle: the named stream; else the one in the viewer's language, or the
+ *   default among several in it (the first when none is flagged); else none.
+ *   A subtitle language the file lacks is no subtitles, not a refusal.
  */
 export function streamsToName(
   profile: MediaTechnicalProfile,
   mode: PlaybackMode,
-  preferences: { videoStream?: number | null; audioStream?: number | null; audioLanguage?: string },
-): { videoStream?: number; audioStream?: number } {
-  if (mode === 'direct') return {};
-  const out: { videoStream?: number; audioStream?: number } = {};
+  preferences: {
+    videoStream?: number | null;
+    audioStream?: number | null;
+    subtitleStream?: number | null;
+    audioLanguage?: string;
+    subtitleLanguage?: string;
+  },
+): { videoStream?: number; audioStream?: number; subtitleStream?: number } {
+  const named = (index: number | null | undefined) => index !== undefined && index !== null && index >= 0;
+  const inLanguage = (type: MediaTechnicalStream['type'], language: string | undefined) => {
+    const wanted = language?.trim().toLowerCase();
+    return wanted ? profile.streams.filter((stream) => stream.type === type && stream.language.toLowerCase() === wanted) : undefined;
+  };
+  const out: { videoStream?: number; audioStream?: number; subtitleStream?: number } = {};
+
   const videos = profile.streams.filter((stream) => stream.type === 'video');
-  if (videos.length > 1 && (preferences.videoStream === undefined || preferences.videoStream === null)) {
+  if (mode !== 'direct' && videos.length > 1 && !named(preferences.videoStream)) {
     const chosen = defaultStream(profile.streams, 'video');
     if (chosen) out.videoStream = chosen.index;
   }
-  const audios = profile.streams.filter((stream) => stream.type === 'audio');
-  if (audios.length > 1 && (preferences.audioStream === undefined || preferences.audioStream === null)) {
-    const language = preferences.audioLanguage?.trim().toLowerCase();
-    const matches = language ? audios.filter((stream) => stream.language.toLowerCase() === language) : [];
-    if (matches.length !== 1) {
-      const chosen = matches.length > 1 ? defaultStream(matches, 'audio') : defaultStream(profile.streams, 'audio');
-      if (chosen) out.audioStream = chosen.index;
-    }
+
+  if (!named(preferences.audioStream)) {
+    const audios = profile.streams.filter((stream) => stream.type === 'audio');
+    const matches = inLanguage('audio', preferences.audioLanguage);
+    const chosen = matches && matches.length > 0 ? defaultStream(matches, 'audio')
+      : mode !== 'direct' && audios.length > 1 ? defaultStream(profile.streams, 'audio')
+        : undefined;
+    if (chosen) out.audioStream = chosen.index;
+  }
+
+  if (!named(preferences.subtitleStream)) {
+    const matches = inLanguage('subtitle', preferences.subtitleLanguage);
+    const chosen = matches?.find((stream) => stream.default) ?? matches?.[0];
+    if (chosen) out.subtitleStream = chosen.index;
   }
   return out;
+}
+
+/**
+ * Preferences with the viewer's languages taken out, for a request whose
+ * streams `streamsToName` has already resolved from them. A named index wins
+ * on the node, but where nothing was named (a `direct` play, or no subtitle in
+ * that language) a language left in would be refused outright.
+ */
+export function withoutLanguages<T extends { audioLanguage?: string; subtitleLanguage?: string }>(preferences: T): T {
+  const { audioLanguage: _audio, subtitleLanguage: _subtitle, ...rest } = preferences;
+  return rest as T;
 }

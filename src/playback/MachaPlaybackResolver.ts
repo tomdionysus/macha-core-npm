@@ -251,15 +251,27 @@ export const CHOICE_NOT_AVAILABLE_CODE = 'choice_not_available';
 function answeredChoice(
   error: unknown,
   sent: PlaybackPreferencesUpdate,
-  capabilities: PlaybackCapabilities,
+  capabilities: PlaybackCapabilities | undefined,
   answered: Set<string>,
-): { preferences: PlaybackPreferencesUpdate; named: number | string } | undefined {
-  if (!(error instanceof MachaPlaybackError) || error.code !== CHOICE_REQUIRED_CODE || !error.choice) return undefined;
+): { preferences: PlaybackPreferencesUpdate; named: number | string | null } | undefined {
+  if (!(error instanceof MachaPlaybackError) || !error.choice) return undefined;
+  // A language the media lacks (0.58.0): until then the node fell back to the
+  // default track, so a viewer's preference was always safe to send. Dropped
+  // here, and the request asked again: audio then names what the node lists
+  // should it still find a choice open, and subtitles go without.
+  if (error.code === CHOICE_NOT_AVAILABLE_CODE) {
+    const field = error.choice === 'audio_stream' ? 'audioLanguage' : error.choice === 'subtitle_stream' ? 'subtitleLanguage' : undefined;
+    if (!field || !sent[field] || answered.has(`language:${error.choice}`)) return undefined;
+    answered.add(`language:${error.choice}`);
+    const { [field]: _dropped, ...rest } = sent;
+    return { preferences: rest, named: null };
+  }
+  if (error.code !== CHOICE_REQUIRED_CODE) return undefined;
   if (answered.has(error.choice)) return undefined;
   answered.add(error.choice);
   const first = error.choices?.[0];
   if (error.choice === 'container') {
-    const container = segmentContainer(capabilities).container
+    const container = (capabilities ? segmentContainer(capabilities).container : undefined)
       ?? (first === 'fmp4' || first === 'mpegts' ? first : undefined);
     if (!container) return undefined;
     return { preferences: { ...sent, container }, named: container };
@@ -267,6 +279,7 @@ function answeredChoice(
   if (typeof first !== 'number') return undefined;
   if (error.choice === 'video_stream') return { preferences: { ...sent, videoStream: first }, named: first };
   if (error.choice === 'audio_stream') return { preferences: { ...sent, audioStream: first }, named: first };
+  if (error.choice === 'subtitle_stream') return { preferences: { ...sent, subtitleStream: first }, named: first };
   return undefined;
 }
 
@@ -596,18 +609,30 @@ export class MachaPlaybackResolver implements PlaybackResolver {
 
   async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
     this.log.info('session-update', { sessionId, update });
-    const body: Record<string, unknown> = {};
-    const preferences = wirePreferences(update.preferences);
-    if (preferences) body.preferences = preferences;
-    if (update.seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(update.seekMs));
-    if (update.mediaId !== undefined) body.media_id = update.mediaId;
-    const session = this.mapSession(await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(body),
-      signal,
-    }));
-    this.log.info('session-updated', this.sessionSummary(session));
-    return session;
+    // The same safety net as `resolve`: a PATCH is held to the same choices.
+    const answered = new Set<string>();
+    let sent = update.preferences;
+    for (;;) {
+      const body: Record<string, unknown> = {};
+      const preferences = wirePreferences(sent);
+      if (preferences) body.preferences = preferences;
+      if (update.seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(update.seekMs));
+      if (update.mediaId !== undefined) body.media_id = update.mediaId;
+      try {
+        const session = this.mapSession(await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+          signal,
+        }));
+        this.log.info('session-updated', this.sessionSummary(session));
+        return session;
+      } catch (error) {
+        const next = sent ? answeredChoice(error, sent, undefined, answered) : undefined;
+        if (!next) throw error;
+        this.log.warn('stream-unchosen-defaulted', { sessionId, choice: (error as MachaPlaybackError).choice, named: next.named });
+        sent = next.preferences;
+      }
+    }
   }
 
   async stop(sessionId: string, options: PlaybackStopOptions = {}): Promise<void> {
