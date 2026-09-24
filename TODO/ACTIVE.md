@@ -75,6 +75,14 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
 - Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.58.0, so the next phone release needs a published core that includes `0bce895`.
 - TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.58.0 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
 
+### Per-quality Play and the device ceiling: rulings settled — Tom, 2026-09-25
+Not built yet. Tom confirmed these in core's session. They reached core relayed by the web client.
+- Qualities cap down only, from the best file's class to 720.
+- Where the best file is below 720p, its own class is offered anyway, e.g. 480p beside Play, and never a class above it. `qualityClass` needs classes below 720: 576, 480 and 360.
+- With no setting chosen, automatic play caps at the display's resolution class. The host states its display: on the web, screen size times devicePixelRatio; on the TV, the panel. An explicit setting overrides it, and a reason code is given when the cap limits the choice.
+- The phone has Wi-Fi and mobile-data ceilings, the mobile one lower, with a reason shown and an override in settings.
+- An explicit pick is never capped.
+
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
 - **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
