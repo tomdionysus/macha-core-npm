@@ -1,7 +1,7 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, fetchWithTimeout, mergeRequestHeaders, normalizeBaseUrl, readResponseBody } from './httpCompat.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import type { CurrentSession, UserRole } from './UsersApi.js';
-import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
+import { isGatewayConnectionFailure, LIVENESS_PATH, serverUnreachable } from './serverConnection.js';
 import type { EndpointCandidate, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
 /**
@@ -168,9 +168,42 @@ function sessionRoles(record: Record<string, unknown> | undefined): UserRole[] |
  * any node is valid cluster-wide, so a single down node must not block
  * getting a token.
  */
+/**
+ * The ranked candidates, led by the first to answer a liveness probe when the
+ * registry has no evidence about any of them yet: a fresh sign-in, or a cold
+ * start with no cached token.
+ *
+ * A mint creates a session, so it cannot be hedged the way validation is:
+ * each losing mint would hold a session against the account's cap. So the
+ * question "who is answering" is asked of the unauthenticated health route,
+ * hedged, and the mint then goes to that node alone, falling back to the rest
+ * in ranked order. Without it a fresh sign-in waited a full request timeout,
+ * 8 s, for every dead node ranked ahead of a live one.
+ */
+async function mintOrder(registry: EndpointRegistry): Promise<EndpointCandidate['endpoint'][]> {
+  const candidates = registry.candidates();
+  const ranked = candidates.map(({ endpoint }) => endpoint);
+  if (candidates.length < 2 || candidates.some(({ health }) => health.lastSuccessAt !== undefined || health.consecutiveFailures > 0)) {
+    return ranked;
+  }
+  const won = await firstToAnswer(registry, async (endpoint, signal) => {
+    await fetchWithTimeout(
+      (target, init) => fetch(target, init),
+      `${endpoint.baseUrl}${LIVENESS_PATH}`,
+      { method: 'GET', headers: mergeRequestHeaders(undefined, { Accept: 'application/json' }), cache: 'no-store', signal },
+      DEFAULT_REQUEST_TIMEOUT_MS,
+    );
+    // Any response is an answer. A node answering 503 while it starts is
+    // reachable, and the mint decides the rest.
+    return true;
+  });
+  if (!won) return ranked;
+  return [won.endpoint, ...ranked.filter((endpoint) => endpoint.id !== won.endpoint.id)];
+}
+
 export async function mintSessionAnyNode(registry: EndpointRegistry, credentials?: SessionCredentials): Promise<Session> {
   let lastError: unknown;
-  for (const { endpoint } of registry.candidates()) {
+  for (const endpoint of await mintOrder(registry)) {
     try {
       const session = await mintSession(endpoint.baseUrl, credentials);
       registry.recordSuccess(endpoint.id);

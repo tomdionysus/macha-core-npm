@@ -15,6 +15,27 @@ function blackHoled() {
   });
 }
 
+/**
+ * A fetch that answers the liveness probe for the nodes listed as up, fails it
+ * for the rest, and hands every other request to `rest`. A fresh mint probes
+ * first, so tests of the mint walk answer by URL rather than by call order.
+ */
+function withLiveness(up: readonly string[], rest: (url: string, init?: RequestInit) => Promise<Response>) {
+  return vi.fn((url: string, init?: RequestInit) => {
+    if (String(url).endsWith('/api/v1/health')) {
+      return up.some((node) => String(url).startsWith(node))
+        ? Promise.resolve(new Response('{"status":"ok"}', { status: 200 }))
+        : Promise.reject(new TypeError('unreachable'));
+    }
+    return rest(url, init);
+  });
+}
+
+/** The requests that were not liveness probes. */
+function requestsBeyondProbes(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => !url.endsWith('/api/v1/health'));
+}
+
 function sessionResponse(overrides: Record<string, unknown> = {}) {
   return {
     id: 'session-1',
@@ -124,20 +145,18 @@ describe('a node refusing to mint', () => {
     // node answered 403 while the rest would have minted happily, and
     // stopping at its opinion denied a session the cluster was willing to
     // grant.
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(
+    const fetchMock = withLiveness(['http://stale.test', 'http://a.test'], async (url) => (url.startsWith('http://stale.test')
+      ? new Response(
         JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
         { status: 403, headers: { 'Content-Type': 'application/json' } },
-      ))
-      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
-        status: 201, headers: { 'Content-Type': 'application/json' },
-      }));
+      )
+      : new Response(JSON.stringify(sessionResponse()), { status: 201, headers: { 'Content-Type': 'application/json' } })));
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://stale.test', 'http://a.test']));
 
     await expect(mintSessionAnyNode(registry)).resolves.toMatchObject({ token: 'token-secret' });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestsBeyondProbes(fetchMock)).toEqual(['http://stale.test/api/v1/session', 'http://a.test/api/v1/session']);
     // And the refusing node is still healthy: it answered, which is what a
     // working node does.
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
@@ -146,7 +165,7 @@ describe('a node refusing to mint', () => {
   it('reports the refusal once every node has refused, rather than an unreachable cluster', async () => {
     // A fresh Response per call: a body can only be read once, and reusing
     // one would have this test assert the empty-body fallback by accident.
-    const fetchMock = vi.fn(async () => new Response(
+    const fetchMock = withLiveness(['http://a.test', 'http://b.test'], async () => new Response(
       JSON.stringify({ error: { code: 'anonymous_disabled', message: 'anonymous access is disabled' } }),
       { status: 403, headers: { 'Content-Type': 'application/json' } },
     ));
@@ -157,7 +176,7 @@ describe('a node refusing to mint', () => {
       status: 403,
       code: 'anonymous_disabled',
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestsBeyondProbes(fetchMock)).toHaveLength(2);
   });
 });
 
@@ -181,23 +200,22 @@ describe('a node that accepts the connection and never answers', () => {
     // The cost of the missing deadline was never one slow request: every
     // fetch() in the application queues behind the bootstrap mint, so an
     // unbounded first candidate froze the client for an OS timeout per node.
+    // And it no longer costs the timeout: the probe finds the answering node
+    // after one hedge, and the mint goes straight there.
     vi.useFakeTimers();
-    const fetchMock = vi.fn()
-      .mockImplementationOnce(blackHoled())
-      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
-        status: 201, headers: { 'Content-Type': 'application/json' },
-      }));
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => (String(url).startsWith('http://a.test')
+      ? blackHoled()(url, init)
+      : String(url).endsWith('/api/v1/health')
+        ? Promise.resolve(new Response('{"status":"ok"}', { status: 200 }))
+        : Promise.resolve(new Response(JSON.stringify(sessionResponse()), { status: 201, headers: { 'Content-Type': 'application/json' } }))));
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
     const request = mintSessionAnyNode(registry);
-    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_HEDGE_MS);
 
     await expect(request).resolves.toMatchObject({ token: 'token-secret' });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    // A node that never answered is a node fault, unlike a refusal.
-    expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a.test')?.health.consecutiveFailures)
-      .toBeGreaterThan(0);
+    expect(requestsBeyondProbes(fetchMock)).toEqual(['http://b.test/api/v1/session']);
   });
 
   it('gives up on validating a cached token on the same deadline', async () => {
@@ -277,7 +295,7 @@ describe('signing in with credentials', () => {
     // failure against every node, degrading endpoint ranking and playback
     // failover because somebody fumbled a login. The refusal is also
     // cluster-wide: every node checks the same replicated table.
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
+    const fetchMock = withLiveness(['http://a.test', 'http://b.test'], async () => new Response(
       JSON.stringify({ error: 'invalid_credentials', message: 'Unknown username or password.' }),
       { status: 401, headers: { 'Content-Type': 'application/json' } },
     ));
@@ -287,24 +305,24 @@ describe('signing in with credentials', () => {
     await expect(mintSessionAnyNode(registry, { username: 'alice', password: 'wrong' }))
       .rejects.toMatchObject({ status: 401 });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(requestsBeyondProbes(fetchMock)).toHaveLength(1);
     for (const { health } of registry.candidates()) expect(health.consecutiveFailures).toBe(0);
   });
 
   it('still walks to the next node when one cannot answer at all', async () => {
     // The counterpart: a node that fails to respond is a node fault, and the
     // walk is the whole reason a cold start survives one node being down.
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
-      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
-        status: 201, headers: { 'Content-Type': 'application/json' },
-      }));
+    // The probe says both are up; the first then fails the mint itself.
+    const fetchMock = withLiveness(['http://a.test', 'http://b.test'], async (url) => {
+      if (url.startsWith('http://a.test')) throw new TypeError('Failed to fetch');
+      return new Response(JSON.stringify(sessionResponse()), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    });
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a.test', 'http://b.test']));
 
     await expect(mintSessionAnyNode(registry, { username: 'alice', password: 'right' }))
       .resolves.toMatchObject({ token: 'token-secret' });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestsBeyondProbes(fetchMock)).toHaveLength(2);
   });
 });
 
@@ -312,20 +330,33 @@ describe('mintSessionAnyNode', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('mints against whichever endpoint answers first and records the outcome', async () => {
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new TypeError('node a unreachable'))
-      .mockResolvedValueOnce(new Response(JSON.stringify(sessionResponse()), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }));
+    const fetchMock = withLiveness(['http://b'], async () => new Response(JSON.stringify(sessionResponse()), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    }));
     vi.stubGlobal('fetch', fetchMock);
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
 
     const session = await mintSessionAnyNode(registry);
 
     expect(session.token).toBe('token-secret');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Only the node the probe found answering is asked to mint.
+    expect(requestsBeyondProbes(fetchMock)).toEqual(['http://b/api/v1/session']);
     expect(registry.snapshot().find((entry) => entry.endpoint.id === 'http://a')?.health.consecutiveFailures).toBeGreaterThan(0);
+  });
+
+  it('probes nothing once the registry already knows which nodes answer', async () => {
+    // After validation, or any request, the ranking already leads with a node
+    // that answered; a probe would only add a round trip.
+    const fetchMock = withLiveness(['http://a', 'http://b'], async () => new Response(JSON.stringify(sessionResponse()), {
+      status: 201, headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    registry.recordSuccess('http://b');
+
+    await mintSessionAnyNode(registry);
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(['http://b/api/v1/session']);
   });
 
   it('throws once every known endpoint has failed', async () => {
