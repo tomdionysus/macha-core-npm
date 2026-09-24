@@ -919,7 +919,7 @@ Raised by the phone client and **closed by it the same day**, on reading rather 
 **How this entry came to be wrong is the part worth keeping.** The `0.14.0` seek work was moved to COMPLETED.md wholesale during the 2026-09-19 reconciliation; a later session re-opened the half it could not find evidence for, and re-opened it on the strength of not finding it rather than on looking. That is fault 1 in the list above, in its cheapest form: the whole check is one call on the first line of the function the entry cites by line number.
 
 ### Smaller correctness items
-**Waiting on:** core, for the one that is left. **Four of five shipped in `0.18.0`** and are in COMPLETED: the README seeding snippet, the emptied bootstrap set, the per-title guard on `ClusterPlaybackFactsApi`, and `envelopeArray` with the `502 invalid_response` classification.
+**All five done.** The last, `TorrentJob.catalogue` made optional, went out 2026-09-24 beside 0.56.0's `error_code` on the same type; the web client already guarded for its absence. **Four of five shipped in `0.18.0`** and are in COMPLETED: the README seeding snippet, the emptied bootstrap set, the per-title guard on `ClusterPlaybackFactsApi`, and `envelopeArray` with the `502 invalid_response` classification.
 
 - **`TorrentJob.catalogue` is declared required but version-gated.** `api/AcquisitionApi.ts:72`, "since 0.28.1", and the package supports mixed-version endpoint sets with no runtime check. Make it optional; absent stays absent. **Held deliberately:** widening a required field to optional is a compile break in every consumer that reads it, so it is not internal work and wants to go out with whatever else moves that type, announced rather than discovered.
 

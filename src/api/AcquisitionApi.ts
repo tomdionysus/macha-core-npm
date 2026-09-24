@@ -96,7 +96,11 @@ export interface TorrentJob {
   uploaded_total: number;
   peers: number;
   seeds: number;
-  catalogue: TorrentCatalogueSummary;
+  /**
+   * Absent on a node older than 0.28.1, which does not report it. The package
+   * supports mixed-version clusters, so absent stays absent: never a default.
+   */
+  catalogue?: TorrentCatalogueSummary;
   eta_seconds: number | null;
   progress: number | null;
   ingest_job_id: string | null;
