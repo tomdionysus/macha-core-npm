@@ -50,8 +50,8 @@ Throw or emit `PlaybackSourceError` with a `kind`:
 | kind | Means | Consequence |
 | --- | --- | --- |
 | `stream` | The bytes stopped arriving | Retried on another node |
-| `media` | The container or stream is broken | Not retried elsewhere |
-| `unsupported` | This decoder cannot play this | Not retried elsewhere |
+| `media` | The container or stream is broken, or would not decode | Not retried elsewhere; a copied stream is transcoded once on the same node, unless the viewer chose the mode |
+| `unsupported` | This decoder cannot play this | As `media` |
 | `not-found` | This node no longer has the source | Recovered without tearing down |
 | `not-ready` | The node has not produced this fragment yet | Not evidence; nothing is retried |
 | `unknown` | No evidence | Retried on another node |
