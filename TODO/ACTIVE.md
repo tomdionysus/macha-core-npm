@@ -513,7 +513,10 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 
 **Worth knowing before deciding: core is already the natural place.** The chooser lives here precisely so every client decides the same way from the same facts, and a speed figure is another fact of exactly that kind. The alternative — the server explaining it to three clients separately — is the shape that produced two of the divergences already recorded in this file.
 
-### ~~The law numbers mean different things in core and on the server~~ — RULED 2026-09-20, do not spend more time on it
+### ~~The law numbers mean different things in core and on the server~~ — RESOLVED 2026-09-24: one numbering everywhere
+
+**Resolved.** Tom ruled that every Macha project standardises on this repo's `docs/principles-and-laws.md` numbering and order: 1 control, 2 viewer, 3 loader, 4 unchanged. The server renumbered every citation in `c85ba51` (macha develop, 136 citations in 33 files). Core's note that the numberings disagree is removed, and the clients were told to correct any verbatim copy. The history below is kept for the reasoning.
+
 
 Core raised that `docs/principles-and-laws.md` numbers the laws control/viewer/loader 1-2-3 while the server's `ARCHITECTURE.md` numbers them viewer/loader/control, and that both trees cite by number.
 
