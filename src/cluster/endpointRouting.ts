@@ -1,6 +1,6 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
 import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
-import { reportClusterReachable, SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
+import { reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
 
@@ -10,7 +10,7 @@ const log = createClientLogger('cluster.routing');
 
 export class MachaClusterRouteError extends Error {
   constructor(public readonly endpointIds: readonly string[], public readonly unreachable: boolean, public readonly cause?: unknown) {
-    super(unreachable ? SERVER_UNREACHABLE_MESSAGE : 'All configured Macha API endpoints failed.');
+    super(unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
     this.name = 'MachaClusterRouteError';
   }
 }

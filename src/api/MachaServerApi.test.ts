@@ -1,3 +1,4 @@
+import { MachaConnectionError } from './serverConnection.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaServerApi } from './MachaServerApi.js';
 import { fixedBearerToken } from './SessionManager.js';
@@ -67,12 +68,12 @@ describe('MachaServerApi', () => {
   });
   it('reports a network failure as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    await expect(new MachaServerApi('').status()).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(new MachaServerApi('').status()).rejects.toBeInstanceOf(MachaConnectionError);
   });
 
   it('treats a proxy-generated non-JSON 500 as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('connect ECONNREFUSED', { status: 500 })));
-    await expect(new MachaServerApi('').status()).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(new MachaServerApi('').status()).rejects.toBeInstanceOf(MachaConnectionError);
   });
 
 });

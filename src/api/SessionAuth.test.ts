@@ -71,7 +71,7 @@ describe('mintSession', () => {
 
   it('reports a network failure as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    await expect(mintSession('http://node.test')).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(mintSession('http://node.test')).rejects.toBeInstanceOf(MachaConnectionError);
   });
 });
 

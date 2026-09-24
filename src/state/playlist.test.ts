@@ -48,7 +48,7 @@ describe('PlaylistStore', () => {
     const store = new PlaylistStore('client', storage);
     const adopted = store.list();
     expect(adopted).toHaveLength(1);
-    expect(adopted[0]?.name).toBe('Playlist');
+    expect(adopted[0]?.name).toBe('');
     expect(adopted[0]?.items.map((item) => item.id)).toEqual(['one', 'two']);
 
     // Adoption must never overwrite a real collection on a later read.

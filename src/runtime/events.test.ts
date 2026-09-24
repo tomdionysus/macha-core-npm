@@ -8,8 +8,8 @@ describe('connection state events', () => {
     const unsubscribeFirst = subscribeConnectionState(first);
     const unsubscribeSecond = subscribeConnectionState(second);
 
-    publishConnectionState({ type: 'unreachable', message: 'down' });
-    expect(first).toHaveBeenCalledWith({ type: 'unreachable', message: 'down' });
+    publishConnectionState({ type: 'unreachable' });
+    expect(first).toHaveBeenCalledWith({ type: 'unreachable' });
     expect(second).toHaveBeenCalledTimes(1);
 
     unsubscribeFirst();

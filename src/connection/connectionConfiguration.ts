@@ -1,5 +1,5 @@
 import { mergeRequestHeaders, normalizeBaseUrl } from '../api/httpCompat.js';
-import { LIVENESS_PATH, SERVER_UNREACHABLE_MESSAGE } from '../api/serverConnection.js';
+import { LIVENESS_PATH } from '../api/serverConnection.js';
 
 export const CONNECTION_CHECK_TIMEOUT_MS = 4_000;
 export type ConnectionGate = 'welcome' | 'unreachable';
@@ -47,8 +47,16 @@ export interface ConnectionCheckResult {
    * accepting a wrong one.
    */
   unconfirmed: string[];
-  message?: string;
+  /**
+   * Why nothing is available, when nothing is, for the host to word:
+   * `no-endpoints` when none was entered, `pending` when some had not
+   * answered within the deadline, `unreachable` when every one failed.
+   * Absent when at least one endpoint answered. Core writes no viewer text.
+   */
+  problem?: ConnectionCheckProblem;
 }
+
+export type ConnectionCheckProblem = 'no-endpoints' | 'pending' | 'unreachable';
 
 type ConnectionAttempt = { state: 'response'; response: Response } | { state: 'pending' } | { state: 'failed' };
 
@@ -99,7 +107,7 @@ export async function checkEndpointConfiguration(
   timeoutMs = CONNECTION_CHECK_TIMEOUT_MS,
 ): Promise<ConnectionCheckResult> {
   const endpoints = normalizeConnectionEndpoints(urls);
-  if (endpoints.length === 0) return { endpoints, available: [], unconfirmed: [], message: 'Enter at least one Macha API endpoint.' };
+  if (endpoints.length === 0) return { endpoints, available: [], unconfirmed: [], problem: 'no-endpoints' };
 
   let pendingResponse = false;
   const results = await Promise.all(endpoints.map(async (endpoint) => {
@@ -122,10 +130,6 @@ export async function checkEndpointConfiguration(
     endpoints,
     available,
     unconfirmed,
-    message: available.length > 0
-      ? undefined
-      : pendingResponse
-        ? 'Connection checks are still pending. Try again shortly.'
-        : SERVER_UNREACHABLE_MESSAGE,
+    problem: available.length > 0 ? undefined : pendingResponse ? 'pending' : 'unreachable',
   };
 }

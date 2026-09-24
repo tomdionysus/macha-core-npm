@@ -24,7 +24,7 @@ describe('connection configuration', () => {
       : Promise.reject(new TypeError('offline')));
     const result = await checkEndpointConfiguration(['http://a', 'http://b'], fetchMock as unknown as typeof fetch, 50);
     expect(result.available).toEqual(['http://b']);
-    expect(result.message).toBeUndefined();
+    expect(result.problem).toBeUndefined();
     // Deliberately unauthenticated: this asks whether an address answers at
     // all, which needs no credentials, and there is no session to draw one
     // from before the endpoint has been saved.
@@ -56,14 +56,18 @@ describe('connection configuration', () => {
     // Separated rather than hidden, so a caller can say "reached, but it did
     // not identify itself as Macha" instead of guessing in either direction.
     expect(result.unconfirmed).toEqual(['http://starting']);
-    expect(result.message).toBeUndefined();
+    expect(result.problem).toBeUndefined();
+  });
+
+  it('says why when nothing was entered, as a kind rather than a sentence', async () => {
+    await expect(checkEndpointConfiguration([], vi.fn() as unknown as typeof fetch, 50)).resolves.toMatchObject({ problem: 'no-endpoints' });
   });
 
   it('returns one concise transport failure when no endpoint can be reached', async () => {
     const fetchMock = vi.fn(async () => { throw new TypeError('offline'); }) as typeof fetch;
     await expect(checkEndpointConfiguration(['http://a', 'http://b'], fetchMock, 50)).resolves.toMatchObject({
       available: [],
-      message: 'All configured API endpoints are unreachable.',
+      problem: 'unreachable',
     });
   });
 
@@ -77,7 +81,7 @@ describe('connection configuration', () => {
       endpoints: ['http://a'],
       available: [],
       unconfirmed: [],
-      message: 'Connection checks are still pending. Try again shortly.',
+      problem: 'pending',
     });
   });
 });

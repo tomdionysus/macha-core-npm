@@ -1,3 +1,4 @@
+import { MachaConnectionError } from './serverConnection.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from './MachaCatalogueApi.js';
 import { fixedBearerToken } from './SessionManager.js';
@@ -263,14 +264,14 @@ describe('MachaCatalogueApi', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     const api = new MachaCatalogueApi('http://node.test');
 
-    await expect(api.status()).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(api.status()).rejects.toBeInstanceOf(MachaConnectionError);
   });
 
   it('treats a proxy-generated non-JSON 500 as an unreachable Macha server', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('connect ECONNREFUSED', { status: 500 })));
     const api = new MachaCatalogueApi('');
 
-    await expect(api.status()).rejects.toThrow('The Macha server cannot be reached.');
+    await expect(api.status()).rejects.toBeInstanceOf(MachaConnectionError);
   });
 
   it('keeps a JSON 500 from Macha as a catalogue error', async () => {

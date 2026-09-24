@@ -42,14 +42,14 @@ describe('the container actually served', () => {
     const described = describePlaybackSession(session({
       output: { ...session().output, format: 'hls', container: 'mpegts' },
     }));
-    expect(described?.container).toBe('MPEG-TS');
+    expect(described?.container).toBe('mpegts');
   });
 
   it('reports fragmented MP4 under the name the server uses', () => {
     const described = describePlaybackSession(session({
       output: { ...session().output, format: 'hls', container: 'fmp4' },
     }));
-    expect(described?.container).toBe('FMP4');
+    expect(described?.container).toBe('fmp4');
   });
 
   it('says nothing at all when neither container nor format was reported', () => {
@@ -69,16 +69,16 @@ describe('the container actually served', () => {
       mode: 'direct',
       output: { format: 'avi', video: session().output.video, audio: session().output.audio },
     }));
-    expect(described?.container).toBe('AVI');
+    expect(described?.container).toBe('avi');
   });
 
-  it('calls a copied session DIRECT when the served container is the source container', () => {
+  it('calls a copied session direct when the served container is the source container', () => {
     const described = describePlaybackSession(session({
       mode: 'direct',
       source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
       output: { ...session().output, format: 'matroska', container: 'matroska' },
     }));
-    expect(described?.video).toBe('DIRECT · HEVC · 1920×1080 · 7.5 Mb/s');
+    expect(described?.delivery).toBe('direct');
   });
 
   it('does not call an MPEG-TS source in MPEG-TS segments a direct hand-off', () => {
@@ -90,10 +90,10 @@ describe('the container actually served', () => {
       sourceInfo: { ...session().sourceInfo, format: 'mpegts', container: 'mpegts' },
       output: { ...session().output, format: 'hls', container: 'mpegts' },
     }));
-    expect(described?.video).toBe('REMUX · HEVC · 1920×1080 · 7.5 Mb/s');
+    expect(described?.delivery).toBe('remux');
   });
 
-  it('calls it REMUX when the container changed, whatever the mode field says', () => {
+  it('calls it remux when the container changed, whatever the mode field says', () => {
     // The server reported `direct` for a session whose container changed.
     // What arrived decides the badge; what was asked for does not. Handed
     // over whole, so the manifest shortcut is not what is under test here.
@@ -102,7 +102,7 @@ describe('the container actually served', () => {
       source: { ...session().source, mimeType: 'video/mp2t', isManifest: false },
       output: { ...session().output, format: 'mpegts', container: 'mpegts' },
     }));
-    expect(described?.video).toBe('REMUX · HEVC · 1920×1080 · 7.5 Mb/s');
+    expect(described?.delivery).toBe('remux');
   });
 });
 
@@ -141,64 +141,56 @@ describe('describePlaybackSession', () => {
     expect(described?.endpoint).toBe('http://node-b.test:7438');
   });
 
-  it('reports the server-resolved remux mode when both streams are copied', () => {
-    // Both lines carry the session's own badge, not a per-stream operation.
-    // "AUDIO COPY" here would name an operation nobody needs distinguishing:
-    // in remux every stream is copied, so saying it per stream says nothing
-    // the badge has not already said.
-    expect(describePlaybackSession(session())).toEqual({
-      container: 'MP4',
-      video: 'REMUX · HEVC · 1920×1080 · 7.5 Mb/s',
-      audio: 'REMUX · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
+  it('reports the session as a remux when both streams are copied, with the streams as data', () => {
+    const base = session();
+    expect(describePlaybackSession(base)).toEqual({
+      container: 'mp4',
+      delivery: 'remux',
+      video: { transform: 'copy', source: base.sourceInfo.streams[0], sourceBitrate: 8_000_000, output: undefined, outputBitrate: undefined },
+      audio: { transform: 'copy', source: base.sourceInfo.streams[1], output: undefined },
     });
   });
 
-  it('calls both streams DIRECT when the file was handed over untouched', () => {
-    // The server copied nothing: it served the source file. Describing the
-    // audio as "copy" was true of the instruction and false of the operation,
-    // and it read as though a stream had been repackaged when none had.
+  it('carries no viewer text anywhere in the description', () => {
+    // Core writes none (Tom, 2026-09-24). Every string left is a server value
+    // or an origin: no labels, units or separators of core's own.
+    const text = JSON.stringify(describePlaybackSession(session({
+      mode: 'transcode',
+      transform: { video: 'transcode', audio: 'transcode' },
+      output: {
+        format: 'mp4',
+        video: { sourceStream: 0, transform: 'transcode', codec: 'h264', width: 1280, height: 720, bitrate: 4_000_000 },
+        audio: { sourceStream: 1, transform: 'transcode', codec: 'aac', channels: 2, sampleRate: 48000, bitrate: 192_000 },
+      },
+    })));
+    for (const made of ['TRANSCODE', 'SOURCE', 'COPY', 'DIRECT', 'REMUX', 'Mb/s', 'kb/s', 'kHz', 'stereo', '·', '→']) {
+      expect(text).not.toContain(made);
+    }
+  });
+
+  it('calls the session direct when the file was handed over untouched', () => {
+    // The server copied nothing: it served the source file. Calling the audio
+    // a copy was true of the instruction and false of the operation.
     expect(describePlaybackSession(session({
       mode: 'direct',
       source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
       output: { ...session().output, format: 'matroska', container: 'matroska' },
-    }))).toEqual({
-      container: 'MATROSKA',
-      video: 'DIRECT · HEVC · 1920×1080 · 7.5 Mb/s',
-      audio: 'DIRECT · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s',
-    });
+    }))?.delivery).toBe('direct');
   });
 
-  it('keeps AUDIO COPY where a copy is genuinely what distinguishes the stream', () => {
-    // Under transcode the streams differ from one another, so each needs
-    // naming: this is the case the word "copy" exists for.
-    expect(describePlaybackSession(session({
-      mode: 'transcode',
-      transform: { video: 'transcode', audio: 'copy' },
-      output: {
-        format: 'mp4',
-        video: { sourceStream: 0, transform: 'transcode', codec: 'h264', width: 1920, height: 1080, bitrate: 5_000_000 },
-        audio: { sourceStream: 1, transform: 'copy', codec: 'eac3', channels: 6, sampleRate: 48000, bitrate: 640_000 },
-      },
-    }))?.audio).toBe('AUDIO COPY · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s');
-  });
-
-  it('calls a video with no selected audio DIRECT too', () => {
-    // The omitted side is not a second operation to distinguish from the
-    // first, so there is nothing for "VIDEO COPY" to be contrasting with —
-    // the session is still just the file, handed over.
-    expect(describePlaybackSession(session({
+  it('calls a video with no selected audio direct too', () => {
+    const described = describePlaybackSession(session({
       mode: 'direct',
       source: { ...session().source, mimeType: 'video/x-matroska', isManifest: false },
       transform: { video: 'copy', audio: 'omit' },
       output: { ...session().output, format: 'matroska', container: 'matroska' },
-    }))).toEqual({
-      container: 'MATROSKA',
-      video: 'DIRECT · HEVC · 1920×1080 · 7.5 Mb/s',
-    });
+    }));
+    expect(described?.delivery).toBe('direct');
+    expect(described?.audio).toBeUndefined();
   });
 
-  it('reports mixed transforms per stream rather than as a blanket transcode', () => {
-    expect(describePlaybackSession(session({
+  it('names no delivery when anything is transcoded, and gives each stream its own transform', () => {
+    const described = describePlaybackSession(session({
       mode: 'transcode',
       transform: { video: 'copy', audio: 'transcode' },
       output: {
@@ -206,14 +198,14 @@ describe('describePlaybackSession', () => {
         video: { sourceStream: 0, transform: 'copy', codec: 'hevc', width: 1920, height: 1080 },
         audio: { sourceStream: 1, transform: 'transcode', codec: 'aac', channels: 2, sampleRate: 48000, bitrate: 192_000 },
       },
-    }))).toEqual({
-      container: 'MP4',
-      video: 'VIDEO COPY · HEVC · 1920×1080 · 7.5 Mb/s',
-      audio: 'AUDIO TRANSCODE · SOURCE · ENG · EAC3 · 5.1 · 48 kHz · 640 kb/s → AAC · stereo · 48 kHz · 192 kb/s',
-    });
+    }));
+    expect(described?.delivery).toBeUndefined();
+    expect(described?.video?.transform).toBe('copy');
+    expect(described?.video?.output).toBeUndefined();
+    expect(described?.audio).toMatchObject({ transform: 'transcode', output: { codec: 'aac', channels: 2, bitrate: 192_000 } });
   });
 
-  it('shows server-supplied transcode output resolution and bitrate', () => {
+  it("carries the server's transcode output for a transcoded video", () => {
     expect(describePlaybackSession(session({
       mode: 'transcode',
       transform: { video: 'transcode', audio: 'copy' },
@@ -222,7 +214,7 @@ describe('describePlaybackSession', () => {
         video: { sourceStream: 0, transform: 'transcode', codec: 'h264', width: 1280, height: 720, bitrate: 4_000_000 },
         audio: { sourceStream: 1, transform: 'copy', codec: 'eac3', channels: 6, sampleRate: 48000 },
       },
-    }))?.video).toBe('VIDEO TRANSCODE · SOURCE · HEVC · 1920×1080 · 7.5 Mb/s → H264 · 1280×720 · 4.0 Mb/s');
+    }))?.video).toMatchObject({ transform: 'transcode', source: { codec: 'hevc', width: 1920 }, output: { codec: 'h264', width: 1280, height: 720, bitrate: 4_000_000 } });
   });
 
   it('reports the selected subtitle stream only when subtitles are enabled', () => {
@@ -238,7 +230,7 @@ describe('describePlaybackSession', () => {
       selected: { videoStream: 0, audioStream: 1, subtitleStream: 5 },
     });
 
-    expect(describePlaybackSession(withSubtitles)?.subtitle).toBe('SUBTITLES · ENG · ASS · FORCED');
+    expect(describePlaybackSession(withSubtitles)?.subtitle).toMatchObject({ index: 5, codec: 'ass', language: 'eng', forced: true });
     expect(describePlaybackSession(session())?.subtitle).toBeUndefined();
   });
 
