@@ -60,6 +60,7 @@ export * from './api/httpCompat.js';
 export * from './api/MachaAcquisitionApi.js';
 export * from './api/MachaCatalogueApi.js';
 export * from './api/MachaManageApi.js';
+export * from './api/identification.js';
 export * from './api/MachaMediaApi.js';
 export * from './api/ClusterPlaybackFactsApi.js';
 export * from './api/MachaPlaybackFactsApi.js';
