@@ -360,8 +360,26 @@ export function isAccountSessionLimit(error: unknown): boolean {
   return code !== undefined && ACCOUNT_SCOPED_FAILURE_CODES.has(code);
 }
 
+/**
+ * A routed call's walk ended with no endpoint serving it. `unreachable` says
+ * whether every endpoint failed to answer at all. Lives here, beside the
+ * predicates that classify it, so the two modules do not import each other.
+ */
+export class MachaClusterRouteError extends Error {
+  constructor(public readonly endpointIds: readonly string[], public readonly unreachable: boolean, public readonly cause?: unknown) {
+    super(unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
+    this.name = 'MachaClusterRouteError';
+  }
+}
+
 export function unreachableEndpointFailure(error: unknown): boolean {
   if (error instanceof MachaConnectionError) return true;
+  // An exhausted walk throws this, not a connection error, and says in its
+  // own field whether every node was unreachable. A host asking this of a
+  // routed call's failure was always told no. Found by the phone client
+  // 2026-09-24: both its offline fallbacks were dead in the app while unit
+  // tests passed on bare classes.
+  if (error instanceof MachaClusterRouteError) return error.unreachable;
   if (error instanceof MachaEndpointError) return error.kind === 'transport';
   return error instanceof TypeError;
 }

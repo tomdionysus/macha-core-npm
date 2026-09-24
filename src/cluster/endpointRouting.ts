@@ -1,5 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
-import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
@@ -7,13 +7,6 @@ import { abortError } from '../errors.js';
 export type EndpointOperation<T> = (endpoint: MachaEndpoint) => Promise<T>;
 
 const log = createClientLogger('cluster.routing');
-
-export class MachaClusterRouteError extends Error {
-  constructor(public readonly endpointIds: readonly string[], public readonly unreachable: boolean, public readonly cause?: unknown) {
-    super(unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
-    this.name = 'MachaClusterRouteError';
-  }
-}
 
 /**
  * How a `find` walk that produced nothing ended.
