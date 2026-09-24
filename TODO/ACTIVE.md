@@ -60,7 +60,7 @@ Built in `284e52e`, after `0.19.0`. The facts supplier returns every file, the c
 - The web client moves `App.tsx`'s facts supplier to the whole list.
 
 ### Server 0.58.0: the server chooses nothing — live on fi-1 and gbni-1, 2026-09-25
-Deployed as "0.57.1" and renumbered 0.58.0 by Tom because the change breaks old clients. The contract is identical byte for byte (server `develop` `37440df`, the same code as `7c44643`), and "0.57.1" was never tagged. Both nodes are being redeployed so that health reports 0.58.0; the server confirms each node.
+Deployed as "0.57.1" and renumbered 0.58.0 by Tom because the change breaks old clients. The contract is identical byte for byte (server `develop` `37440df`, the same code as `7c44643`), and "0.57.1" was never tagged. Health now reports 0.58.0 on both nodes: fi-1 from 23:03:13Z, writable from 23:04:30Z, and gbni-1 from 23:03:51Z, writable from 23:03:52Z.
 Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accepted` on every create, as Tom accepted.
 - Create sends `media_id` and never `item_id`. Remux and transcode always carry a container: the host's preferred segment container.
 - Core names the video stream or the audio stream wherever a file has several. The rule is the viewer's choice first. Next comes a language that exactly one stream has, which is left to the node. Otherwise core names the default-flagged stream, and failing that the first. The rule is `streamsToName`.
