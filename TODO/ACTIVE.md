@@ -60,7 +60,7 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 - `33fa8b5`: `TorrentJob.catalogue` is optional.
 - `5973dc5`: resolver-level recovery is documented.
 
-**Follow-up, not built:** a probe-first mint on a cold registry. Mint is a POST, so it cannot be hedged, but a hedged health probe could pick the node to mint on. It changes what five mint tests observe; decide it on its own.
+- `47812f7`: a fresh mint on a registry with no evidence first probes the health route, hedged, and mints on the first node to answer, so a dead node costs a 1 s hedge where it cost the 8 s timeout. The mint tests now answer by URL.
 
 **ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
 
