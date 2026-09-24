@@ -3800,3 +3800,91 @@ describe('how long a standby is worth holding', () => {
     expect(alternateRecoveryWindowMs(sourced('transcode', 60_000))).toBe(8_000);
   });
 });
+
+/**
+ * Tom, 2026-09-24: a player that cannot decode a copied stream falls back to a
+ * transcode on the same node, once, unless the viewer chose the mode. Found on
+ * the Android TV set: MPEG-4 Part 2 video in an AVI failed in the hardware
+ * decoder, and the failure moved node, which a decode failure follows.
+ */
+describe('a copied stream the player could not decode', () => {
+  const facts = async () => ({ profile: { mediaId: 'm1', format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+    { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false },
+    { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+  ] } });
+
+  function setup(initialPreferences?: PlaybackPreferencesUpdate) {
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(session({ mode: 'direct' }), async (update) => {
+      updates.push(update);
+      return session({ mode: 'transcode', preferences: { ...session().preferences, mode: 'transcode' } as PlaybackPreferences });
+    });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 0, initialPreferences, facts,
+    });
+    return { coordinator, player, updates };
+  }
+
+  it('asks the same node for a transcode of every copied stream, and says why', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.video).toBe('copy');
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', video: 'transcode', audio: 'transcode' });
+    expect(coordinator.getSnapshot().notice?.code).toBe('decode-fallback');
+    expect(coordinator.getSnapshot().instruction?.reasons).toContain('player-could-not-decode');
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+  });
+
+  it('ends playback as before when the viewer chose the mode at the start', async () => {
+    const { coordinator, player, updates } = setup({ mode: 'direct' });
+    await coordinator.start();
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(0);
+  });
+
+  it('and when the viewer switched to it partway through', async () => {
+    // The chooser picked the copy at the start, so an instruction exists; the
+    // viewer's later choice is what has to stop the fallback.
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'direct' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(1);
+  });
+
+  it('falls back once per playback, even if the chooser picks the copy again', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('transcode'));
+
+    // "Decide for me" again: the chooser picks the copy it picked before.
+    coordinator.update({ preferences: { mode: 'choose' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(2));
+    expect(updates[1]?.preferences?.video).toBe('copy');
+
+    player.fail(new PlaybackSourceError('still cannot decode', 'unsupported'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(updates).toHaveLength(2);
+  });
+
+  it('leaves a node failure to the node path', async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    player.fail(new PlaybackSourceError('fragment failed', 'stream'));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError ?? coordinator.getSnapshot().preparingSource).toBeTruthy());
+    expect(updates).toHaveLength(0);
+  });
+});

@@ -12,7 +12,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, segmentContainer, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { choosePlaybackInstruction, degradeInstruction, segmentContainer, transcodeUndecodable, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -25,6 +25,9 @@ export interface PlaybackIntent {
  * Why the coordinator is telling the host something, for the host to word:
  * - `copy-refused`: the node could not copy the source streams, so it is
  *   converting them (the instruction's reasons carry `executor-refused-copy`);
+ * - `decode-fallback`: the player could not decode the copied streams, so they
+ *   are being converted (reasons carry `player-could-not-decode`); `error` is
+ *   the player's report;
  * - `cannot-seek`: a seek was refused because this stream cannot seek;
  * - `not-ready`: an update or a move was asked for before a session existed;
  * - `instruction-failed`: re-choosing how to play failed; `error` says why;
@@ -33,6 +36,7 @@ export interface PlaybackIntent {
  */
 export type PlaybackNoticeCode =
   | 'copy-refused'
+  | 'decode-fallback'
   | 'cannot-seek'
   | 'not-ready'
   | 'instruction-failed'
@@ -912,6 +916,10 @@ export class PlaybackCoordinator {
    * regeneration changed nothing, and the next step has to be a different one.
    */
   private lastRegenerationPositionMs?: number;
+  /** Set once the decode fallback has been taken; see `fallBackFromUndecodable`. */
+  private decodeFallbackTaken = false;
+  /** Set by the viewer's own `update` with a mode; see `viewerChoseMode`. */
+  private viewerModeChoice?: boolean;
 
   /**
    * A replacement generation that is built and waiting for the buffered
@@ -1153,9 +1161,12 @@ export class PlaybackCoordinator {
     }
   }
 
-  /** The viewer named the mode themselves, so nothing here may quietly change it. */
+  /**
+   * The viewer named the mode themselves, so nothing here may quietly change
+   * it: at the start, or later through `update`, which overrides the start.
+   */
   private get viewerChoseMode(): boolean {
-    return (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
+    return this.viewerModeChoice ?? (this.options.initialPreferences?.mode ?? 'choose') !== 'choose';
   }
 
   /**
@@ -1182,7 +1193,7 @@ export class PlaybackCoordinator {
    * have been rebuilt from was the refused one, so every recovery re-asked for
    * the copy the first attempt had already given up on.
    */
-  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown): void {
+  private applyDegradedInstruction(degraded: PlaybackInstruction, error: unknown, notice: PlaybackNotice = { code: 'copy-refused' }): void {
     const instruction = this.chosenInstruction;
     this.log.warn('instruction-degraded', {
       mediaId: this.options.media.id,
@@ -1203,8 +1214,39 @@ export class PlaybackCoordinator {
         chosenByViewer: false,
         withoutFacts: this.snapshot.instruction?.withoutFacts ?? false,
       },
-      notice: { code: 'copy-refused' },
+      notice,
     });
+  }
+
+  /**
+   * The player could not decode what a copied generation handed it, so ask the
+   * same node for a transcode at the viewer's position, once.
+   *
+   * Tom's ruling, 2026-09-24. Found on the Android TV set: an AVI with MPEG-4
+   * Part 2 video failed in the hardware decoder. The failure moved node, which
+   * cannot help, because a decode failure follows the file to every node; a
+   * transcode played it.
+   *
+   * - Only for `media` or `unsupported`, the kinds that are facts about the
+   *   bytes and not about the node.
+   * - Only for a generation that copied something. A transcode that will not
+   *   decode is not fixed by another one.
+   * - Never over a mode the viewer chose themselves. Then the failure ends
+   *   playback as before, and the host may offer a transcode.
+   * - Once per playback. A second decode failure ends it.
+   */
+  private fallBackFromUndecodable(session: PlaybackSession, error: Error): boolean {
+    if (!(error instanceof PlaybackSourceError) || (error.kind !== 'media' && error.kind !== 'unsupported')) return false;
+    const instruction = this.chosenInstruction;
+    if (this.decodeFallbackTaken || this.viewerChoseMode || !instruction || !session.options.modes.includes('transcode')) return false;
+    const degraded = transcodeUndecodable(instruction);
+    if (!degraded) return false;
+    this.decodeFallbackTaken = true;
+    this.log.warn('decode-failed-transcoding', { sessionId: session.sessionId, mode: session.mode, kind: error.kind, error });
+    this.applyUpdate({ preferences: instructionPreferences(degraded) });
+    // After the update, which clears the notice when it queues a change.
+    this.applyDegradedInstruction(degraded, error, { code: 'decode-fallback', error });
+    return true;
   }
 
   /**
@@ -1530,6 +1572,17 @@ export class PlaybackCoordinator {
 
   update(update: PlaybackUpdate): void {
     if (this.disposed) return;
+    // The viewer's own word on the mode, which a fallback must not override.
+    // Only here: core's own changes go through `applyUpdate` and say nothing
+    // about what the viewer wants.
+    if (this.snapshot.session && update.preferences?.mode !== undefined) {
+      this.viewerModeChoice = update.preferences.mode !== 'choose';
+    }
+    this.applyUpdate(update);
+  }
+
+  private applyUpdate(update: PlaybackUpdate): void {
+    if (this.disposed) return;
     const session = this.snapshot.session;
     if (!session) {
       this.patchSnapshot({ notice: { code: 'not-ready' } });
@@ -1744,7 +1797,7 @@ export class PlaybackCoordinator {
         capabilities,
       );
       if (this.disposed) return;
-      this.update({ ...update, preferences });
+      this.applyUpdate({ ...update, preferences });
     } catch (error) {
       this.log.warn('instruction-rechoose-failed', { mediaId: this.options.media.id, error });
       this.patchSnapshot({ notice: { code: 'instruction-failed', error: asError(error) } });
@@ -2787,6 +2840,7 @@ export class PlaybackCoordinator {
     // either the adapter has no degradation channel, or the cover ran out
     // before recovery finished. Same question, same answer, and still not a
     // reason to condemn the node.
+    if (failedSession && this.fallBackFromUndecodable(failedSession, fatalError)) return;
     if (isMissingSourceFailure(fatalError) && this.beginMissingSessionRecovery(fatalError, true)) return;
     // **An unclassified fatal asks the same question before it charges
     // anyone.** A player that cannot see a status -- expo-video's terminal

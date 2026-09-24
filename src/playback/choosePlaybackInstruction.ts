@@ -29,7 +29,9 @@ export type PlaybackDecisionReason =
   | 'executor-refused-copy'
   | 'executor-cannot-direct'
   | 'executor-cannot-copy-video'
-  | 'executor-cannot-copy-audio';
+  | 'executor-cannot-copy-audio'
+  // The player could not decode the copied streams, so they are converted.
+  | 'player-could-not-decode';
 
 /**
  * Platform truths that no probe can discover.
@@ -427,6 +429,24 @@ export function choosePlaybackInstruction(
  * Returns undefined when there is nothing left to give up, which is the point
  * at which the failure is real and must surface.
  */
+/**
+ * The step down from a copied generation the player could not decode: convert
+ * every stream that was being copied. Both, not the audio first as
+ * `degradeInstruction` does, because a decoder failure does not say which
+ * stream it could not handle, and the fallback is taken only once. Undefined
+ * when nothing was being copied.
+ */
+export function transcodeUndecodable(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
+  if (instruction.video !== 'copy' && instruction.audio !== 'copy') return undefined;
+  return {
+    ...instruction,
+    mode: 'transcode',
+    video: instruction.video === 'copy' ? 'transcode' : instruction.video,
+    audio: instruction.audio === 'copy' ? 'transcode' : instruction.audio,
+    reasons: [...instruction.reasons, 'player-could-not-decode'],
+  };
+}
+
 export function degradeInstruction(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
   const reasons: PlaybackDecisionReason[] = [...instruction.reasons, 'executor-refused-copy'];
 
