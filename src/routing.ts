@@ -31,6 +31,11 @@ export const routes = {
   edit: (id: string) => `/items/${segment(id)}/edit`,
   search: '/search',
   ingest: '/ingest',
+  // A section with sub-pages, like `manage` and `status`: torrents are one
+  // kind of import, not the whole of it (Tom, 2026-09-24).
+  ingestTorrents: '/ingest/torrents',
+  ingestTorrent: (id: string) => `/ingest/torrents/${segment(id)}`,
+  ingestFiles: '/ingest/files',
   status: '/status',
   statusClient: '/status/client',
   statusConnectivity: '/status/connectivity',
