@@ -46,6 +46,15 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
+### Core writes no viewer text — Tom, 2026-09-24
+**Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
+- An error's `message` is log text.
+- Every API error carries `detail`, the server's own sentence only, for a host that wants the server's words.
+- Server text passes through untouched.
+- All three clients were sent the full replacement list.
+
+Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Left pending Tom:** `formatPlaybackTime` (numbers only) and the `#` bucket in `ALPHABET_INDEX`.
+
 ### What the link week taught, kept because it still governs `develop`
 
 **A version number is immutable once it is published and only then.** Before that it is the name of the thing being built. **Core proposed a `-dev` prerelease scheme to stop the version string equalling a stale tag, and Tom rejected it:** *"NO. Do not do this. We're a development private cluster."* The honest identifier for a moving tree is a SHA, and where a client needs to say what it measured against it records **SHA + dirty state + `dist` hash**, the hash by `npm run dist:hash` and nothing else — three sessions computed three hashes of one `dist` in a day before that script existed, because `shasum` includes the path it is given and one method covered only `*.js` while `dist` carries 72 `.d.ts` files a linked client compiles against.
