@@ -91,7 +91,7 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 
 **ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
 
-**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
+**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and LIVE since 2026-09-24 18:57Z, inside server `0.57.0` on gbni-1 and fi-1.** Shipped in core `0.19.0`. Not yet checked against a live node; the web and Android TV clients were asked to. The search `kind` filter is still not shipped, so core still filters locally. (Superseded text follows.) It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
 - `/manage/unmatched` carries no `error_code`, by design: it lists only no-match hints, whose error is cleared.
 - The same review fixed core reading media-info's 202 "pending" as an invalid profile.
 
