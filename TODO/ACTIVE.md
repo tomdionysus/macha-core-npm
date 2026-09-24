@@ -66,6 +66,7 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
 - Each stream now carries its own `copy_into`, and it wins over the `operations` pair. An older node's pair is still read.
 - A `choice_required` still left open is answered once per kind, with the first choice the node offers, and logged as `stream-unchosen-defaulted`. `choice_required` and `choice_not_available` are never treated as an executor refusal, so they never step the mode down.
 - Next: the clients test against the live nodes on core `develop`, and then a core release.
+- Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.57.1, so the next phone release needs a published core that includes `0bce895`.
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
