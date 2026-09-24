@@ -30,6 +30,8 @@ describe('routes', () => {
     expect(routes.statusNode('node:one')).toBe('/status/nodes/node%3Aone');
     expect(routes.manage).toBe('/manage');
     expect(routes.manageFiles).toBe('/manage/files');
+    expect(routes.manageUnmatched).toBe('/manage/unmatched');
+    expect(routes.manageUnmatchedFile('file:1')).toBe('/manage/unmatched/file%3A1');
     expect(routes.manageUsers).toBe('/manage/users');
     expect(routes.login).toBe('/login');
     expect(routes.account).toBe('/account');

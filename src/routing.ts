@@ -42,6 +42,8 @@ export const routes = {
   statusNode: (id: string) => `/status/nodes/${segment(id)}`,
   manage: '/manage',
   manageFiles: '/manage/files',
+  manageUnmatched: '/manage/unmatched',
+  manageUnmatchedFile: (id: string) => `/manage/unmatched/${segment(id)}`,
   manageUsers: '/manage/users',
   login: '/login',
   account: '/account',
