@@ -53,7 +53,18 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - Server text passes through untouched.
 - All three clients were sent the full replacement list.
 
-Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
+Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `trackSubtitle`, `trackNumberLabel`, `choiceLabel`, and the sort and category labels. **Do not add a label, subtitle, notice sentence or default name to core again**, whatever a client asks. Offer the data. **Built 2026-09-24 afternoon, all pushed, not yet seen on a device:**
+- `b47773d`: `seedEndpoints`. The remembered-endpoints list no longer lasts one start: two clients seeded remembered nodes under the wrong source, and the health cycle dropped unconfirmed ones. Found by the Android TV client.
+- `9654e1e`: session validation is hedged at `SESSION_HEDGE_MS` (1 s). The web client measured a 17.2 s cold start with two nodes down. When no node answers, the cached session is now kept, where a viewer with a good token had been sent to sign in on a cluster that requires an account.
+- `f3cf74c`: `unreachableEndpointFailure` recognises `MachaClusterRouteError`. Found by the phone client.
+- `33fa8b5`: `TorrentJob.catalogue` is optional.
+- `5973dc5`: resolver-level recovery is documented.
+
+**Follow-up, not built:** a probe-first mint on a cold registry. Mint is a POST, so it cannot be hedged, but a hedged health probe could pick the node to mint on. It changes what five mint tests observe; decide it on its own.
+
+**ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
+
+**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
 - `/manage/unmatched` carries no `error_code`, by design: it lists only no-match hints, whose error is cleared.
 - The same review fixed core reading media-info's 202 "pending" as an invalid profile.
 
