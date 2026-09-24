@@ -2,11 +2,11 @@ import { MachaPlaybackError } from './MachaPlaybackResolver.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
-import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import {
   PlaybackCoordinator,
   type PlaybackCoordinatorSnapshot,
+  type PlaybackFacts,
   type PlaybackInstructionReport,
   type PlaybackMoveOptions,
 } from './PlaybackCoordinator.js';
@@ -115,7 +115,7 @@ function requestError(media: MediaSummary): Error | undefined {
  */
 export interface PlaybackRuntimeOptions {
   /** What the media is and what the node can do with it. See `PlaybackCoordinatorOptions`. */
-  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
 }

@@ -232,6 +232,14 @@ export interface PlaybackPreferencesUpdate {
    * decide which wins.
    */
   mode?: PlaybackMode | 'choose';
+  /**
+   * Which of the item's files to play, sent as the session's `media_id` when
+   * a session is created. The client chooses among an item's files, not the
+   * server (Tom, 2026-09-24): `PlaybackCoordinator` sets it from the chooser,
+   * and replacement generations restate the file being served. Ignored by an
+   * update; switching file mid-session is `PlaybackUpdate.mediaId`.
+   */
+  mediaId?: string;
   /** Per-stream instruction, overriding the `mode` shorthand when given. */
   video?: 'copy' | 'transcode';
   audio?: 'copy' | 'transcode';

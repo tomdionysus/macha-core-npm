@@ -3949,3 +3949,53 @@ describe('a change queued as the previous one finishes', () => {
     expect(updates[1]?.preferences?.maxHeight).toBe(720);
   });
 });
+
+/**
+ * Choosing among an item's files is the client's decision (Tom, 2026-09-24).
+ * Given only an item, the server played its first directly-playable file in
+ * stored order, while the chooser reasoned about whichever file the host
+ * handed it, so the two could disagree.
+ */
+describe('an item with several files', () => {
+  const file = (mediaId: string, codec: string) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec, profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  function start(facts: unknown, mediaIds: string[]) {
+    const api = resolver(session({ mode: 'direct' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => facts as never,
+    });
+    return { api, coordinator };
+  }
+
+  it('plays the file that plays best, and names it on the session', async () => {
+    const { api, coordinator } = start([file('hevc-file', 'hevc'), file('h264-file', 'h264')], ['hevc-file', 'h264-file']);
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'h264-file' });
+    expect(coordinator.getSnapshot().instruction?.mediaId).toBe('h264-file');
+  });
+
+  it('takes the first of equals, as stored order had it', async () => {
+    const { api, coordinator } = start([file('a', 'h264'), file('b', 'h264')], ['a', 'b']);
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
+  });
+
+  it('names an only file even from facts that carry no id, and names none it cannot know', async () => {
+    const single = { profile: file('x', 'h264').profile };
+    const one = start(single, ['only']);
+    await one.coordinator.start();
+    expect(one.api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('only');
+
+    const several = start(single, ['a', 'b']);
+    await several.coordinator.start();
+    expect(several.api.resolve.mock.calls[0]?.[3]?.mediaId).toBeUndefined();
+  });
+});

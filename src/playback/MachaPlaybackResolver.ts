@@ -502,6 +502,10 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       })),
     };
     if (seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(seekMs));
+    // The file the client chose. With it the node plays exactly that file;
+    // without it, a node older than the server's change ranks the item's files
+    // itself, which is the decision that is the client's.
+    if (preferences?.mediaId) body.media_id = preferences.mediaId;
     // Session admission deliberately has no profile preflight: immutable
     // profiles are advisory metadata and must not enter the viewer's critical
     // path. A non-conforming server response is surfaced immediately so the

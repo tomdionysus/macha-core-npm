@@ -24,7 +24,9 @@ title is, what its streams are and what operations it can perform. Choosing
 between Direct Play, remux and transcode is the client's, made from its own
 measured capabilities — and it is made in `@machafoundation/core` rather than in any one
 client, so every client decides the same way from the same facts. The server
-obeys the result; it does not pick on the client's behalf.
+obeys the result; it does not pick on the client's behalf. Choosing among an
+item's files is part of the same negotiation: the client matches each file's
+facts to its own capabilities and names the file it will play.
 
 The catalogue wire model mirrors the server contract. The client must not infer
 cluster truth, invent a parallel server model, transcode media, or treat a local

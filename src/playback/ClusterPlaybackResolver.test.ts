@@ -1483,3 +1483,24 @@ describe('ClusterPlaybackResolver.prepareOn and throughput', () => {
     });
   });
 });
+
+describe('a replacement generation keeps the file being served', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('restates it as media_id on failover, unless the caller named another', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(wireSession(`s${bodies.length}`)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c'])));
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await resolver.failover(active, media, capabilities, 0, { mode: 'direct' });
+    expect(bodies.at(-1)).toMatchObject({ media_id: 'macha:media' });
+
+    const second = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    await resolver.failover(second, media, capabilities, 0, { mode: 'direct', mediaId: 'macha:other' });
+    expect(bodies.at(-1)).toMatchObject({ media_id: 'macha:other' });
+  });
+});

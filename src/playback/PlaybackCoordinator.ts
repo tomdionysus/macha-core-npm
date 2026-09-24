@@ -11,7 +11,7 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
-import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
+import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
 import { choosePlaybackInstruction, degradeInstruction, segmentContainer, transcodeUndecodable, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
@@ -162,6 +162,12 @@ export interface PlaybackInstructionReport {
   /** The viewer chose this mode themselves; the chooser was not consulted. */
   chosenByViewer: boolean;
   /**
+   * The file the chooser picked among the item's files, sent as the session's
+   * `media_id`. Absent when the chooser did not pick one: the viewer chose the
+   * mode, or there were no facts, on an item with several files.
+   */
+  mediaId?: string;
+  /**
    * True when the instruction is a fallback rather than a decision — the
    * facts were unavailable, so nothing could be reasoned from.
    */
@@ -217,8 +223,15 @@ export interface PlaybackCoordinatorOptions {
    * items over its lifetime, and a zero-argument thunk captured once returns
    * the first item's facts for every later title — a wrong instruction that
    * looks entirely reasonable.
+   *
+   * **Return every file.** An item can hold several files, and choosing among
+   * them is the client's decision, not the server's (Tom, 2026-09-24).
+   * `MachaPlaybackFactsApi.facts({ itemId })` returns one entry per file; hand
+   * the whole list over and the coordinator chooses the file and names it on
+   * the session. A single `PlaybackDecisionFacts` is still accepted, and then
+   * describes the item's only file, or whichever the host picked.
    */
-  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
 }
@@ -551,6 +564,22 @@ function rangeContainsPosition(
 ): boolean {
   return ranges.some((range) => range.startMs <= positionMs && positionMs <= range.endMs);
 }
+
+/** What `facts` may return: one file's facts, or one entry per file of the item. */
+export type PlaybackFacts = PlaybackDecisionFacts | readonly PlaybackMediaFacts[];
+
+/** One file's facts, and which file, where known. */
+type FileFacts = PlaybackDecisionFacts & { mediaId?: string };
+
+/** Nothing usable when the list is empty. */
+function filesFrom(supplied: PlaybackFacts | undefined): readonly FileFacts[] | undefined {
+  if (supplied === undefined) return undefined;
+  const files = Array.isArray(supplied) ? supplied as readonly PlaybackMediaFacts[] : [supplied as PlaybackDecisionFacts];
+  return files.length > 0 ? files : undefined;
+}
+
+/** The server's own ranking, when it chose: direct, then remux, then transcode. */
+const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode: 2 };
 
 function instructionPreferences(instruction: PlaybackInstruction): PlaybackPreferencesUpdate {
   return {
@@ -1003,14 +1032,14 @@ export class PlaybackCoordinator {
    * An explicit choice always wins: the Mode control must mean what it says,
    * including when it is wrong, because it is the operator's escape hatch.
    */
-  private cachedFacts?: Promise<PlaybackDecisionFacts | undefined>;
+  private cachedFacts?: Promise<readonly FileFacts[] | undefined>;
   private factsError?: unknown;
   private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
   private substitutionReportedFor?: string;
   private unclassifiedReportedFor?: string;
 
-  private facts(): Promise<PlaybackDecisionFacts | undefined> {
+  private facts(): Promise<readonly FileFacts[] | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
     // repeatedly without a round trip each time. The media's own facts are
     // immutable, so that part is always safe.
@@ -1033,6 +1062,7 @@ export class PlaybackCoordinator {
     // recovered even once the cluster was answering perfectly.
     if (this.cachedFacts) return this.cachedFacts;
     const attempt = Promise.resolve(this.options.facts?.(this.options.media))
+      .then(filesFrom)
       .catch((error: unknown) => {
         // Kept, not swallowed: a thrown lookup and an absent supplier both
         // yield undefined, and they are not the same thing at all.
@@ -1102,10 +1132,19 @@ export class PlaybackCoordinator {
       return { ...preferences, mode: 'transcode', container };
     }
 
-    const instruction = choosePlaybackInstruction(facts.profile, capabilities, {
-      overrides: this.options.policyOverrides,
-      operations: facts.operations,
-    });
+    // Every file, and the one that plays best, ranked as the server itself
+    // ranked them before the choice was the client's: direct, then remux, then
+    // transcode, and stored order between equals.
+    const choices = facts.map((file, index) => ({
+      file, index,
+      instruction: choosePlaybackInstruction(file.profile, capabilities, {
+        overrides: this.options.policyOverrides,
+        operations: file.operations,
+      }),
+    }));
+    const best = choices.reduce((a, b) => (MODE_RANK[b.instruction.mode] < MODE_RANK[a.instruction.mode] ? b : a));
+    const instruction = best.instruction;
+    const chosenMediaId = best.file.mediaId ?? this.onlyMediaId();
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1114,6 +1153,8 @@ export class PlaybackCoordinator {
       audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons,
+      chosenMediaId,
+      files: facts.length,
     });
     this.chosenInstruction = instruction;
     this.patchSnapshot({ instruction: {
@@ -1121,8 +1162,9 @@ export class PlaybackCoordinator {
       container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,
       chosenByViewer: false, withoutFacts: false,
+      ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
-    return { ...preferences, ...instructionPreferences(instruction) };
+    return { ...preferences, ...instructionPreferences(instruction), ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
   }
 
   /**
@@ -1159,6 +1201,12 @@ export class PlaybackCoordinator {
         { ...preferences, ...instructionPreferences(degraded) },
       );
     }
+  }
+
+  /** The item's file when it has exactly one, which names itself. */
+  private onlyMediaId(): string | undefined {
+    const ids = this.options.media.mediaIds;
+    return ids.length === 1 ? ids[0] : undefined;
   }
 
   /**
