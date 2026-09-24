@@ -54,6 +54,17 @@ All three clients verified the candidate through the link before release (web 54
 - the phone waits on the A85 returning to ADB;
 - the web client's own release question, node moves waiting on its handover P0, is with Tom.
 
+### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
+Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
+- **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
+- **Waiting on the server,** whose proposal A-G is with Tom via the web client:
+  - A: provider search and match by `ref`;
+  - D: parent ids on `/manual`;
+  - E: artwork options and choice;
+  - F: a parent filter;
+  - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
+  Core wraps each when the server names its version, behind the same `identifyUnmatched`.
+
 ### Core writes no viewer text — Tom, 2026-09-24
 **Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
 - An error's `message` is log text.
