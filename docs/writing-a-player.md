@@ -129,6 +129,44 @@ The compile-time gate and a host's runtime are different facts. `npm run lint:pl
 - **An HLS stream URL points at a master playlist.** A library player follows the indirection for you; a hand-rolled fetch-and-parse player must. The core passes `source.url` and `source.mimeType` through untouched and never parses a manifest.
 - **With two player engines, guard listeners in both directions.** A native host often needs one engine for video and another for music. Guarding only the newly active engine is not enough — an idle engine still reporting position 0 into shared state makes the progress bar oscillate. The core sees one `Player`; composing two behind it is the host's job.
 
+## Recovering without the coordinator
+
+`PlaybackCoordinator` does all of this for you. Read this section only if your host calls `ClusterPlaybackResolver` directly and recovers from player failures itself. The individual methods are documented where they are declared; this is the order to call them in, and it is the order the coordinator follows.
+
+### 1. Decide which generation the error is about, before anything else
+
+Drop an error that belongs to a source you have already replaced. This is the step a resolver-only host is most likely to skip, and skipping it is expensive.
+
+`sessionAlive(id)` answers `false` for a session **you released yourself**. The id names its node, core asks that node, and the node answers `404`, exactly as it does for a reaped session. So a late error from the source you just replaced, probed and regenerated, discards the replacement you finished a moment ago. Core lost 82 seconds of playable video to the same sequence on 2026-09-17, with every step doing what it was told.
+
+The error usually names no generation, and `expo-video` gives only a message. The attribution then has to come from your own bookkeeping: which source is presenting, and when you last replaced it. A short quiet period after `replace`, like a seek window, is one way. The coordinator drops an error when a replacement is already pending or has superseded the source the error came from.
+
+### 2. Ask the owning node whether it still holds the session
+
+`sessionAlive(currentId)`:
+
+- **`false`**: the node reaped the session and is itself fine. Go to step 3 and regenerate on it. Nothing is charged.
+- **`true`**: the node still holds the session. If the failure was a `not-found` on a fragment, the fragment is past the end of a live plan, and replacing the session fixes nothing; the coordinator stops there. For a fatal failure the node could not serve, fail over (step 4).
+- **Throws a `MachaConnectionError`**: the answer did not come within `SESSION_LIVENESS_TIMEOUT_MS` (8 s), or the node could not be reached. "Could not find out" is not "gone". Fail over.
+- **Throws with `playbackFailureCode(error) === SESSION_PROVENANCE_UNKNOWN_CODE`**: the id names no node, so it is not a handle this resolver issued. Stop. There is nothing to recover and nothing to charge.
+
+### 3. Regenerate on the same node
+
+`regenerate(session, media, capabilities, positionMs, preferences)` releases the old session and creates its replacement on the same node, keeping the carriage it was served with:
+
+- **Resolves**: present the new session, and remember the position you asked for.
+- **Rejects with `REGENERATION_ENDPOINT_GONE_CODE`**: that node has left the registry. Fail over; this is the case failover is for.
+- **Rejects with `SESSION_PROVENANCE_UNKNOWN_CODE`**: as in step 2. Stop.
+- **Rejects otherwise**: fail over.
+
+**Bound it.** If you are about to regenerate at the same position (to the millisecond) as the last regeneration, the last one made no progress and another will not either. Fail over. The coordinator logs `session-regeneration-made-no-progress` and does the same.
+
+### 4. Fail over
+
+`failover` records the failure against the node, walks to another, and releases the session it abandons. Reach it only from the cases above that say so. A node that answered about a session, rather than failing to answer, has done nothing to be charged for.
+
+Read codes with `playbackFailureCode`, which walks the `cause` chain, never from `message`. Messages are log text.
+
 ## What to emit
 
 Emit `PlaybackEvent` on every meaningful transport change, and at a steady tick during playback:

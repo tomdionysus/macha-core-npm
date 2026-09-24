@@ -640,7 +640,12 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **What has to be decided, and it is not obvious.** The honest arrival point is *the position the viewer will have reached when the generation is usable*, which needs an estimate of the round trip — and an over-estimate lands the generation ahead of the viewer, which `activationPosition` then has to resolve against the seek contract. The node states `startup_timeout_ms`; core already derives an attempt budget from it and carries it on `PlaybackSource.budgets.deadlineMs`. **That is probably the right input and it is already in core's hands.** But a budget is a ceiling rather than an expectation, and using a 19 s ceiling to place a generation a viewer reaches in 11.5 s is its own fault in the other direction.
 
-### A host driving the resolver directly must not failover on a probe that threw — core's contract says so nowhere
+### ~~A host driving the resolver directly must not failover on a probe that threw — core's contract says so nowhere~~ — DOCUMENTED 2026-09-24
+
+**Done:** `docs/writing-a-player.md`, *Recovering without the coordinator*, gives the sequence: attribute, probe, regenerate, bound, fail over. Two facts have changed since this entry was written:
+- `sessionAlive` now recovers the node from the id, so a session the host released itself answers `false`, not a provenance throw. Attribution comes first because of that.
+- Both stop cases are now coded, as `SESSION_PROVENANCE_UNKNOWN_CODE` and `REGENERATION_ENDPOINT_GONE_CODE` (`22281d0`).
+The original entry follows.
 
 **Waiting on:** core, and it is documentation rather than code. **Raised 2026-09-20** by the phone client, which called the resolver contract correctly from the `.d.ts` and then proposed one rule core has already measured the cost of.
 
