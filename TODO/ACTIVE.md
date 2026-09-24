@@ -79,7 +79,7 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
 Not built yet. Tom confirmed these in core's session. They reached core relayed by the web client.
 - Qualities cap down only, from the best file's class to 720.
 - Where the best file is below 720p, its own class is offered anyway, e.g. 480p beside Play, and never a class above it. `qualityClass` needs classes below 720: 576, 480 and 360.
-- With no setting chosen, automatic play caps at the display's resolution class. The host states its display: on the web, screen size times devicePixelRatio; on the TV, the panel. An explicit setting overrides it, and a reason code is given when the cap limits the choice.
+- With no setting chosen, automatic play caps at the display's resolution class. The host states its display: on the web, screen size times devicePixelRatio; on the TV, the panel. The TV's value is the panel's physical mode (`Display.getMode`: 3840x2160 on .133, so 2160), not the 1920x1080 UI size that React Native reports. So the API takes a resolution the host has measured, and never reads a screen size itself. An explicit setting overrides it, and a reason code is given when the cap limits the choice.
 - The phone has Wi-Fi and mobile-data ceilings, the mobile one lower, with a reason shown and an override in settings.
 - An explicit pick is never capped.
 
