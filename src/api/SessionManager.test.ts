@@ -404,7 +404,10 @@ describe('SessionManager', () => {
     vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'token-a', expiresAtMs: Date.now() + DAY_MS,
     });
-    const manager = new SessionManager();
+    // Its own empty storage. The shared default could hold a session another
+    // test cached, which sent this one to validate against the unresolvable
+    // http://a for real, and under a full-suite load that outlasted the wait.
+    const manager = new SessionManager(new MemoryStorage());
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
 
