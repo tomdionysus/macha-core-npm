@@ -277,7 +277,12 @@ export interface ClusterStatusApi {
 }
 
 export class MachaClusterStatusApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
+  ) {
     super(message);
     this.name = 'MachaClusterStatusApiError';
   }
@@ -304,10 +309,8 @@ export class MachaClusterStatusApi implements ClusterStatusApi {
       const record = body && typeof body === 'object' && !Array.isArray(body)
         ? body as Record<string, unknown>
         : undefined;
-      const message = typeof record?.message === 'string'
-        ? record.message
-        : `${response.status} ${response.statusText}`;
-      throw new MachaClusterStatusApiError(message, response.status);
+      const detail = typeof record?.message === 'string' && record.message.trim() ? record.message : undefined;
+      throw new MachaClusterStatusApiError(`Macha status request failed: ${detail ?? `${response.status} ${response.statusText}`}`, response.status, detail);
     }
     return body as T;
   }

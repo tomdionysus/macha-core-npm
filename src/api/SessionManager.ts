@@ -164,7 +164,9 @@ export interface SessionMintFailure {
   status?: number;
   /** The server's machine-readable reason, e.g. `anonymous_disabled`. */
   code?: string;
-  /** The server's own sentence where it sent one, otherwise ours. Never assume it is fit to show a viewer. */
+  /** The server's own sentence, where it sent one, for a host that shows it. Never core's text. */
+  detail?: string;
+  /** For a log: the server's sentence where it sent one, otherwise core's. Not viewer text. */
   message: string;
 }
 
@@ -174,6 +176,7 @@ function describeMintFailure(error: unknown): SessionMintFailure {
     reason: isSessionRefusal(error) ? 'refused' : 'unreachable',
     ...(authError?.status !== undefined ? { status: authError.status } : {}),
     ...(authError?.code !== undefined ? { code: authError.code } : {}),
+    ...(authError?.detail !== undefined ? { detail: authError.detail } : {}),
     message: error instanceof Error ? error.message : String(error),
   };
 }

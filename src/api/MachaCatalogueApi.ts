@@ -36,6 +36,8 @@ export class MachaApiError extends Error {
     message: string,
     public readonly status?: number,
     public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
   ) {
     super(message);
   }
@@ -229,6 +231,6 @@ export class MachaCatalogueApi implements CatalogueApi {
     const { body, wasJson } = await readResponseBody(response);
     if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
     const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-    throw new MachaApiError(`Macha catalogue request failed: ${parsed.message}`, response.status, parsed.code);
+    throw new MachaApiError(`Macha catalogue request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
   }
 }

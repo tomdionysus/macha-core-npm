@@ -70,6 +70,8 @@ export class SessionAuthError extends Error {
      * wrong here.
      */
     public readonly code?: string,
+    /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
+    public readonly detail?: string,
   ) {
     super(message);
   }
@@ -133,8 +135,8 @@ export async function mintSession(baseUrl: string, credentials?: SessionCredenti
     // reached the viewer as "Could not start a session: 401" while the
     // server's own sentence, and the code the client needed, were both in the
     // body all along.
-    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code);
+    const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Could not start a session: ${message}`, response.status, code, detail);
   }
   const token = typeof record?.token === 'string' ? record.token : undefined;
   const expiresAtMs = typeof record?.expires_unix_ms === 'number' ? record.expires_unix_ms : undefined;
@@ -236,8 +238,8 @@ export async function revokeSessionAnyNode(registry: EndpointRegistry, token: st
       // concerned. Anything else the node says is a real failure to revoke and
       // the caller must hear about it rather than be told it signed out.
       if (response.ok || response.status === 401 || response.status === 403) return;
-      const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-      throw new SessionAuthError(`Could not end the session: ${message}`, response.status, code);
+      const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+      throw new SessionAuthError(`Could not end the session: ${message}`, response.status, code, detail);
     } catch (error) {
       if (error instanceof SessionAuthError) throw error;
       registry.recordFailure(endpoint.id);
@@ -301,8 +303,8 @@ export async function validateSession(baseUrl: string, token: string): Promise<C
   if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
   if (response.status === 401 || response.status === 403) return undefined;
   if (!response.ok) {
-    const { message, code } = parseErrorEnvelope(body, `HTTP ${response.status}`);
-    throw new SessionAuthError(message, response.status, code);
+    const { message, code, detail } = parseErrorEnvelope(body, `HTTP ${response.status}`);
+    throw new SessionAuthError(`Session check failed: ${message}`, response.status, code, detail);
   }
   // The record is returned rather than a boolean because this request already
   // carries the answer to a second question nothing else was asking: what the

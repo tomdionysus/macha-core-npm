@@ -3,7 +3,14 @@ interface ErrorRecord {
 }
 
 export interface ParsedErrorEnvelope {
+  /** For a log: the server's sentence, or else a status line or a dump of the body. */
   message: string;
+  /**
+   * The server's own sentence and nothing else, for a host that shows it.
+   * Undefined when the server said nothing in words; `message` then holds
+   * core's fallback, which is log text. Core writes no viewer text.
+   */
+  detail?: string;
   code?: string;
   /**
    * Why the source failed, when the server says: `source_unreadable`,
@@ -63,7 +70,7 @@ function describe(value: unknown): string | undefined {
  */
 export function parseErrorEnvelope(body: unknown, fallback: string): ParsedErrorEnvelope {
   const envelope = asRecord(body);
-  if (!envelope) return { message: describe(body) ?? fallback };
+  if (!envelope) return { message: describe(body) ?? fallback, detail: nonEmptyString(body) };
 
   const structuredError = asRecord(envelope.error);
   const code = nonEmptyString(envelope.code)
@@ -79,5 +86,12 @@ export function parseErrorEnvelope(body: unknown, fallback: string): ParsedError
 
   const reason = nonEmptyString(envelope.reason) ?? nonEmptyString(structuredError?.reason);
 
-  return { message, code, reason };
+  // `{ error: "..." }` with no message is the legacy human-message shape; with
+  // a message beside it, `error` is the machine code.
+  const detail = nonEmptyString(envelope.message)
+    ?? nonEmptyString(structuredError?.message)
+    ?? nonEmptyString(envelope.detail)
+    ?? (nonEmptyString(envelope.message) ? undefined : nonEmptyString(envelope.error));
+
+  return { message, detail, code, reason };
 }
