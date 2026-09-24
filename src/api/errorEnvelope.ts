@@ -23,7 +23,7 @@ export interface ParsedErrorEnvelope {
    */
   reason?: string;
   /**
-   * From server 0.57.1, on `choice_required` and `choice_not_available`: what
+   * From server 0.58.0, on `choice_required` and `choice_not_available`: what
    * has to be named (`video_stream`, `audio_stream`, `subtitle_stream` or
    * `container`) and the candidates (stream indexes, or the container names).
    */

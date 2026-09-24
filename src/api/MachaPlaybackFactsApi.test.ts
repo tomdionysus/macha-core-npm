@@ -78,7 +78,7 @@ describe('MachaPlaybackFactsApi', () => {
   });
 });
 
-describe('MachaPlaybackFactsApi against server 0.57.1', () => {
+describe('MachaPlaybackFactsApi against server 0.58.0', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   const streams = [

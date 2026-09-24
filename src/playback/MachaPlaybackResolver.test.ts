@@ -91,7 +91,7 @@ describe('MachaPlaybackResolver', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url.split('?')[0]).toBe('http://node.test/api/v1/playback/sessions');
     expect(new Headers(init.headers).get('Authorization')).toBe('Bearer secret');
-    // Server 0.57.1 plays files, not titles, and refuses item_id outright.
+    // Server 0.58.0 plays files, not titles, and refuses item_id outright.
     expect(JSON.parse(String(init.body))).not.toHaveProperty('item_id');
     expect(JSON.parse(String(init.body))).toMatchObject({ media_id: media.mediaIds[0] });
     // Capabilities are not sent at all. The server never acted on them, so
@@ -275,7 +275,7 @@ describe('MachaPlaybackResolver', () => {
     await resolver.resolve(media, capabilities, 42_000, { mode: 'transcode', maxHeight: 720 });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    // A transcode always names its container from server 0.57.1; with none
+    // A transcode always names its container from server 0.58.0; with none
     // stated, the device's own preference.
     expect(JSON.parse(String(init.body))).toEqual(expect.objectContaining({
       seek_ms: 42_000,
@@ -659,7 +659,7 @@ describe('asking a node whether a session is alive', () => {
   });
 });
 
-describe('MachaPlaybackResolver against a node that chooses nothing (server 0.57.1)', () => {
+describe('MachaPlaybackResolver against a node that chooses nothing (server 0.58.0)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   const choiceRequired = (choice: string, choices: Array<number | string>) => jsonResponse({

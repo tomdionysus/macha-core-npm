@@ -1097,7 +1097,7 @@ export class PlaybackCoordinator {
       // device plays directly, where the item has one. Facts are fetched only
       // for an item with several files; one file names itself.
       //
-      // From server 0.57.1 the node chooses nothing else either: a remux or a
+      // From server 0.58.0 the node chooses nothing else either: a remux or a
       // transcode names its container, and a file with several video or audio
       // streams names the one to play. The container is the device's; the
       // streams come from the file's facts where there are any, and a node

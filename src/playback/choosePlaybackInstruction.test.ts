@@ -240,7 +240,7 @@ describe('executor operations as an input', () => {
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
   });
 
-  it("takes a stream's own copy answer over the pair, from server 0.57.1", () => {
+  it("takes a stream's own copy answer over the pair, from server 0.58.0", () => {
     // The pair spoke for the first streams only; the stream that plays says
     // for itself, in either direction.
     const refusing = { ...eac3, copyInto: { fmp4: false, mpegts: true } };

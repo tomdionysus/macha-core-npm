@@ -59,15 +59,16 @@ Built in `284e52e`, after `0.19.0`. The facts supplier returns every file, the c
 - Closed since: a viewer-chosen mode runs the chooser over the files (`580473f`), and no facts names the item's first file (`b94b468`).
 - The web client moves `App.tsx`'s facts supplier to the whole list.
 
-### Server 0.57.1: the server chooses nothing — live on fi-1 and gbni-1, 2026-09-25
+### Server 0.58.0: the server chooses nothing — live on fi-1 and gbni-1, 2026-09-25
+Deployed as "0.57.1" and renumbered 0.58.0 by Tom because the change breaks old clients. The contract is identical byte for byte (server `develop` `37440df`, the same code as `7c44643`), and "0.57.1" was never tagged. Both nodes are being redeployed so that health reports 0.58.0; the server confirms each node.
 Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accepted` on every create, as Tom accepted.
 - Create sends `media_id` and never `item_id`. Remux and transcode always carry a container: the host's preferred segment container.
 - Core names the video stream or the audio stream wherever a file has several. The rule is the viewer's choice first. Next comes a language that exactly one stream has, which is left to the node. Otherwise core names the default-flagged stream, and failing that the first. The rule is `streamsToName`.
 - Each stream now carries its own `copy_into`, and it wins over the `operations` pair. An older node's pair is still read.
 - A `choice_required` still left open is answered once per kind, with the first choice the node offers, and logged as `stream-unchosen-defaulted`. `choice_required` and `choice_not_available` are never treated as an executor refusal, so they never step the mode down.
 - Next: the clients test against the live nodes on core `develop`, and then a core release.
-- Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.57.1, so the next phone release needs a published core that includes `0bce895`.
-- TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.57.1 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
+- Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.58.0, so the next phone release needs a published core that includes `0bce895`.
+- TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.58.0 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.

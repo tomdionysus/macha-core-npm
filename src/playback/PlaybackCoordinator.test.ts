@@ -4038,7 +4038,7 @@ describe('an item with several files', () => {
 });
 
 /**
- * Server 0.57.1 chooses nothing: a remux or transcode names its container,
+ * Server 0.58.0 chooses nothing: a remux or transcode names its container,
  * and a file with several video or audio streams names the one to play.
  */
 describe('against a node that chooses nothing', () => {

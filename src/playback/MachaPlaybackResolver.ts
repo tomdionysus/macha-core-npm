@@ -105,7 +105,7 @@ interface WireSession {
     mode: PlaybackMode;
     max_height: number | null;
     max_bitrate: number | null;
-    /** From server 0.57.1. */
+    /** From server 0.58.0. */
     video_stream?: number | null;
     audio_stream: number | null;
     subtitle_stream: number | null;
@@ -181,13 +181,13 @@ interface WireSession {
   options: {
     modes: PlaybackMode[];
     quality_heights: number[];
-    /** Removed in server 0.57.1: a session is bound to one file. */
+    /** Removed in server 0.58.0: a session is bound to one file. */
     media_ids?: string[];
     audio_streams: WireStream[];
     subtitle_streams: WireStream[];
     can_seek: boolean;
     can_change_quality: boolean;
-    /** Removed in server 0.57.1. */
+    /** Removed in server 0.58.0. */
     can_switch_media?: boolean;
   };
 }
@@ -232,15 +232,15 @@ export class MachaPlaybackError extends Error {
     super(message);
   }
 
-  /** From server 0.57.1: what has to be named; see `ParsedErrorEnvelope.choice`. */
+  /** From server 0.58.0: what has to be named; see `ParsedErrorEnvelope.choice`. */
   choice?: string;
   /** The candidates for `choice`: stream indexes, or container names. */
   choices?: Array<number | string>;
 }
 
-/** Server 0.57.1's code when a choice was left open. */
+/** Server 0.58.0's code when a choice was left open. */
 export const CHOICE_REQUIRED_CODE = 'choice_required';
-/** Server 0.57.1's code when a choice names something the media lacks. */
+/** Server 0.58.0's code when a choice names something the media lacks. */
 export const CHOICE_NOT_AVAILABLE_CODE = 'choice_not_available';
 
 /**
@@ -537,18 +537,18 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       seekMs: seekMs ?? 0,
       requestedPreferences: preferences,
     });
-    // No item_id: from server 0.57.1 a title is not playable as such, its
+    // No item_id: from server 0.58.0 a title is not playable as such, its
     // files are, and naming the item is refused (item_id_not_accepted). A
     // 0.57.0 node plays the named media_id and needs no item either.
     const mode = requiredMode(preferences?.mode);
-    // From 0.57.1 a remux or transcode names its segment container; the node
+    // From 0.58.0 a remux or transcode names its segment container; the node
     // no longer defaults to fMP4. The coordinator always names one; a host
     // driving this directly gets the device's own preference.
     const container = preferences?.container
       ?? (mode === 'remux' || mode === 'transcode' ? segmentContainer(capabilities).container : undefined);
     let sent: PlaybackPreferencesUpdate = { ...preferences, mode, ...(container ? { container } : {}) };
     let key = idempotencyKey;
-    // A choice the node refuses to make (0.57.1) is made here, once per kind:
+    // A choice the node refuses to make (0.58.0) is made here, once per kind:
     // the first candidate it lists. The coordinator names streams from the
     // facts before asking, so this is the safety net for a host driving the
     // resolver directly, or a start with no facts. Logged, because a host

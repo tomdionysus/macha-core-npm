@@ -624,7 +624,7 @@ describe('the carriage a replacement generation asks for', () => {
   });
 
   it("asks for the device's own container when the node reported none", async () => {
-    // From server 0.57.1 a remux names its container; there is no node default
+    // From server 0.58.0 a remux names its container; there is no node default
     // to fall back on. The served one is unknown, so the device's preference.
     expect(await failoverFrom(undefined)).toMatchObject({ container: 'fmp4' });
   });

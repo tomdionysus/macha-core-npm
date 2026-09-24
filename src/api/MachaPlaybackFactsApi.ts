@@ -24,7 +24,7 @@ interface WireFactsStream {
   color_transfer?: string;
   dolby_vision_profile?: number;
   dolby_vision_compatibility?: number;
-  /** From server 0.57.1; see `MediaTechnicalStream.copyInto`. */
+  /** From server 0.58.0; see `MediaTechnicalStream.copyInto`. */
   copy_into?: { fmp4?: boolean; mpegts?: boolean };
 }
 
@@ -60,7 +60,7 @@ function streamPair(field: unknown): { video: boolean; audio: boolean } {
 
 function mapOperations(value: unknown, streams: readonly MediaTechnicalStream[]): PlaybackOperations {
   const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
-  // Server 0.57.1 moved copy support onto each stream and dropped the pair
+  // Server 0.58.0 moved copy support onto each stream and dropped the pair
   // from `operations`. The pair is then the default streams' answer, which is
   // what an older node's pair meant, so a consumer reading `operations` sees
   // one shape from either. The chooser reads the stream's own answer first.

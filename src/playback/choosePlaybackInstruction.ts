@@ -275,7 +275,7 @@ export function segmentContainer(
  * takes AV1 and Opus that MPEG-TS refuses. Asking `copyIntoFmp4` about a
  * MPEG-TS session would answer a question nobody asked.
  *
- * From server 0.57.1 each stream answers for itself, and that answer wins: the
+ * From server 0.58.0 each stream answers for itself, and that answer wins: the
  * node's `operations` pair spoke only for the first video and audio stream,
  * which is not the one played when another is named. An older node's pair
  * answers where a stream carries nothing.
@@ -533,7 +533,7 @@ export function chooseAmongFiles(
 
 /**
  * The stream of a type core plays when nothing names one: the stream flagged
- * default, else the first. From server 0.57.1 the node chooses no stream, so
+ * default, else the first. From server 0.58.0 the node chooses no stream, so
  * this rule is core's, and it is the same rule the node used to apply.
  */
 export function defaultStream(streams: readonly MediaTechnicalStream[], type: 'video' | 'audio'): MediaTechnicalStream | undefined {
