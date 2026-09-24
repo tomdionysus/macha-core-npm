@@ -1130,8 +1130,9 @@ export class PlaybackCoordinator {
         reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
         ...(this.factsError !== undefined ? { factsError: this.factsError } : {}),
       } });
-      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container });
-      return { ...preferences, mode: 'transcode', container };
+      const fileId = preferences.mediaId ?? this.noFactsMediaId();
+      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container, fileId });
+      return { ...preferences, mode: 'transcode', container, ...(fileId ? { mediaId: fileId } : {}) };
     }
 
     // Every file, and the one that plays best, ranked as the server itself
@@ -1139,7 +1140,7 @@ export class PlaybackCoordinator {
     // transcode, and stored order between equals.
     const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, this.options.media.mediaIds)!;
     const instruction = choice.instruction;
-    const chosenMediaId = choice.mediaId;
+    const chosenMediaId = choice.mediaId ?? this.noFactsMediaId();
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1203,8 +1204,21 @@ export class PlaybackCoordinator {
     const mediaIds = this.options.media.mediaIds;
     if (mediaIds.length <= 1) return mediaIds[0];
     const facts = await this.facts();
-    if (!facts) return undefined;
-    return chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds)?.mediaId;
+    // Without facts there is nothing to rank, and the server is to stop
+    // choosing for us, so the first file stands in (see `noFactsMediaId`).
+    if (!facts) return this.noFactsMediaId();
+    return chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds)?.mediaId ?? this.noFactsMediaId();
+  }
+
+  /**
+   * The file to name when there are no facts to choose from: the item's
+   * first, in stored order. The server is to stop choosing among an item's
+   * files and refuse a create that names none, so naming nothing is not an
+   * option. With no facts the instruction is a transcode, which any file can
+   * serve.
+   */
+  private noFactsMediaId(): string | undefined {
+    return this.options.media.mediaIds[0];
   }
 
   /**

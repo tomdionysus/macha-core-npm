@@ -109,7 +109,7 @@ describe('MachaPlaybackResolver', () => {
     expect(session.options.audioStreams[0]).toEqual(expect.objectContaining({ index: 1, language: 'eng', channels: 2, bitrate: 192_000 }));
   });
 
-  it("names the chosen file as media_id, and sends none when nothing was chosen", async () => {
+  it("names the chosen file as media_id, and the item's first when nothing was chosen", async () => {
     const fetchMock = vi.fn().mockImplementation(async () => jsonResponse(sessionResponse(), 201));
     vi.stubGlobal('fetch', fetchMock);
     const resolver = new MachaPlaybackResolver('http://node.test');
@@ -120,7 +120,9 @@ describe('MachaPlaybackResolver', () => {
     const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>);
     expect(bodies[0]).toMatchObject({ item_id: media.id, media_id: 'macha:file-2' });
     expect(bodies[0]?.preferences).not.toHaveProperty('media_id');
-    expect(bodies[1]).not.toHaveProperty('media_id');
+    // The server is to stop choosing among an item's files, so a create never
+    // goes without one.
+    expect(bodies[1]).toMatchObject({ media_id: media.mediaIds[0] });
   });
 
   it('sends the idempotency key as a query parameter, not a header', async () => {

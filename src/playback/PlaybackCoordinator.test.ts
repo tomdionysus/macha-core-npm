@@ -3995,6 +3995,17 @@ describe('an item with several files', () => {
     expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'h264-file' });
   });
 
+  it('names the first file when there are no facts at all, rather than none', async () => {
+    const api = resolver(session({ mode: 'transcode' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['first', 'second'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => undefined,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', mediaId: 'first' });
+  });
+
   it('asks for no facts when the viewer chose the mode on a single-file item', async () => {
     const facts = vi.fn(async () => undefined);
     const api = resolver(session({ mode: 'direct' }));
@@ -4013,7 +4024,7 @@ describe('an item with several files', () => {
     expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
   });
 
-  it('names an only file even from facts that carry no id, and names none it cannot know', async () => {
+  it('names an only file even from facts that carry no id, and the first when it cannot know', async () => {
     const single = { profile: file('x', 'h264').profile };
     const one = start(single, ['only']);
     await one.coordinator.start();
@@ -4021,6 +4032,7 @@ describe('an item with several files', () => {
 
     const several = start(single, ['a', 'b']);
     await several.coordinator.start();
-    expect(several.api.resolve.mock.calls[0]?.[3]?.mediaId).toBeUndefined();
+    // The server is to stop choosing, so a create never goes without a file.
+    expect(several.api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
   });
 });

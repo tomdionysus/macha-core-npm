@@ -505,7 +505,16 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     // The file the client chose. With it the node plays exactly that file;
     // without it, a node older than the server's change ranks the item's files
     // itself, which is the decision that is the client's.
-    if (preferences?.mediaId) body.media_id = preferences.mediaId;
+    if (preferences?.mediaId) {
+      body.media_id = preferences.mediaId;
+    } else if (media.mediaIds.length > 0) {
+      // A caller that chose no file, such as a host driving the resolver
+      // directly. The server is to stop choosing and refuse a create that names
+      // none on a multi-file item, so name the first rather than fail; loudly,
+      // because a host should choose (see `chooseAmongFiles`).
+      body.media_id = media.mediaIds[0];
+      if (media.mediaIds.length > 1) this.log.warn('media-unchosen-defaulted', { itemId: media.id, mediaId: media.mediaIds[0], files: media.mediaIds.length });
+    }
     // Session admission deliberately has no profile preflight: immutable
     // profiles are advisory metadata and must not enter the viewer's critical
     // path. A non-conforming server response is surfaced immediately so the
