@@ -46,8 +46,13 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-### Release candidate, 2026-09-24 — FROZEN, waiting on Tom's word and version
-`develop` at `d7aa96d`, `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. `f235a99` after it is README only. All three clients were told of the freeze and the candidate. Proposed version: **`0.19.0`**, because it is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced). Procedure: `npm version 0.19.0 --no-git-tag-version`, commit, merge to `main`, annotated bare-semver tag, push, `npm publish`, `git checkout develop`, build last. Then tell every client, which will each verify `main` against the registry copy.
+### Published: `0.19.0`, 2026-09-24
+npm `latest` is `0.19.0`, `gitHead` `4e1746a`, which is the annotated tag `0.19.0`. `main` has the merge `1377dac`. `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. Tom published it; core cut, tagged, merged and pushed. It is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced), and the release notes are in `4e1746a`'s message.
+
+All three clients verified the candidate through the link before release (web 542 tests, Android TV 297, phone 290) and were told it is on npm. Each moves its `main` to `^0.19.0` against the registry copy on Tom's word:
+- the Android TV client plans its `0.7.0` on it;
+- the phone waits on the A85 returning to ADB;
+- the web client's own release question, node moves waiting on its handover P0, is with Tom.
 
 ### Core writes no viewer text — Tom, 2026-09-24
 **Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
