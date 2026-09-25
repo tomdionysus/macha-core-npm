@@ -6,6 +6,11 @@ export type IngestJobState = 'queued' | 'scanning' | 'importing' | 'cataloguing'
  * it read as `verifying` with no progress, which looked like a stall.
  * `verifying` is a check in progress on this job, with `eta_seconds` from
  * 0.61.0.
+ *
+ * `failed` is not final from server 0.62.0 while the job's linked ingest can
+ * still be resumed: resuming that ingest by any route brings the torrent job
+ * back to `importing`, then `cataloguing` and `completed`. Before, only the
+ * torrent's own retry did.
  */
 export type TorrentJobState = 'queued' | 'metadata' | 'downloading' | 'verify_queued' | 'verifying' | 'downloaded' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
 
