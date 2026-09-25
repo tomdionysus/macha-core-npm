@@ -105,6 +105,7 @@ export * from './state/continueWatching.js';
 export * from './state/continueWatchingMigration.js';
 export * from './state/musicPlaylist.js';
 export * from './state/playlist.js';
+export * from './state/qualityPreference.js';
 export * from './state/playbackQueue.js';
 export * from './state/progressWrite.js';
 export * from './state/storage.js';

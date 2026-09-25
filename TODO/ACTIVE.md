@@ -87,7 +87,9 @@ Built in `src/playback/playbackVersions.ts` and the coordinator; the commit foll
   - the cellular default is 720 (`DEFAULT_CELLULAR_CEILING`);
   - automatic play ranks a file that needs no re-encode above one that does, then the larger picture. So a remux of 2160p beats a direct 1080p, which changes the ranking for items with files of different sizes;
   - a capped transcode is fitted to the source's shape.
-- Not yet stored by core: the per-device preference. The host keeps it and passes it in through `qualityCeiling`.
+- The per-device setting is kept by `QualityPreferenceStore` at `macha.qualityPreference.v1`, core's key, one for every client. The TV had begun its own key, `macha.quality-preference.v1`, and was asked to move.
+- `instruction.quality` is the step playing. `limitedBy` is on `versions` only, by design.
+- The mobile-data default of 720 is put to Tom as an open question (via the phone).
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.

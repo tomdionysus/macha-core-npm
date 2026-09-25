@@ -4253,6 +4253,39 @@ describe('versions and the quality ceiling', () => {
     expect(updates[0]?.preferences?.audioStream).toBeUndefined();
   });
 
+  it("clears a transcode step's cap when a file step that transcodes follows it", async () => {
+    // The file step names no cap of its own, and a PATCH into a transcode
+    // restates the session's: so the file came back still capped at 720.
+    const hevc = (mediaId: string) => ({ ...sized(mediaId, 3840, 2160), profile: { ...sized(mediaId, 3840, 2160).profile,
+      streams: sized(mediaId, 3840, 2160).profile.streams.map((stream) => stream.type === 'video' ? { ...stream, codec: 'hevc' } : stream) } });
+    const updates: PlaybackUpdate[] = [];
+    const capped = session({ mode: 'transcode', mediaId: 'uhd',
+      preferences: { mode: 'transcode', maxHeight: 720, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const api = resolver(capped, async (update) => { updates.push(update); return capped; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => [hevc('uhd')] as never,
+    });
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 2160)!;
+    expect(step).toMatchObject({ source: 'file', instruction: { mode: 'transcode' } });
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences?.maxHeight).toBeNull();
+    expect(coordinator.getSnapshot().instruction?.quality).toBe(2160);
+  });
+
+  it('reports the quality playing, automatic or picked', async () => {
+    const auto = start({ ceiling: { quality: 1080, reason: 'ceiling-display' } });
+    await auto.coordinator.start();
+    expect(auto.coordinator.getSnapshot().instruction?.quality).toBe(1080);
+
+    const step = playbackVersions(files(), capabilities()).steps.find((candidate) => candidate.quality === 1440)!;
+    const picked = start({ initialPreferences: versionPreferences(step) });
+    await picked.coordinator.start();
+    expect(picked.coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, quality: 1440 });
+  });
+
   it('caps a version on the same file with a transcode, and does not name the file again', async () => {
     const { coordinator, updates } = start();
     await coordinator.start();

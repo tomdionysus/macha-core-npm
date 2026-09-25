@@ -4,7 +4,7 @@ import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackT
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
-import { playbackVersions, type PlaybackVersions, type QualityCeiling, type VersionStep } from './playbackVersions.js';
+import { playbackVersions, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -130,6 +130,12 @@ export interface PlaybackCoordinatorSnapshot {
 
 export interface PlaybackInstructionReport {
   mode: PlaybackMode;
+  /**
+   * The quality playing: the class of the `versions` step this is, so a host
+   * marks it among its buttons. Absent without facts, or for a choice that
+   * matches no step.
+   */
+  quality?: QualityClass;
   video?: 'copy' | 'transcode';
   audio?: 'copy' | 'transcode';
   reasons: PlaybackDecisionReason[];
@@ -1216,7 +1222,13 @@ export class PlaybackCoordinator {
       const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
       // The buttons stay drawable after a version was picked: the qualities
       // are the item's, whichever one is playing.
-      if (facts) this.patchSnapshot({ versions: playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds }) });
+      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds }) : undefined;
+      if (versions) this.patchSnapshot({ versions });
+      // The step this start is, by its file and its cap: a file step has no
+      // cap and a transcode step its own.
+      const quality = versions?.steps.find((step) => step.mediaId === mediaId
+        && step.maxHeight === (preferences.maxHeight ?? undefined)
+        && (step.source === 'transcode' || step.instruction.mode === preferences.mode))?.quality;
       const container = preferences.container
         ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
       const streams = profile ? streamsToName(profile, preferences.mode, preferences) : undefined;
@@ -1225,6 +1237,7 @@ export class PlaybackCoordinator {
         container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
         ...(mediaId ? { mediaId } : {}),
+        ...(quality !== undefined ? { quality } : {}),
       } });
       // With facts the languages are resolved into `streams`, and sent as
       // indexes; without, they go as given and the resolver drops one the
@@ -1300,7 +1313,7 @@ export class PlaybackCoordinator {
       mode: instruction.mode, video: instruction.video, audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,
-      chosenByViewer: false, withoutFacts: false,
+      chosenByViewer: false, withoutFacts: false, quality: step.quality,
       ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
     return { ...withoutLanguages(preferences), ...instructionPreferences(instruction), ...cap, ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
@@ -1319,7 +1332,10 @@ export class PlaybackCoordinator {
     const switching = step.mediaId !== undefined && step.mediaId !== session?.mediaId;
     const preferences: PlaybackPreferencesUpdate = {
       ...instructionPreferences(step.instruction),
-      ...(step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {}),
+      // Always stated: a file step's null clears the cap a transcode step
+      // left, which a PATCH into a transcode would otherwise restate (see
+      // `restatePreferencesClearedByMode`). Found by the phone client.
+      maxHeight: step.maxHeight ?? null,
     };
     if (switching) {
       const facts = await this.facts();
@@ -1329,8 +1345,11 @@ export class PlaybackCoordinator {
     }
     this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
     this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
-    if (step.mediaId !== undefined && this.snapshot.instruction) {
-      this.patchSnapshot({ instruction: { ...this.snapshot.instruction, mediaId: step.mediaId } });
+    if (this.snapshot.instruction) {
+      this.patchSnapshot({ instruction: {
+        ...this.snapshot.instruction, quality: step.quality,
+        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
+      } });
     }
   }
 
@@ -1848,6 +1867,11 @@ export class PlaybackCoordinator {
       audio: preferences.audio,
       container: preferences.container ?? this.snapshot.instruction?.container,
       reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+      // A mode picked mid-play keeps the file, so the quality stands; a cap
+      // it names makes it none of the steps.
+      ...(this.snapshot.instruction?.quality !== undefined && preferences.maxHeight === undefined
+        ? { quality: this.snapshot.instruction.quality } : {}),
+      ...(this.snapshot.instruction?.mediaId !== undefined ? { mediaId: this.snapshot.instruction.mediaId } : {}),
     } });
   }
 
