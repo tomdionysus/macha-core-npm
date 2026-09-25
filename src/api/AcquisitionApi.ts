@@ -1,5 +1,13 @@
 export type IngestJobState = 'queued' | 'scanning' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
-export type TorrentJobState = 'queued' | 'metadata' | 'downloading' | 'verifying' | 'downloaded' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
+/**
+ * `verify_queued` (server 0.61.0) is waiting to check the pieces already on
+ * disk while another torrent is checked, which libtorrent does one at a time;
+ * not terminal, and it takes pause and cancel as `queued` does. Before 0.61.0
+ * it read as `verifying` with no progress, which looked like a stall.
+ * `verifying` is a check in progress on this job, with `eta_seconds` from
+ * 0.61.0.
+ */
+export type TorrentJobState = 'queued' | 'metadata' | 'downloading' | 'verify_queued' | 'verifying' | 'downloaded' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
 
 export interface StagingStatus {
   path: string;
