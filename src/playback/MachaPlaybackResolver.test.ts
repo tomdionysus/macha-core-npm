@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from '../api/MachaCatalogueApi.js';
-import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS } from './MachaPlaybackResolver.js';
+import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS, signedCloseUrl } from './MachaPlaybackResolver.js';
 import { MachaConnectionError } from '../api/serverConnection.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
@@ -729,5 +729,35 @@ describe('MachaPlaybackResolver against a node that chooses nothing (server 0.58
     expect(session.options.mediaIds).toEqual([]);
     expect(session.options.canSwitchMedia).toBe(false);
     expect(session.mediaId).toBe('file:abc');
+  });
+});
+
+describe('closing by the signed stream URL on a page exit', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const streamUrl = 'http://node.test/api/v1/playback/sessions/s-1/stream/tok-9/master.m3u8';
+
+  it('finds the close route under a signed stream URL, and nothing under any other', () => {
+    expect(signedCloseUrl(streamUrl)).toBe('http://node.test/api/v1/playback/sessions/s-1/stream/tok-9/close');
+    expect(signedCloseUrl('http://node.test/api/v1/playback/sessions/s-1/stream/tok-9/seg/3.m4s?x=1')).toBe('http://node.test/api/v1/playback/sessions/s-1/stream/tok-9/close');
+    expect(signedCloseUrl('http://node.test/movie.mkv')).toBeUndefined();
+  });
+
+  it('sends a close with no Authorization beside the signed-in DELETE, only on a page exit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test', fixedBearerToken('secret'));
+
+    await resolver.stop('s-1', { keepalive: true, streamUrl });
+    const calls = fetchMock.mock.calls as Array<[string, RequestInit]>;
+    const close = calls.find(([url]) => url.endsWith('/close'));
+    expect(close?.[1]).toMatchObject({ method: 'POST', keepalive: true });
+    expect(new Headers(close?.[1].headers).get('Authorization')).toBeNull();
+    expect(close?.[1].body).toBeUndefined();
+    const del = calls.find(([, init]) => init.method === 'DELETE');
+    expect(new Headers(del?.[1].headers).get('Authorization')).toBe('Bearer secret');
+
+    fetchMock.mockClear();
+    await resolver.stop('s-1', { streamUrl });
+    expect((fetchMock.mock.calls as Array<[string]>).some(([url]) => url.endsWith('/close'))).toBe(false);
   });
 });

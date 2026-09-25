@@ -272,6 +272,12 @@ export interface PlaybackStopOptions {
   /** Keep the teardown request alive while the browser is navigating away. */
   keepalive?: boolean;
   /**
+   * The session's signed stream URL, for a close that needs no Authorization
+   * header; see `signedCloseUrl`. Used on a page exit only, where a signed-in
+   * DELETE does not survive the unload.
+   */
+  streamUrl?: string;
+  /**
    * This node has already been charged for the outage that made this close
    * necessary, so the close itself must not charge it again.
    *

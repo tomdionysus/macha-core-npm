@@ -1715,16 +1715,18 @@ export class PlaybackCoordinator {
    * page either way, as it always did.
    */
   private stopEverythingNowForPageExit(): void {
-    const ids = new Set<string>();
+    // Each with its signed stream URL where core has it, for the close that
+    // survives an unload (see `MachaPlaybackResolver.closeBySignedUrl`).
+    const ids = new Map<string, string | undefined>();
     for (const session of [this.serverSession, this.snapshot.session, ...this.alternateSessions.values()]) {
-      if (session) ids.add(session.sessionId);
+      if (session && !ids.get(session.sessionId)) ids.set(session.sessionId, session.source.url);
     }
-    for (const id of this.releaseAfterCut) ids.add(id);
-    for (const id of ids) {
+    for (const id of this.releaseAfterCut) if (!ids.has(id)) ids.set(id, undefined);
+    for (const [id, streamUrl] of ids) {
       if (this.stoppedForPageExit.has(id)) continue;
       this.stoppedForPageExit.add(id);
       this.log.info('session-stop-page-exit', { sessionId: id });
-      void this.options.resolver.stop(id, { ...this.closeOptions, keepalive: true }).catch((error: unknown) => {
+      void this.options.resolver.stop(id, { ...this.closeOptions, keepalive: true, ...(streamUrl ? { streamUrl } : {}) }).catch((error: unknown) => {
         this.log.warn('session-stop-page-exit-failed', { sessionId: id, error });
       });
     }

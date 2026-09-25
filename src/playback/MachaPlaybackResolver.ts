@@ -291,6 +291,17 @@ function retryAfterMs(value: string | null): number {
   return Number.isFinite(date) ? Math.max(100, date - Date.now()) : 1_000;
 }
 
+/**
+ * The close route under a session's signed stream URL, or undefined for a URL
+ * that is not one: `/api/v1/playback/sessions/{id}/stream/{token}/close`,
+ * from any URL beneath `/api/v1/playback/sessions/{id}/stream/{token}/`. The
+ * token authorises it, so it is sent with no Authorization header.
+ */
+export function signedCloseUrl(streamUrl: string): string | undefined {
+  const match = /^(.*\/api\/v1\/playback\/sessions\/[^/?#]+\/stream\/[^/?#]+)\//.exec(streamUrl);
+  return match ? `${match[1]}/close` : undefined;
+}
+
 export function newPlaybackIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
@@ -637,6 +648,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
 
   async stop(sessionId: string, options: PlaybackStopOptions = {}): Promise<void> {
     this.log.info('session-stop', { sessionId, keepalive: options.keepalive ?? false });
+    if (options.keepalive) this.closeBySignedUrl(sessionId, options.streamUrl);
     try {
       await this.request<void>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {
         method: 'DELETE',
@@ -651,6 +663,33 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       }
       this.log.error('session-stop-failed', { sessionId, error });
       throw error;
+    }
+  }
+
+  /**
+   * On a page exit, close through the session's signed stream URL, beside the
+   * DELETE below.
+   *
+   * A DELETE carries Authorization, so a cross-origin one needs a CORS
+   * preflight, and Chrome does not carry a preflighted keepalive request
+   * through a real unload: the web client measured a reload leaving a
+   * transcode on fi-1 until the idle rule, though the DELETE was issued in
+   * the handler and lands from a live page. This close is a CORS simple
+   * request (a POST with no headers and no body), authorised by the token in
+   * the URL, so it needs no preflight (Tom, 2026-09-25: "As long as it's
+   * authorised by the signed URL, yes"). Sent in this turn, not awaited; a
+   * node without the route answers 404 and the DELETE still stands.
+   */
+  private closeBySignedUrl(sessionId: string, streamUrl: string | undefined): void {
+    const url = streamUrl ? signedCloseUrl(streamUrl) : undefined;
+    if (!url) return;
+    this.log.info('session-close-signed', { sessionId });
+    try {
+      void fetch(url, { method: 'POST', keepalive: true }).catch((error: unknown) => {
+        this.log.warn('session-close-signed-failed', { sessionId, error });
+      });
+    } catch (error) {
+      this.log.warn('session-close-signed-failed', { sessionId, error });
     }
   }
 

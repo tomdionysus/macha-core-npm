@@ -1315,7 +1315,7 @@ describe('PlaybackCoordinator player failures', () => {
 
     expect(closed).toBe(true);
     expect(api.stop).toHaveBeenCalledWith('s2', { keepalive: true });
-    expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith('s1', expect.objectContaining({ keepalive: true }));
   });
 
   it('does not act on a stream error during an in-flight seek-driven generation replacement until the seek settles, then drops it as stale once the seek replaces the source', async () => {
@@ -1666,7 +1666,7 @@ describe('PlaybackCoordinator lease teardown', () => {
 
     await coordinator.close({ keepalive: true });
 
-    expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith('s1', expect.objectContaining({ keepalive: true }));
   });
 });
 
@@ -4372,7 +4372,8 @@ describe('closing for a page exit', () => {
     expect(api.update).toHaveBeenCalled(); // a PATCH is in flight and will never answer
 
     void coordinator.close({ keepalive: true });
-    expect(api.stop).toHaveBeenCalledWith(initial.sessionId, expect.objectContaining({ keepalive: true }));
+    // With the signed stream URL, for the close that survives an unload.
+    expect(api.stop).toHaveBeenCalledWith(initial.sessionId, expect.objectContaining({ keepalive: true, streamUrl: initial.source.url }));
   });
 
   it('does not send it twice once the orderly close catches up', async () => {
