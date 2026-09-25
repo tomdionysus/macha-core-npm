@@ -1623,7 +1623,10 @@ export class PlaybackCoordinator {
   }
 
   close(options: PlaybackStopOptions = {}): Promise<void> {
-    if (options.keepalive) this.closeOptions = { ...this.closeOptions, keepalive: true };
+    if (options.keepalive) {
+      this.closeOptions = { ...this.closeOptions, keepalive: true };
+      this.stopEverythingNowForPageExit();
+    }
     if (this.closePromise) return this.closePromise;
 
     this.disposed = true;
@@ -1673,7 +1676,7 @@ export class PlaybackCoordinator {
       const retired = [...this.releaseAfterCut].filter((id) => id !== session?.sessionId);
       this.releaseAfterCut.clear();
       await Promise.all(retired.map((id) => this.stopOnDisposal(id)));
-      if (session) {
+      if (session && !this.stoppedForPageExit.has(session.sessionId)) {
         try {
           await this.options.resolver.stop(session.sessionId, this.closeOptions);
         } catch (error) {
@@ -1681,7 +1684,7 @@ export class PlaybackCoordinator {
         }
       }
       for (const alternate of this.alternateSessions.values()) {
-        if (alternate.sessionId === session?.sessionId) continue;
+        if (alternate.sessionId === session?.sessionId || this.stoppedForPageExit.has(alternate.sessionId)) continue;
         await this.options.resolver.stop(alternate.sessionId, this.closeOptions).catch((error) => {
           this.log.warn('alternate-session-close-failed', { sessionId: alternate.sessionId, error });
         });
@@ -1692,6 +1695,39 @@ export class PlaybackCoordinator {
       this.listeners.clear();
     })();
     return this.closePromise;
+  }
+
+  /** Sessions already sent their DELETE by `stopEverythingNowForPageExit`. */
+  private readonly stoppedForPageExit = new Set<string>();
+
+  /**
+   * On a page exit, the DELETE for every session core holds, sent in this
+   * turn rather than after the work in flight.
+   *
+   * `close()` otherwise waits for a start, a PATCH, a failover, a
+   * regeneration and any alternate preparation to settle before it stops the
+   * session, which is right for an orderly close: a session made during that
+   * wait is stopped too. A page being unloaded waits for none of it, so when
+   * any of it was on the network the DELETE was never sent. The web client
+   * measured it on 2026-09-25: a reload left a 720p transcode on fi-1 until
+   * the node's five-minute idle rule, and every start on that one-slot node
+   * was refused 429 meanwhile. A session made after this point dies with the
+   * page either way, as it always did.
+   */
+  private stopEverythingNowForPageExit(): void {
+    const ids = new Set<string>();
+    for (const session of [this.serverSession, this.snapshot.session, ...this.alternateSessions.values()]) {
+      if (session) ids.add(session.sessionId);
+    }
+    for (const id of this.releaseAfterCut) ids.add(id);
+    for (const id of ids) {
+      if (this.stoppedForPageExit.has(id)) continue;
+      this.stoppedForPageExit.add(id);
+      this.log.info('session-stop-page-exit', { sessionId: id });
+      void this.options.resolver.stop(id, { ...this.closeOptions, keepalive: true }).catch((error: unknown) => {
+        this.log.warn('session-stop-page-exit-failed', { sessionId: id, error });
+      });
+    }
   }
 
   ownedSessionId(): string | undefined {
@@ -3549,6 +3585,7 @@ export class PlaybackCoordinator {
    * on a return value for, so a silent failure here is a leak with no trace.
    */
   private async stopOnDisposal(sessionId: string): Promise<void> {
+    if (this.stoppedForPageExit.has(sessionId)) return;
     await this.options.resolver.stop(sessionId, this.closeOptions).catch((error: unknown) => {
       this.log.warn('recovered-session-close-failed', { sessionId, error });
     });

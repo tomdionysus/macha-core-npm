@@ -4350,3 +4350,40 @@ describe('a player event before anything is presented', () => {
     expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
   });
 });
+
+/**
+ * The web client, 2026-09-25: a page reload left a 720p transcode alive on
+ * fi-1 for the node's five-minute idle rule, refusing the next viewer 429.
+ * `close()` waited for work in flight before its DELETE, and a page being
+ * unloaded does not wait for any of it.
+ */
+describe('closing for a page exit', () => {
+  it('sends the DELETE at once, not after the work in flight', async () => {
+    const initial = session({ mode: 'transcode' });
+    const hung = deferred<PlaybackSession>();
+    const api = resolver(initial, async () => hung.promise);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { maxHeight: 720 } });
+    await flush();
+    expect(api.update).toHaveBeenCalled(); // a PATCH is in flight and will never answer
+
+    void coordinator.close({ keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith(initial.sessionId, expect.objectContaining({ keepalive: true }));
+  });
+
+  it('does not send it twice once the orderly close catches up', async () => {
+    const initial = session({ mode: 'transcode' });
+    const api = resolver(initial);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    await coordinator.close({ keepalive: true });
+    expect(api.stop).toHaveBeenCalledTimes(1);
+  });
+});
