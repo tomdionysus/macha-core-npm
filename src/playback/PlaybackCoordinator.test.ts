@@ -4425,6 +4425,23 @@ describe("the playing file's facts on the snapshot", () => {
     ]);
   });
 
+  it('reports the versions and the quality playing after a start that needed no facts', async () => {
+    // The web client, tmdb:movie:185: one 1792x1080 file started from its
+    // 1080p button, and the buttons fell back to the node's heights.
+    const one = [{ ...mkv()[0]!, profile: { ...mkv()[0]!.profile, container: 'mp4', format: 'mov,mp4',
+      streams: mkv()[0]!.profile.streams.map((stream) => stream.type === 'video' ? { ...stream, width: 1792 } : stream) } }];
+    const step = playbackVersions(one as never, capabilities()).steps[0]!;
+    expect(step).toMatchObject({ quality: 1080, source: 'file', instruction: { mode: 'direct' } });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: resolver(session({ mode: 'direct' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => one as never,
+      initialPreferences: versionPreferences(step),
+    });
+    await coordinator.start();
+    await vi.waitFor(() => expect(coordinator.getSnapshot().versions?.steps.map((candidate) => candidate.quality)).toEqual([1080, 720]));
+    expect(coordinator.getSnapshot().instruction?.quality).toBe(1080);
+  });
+
   it('fetches the facts after a start that needed none, for the modes', async () => {
     const coordinator = await start(mkv(), { mode: 'direct' });
     await vi.waitFor(() => expect(coordinator.getSnapshot().modes).toBeDefined());

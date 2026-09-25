@@ -1717,6 +1717,26 @@ export class PlaybackCoordinator {
   /** The last facts that answered; see `facts`. */
   private factsSeen?: readonly FileFacts[];
 
+  /**
+   * The versions, and the quality playing, for a start that needed no facts:
+   * without them the per-quality buttons fall back to the node's heights. No
+   * ceiling, since such a start is the viewer's pick, and a pick is not
+   * capped. Found by the web client, 2026-09-25.
+   */
+  private versionsAfterStart(facts: readonly FileFacts[] | undefined, session: PlaybackSession): Partial<PlaybackCoordinatorSnapshot> {
+    const capabilities = this.capabilitiesSeen;
+    if (!facts || !capabilities || this.snapshot.versions) return {};
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false });
+    const maxHeight = session.preferences.maxHeight ?? undefined;
+    const quality = versions.steps.find((step) => (step.mediaId === undefined || step.mediaId === session.mediaId)
+      && step.maxHeight === maxHeight && (step.source === 'transcode' || step.instruction.mode === session.mode))?.quality;
+    const instruction = this.snapshot.instruction;
+    return {
+      versions,
+      ...(instruction && quality !== undefined && instruction.quality === undefined ? { instruction: { ...instruction, quality } } : {}),
+    };
+  }
+
   /** `playingFile` and `modes` for a session, from the facts seen so far. */
   private playingFileFor(session: PlaybackSession): { playingFile?: FileFacts; modes?: OfferedMode[] } {
     const facts = this.factsSeen;
@@ -2915,9 +2935,9 @@ export class PlaybackCoordinator {
     // A start that needed no facts (a direct play of an item's only file)
     // fetches them now, off the critical path, for the modes to offer.
     if (!this.factsSeen && this.options.facts && session.mediaId) {
-      void this.facts().then(() => {
+      void this.facts().then((facts) => {
         if (this.disposed || this.snapshot.session?.sessionId !== session.sessionId) return;
-        this.patchSnapshot(this.playingFileFor(session));
+        this.patchSnapshot({ ...this.playingFileFor(session), ...this.versionsAfterStart(facts, session) });
       });
     }
     for (const retired of [...this.releaseAfterCut]) {
