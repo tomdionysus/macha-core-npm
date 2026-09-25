@@ -77,7 +77,8 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
   - a direct resume from Continue Watching kept its place (1404050);
   - `instruction.quality` marks correctly;
   - the transcode container is fMP4, as core intends: MPEG-TS only on a stated `preferSegmentContainer`, which is the Samsung web host's policy, not the TV's.
-  Still to measure: a transcode resume, a `resource_limit` refusal, and the decoder sizes the set reports.
+  - Decoder size: the set reports 4096x2176, the largest over all its decoders, so class 2160 and 4K keeps direct play. A codec whose own decoder is smaller (VP8 stops at 1920x1088 per the vendor XML) is still claimed 2160. Per-codec limits were declined for now: the decode fallback catches the rare case.
+  Still to measure: a transcode resume and a `resource_limit` refusal.
 - Page-exit leak: a reload left the session holding fi-1's single transcode slot until the node's five-minute idle rule.
   - 7bf1de1 sends the keepalive DELETE synchronously in pagehide, and it lands from a live page (204).
   - On a real reload it doesn't land, though core held the session id (web client, 11:31:52Z, session 97b3d5be).
