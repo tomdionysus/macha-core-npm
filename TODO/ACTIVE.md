@@ -91,6 +91,12 @@ Built in `src/playback/playbackVersions.ts` and the coordinator; the commit foll
 - The per-device setting is kept by `QualityPreferenceStore` at `macha.qualityPreference.v1`, core's key, one for every client. The TV had begun its own key, `macha.quality-preference.v1`, and was asked to move.
 - `instruction.quality` is the step playing. `limitedBy` is on `versions` only, by design.
 - The mobile-data default of 720 is put to Tom as an open question (via the phone).
+- Tom, 2026-09-25, in core's session: "limit to the device capabilities for direct on all clients - but, all clients should also have a setting to disable this." Built as follows:
+  - the chooser objects to a picture larger than the stated `maxWidth` / `maxHeight` (`video-size-exceeds-client`); it ignored them before;
+  - `playbackVersions` offers no step above `deviceQualityClass(capabilities)`, and automatic play stays within the device (`ceiling-device`) even with the setting on;
+  - `offeredModes(profile, capabilities, { offerAll })` says, per mode, whether this device can play the file that way, with the chooser's reasons;
+  - the setting is `QualityPreference.offerAll`, set with `QualityPreferenceStore.setOfferAll`, and reaches the coordinator and runtime through their `offerAll` option.
+  The TV states `maxWidth` / `maxHeight` from its decoders' largest supported size, a true capability. The phone states none and filtered by screen on its own, with its own `macha.offer-everything` key; it is asked to state a size and adopt this. The web states none, so nothing limits it.
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.

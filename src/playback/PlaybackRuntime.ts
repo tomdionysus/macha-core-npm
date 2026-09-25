@@ -123,6 +123,8 @@ export interface PlaybackRuntimeOptions {
   policyOverrides?: PlaybackPolicyOverrides;
   /** See `PlaybackCoordinatorOptions.qualityCeiling`. */
   qualityCeiling?: () => QualityCeiling | undefined;
+  /** See `PlaybackCoordinatorOptions.offerAll`. */
+  offerAll?: () => boolean;
 }
 
 export class PlaybackRuntime {
@@ -267,6 +269,7 @@ export class PlaybackRuntime {
         facts: this.options.facts,
         policyOverrides: this.options.policyOverrides,
         qualityCeiling: this.options.qualityCeiling,
+        offerAll: this.options.offerAll,
       });
       this.coordinator = coordinator;
       this.unsubscribeCoordinator = coordinator.subscribe((snapshot) => {

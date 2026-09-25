@@ -14,8 +14,9 @@ function isQualityClass(value: unknown): value is QualityClass {
 
 function validPreference(value: unknown): value is QualityPreference {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const { wifi, cellular } = value as Record<string, unknown>;
-  return (wifi === undefined || isQualityClass(wifi)) && (cellular === undefined || isQualityClass(cellular));
+  const { wifi, cellular, offerAll } = value as Record<string, unknown>;
+  return (wifi === undefined || isQualityClass(wifi)) && (cellular === undefined || isQualityClass(cellular))
+    && (offerAll === undefined || typeof offerAll === 'boolean');
 }
 
 /**
@@ -47,9 +48,18 @@ export class QualityPreferenceStore {
   }
 
   /** Set or clear one ceiling; `undefined` clears it back to no setting. */
-  set(connection: keyof QualityPreference, quality: QualityClass | undefined): QualityPreference {
+  set(connection: 'wifi' | 'cellular', quality: QualityClass | undefined): QualityPreference {
     const { [connection]: _previous, ...rest } = this.get();
-    const next: QualityPreference = quality === undefined ? rest : { ...rest, [connection]: quality };
+    return this.write(quality === undefined ? rest : { ...rest, [connection]: quality });
+  }
+
+  /** Offer everything, even what this device cannot play; see `QualityPreference.offerAll`. */
+  setOfferAll(offerAll: boolean): QualityPreference {
+    const { offerAll: _previous, ...rest } = this.get();
+    return this.write(offerAll ? { ...rest, offerAll: true } : rest);
+  }
+
+  private write(next: QualityPreference): QualityPreference {
     writeJson(this.storage, QUALITY_PREFERENCE_KEY, next);
     this.cached = undefined;
     for (const listener of this.listeners) listener();

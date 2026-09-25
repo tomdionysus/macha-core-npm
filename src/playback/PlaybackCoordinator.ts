@@ -281,6 +281,12 @@ export interface PlaybackCoordinatorOptions {
    * the viewer picks is never capped.
    */
   qualityCeiling?: () => QualityCeiling | undefined;
+  /**
+   * Whether to offer steps above what the device can play, read with the
+   * versions: the viewer's `QualityPreference.offerAll`. Automatic play stays
+   * within the device either way.
+   */
+  offerAll?: () => boolean;
 }
 
 type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
@@ -1222,7 +1228,7 @@ export class PlaybackCoordinator {
       const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
       // The buttons stay drawable after a version was picked: the qualities
       // are the item's, whichever one is playing.
-      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds }) : undefined;
+      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false }) : undefined;
       if (versions) this.patchSnapshot({ versions });
       // The step this start is, by its file and its cap: a file step has no
       // cap and a transcode step its own.
@@ -1286,7 +1292,7 @@ export class PlaybackCoordinator {
     // among files of one class (direct, then remux, then transcode, then
     // stored order), or a capped transcode where every file is above it.
     const ceiling = this.options.qualityCeiling?.();
-    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, ...(ceiling ? { ceiling } : {}) });
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
     const step = versions.automatic!;
     const instruction = step.instruction;
     const chosenMediaId = step.mediaId ?? this.noFactsMediaId();

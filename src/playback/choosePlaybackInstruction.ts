@@ -17,6 +17,8 @@ export type PlaybackDecisionReason =
   | 'video-codec-not-playable'
   | 'video-codec-not-deliverable-over-hls'
   | 'video-bit-depth-exceeds-client'
+  // Larger than the `maxWidth` / `maxHeight` the host stated.
+  | 'video-size-exceeds-client'
   | 'video-transfer-not-presentable'
   | 'video-dolby-vision-not-supported'
   | 'audio-codec-not-playable'
@@ -209,6 +211,12 @@ export function videoStreamObjection(
   if (!has(capabilities.videoCodecs, stream.codec)) return 'video-codec-not-playable';
   if (stream.bitDepth !== undefined && capabilities.videoBitDepth !== undefined
     && stream.bitDepth > capabilities.videoBitDepth) return 'video-bit-depth-exceeds-client';
+  // A limit the host stated, and only then: web leaves both unset. Tom,
+  // 2026-09-25: limit to the device's capabilities for direct, on all clients.
+  if ((stream.width !== undefined && capabilities.maxWidth !== undefined && stream.width > capabilities.maxWidth)
+    || (stream.height !== undefined && capabilities.maxHeight !== undefined && stream.height > capabilities.maxHeight)) {
+    return 'video-size-exceeds-client';
+  }
 
   const transfer = stream.colorTransfer?.toLowerCase();
   if (transfer !== undefined && !SDR_TRANSFERS.has(transfer) && !has(capabilities.hdr, transfer)) {

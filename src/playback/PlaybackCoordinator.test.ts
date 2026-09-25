@@ -4275,6 +4275,22 @@ describe('versions and the quality ceiling', () => {
     expect(coordinator.getSnapshot().instruction?.quality).toBe(2160);
   });
 
+  it('offers only what the device plays, and everything when the viewer asks', async () => {
+    const run = async (offerAll: boolean) => {
+      const coordinator = new PlaybackCoordinator({
+        media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: resolver(session({ mode: 'direct', mediaId: 'fhd' })),
+        capabilities: async () => ({ ...capabilities(), maxWidth: 1920, maxHeight: 1080 }), initialPositionMs: 0,
+        facts: async () => files() as never, offerAll: () => offerAll,
+      });
+      await coordinator.start();
+      return coordinator.getSnapshot().versions!;
+    };
+    expect((await run(false)).steps.map((step) => step.quality)).toEqual([1080, 720]);
+    const all = await run(true);
+    expect(all.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+    expect(all.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+  });
+
   it('reports the quality playing, automatic or picked', async () => {
     const auto = start({ ceiling: { quality: 1080, reason: 'ceiling-display' } });
     await auto.coordinator.start();

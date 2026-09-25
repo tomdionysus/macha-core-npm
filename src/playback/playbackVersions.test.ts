@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaTechnicalStream, PlaybackCapabilities } from '../types.js';
-import { playbackVersions, qualityCeiling, qualityClass } from './playbackVersions.js';
+import { deviceQualityClass, offeredModes, playbackVersions, qualityCeiling, qualityClass } from './playbackVersions.js';
 
 const web: PlaybackCapabilities = {
   platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
@@ -103,5 +103,51 @@ describe('playbackVersions', () => {
     expect(versions.automatic?.mediaId).toBe('fhd');
     // The ranking, not the ceiling, passed the larger file over.
     expect(versions.limitedBy).toBeUndefined();
+  });
+});
+
+describe('limited to what the device can play, unless the viewer offers everything', () => {
+  const phone: PlaybackCapabilities = { ...web, maxWidth: 2400, maxHeight: 1080 };
+  const facts = () => [file('uhd', 3840, 2160), file('fhd', 1920, 1080)];
+
+  it('classes the device from the size its host stated, and nothing where it stated none', () => {
+    expect(deviceQualityClass(phone)).toBe(1080);
+    expect(deviceQualityClass({ ...web, maxHeight: 720 })).toBe(720);
+    expect(deviceQualityClass(web)).toBeUndefined();
+  });
+
+  it('offers no quality above the device, and every one with offerAll', () => {
+    expect(playbackVersions(facts(), phone).steps.map((step) => step.quality)).toEqual([1080, 720]);
+    expect(playbackVersions(facts(), phone, { offerAll: true }).steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+    expect(playbackVersions(facts(), web).steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+  });
+
+  it('keeps automatic play within the device even with offerAll, and says so', () => {
+    const versions = playbackVersions(facts(), phone, { offerAll: true, ceiling: { quality: 2160, reason: 'ceiling-preference' } });
+    expect(versions.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+    expect(versions.limitedBy).toEqual({ quality: 1080, reason: 'ceiling-device' });
+  });
+
+  it('offers a device that plays none of the steps its own limit', () => {
+    const versions = playbackVersions(facts(), { ...web, maxWidth: 854, maxHeight: 480 });
+    expect(versions.steps).toMatchObject([{ quality: 480, source: 'transcode', mediaId: 'fhd' }]);
+  });
+
+  it('objects to direct play of a picture larger than the device, where its host stated a size', () => {
+    const [uhd] = facts();
+    expect(offeredModes(uhd!.profile, phone).map(({ mode, offered }) => [mode, offered])).toEqual([
+      ['direct', false], ['remux', false], ['transcode', true],
+    ]);
+    expect(offeredModes(uhd!.profile, phone)[0]?.reasons).toContain('video-size-exceeds-client');
+    // With offerAll every mode is offered, and the reason still says why not.
+    expect(offeredModes(uhd!.profile, phone, { offerAll: true })[0]).toMatchObject({ offered: true, reasons: ['video-size-exceeds-client'] });
+    expect(offeredModes(uhd!.profile, web).every((mode) => mode.offered)).toBe(true);
+  });
+
+  it('offers remux, not direct, for a file the device takes only in a segment container', () => {
+    const mkv = file('mkv', 1920, 1080, 'h264', 'matroska');
+    expect(offeredModes(mkv.profile, web).map(({ mode, offered }) => [mode, offered])).toEqual([
+      ['direct', false], ['remux', true], ['transcode', true],
+    ]);
   });
 });

@@ -1,7 +1,10 @@
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import type { PlaybackPreferencesUpdate } from './PlaybackResolver.js';
+import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
+import type { PlaybackMode } from '../types.js';
 import {
   choosePlaybackInstruction,
+  type PlaybackDecisionReason,
   segmentContainer,
   type FileFacts,
   type PlaybackInstruction,
@@ -59,6 +62,21 @@ export function displayQualityClass(width: number, height: number): QualityClass
   return QUALITY_CLASSES.find((quality) => fits >= quality * 0.9) ?? 360;
 }
 
+/**
+ * The largest class this device can play, from the `maxWidth` / `maxHeight`
+ * its host stated, or undefined where it stated neither (the web leaves both
+ * unset, and is then limited by nothing). Classed as a screen is: the largest
+ * 16:9 picture within both.
+ */
+export function deviceQualityClass(capabilities: PlaybackCapabilities): QualityClass | undefined {
+  const { maxWidth, maxHeight } = capabilities;
+  if (maxWidth === undefined && maxHeight === undefined) return undefined;
+  const width = maxWidth ?? Number.POSITIVE_INFINITY;
+  const height = maxHeight ?? Number.POSITIVE_INFINITY;
+  const fits = Math.min(height, (width * 9) / 16);
+  return QUALITY_CLASSES.find((quality) => fits >= quality * 0.9) ?? 360;
+}
+
 /** A profile's picture size, from its first video stream. */
 function pictureOf(profile: MediaTechnicalProfile): { width?: number; height?: number } {
   const video = profile.streams.find((stream) => stream.type === 'video' && stream.default)
@@ -83,6 +101,13 @@ export type ConnectionKind = 'wifi' | 'cellular' | 'unknown';
 export interface QualityPreference {
   wifi?: QualityClass;
   cellular?: QualityClass;
+  /**
+   * Offer every quality and every mode, even those this device cannot play.
+   * Tom, 2026-09-25: limit to the device's capabilities on all clients, with
+   * a setting on all clients to turn the limit off. It widens what is
+   * offered; automatic play still stays within the device.
+   */
+  offerAll?: boolean;
 }
 
 /**
@@ -90,9 +115,11 @@ export interface QualityPreference {
  * "with context to the user as to why"):
  * - `ceiling-display`: no setting, so the display's own class;
  * - `ceiling-preference`: the viewer's setting;
- * - `ceiling-cellular`: on mobile data, the mobile-data ceiling.
+ * - `ceiling-cellular`: on mobile data, the mobile-data ceiling;
+ * - `ceiling-device`: the largest picture this device can play, from the
+ *   `maxWidth` / `maxHeight` its host stated (see `deviceQualityClass`).
  */
-export type QualityCeilingReason = 'ceiling-display' | 'ceiling-preference' | 'ceiling-cellular';
+export type QualityCeilingReason = 'ceiling-display' | 'ceiling-preference' | 'ceiling-cellular' | 'ceiling-device';
 
 export interface QualityCeiling {
   quality: QualityClass;
@@ -161,8 +188,13 @@ export interface VersionStep {
 
 export interface PlaybackVersions {
   files: VersionFile[];
-  /** Highest first, from the best file's class down to 720p. */
+  /**
+   * Highest first, from the best file's class down to 720p, without any above
+   * what the device can play unless `offerAll` was set.
+   */
   steps: VersionStep[];
+  /** The largest class the device can play, where its host stated one. */
+  deviceLimit?: QualityClass;
   /** What automatic play would choose. */
   automatic?: VersionStep;
   /** Set when the ceiling kept automatic play off a larger file. */
@@ -233,6 +265,8 @@ export interface PlaybackVersionsOptions {
   mediaIds?: readonly string[];
   /** The cap on automatic play; see `qualityCeiling`. */
   ceiling?: QualityCeiling;
+  /** Offer steps above the device's limit too; see `QualityPreference.offerAll`. */
+  offerAll?: boolean;
 }
 
 /**
@@ -272,14 +306,24 @@ export function playbackVersions(
     const smallest = best(above.filter((file) => file.quality === Math.min(...above.map((f) => f.quality))))!;
     return capped(smallest, quality, capabilities, options.overrides);
   };
-  const steps = QUALITY_CLASSES.filter((quality) => quality <= top && quality >= floor).map(stepAt);
+  const deviceLimit = deviceQualityClass(capabilities);
+  const offered = (quality: QualityClass) => options.offerAll || deviceLimit === undefined || quality <= deviceLimit;
+  const steps = QUALITY_CLASSES.filter((quality) => quality <= top && quality >= floor && offered(quality)).map(stepAt);
+  // Where the device cannot play even the lowest step, it is offered its own
+  // limit instead, so there is always something to press.
+  if (steps.length === 0 && deviceLimit !== undefined) steps.push(stepAt(deviceLimit));
 
-  const ceiling = options.ceiling;
+  // Automatic play stays within the device whatever is offered, under the
+  // lower of the device and the host's ceiling.
+  const ceiling = deviceLimit !== undefined && (!options.ceiling || deviceLimit < options.ceiling.quality)
+    ? { quality: deviceLimit, reason: 'ceiling-device' as const }
+    : options.ceiling;
   const within = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
   const automatic = within.length > 0 ? fileStep(best(within)!) : stepAt(ceiling!.quality);
   return {
     files,
     steps,
+    ...(deviceLimit !== undefined ? { deviceLimit } : {}),
     automatic,
     // Only where the ceiling excluded a file: a larger file passed over
     // because it needs re-encoding is the ranking, not the ceiling.
@@ -302,4 +346,36 @@ export function versionPreferences(step: VersionStep): PlaybackPreferencesUpdate
     ...(step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {}),
     ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
   };
+}
+
+/** Whether this device can play a file a given way, and why not. */
+export interface OfferedMode {
+  mode: PlaybackMode;
+  /** False where the device cannot play it so; true for all with `offerAll`. */
+  offered: boolean;
+  /** Why the device cannot, from the chooser, even where `offerAll` offers it. */
+  reasons: PlaybackDecisionReason[];
+}
+
+/**
+ * The modes to offer for a file on this device. Tom, 2026-09-25: limit to
+ * the device's capabilities, with a setting to turn the limit off. `direct`
+ * is offered where the chooser would play the file directly, `remux` where it
+ * would play it without re-encoding (directly, or copied into a segment
+ * container), and `transcode` always. With `offerAll` every mode is offered,
+ * and the reasons still say why the device objects, for the host to show.
+ */
+export function offeredModes(
+  profile: MediaTechnicalProfile,
+  capabilities: PlaybackCapabilities,
+  options: { operations?: PlaybackOperations; overrides?: PlaybackPolicyOverrides; offerAll?: boolean } = {},
+): OfferedMode[] {
+  const instruction = choosePlaybackInstruction(profile, capabilities, { operations: options.operations, overrides: options.overrides });
+  const why = instruction.reasons.filter((reason) => reason !== 'source-plays-as-is' && reason !== 'host-policy-prefers-container');
+  const playable = (mode: PlaybackMode) => MODE_RANK[instruction.mode] <= MODE_RANK[mode];
+  return (['direct', 'remux', 'transcode'] as const).map((mode) => ({
+    mode,
+    offered: options.offerAll === true || playable(mode),
+    reasons: playable(mode) ? [] : why,
+  }));
 }

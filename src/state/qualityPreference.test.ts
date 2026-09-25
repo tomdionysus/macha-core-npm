@@ -41,6 +41,13 @@ describe('QualityPreferenceStore', () => {
     expect(store.getSnapshot()).toEqual({ wifi: 720 });
   });
 
+  it('keeps offerAll beside the ceilings, and clears it back to no setting', () => {
+    const store = new QualityPreferenceStore(memory());
+    store.set('wifi', 1080);
+    expect(store.setOfferAll(true)).toEqual({ wifi: 1080, offerAll: true });
+    expect(store.setOfferAll(false)).toEqual({ wifi: 1080 });
+  });
+
   it("is one of core's keys", () => {
     expect(isMachaStorageKey(QUALITY_PREFERENCE_KEY)).toBe(true);
   });
