@@ -1711,6 +1711,9 @@ export class PlaybackCoordinator {
     return this.closePromise;
   }
 
+  /** The report before a viewer's mode change, until it lands; see `update`. */
+  private instructionBeforeModeChange?: PlaybackInstructionReport;
+
   /** The last facts that answered; see `facts`. */
   private factsSeen?: readonly FileFacts[];
 
@@ -1919,6 +1922,8 @@ export class PlaybackCoordinator {
     // Only here: core's own changes go through `applyUpdate` and say nothing
     // about what the viewer wants.
     if (this.snapshot.session && update.preferences?.mode !== undefined) {
+      // Kept until the change lands, to put back if the node refuses it.
+      this.instructionBeforeModeChange ??= this.snapshot.instruction;
       this.viewerModeChoice = update.preferences.mode !== 'choose';
       if (update.preferences.mode !== 'choose') this.reportViewerChoice(update.preferences);
     }
@@ -2352,6 +2357,7 @@ export class PlaybackCoordinator {
         }
 
         this.activateSession(next, currentDesired, pending.reason === 'seek' ? 'relocate' : 'continue');
+        if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
         if (!this.disposed) this.patchSnapshot({ notice: undefined });
       } catch (error) {
         if (this.disposed) return;
@@ -2370,7 +2376,16 @@ export class PlaybackCoordinator {
           error,
         });
         const refusal = refusalOf(error);
-        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error), ...(refusal ? { refusal } : {}) } });
+        // A refused mode change leaves the node serving what it served, so the
+        // report goes back to describing that. From server 0.60.0 this is
+        // ordinary: leaving transcode gives up the slot, and a switch back can
+        // be refused 429 resource_limit once another viewer has it.
+        const restored = update.preferences?.mode !== undefined && !this.pendingMutation ? this.instructionBeforeModeChange : undefined;
+        if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
+        this.patchSnapshot({
+          notice: { code: 'update-failed', error: asError(error), ...(refusal ? { refusal } : {}) },
+          ...(restored ? { instruction: restored } : {}),
+        });
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;

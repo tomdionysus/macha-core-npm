@@ -4431,3 +4431,37 @@ describe("the playing file's facts on the snapshot", () => {
     expect(coordinator.getSnapshot().modes?.find((mode) => mode.mode === 'remux')?.offered).toBe(true);
   });
 });
+
+/**
+ * Server 0.60.0: a PATCH that leaves transcode releases the slot, so one back
+ * into transcode can be refused 429 resource_limit (scope: request) where
+ * another viewer took it meanwhile. The node leaves the playing generation as
+ * it was; the snapshot must say so.
+ */
+describe('a switch back into transcode refused for capacity', () => {
+  it('keeps playing what the node still serves, reports the refusal, and does not claim the transcode', async () => {
+    const direct = session({ mode: 'direct' });
+    let refuse = false;
+    const api = resolver(session({ mode: 'transcode' }), async (update) => {
+      if (refuse) throw Object.assign(new Error('transcode limit reached'), { status: 429, code: 'resource_limit' });
+      return update.preferences?.mode === 'direct' ? direct : session({ mode: 'transcode' });
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'direct' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('direct'));
+
+    refuse = true;
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().notice?.code).toBe('update-failed'));
+    const snapshot = coordinator.getSnapshot();
+    expect(snapshot.notice?.refusal).toMatchObject({ status: 429, code: 'resource_limit' });
+    expect(snapshot.session?.mode).toBe('direct');
+    expect(snapshot.fatalError).toBeUndefined();
+    // The report describes what the node still serves, not the refused ask.
+    expect(snapshot.instruction?.mode).toBe('direct');
+  });
+});
