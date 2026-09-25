@@ -4,7 +4,7 @@ import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackT
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
-import { playbackVersions, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
+import { offeredModes, playbackVersions, type OfferedMode, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -126,6 +126,19 @@ export interface PlaybackCoordinatorSnapshot {
    * the per-quality buttons from `steps` and plays one with `playVersion`.
    */
   versions?: PlaybackVersions;
+  /**
+   * The facts of the file playing, the node's `operations` included, once
+   * they have answered: the one place a host reads them mid-play, since the
+   * session does not carry them.
+   */
+  playingFile?: FileFacts;
+  /**
+   * The modes to offer for the file playing, from `offeredModes` over
+   * `playingFile` with the node's operations, the capabilities, the policy
+   * overrides and `offerAll`. Absent until the facts answer; a host then
+   * falls back to the session's own profile.
+   */
+  modes?: OfferedMode[];
 }
 
 export interface PlaybackInstructionReport {
@@ -1193,6 +1206,7 @@ export class PlaybackCoordinator {
       });
     this.cachedFacts = attempt;
     void attempt.then((facts) => {
+      if (facts !== undefined) this.factsSeen = facts;
       // Bounded: a failed attempt is forgotten so the next caller may try
       // again, up to a budget. Unbounded retry would put a request on the
       // viewer's critical path every time they touched the mode control while
@@ -1695,6 +1709,24 @@ export class PlaybackCoordinator {
       this.listeners.clear();
     })();
     return this.closePromise;
+  }
+
+  /** The last facts that answered; see `facts`. */
+  private factsSeen?: readonly FileFacts[];
+
+  /** `playingFile` and `modes` for a session, from the facts seen so far. */
+  private playingFileFor(session: PlaybackSession): { playingFile?: FileFacts; modes?: OfferedMode[] } {
+    const facts = this.factsSeen;
+    const file = facts?.find((candidate) => candidate.mediaId === session.mediaId)
+      ?? (facts?.length === 1 && facts[0]!.mediaId === undefined ? facts[0] : undefined);
+    if (!file) return { playingFile: undefined, modes: undefined };
+    const capabilities = this.capabilitiesSeen;
+    return {
+      playingFile: file,
+      modes: capabilities
+        ? offeredModes(file.profile, capabilities, { operations: file.operations, overrides: this.options.policyOverrides, offerAll: this.options.offerAll?.() ?? false })
+        : undefined,
+    };
   }
 
   /** Sessions already sent their DELETE by `stopEverythingNowForPageExit`. */
@@ -2864,7 +2896,15 @@ export class PlaybackCoordinator {
   }
 
   private setSession(session: PlaybackSession): void {
-    this.patchSnapshot({ session, instruction: this.instructionWithServed(session) });
+    this.patchSnapshot({ session, instruction: this.instructionWithServed(session), ...this.playingFileFor(session) });
+    // A start that needed no facts (a direct play of an item's only file)
+    // fetches them now, off the critical path, for the modes to offer.
+    if (!this.factsSeen && this.options.facts && session.mediaId) {
+      void this.facts().then(() => {
+        if (this.disposed || this.snapshot.session?.sessionId !== session.sessionId) return;
+        this.patchSnapshot(this.playingFileFor(session));
+      });
+    }
     for (const retired of [...this.releaseAfterCut]) {
       if (retired === session.sessionId || retired === this.serverSession?.sessionId) continue;
       this.releaseAfterCut.delete(retired);

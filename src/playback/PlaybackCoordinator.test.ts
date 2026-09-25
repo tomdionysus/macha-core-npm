@@ -4007,15 +4007,19 @@ describe('an item with several files', () => {
     expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', mediaId: 'first' });
   });
 
-  it('asks for no facts when the viewer chose the mode on a single-file item', async () => {
-    const facts = vi.fn(async () => undefined);
+  it('asks for no facts before starting when the viewer chose direct on a single-file item', async () => {
+    // Off the critical path: the start needs none. They are fetched once the
+    // session exists, for the modes to offer (`snapshot.modes`).
+    const order: string[] = [];
+    const facts = vi.fn(async () => { order.push('facts'); return undefined; });
     const api = resolver(session({ mode: 'direct' }));
+    api.resolve.mockImplementation(async () => { order.push('resolve'); return session({ mode: 'direct' }); });
     const coordinator = new PlaybackCoordinator({
       media: { ...media(), mediaIds: ['only'] }, player: new FakePlayer(), resolver: api,
       capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' }, facts,
     });
     await coordinator.start();
-    expect(facts).not.toHaveBeenCalled();
+    expect(order[0]).toBe('resolve');
     expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('only');
   });
 
@@ -4386,5 +4390,44 @@ describe('closing for a page exit', () => {
     await coordinator.start();
     await coordinator.close({ keepalive: true });
     expect(api.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the playing file's facts on the snapshot", () => {
+  const mkv = (operations?: unknown) => [{
+    mediaId: 'm1',
+    ...(operations ? { operations } : {}),
+    profile: { mediaId: 'm1', format: 'matroska', container: 'matroska', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width: 1920, height: 1080 },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  }];
+  const cannotCopy = {
+    direct: true, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: { video: false, audio: false },
+    transcodeVideo: true, transcodeAudio: true,
+  };
+
+  async function start(facts: unknown, initialPreferences?: PlaybackPreferencesUpdate) {
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => facts as never,
+      ...(initialPreferences ? { initialPreferences } : {}),
+    });
+    await coordinator.start();
+    return coordinator;
+  }
+
+  it("carries the node's operations, and offers no remux the node would refuse", async () => {
+    const coordinator = await start(mkv(cannotCopy));
+    expect(coordinator.getSnapshot().playingFile?.operations).toEqual(cannotCopy);
+    expect(coordinator.getSnapshot().modes?.map(({ mode, offered }) => [mode, offered])).toEqual([
+      ['direct', false], ['remux', false], ['transcode', true],
+    ]);
+  });
+
+  it('fetches the facts after a start that needed none, for the modes', async () => {
+    const coordinator = await start(mkv(), { mode: 'direct' });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().modes).toBeDefined());
+    expect(coordinator.getSnapshot().modes?.find((mode) => mode.mode === 'remux')?.offered).toBe(true);
   });
 });
