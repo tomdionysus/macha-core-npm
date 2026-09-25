@@ -544,8 +544,7 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 
 ## Waiting on Tom
 
-### Three small questions from 2026-09-24
-- **Specials.** `episodeLabel` names a season-0 episode "Season 0 Episode 1". Should it be something else, such as the season's own title, "Specials"?
+### Three small questions from 2026-09-24 (a fourth, on Specials, fell away with `episodeLabel`: clients word episodes now)
 - **"Plan A" is searched as "Plan".** This is a consequence of dropping "the", "an" and "a" anywhere in a query. It is Tom's rule as relayed, and this is its edge.
 - **Two links on a TV card.** The Android TV client says a card is a single focus target, so it cannot hold separate series and season links as the ruling describes. It reaches both by Back instead: TV Shows → series → season sits beneath every episode. If Tom wants separate focusable targets there, that is a different design and the TV client wants his call.
 - **Refresh stored snapshots on read?** `PlaylistStore` and `PlaybackQueueStore` (core's) keep each item as stored, so anything stored before `839e190` shows no artist or album on the phone until re-added. Refreshing on read would put a catalogue read behind a store read. The phone client owes no migration and is writing none. Macha has not shipped.
