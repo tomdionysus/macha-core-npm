@@ -4312,3 +4312,41 @@ describe('versions and the quality ceiling', () => {
     expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', video: 'transcode', maxHeight: 1440 });
   });
 });
+
+/**
+ * Tom, 2026-09-25: resuming from Continue Watching "sometimes" started at 0.
+ * Reproduced by the Android TV client: expo-video ticks position 0 from an
+ * idle player, and one such tick while the session was being made became the
+ * resume point.
+ */
+describe('a player event before anything is presented', () => {
+  function start(mode: 'direct' | 'transcode') {
+    const player = new FakePlayer();
+    const initial = session({ mode, seekMs: mode === 'direct' ? 0 : 300_000, ...(mode === 'direct' ? {} : { seekOffsetMs: 0 }) } as Partial<PlaybackSession>);
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    api.resolve.mockImplementation(async () => {
+      player.emit({ positionMs: 0, durationMs: 0, paused: true, ended: false });
+      return initial;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 300_000,
+      initialPreferences: { mode },
+    });
+    return { coordinator, player, updates };
+  }
+
+  it('does not move a direct resume back to the start', async () => {
+    const { coordinator, player } = start('direct');
+    await coordinator.start();
+    expect(player.playCalls[0]?.positionMs).toBe(300_000);
+  });
+
+  it('does not seek a transcode resume back to the start', async () => {
+    const { coordinator, updates } = start('transcode');
+    await coordinator.start();
+    await flush();
+    expect(updates.some((update) => update.seekMs === 0)).toBe(false);
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
+  });
+});

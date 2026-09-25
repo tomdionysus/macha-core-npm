@@ -2882,6 +2882,13 @@ export class PlaybackCoordinator {
 
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
+    // Nothing of core's is on the player until the first source is presented,
+    // so what it reports before then describes nothing: an idle expo-video
+    // player ticks position 0 every 250 ms with no source at all. Taken as a
+    // position, one such tick during the start became the resume point, and
+    // Continue Watching "sometimes" started at 0 (Tom, 2026-09-25; found by
+    // the Android TV client). `present()` pins the start position itself.
+    if (!this.snapshot.session) return;
     // Stamped before any branch, because both paths out of here patch the
     // snapshot and both figures are read long afterwards.
     this.lastPlayerEventAt = machaHost().now();
