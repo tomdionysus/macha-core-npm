@@ -38,8 +38,12 @@ describe('qualityCeiling', () => {
     expect(qualityCeiling({ display: fhd, preference: { wifi: 2160 } })).toEqual({ quality: 2160, reason: 'ceiling-preference' });
     expect(qualityCeiling({ display: uhdPanel, preference: { wifi: 720 } })).toEqual({ quality: 720, reason: 'ceiling-preference' });
     expect(qualityCeiling({})).toBeUndefined();
-    // Upright or on its side, a phone is the same screen.
+    // Upright or on its side, a 20:9 phone is a 1080 screen: a 1440p picture
+    // would be scaled down to fit its 1080 rows.
     expect(qualityCeiling({ display: { width: 1080, height: 2400 } })).toEqual({ quality: 1080, reason: 'ceiling-display' });
+    expect(qualityCeiling({ display: { width: 2400, height: 1080 } })).toEqual({ quality: 1080, reason: 'ceiling-display' });
+    expect(qualityCeiling({ display: { width: 1366, height: 768 } })).toEqual({ quality: 720, reason: 'ceiling-display' });
+    expect(qualityCeiling({ display: { width: 2560, height: 1600 } })).toEqual({ quality: 1440, reason: 'ceiling-display' });
   });
 
   it('holds mobile data lower, by its own setting or the default, and counts an unknown connection as Wi-Fi', () => {

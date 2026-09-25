@@ -44,6 +44,21 @@ export function qualityClass(width: number | undefined, height: number | undefin
   return 360;
 }
 
+/**
+ * The class of a screen: the largest 16:9 picture it shows whole, to within
+ * 10%. Not `qualityClass`'s either-dimension rule, which is right for a file
+ * (a scope film is still 1080p) but wrong for a screen: a phone's 2400x1080
+ * is 2400 wide, yet a 1440p picture would be scaled down to fit it, and a
+ * 1080p one fits it exactly. Landscape whichever way the device is held, so
+ * a phone upright is the same screen as on its side.
+ */
+export function displayQualityClass(width: number, height: number): QualityClass {
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  const fits = Math.min(short, (long * 9) / 16);
+  return QUALITY_CLASSES.find((quality) => fits >= quality * 0.9) ?? 360;
+}
+
 /** A profile's picture size, from its first video stream. */
 function pictureOf(profile: MediaTechnicalProfile): { width?: number; height?: number } {
   const video = profile.streams.find((stream) => stream.type === 'video' && stream.default)
@@ -109,11 +124,7 @@ export interface QualityCeilingInput {
  * capped; this is for automatic play only.
  */
 export function qualityCeiling(input: QualityCeilingInput): QualityCeiling | undefined {
-  // Classed as landscape whichever way the device is held: a phone's
-  // 1080x2400 held upright is a 1080 screen, not a 2160 one.
-  const display = input.display
-    ? qualityClass(Math.max(input.display.width, input.display.height), Math.min(input.display.width, input.display.height))
-    : undefined;
+  const display = input.display ? displayQualityClass(input.display.width, input.display.height) : undefined;
   const wifi: QualityCeiling | undefined = input.preference?.wifi !== undefined
     ? { quality: input.preference.wifi, reason: 'ceiling-preference' }
     : display !== undefined ? { quality: display, reason: 'ceiling-display' } : undefined;
