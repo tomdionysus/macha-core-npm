@@ -109,7 +109,11 @@ export interface QualityCeilingInput {
  * capped; this is for automatic play only.
  */
 export function qualityCeiling(input: QualityCeilingInput): QualityCeiling | undefined {
-  const display = input.display ? qualityClass(input.display.width, input.display.height) : undefined;
+  // Classed as landscape whichever way the device is held: a phone's
+  // 1080x2400 held upright is a 1080 screen, not a 2160 one.
+  const display = input.display
+    ? qualityClass(Math.max(input.display.width, input.display.height), Math.min(input.display.width, input.display.height))
+    : undefined;
   const wifi: QualityCeiling | undefined = input.preference?.wifi !== undefined
     ? { quality: input.preference.wifi, reason: 'ceiling-preference' }
     : display !== undefined ? { quality: display, reason: 'ceiling-display' } : undefined;

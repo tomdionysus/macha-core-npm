@@ -38,6 +38,8 @@ describe('qualityCeiling', () => {
     expect(qualityCeiling({ display: fhd, preference: { wifi: 2160 } })).toEqual({ quality: 2160, reason: 'ceiling-preference' });
     expect(qualityCeiling({ display: uhdPanel, preference: { wifi: 720 } })).toEqual({ quality: 720, reason: 'ceiling-preference' });
     expect(qualityCeiling({})).toBeUndefined();
+    // Upright or on its side, a phone is the same screen.
+    expect(qualityCeiling({ display: { width: 1080, height: 2400 } })).toEqual({ quality: 1080, reason: 'ceiling-display' });
   });
 
   it('holds mobile data lower, by its own setting or the default, and counts an unknown connection as Wi-Fi', () => {
