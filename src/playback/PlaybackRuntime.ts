@@ -2,6 +2,7 @@ import { MachaPlaybackError } from './MachaPlaybackResolver.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
+import { versionPreferences, type QualityCeiling, type VersionStep } from './playbackVersions.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import {
   PlaybackCoordinator,
@@ -64,6 +65,8 @@ function retriedCarriage(
     video: instruction.video,
     audio: instruction.audio,
     container: instruction.container,
+    // The file the viewer's version named, which a retry must not re-rank.
+    ...(instruction.mediaId ? { mediaId: instruction.mediaId } : {}),
   };
 }
 
@@ -118,6 +121,8 @@ export interface PlaybackRuntimeOptions {
   facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
+  /** See `PlaybackCoordinatorOptions.qualityCeiling`. */
+  qualityCeiling?: () => QualityCeiling | undefined;
 }
 
 export class PlaybackRuntime {
@@ -261,6 +266,7 @@ export class PlaybackRuntime {
         initialPreferences: initialPreferences ? { ...initialPreferences } : undefined,
         facts: this.options.facts,
         policyOverrides: this.options.policyOverrides,
+        qualityCeiling: this.options.qualityCeiling,
       });
       this.coordinator = coordinator;
       this.unsubscribeCoordinator = coordinator.subscribe((snapshot) => {
@@ -342,6 +348,19 @@ export class PlaybackRuntime {
     if (this.coordinator) return this.coordinator.seekBy(deltaMs);
     if (this.lifecycle.phase !== 'failed' || !this.lifecycle.request) return false;
     return this.seek(this.lifecycle.request.startPositionMs + deltaMs);
+  }
+
+  /**
+   * Play one of the snapshot's `versions.steps` as the viewer's choice; see
+   * `PlaybackCoordinator.playVersion`. After a terminal failure it starts a
+   * fresh generation on that version, as `retry` would.
+   */
+  playVersion(step: VersionStep): Promise<void> {
+    if (this.coordinator) return this.coordinator.playVersion(step);
+    if (this.lifecycle.phase === 'failed' && this.lifecycle.request) {
+      return this.play({ ...this.lifecycle.request }, versionPreferences(step));
+    }
+    return Promise.resolve();
   }
 
   update(update: PlaybackUpdate): void {

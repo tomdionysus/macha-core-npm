@@ -76,12 +76,18 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
 - TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.58.0 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
 
 ### Per-quality Play and the device ceiling: rulings settled — Tom, 2026-09-25
-Not built yet. Tom confirmed these in core's session. They reached core relayed by the web client.
+Built in `src/playback/playbackVersions.ts` and the coordinator; the commit follows this note. Tom confirmed these rulings in core's session. They reached core relayed by the web client.
 - Qualities cap down only, from the best file's class to 720.
 - Where the best file is below 720p, its own class is offered anyway, e.g. 480p beside Play, and never a class above it. `qualityClass` needs classes below 720: 576, 480 and 360.
 - With no setting chosen, automatic play caps at the display's resolution class. The host states its display: on the web, screen size times devicePixelRatio; on the TV, the panel. The TV's value is the panel's physical mode (`Display.getMode`: 3840x2160 on .133, so 2160), not the 1920x1080 UI size that React Native reports. So the API takes a resolution the host has measured, and never reads a screen size itself. An explicit setting overrides it, and a reason code is given when the cap limits the choice.
 - The phone has Wi-Fi and mobile-data ceilings, the mobile one lower, with a reason shown and an override in settings.
 - An explicit pick is never capped.
+- API: `qualityClass`, `qualityCeiling`, `playbackVersions` (files, steps, automatic, limitedBy), `versionPreferences(step)` for a start, `playVersion(step)` on the coordinator and the runtime, `snapshot.versions`, and the `qualityCeiling` option on both.
+- Core's own choices, not rulings:
+  - the cellular default is 720 (`DEFAULT_CELLULAR_CEILING`);
+  - automatic play ranks a file that needs no re-encode above one that does, then the larger picture. So a remux of 2160p beats a direct 1080p, which changes the ranking for items with files of different sizes;
+  - a capped transcode is fitted to the source's shape.
+- Not yet stored by core: the per-device preference. The host keeps it and passes it in through `qualityCeiling`.
 
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.

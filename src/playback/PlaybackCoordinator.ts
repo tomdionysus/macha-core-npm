@@ -4,6 +4,7 @@ import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackT
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
+import { playbackVersions, type PlaybackVersions, type QualityCeiling, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -119,6 +120,12 @@ export interface PlaybackCoordinatorSnapshot {
    * not a symptom. Surface this somewhere a person can see it.
    */
   instruction?: PlaybackInstructionReport;
+  /**
+   * The qualities this item can be played at, and the one automatic play
+   * chose, once facts have answered; see `playbackVersions`. A host draws
+   * the per-quality buttons from `steps` and plays one with `playVersion`.
+   */
+  versions?: PlaybackVersions;
 }
 
 export interface PlaybackInstructionReport {
@@ -261,6 +268,13 @@ export interface PlaybackCoordinatorOptions {
   facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
+  /**
+   * The cap on automatic play, read at each start: the host builds it with
+   * `qualityCeiling` from the display it measured, the viewer's setting and,
+   * on a phone, the connection. Absent, automatic play is uncapped. A version
+   * the viewer picks is never capped.
+   */
+  qualityCeiling?: () => QualityCeiling | undefined;
 }
 
 type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
@@ -836,6 +850,9 @@ export function preparePlaybackPatch(
 function namedStreamsForPatch(update: PlaybackUpdate, session: PlaybackSession): PlaybackUpdate {
   const preferences = update.preferences;
   if (!preferences || session.sourceInfo.streams.length === 0) return update;
+  // Another file's streams are not this one's: a switch names its own, from
+  // that file's facts (see `playVersion`).
+  if (update.mediaId !== undefined && update.mediaId !== session.mediaId) return update;
   const mode = preferences.mode !== undefined && preferences.mode !== 'choose' ? preferences.mode : session.mode;
   const changesMode = preferences.mode !== undefined && preferences.mode !== 'choose';
   const changesLanguage = preferences.audioLanguage !== undefined || preferences.subtitleLanguage !== undefined;
@@ -1196,7 +1213,10 @@ export class PlaybackCoordinator {
       // streams come from the file's facts where there are any, and a node
       // that still finds a choice open says which (`choice_required`), which
       // the resolver answers.
-      const { mediaId, profile } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
+      const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
+      // The buttons stay drawable after a version was picked: the qualities
+      // are the item's, whichever one is playing.
+      if (facts) this.patchSnapshot({ versions: playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds }) });
       const container = preferences.container
         ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
       const streams = profile ? streamsToName(profile, preferences.mode, preferences) : undefined;
@@ -1248,13 +1268,18 @@ export class PlaybackCoordinator {
       return { ...preferences, mode: 'transcode', container, ...(fileId ? { mediaId: fileId } : {}) };
     }
 
-    // Every file, and the one that plays best, ranked as the server itself
-    // ranked them before the choice was the client's: direct, then remux, then
-    // transcode, and stored order between equals.
-    const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, this.options.media.mediaIds)!;
-    const instruction = choice.instruction;
-    const chosenMediaId = choice.mediaId ?? this.noFactsMediaId();
-    const streams = streamsToName(facts[choice.index]!.profile, instruction.mode, preferences);
+    // Every quality the files offer, and the one automatic play takes: the
+    // best file at or below the ceiling, ranked as the server ranked them
+    // among files of one class (direct, then remux, then transcode, then
+    // stored order), or a capped transcode where every file is above it.
+    const ceiling = this.options.qualityCeiling?.();
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, ...(ceiling ? { ceiling } : {}) });
+    const step = versions.automatic!;
+    const instruction = step.instruction;
+    const chosenMediaId = step.mediaId ?? this.noFactsMediaId();
+    const profile = (facts.find((file) => file.mediaId !== undefined && file.mediaId === step.mediaId) ?? facts[0])!.profile;
+    const streams = streamsToName(profile, instruction.mode, preferences);
+    const cap = step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {};
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1265,17 +1290,48 @@ export class PlaybackCoordinator {
       reasons: instruction.reasons,
       chosenMediaId,
       files: facts.length,
+      quality: step.quality,
+      ...cap,
+      ...(versions.limitedBy ? { limitedBy: versions.limitedBy.reason } : {}),
       ...streams,
     });
     this.chosenInstruction = instruction;
-    this.patchSnapshot({ instruction: {
+    this.patchSnapshot({ versions, instruction: {
       mode: instruction.mode, video: instruction.video, audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,
       chosenByViewer: false, withoutFacts: false,
       ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
-    return { ...withoutLanguages(preferences), ...instructionPreferences(instruction), ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
+    return { ...withoutLanguages(preferences), ...instructionPreferences(instruction), ...cap, ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
+  }
+
+  /**
+   * Play one of `snapshot.versions.steps`, or a step a host built with
+   * `playbackVersions` itself. It counts as the viewer's choice, as a mode
+   * picked in the middle of playback does: no fallback overrides it and no
+   * ceiling caps it. A step on another file switches the session to that
+   * file, naming its streams from its facts.
+   */
+  async playVersion(step: VersionStep): Promise<void> {
+    if (this.disposed) return;
+    const session = this.snapshot.session;
+    const switching = step.mediaId !== undefined && step.mediaId !== session?.mediaId;
+    const preferences: PlaybackPreferencesUpdate = {
+      ...instructionPreferences(step.instruction),
+      ...(step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {}),
+    };
+    if (switching) {
+      const facts = await this.facts();
+      if (this.disposed) return;
+      const profile = facts?.find((file) => file.mediaId === step.mediaId)?.profile;
+      if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.options.initialPreferences ?? {}));
+    }
+    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
+    this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
+    if (step.mediaId !== undefined && this.snapshot.instruction) {
+      this.patchSnapshot({ instruction: { ...this.snapshot.instruction, mediaId: step.mediaId } });
+    }
   }
 
   /**
@@ -1317,23 +1373,26 @@ export class PlaybackCoordinator {
   /**
    * The file to play under a mode the viewer chose, and its profile where
    * facts gave one; see `instructedPreferences`. Facts are fetched for an item
-   * with several files, to rank them, and for any mode but direct, to name
-   * streams; a direct play of an item's only file needs none.
+   * with several files, to rank them and report its versions, and for any
+   * mode but direct, to name streams; a direct play of an item's only file
+   * needs none.
    */
   private async fileForViewerMode(
     mode: PlaybackMode,
     named: string | undefined,
     capabilities: PlaybackCapabilities,
-  ): Promise<{ mediaId?: string; profile?: MediaTechnicalProfile }> {
+  ): Promise<{ mediaId?: string; profile?: MediaTechnicalProfile; facts?: readonly FileFacts[] }> {
     const mediaIds = this.options.media.mediaIds;
-    if (mode === 'direct' && (named !== undefined || mediaIds.length <= 1)) return { mediaId: named ?? mediaIds[0] };
+    // Several files are several versions, and their facts draw the buttons,
+    // so only an item's only file, played direct, goes without.
+    if (mode === 'direct' && mediaIds.length <= 1) return { mediaId: named ?? mediaIds[0] };
     const facts = await this.facts();
     // Without facts there is nothing to rank, and the server no longer
     // chooses for us, so the first file stands in (see `noFactsMediaId`).
     if (!facts) return { mediaId: named ?? this.noFactsMediaId() };
-    if (named !== undefined) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile };
+    if (named !== undefined) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile, facts };
     const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds);
-    return { mediaId: choice?.mediaId ?? this.noFactsMediaId(), profile: choice ? facts[choice.index]?.profile : undefined };
+    return { mediaId: choice?.mediaId ?? this.noFactsMediaId(), profile: choice ? facts[choice.index]?.profile : undefined, facts };
   }
 
   /**

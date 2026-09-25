@@ -4,6 +4,7 @@ import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource 
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
+import { playbackVersions, versionPreferences, type QualityCeiling } from './playbackVersions.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
@@ -4162,5 +4163,103 @@ describe('preparePlaybackPatch, for a host that PATCHes without the coordinator'
       preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
     const prepared = preparePlaybackPatch({ preferences: { mode: 'transcode' } }, direct, capabilities());
     expect(prepared.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2 });
+  });
+});
+
+describe('versions and the quality ceiling', () => {
+  const sized = (mediaId: string, width: number, height: number) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width, height },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+  const files = () => [sized('uhd', 3840, 2160), sized('fhd', 1920, 1080)];
+
+  function start(options: { ceiling?: QualityCeiling; initialPreferences?: PlaybackPreferencesUpdate; facts?: unknown } = {}) {
+    const updates: PlaybackUpdate[] = [];
+    const initial = session({ mode: 'direct', mediaId: 'uhd' });
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => (options.facts ?? files()) as never,
+      ...(options.ceiling ? { qualityCeiling: () => options.ceiling } : {}),
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { api, coordinator, updates };
+  }
+
+  it('plays the largest file uncapped, and reports every step', async () => {
+    const { api, coordinator } = start();
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'uhd' });
+    expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+  });
+
+  it('keeps automatic play at or below the ceiling, and says the ceiling did it', async () => {
+    const ceiling: QualityCeiling = { quality: 1080, reason: 'ceiling-display' };
+    const { api, coordinator } = start({ ceiling });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().versions?.limitedBy).toEqual(ceiling);
+  });
+
+  it('transcodes down to a ceiling below every file', async () => {
+    const { api, coordinator } = start({ ceiling: { quality: 720, reason: 'ceiling-cellular' } });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', video: 'transcode', maxHeight: 720, mediaId: 'fhd', container: 'fmp4' });
+  });
+
+  it('never caps a version the viewer starts on', async () => {
+    const step = playbackVersions(files(), capabilities()).steps[0]!;
+    const { api, coordinator } = start({ ceiling: { quality: 720, reason: 'ceiling-cellular' }, initialPreferences: versionPreferences(step) });
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ mode: 'direct', mediaId: 'uhd' });
+    expect(sent.maxHeight).toBeUndefined();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'uhd' });
+    expect(coordinator.getSnapshot().versions?.steps).toHaveLength(4);
+  });
+
+  it('switches file for a version on another file, as the viewer choice', async () => {
+    const { coordinator, updates } = start();
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1080)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toMatchObject({ mediaId: 'fhd', preferences: { mode: 'direct' } });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'fhd' });
+  });
+
+  it("does not carry the old file's stream indexes onto another file", async () => {
+    const streams = [
+      { index: 0, type: 'video', codec: 'h264', language: '', default: true, width: 3840, height: 2160 },
+      { index: 5, type: 'audio', codec: 'aac', language: 'eng', default: true },
+    ];
+    const updates: PlaybackUpdate[] = [];
+    const initial = session({ mode: 'direct', mediaId: 'uhd', sourceInfo: { path: '/m', format: 'mp4', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: 5, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => files() as never,
+    });
+    await coordinator.start();
+    const step = playbackVersions(files(), capabilities()).steps.find((candidate) => candidate.quality === 720)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toMatchObject({ mediaId: 'fhd', preferences: { mode: 'transcode', maxHeight: 720 } });
+    expect(updates[0]?.preferences?.audioStream).toBeUndefined();
+  });
+
+  it('caps a version on the same file with a transcode, and does not name the file again', async () => {
+    const { coordinator, updates } = start();
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1440)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.mediaId).toBeUndefined();
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', video: 'transcode', maxHeight: 1440 });
   });
 });
