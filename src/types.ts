@@ -176,6 +176,15 @@ export interface PlaybackCapabilities {
   /** Optional decoder/platform limits. Web deliberately leaves these unset. */
   maxWidth?: number;
   maxHeight?: number;
+  /**
+   * The largest frame each video codec's own decoder takes, where it is less
+   * than `maxWidth` / `maxHeight`: the A85 decodes AVC, HEVC and VP9 at
+   * 1920x1080 but AV1 only at 1280x720, and the Android TV set VP8 only at
+   * 1920x1088 against 4096x2176 for the rest. Keyed by codec as in
+   * `videoCodecs`. A stream larger than its codec's limit is not played
+   * directly (`video-size-exceeds-client`).
+   */
+  videoCodecMaxSize?: Partial<Record<string, { width: number; height: number }>>;
   videoCodecs: VideoCodec[];
   audioCodecs: AudioCodec[];
   containers: string[];

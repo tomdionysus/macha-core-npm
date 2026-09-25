@@ -151,3 +151,15 @@ describe('limited to what the device can play, unless the viewer offers everythi
     ]);
   });
 });
+
+describe('a codec whose own decoder is smaller than the device', () => {
+  it('is not played directly above its own limit, while other codecs are', () => {
+    // The A85: AVC, HEVC and VP9 at 1920x1080, AV1 only at 1280x720.
+    const a85: PlaybackCapabilities = { ...web, videoCodecs: ['h264', 'av1'], maxWidth: 1920, maxHeight: 1080, videoCodecMaxSize: { av1: { width: 1280, height: 720 } } };
+    const av1 = file('av1', 1920, 1080, 'av1');
+    const avc = file('avc', 1920, 1080, 'h264');
+    expect(offeredModes(av1.profile, a85)[0]).toMatchObject({ mode: 'direct', offered: false, reasons: ['video-size-exceeds-client'] });
+    expect(offeredModes(avc.profile, a85)[0]).toMatchObject({ mode: 'direct', offered: true });
+    expect(offeredModes(file('av1-720', 1280, 720, 'av1').profile, a85)[0]).toMatchObject({ offered: true });
+  });
+});

@@ -213,8 +213,10 @@ export function videoStreamObjection(
     && stream.bitDepth > capabilities.videoBitDepth) return 'video-bit-depth-exceeds-client';
   // A limit the host stated, and only then: web leaves both unset. Tom,
   // 2026-09-25: limit to the device's capabilities for direct, on all clients.
-  if ((stream.width !== undefined && capabilities.maxWidth !== undefined && stream.width > capabilities.maxWidth)
-    || (stream.height !== undefined && capabilities.maxHeight !== undefined && stream.height > capabilities.maxHeight)) {
+  const codecLimit = capabilities.videoCodecMaxSize?.[stream.codec.toLowerCase()] ?? capabilities.videoCodecMaxSize?.[stream.codec];
+  const maxWidth = Math.min(capabilities.maxWidth ?? Infinity, codecLimit?.width ?? Infinity);
+  const maxHeight = Math.min(capabilities.maxHeight ?? Infinity, codecLimit?.height ?? Infinity);
+  if ((stream.width !== undefined && stream.width > maxWidth) || (stream.height !== undefined && stream.height > maxHeight)) {
     return 'video-size-exceeds-client';
   }
 
