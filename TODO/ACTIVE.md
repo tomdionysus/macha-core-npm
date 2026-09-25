@@ -71,6 +71,13 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
   - it named no audio stream on files with several.
   A third cause was found in the node's `chosen_stream`: a language preference the file lacks is now refused outright, even under direct and for subtitles, where until 0.58.0 the node fell back to the default track. Core now resolves the viewer's languages into stream indexes from the facts, and from the session's own streams on a PATCH, and never sends a language the node would refuse. Where core has no facts, the resolver drops a refused language and asks again, on POST and PATCH alike. `update-failed` now carries `refusal` (`status`, `code`, `choice`, `choices`).
 - Tom, 2026-09-25: no core release yet.
+- Measured on the Android TV set .133, 2026-09-25 (TV 9a117d14, core 42cebd6, fi-1 on server 0.60.0):
+  - the slot is released and reacquired both ways;
+  - the stale-cap fix holds;
+  - a direct resume from Continue Watching kept its place (1404050);
+  - `instruction.quality` marks correctly;
+  - the transcode container is fMP4, as core intends: MPEG-TS only on a stated `preferSegmentContainer`, which is the Samsung web host's policy, not the TV's.
+  Still to measure: a transcode resume, a `resource_limit` refusal, and the decoder sizes the set reports.
 - Page-exit leak: a reload left the session holding fi-1's single transcode slot until the node's five-minute idle rule.
   - 7bf1de1 sends the keepalive DELETE synchronously in pagehide, and it lands from a live page (204).
   - On a real reload it doesn't land, though core held the session id (web client, 11:31:52Z, session 97b3d5be).
