@@ -4304,6 +4304,14 @@ describe('versions and the quality ceiling', () => {
     expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
   });
 
+  it("marks the file's own quality for a viewer's uncapped transcode of it", async () => {
+    // The Android TV client, 2026-09-27: The Martian resumed as a viewer's
+    // transcode of the 720p file, and the Quality row marked nothing.
+    const { coordinator } = start({ initialPreferences: { mediaId: 'fhd', mode: 'transcode' } });
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mode: 'transcode', quality: 1080 });
+  });
+
   it('reports the quality playing, automatic or picked', async () => {
     const auto = start({ ceiling: { quality: 1080, reason: 'ceiling-display' } });
     await auto.coordinator.start();

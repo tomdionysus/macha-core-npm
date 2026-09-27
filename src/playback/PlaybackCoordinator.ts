@@ -845,6 +845,20 @@ export function restatePreferencesClearedByMode(
 }
 
 /**
+ * Which of the versions is playing, by file and cap alone. A file's own step
+ * has no cap and a capped transcode its own; the mode does not decide it, so
+ * a viewer's uncapped transcode of the 720p file is still that file's 720p
+ * (the Android TV client, 2026-09-27: after a resume nothing was marked).
+ * Undefined for a cap that is no step's.
+ */
+function qualityPlaying(versions: PlaybackVersions, mediaId: string | undefined, maxHeight: number | null | undefined): QualityClass | undefined {
+  const cap = maxHeight ?? undefined;
+  const onFile = (step: VersionStep) => step.mediaId === undefined || step.mediaId === mediaId;
+  if (cap !== undefined) return versions.steps.find((step) => onFile(step) && step.source === 'transcode' && step.maxHeight === cap)?.quality;
+  return versions.steps.find((step) => onFile(step) && step.source === 'file')?.quality;
+}
+
+/**
  * Name the streams a PATCH would otherwise leave the node to choose.
  *
  * From server 0.58.0 a PATCH is held to the same choices as a create. A
@@ -1250,11 +1264,7 @@ export class PlaybackCoordinator {
       // are the item's, whichever one is playing.
       const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false }) : undefined;
       if (versions) this.patchSnapshot({ versions });
-      // The step this start is, by its file and its cap: a file step has no
-      // cap and a transcode step its own.
-      const quality = versions?.steps.find((step) => step.mediaId === mediaId
-        && step.maxHeight === (preferences.maxHeight ?? undefined)
-        && (step.source === 'transcode' || step.instruction.mode === preferences.mode))?.quality;
+      const quality = versions ? qualityPlaying(versions, mediaId, preferences.maxHeight) : undefined;
       const container = preferences.container
         ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
       const streams = profile ? streamsToName(profile, preferences.mode, preferences) : undefined;
@@ -1766,9 +1776,7 @@ export class PlaybackCoordinator {
     const capabilities = this.capabilitiesSeen;
     if (!facts || !capabilities || this.snapshot.versions) return {};
     const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false });
-    const maxHeight = session.preferences.maxHeight ?? undefined;
-    const quality = versions.steps.find((step) => (step.mediaId === undefined || step.mediaId === session.mediaId)
-      && step.maxHeight === maxHeight && (step.source === 'transcode' || step.instruction.mode === session.mode))?.quality;
+    const quality = qualityPlaying(versions, session.mediaId, session.preferences.maxHeight);
     const instruction = this.snapshot.instruction;
     return {
       versions,
