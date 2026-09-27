@@ -123,6 +123,15 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
+### Continue Watching resumes as if the viewer never left — Tom, 2026-09-27 (relayed by the TV client)
+"Continue watching likely needs to store both the item id AND the media ID. It should also store the mode (direct, remux, transcode), resolution, subtitle settings, and all other data needed to resume as if you'd never left." Built in the commit following this note:
+- `PlaybackProgress` holds `itemId` (formerly `mediaId`, removed so that every caller fails to compile) and `fileMediaId`, plus `resume` for the mode and whether the viewer chose it, the container, quality, cap, and audio and subtitle choices.
+- `progressFor(media, pos, dur, snapshot)` fills them in. `resumePreferences(entry)` restates the file and the viewer's choices; where the mode was core's, core chooses again for the device and node of now.
+- The automatic path keeps a named file.
+- Entries stored under `mediaId` are read as `itemId`.
+- Hosts must now pass the snapshot when they save.
+- The TV found its own progress never written since 0.58.0: it compared the session's `mediaId` (the file) with the item's id. The web and phone were asked to check theirs.
+
 ### Core writes no viewer text — Tom, 2026-09-24
 **Refined 2026-09-27, relayed by the phone client:** "Format, codec, bitrate etc details are non i18n and technical. They are core's responsibility, but should be supplied to clients in a structured object. The client should still 'format' them, in terms of layout." Built as `technicalSummary` / `fileSummaries` (`src/playback/technicalSummary.ts`). Each field comes raw and labelled, plus `parts` in the web's order, with the labels ported from web e31635a and its tests. Sentences, such as the quality-cap one, stay the clients'. Clients delete their copies down to layout.
 

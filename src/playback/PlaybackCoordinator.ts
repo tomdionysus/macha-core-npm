@@ -1306,11 +1306,18 @@ export class PlaybackCoordinator {
     // among files of one class (direct, then remux, then transcode, then
     // stored order), or a capped transcode where every file is above it.
     const ceiling = this.options.qualityCeiling?.();
-    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    // A named file with the mode left to core (a resume from Continue
+    // Watching) keeps its file: automatic play chooses how, not which.
+    const named = preferences.mediaId !== undefined ? facts.filter((file) => file.mediaId === preferences.mediaId) : [];
+    const candidates = named.length > 0 ? named : facts;
+    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    // The buttons still offer every file's versions.
+    const offered = candidates === facts ? versions
+      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
     const step = versions.automatic!;
     const instruction = step.instruction;
     const chosenMediaId = step.mediaId ?? this.noFactsMediaId();
-    const profile = (facts.find((file) => file.mediaId !== undefined && file.mediaId === step.mediaId) ?? facts[0])!.profile;
+    const profile = (candidates.find((file) => file.mediaId !== undefined && file.mediaId === step.mediaId) ?? candidates[0])!.profile;
     const streams = streamsToName(profile, instruction.mode, preferences);
     const cap = step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {};
     this.log.info('instruction-chosen', {
@@ -1329,7 +1336,7 @@ export class PlaybackCoordinator {
       ...streams,
     });
     this.chosenInstruction = instruction;
-    this.patchSnapshot({ versions, instruction: {
+    this.patchSnapshot({ versions: offered, instruction: {
       mode: instruction.mode, video: instruction.video, audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,

@@ -1,4 +1,6 @@
-import type { MediaSummary, PlaybackProgress } from '../types.js';
+import type { MediaSummary, PlaybackProgress, PlaybackResumeState } from '../types.js';
+import type { PlaybackCoordinatorSnapshot } from '../playback/PlaybackCoordinator.js';
+import type { PlaybackPreferencesUpdate } from '../playback/PlaybackResolver.js';
 import type { StorageLike } from './storage.js';
 import { machaHost } from '../runtime/host.js';
 
@@ -32,8 +34,66 @@ const MINIMUM_PROGRESS_MS = 30_000;
  * is worth attaching, and an entry saved without it renders as a bare id in
  * Continue Watching with nothing to indicate why.
  */
-export function progressFor(media: MediaSummary, positionMs: number, durationMs: number): PlaybackProgress {
-  return { mediaId: media.id, positionMs, durationMs, updatedAt: Date.now(), media };
+export function progressFor(
+  media: MediaSummary,
+  positionMs: number,
+  durationMs: number,
+  playing?: Pick<PlaybackCoordinatorSnapshot, 'session' | 'instruction'>,
+): PlaybackProgress {
+  const fileMediaId = playing?.session?.mediaId || playing?.instruction?.mediaId;
+  const resume = playing ? resumeStateFrom(playing) : undefined;
+  return {
+    itemId: media.id, positionMs, durationMs, updatedAt: Date.now(), media,
+    ...(fileMediaId ? { fileMediaId } : {}),
+    ...(resume ? { resume } : {}),
+  };
+}
+
+/**
+ * How a title was playing, from the coordinator's snapshot: the mode and
+ * whether the viewer chose it, the version, the cap, and the audio and
+ * subtitle choices as the node confirmed them. Undefined before a session.
+ */
+export function resumeStateFrom(playing: Pick<PlaybackCoordinatorSnapshot, 'session' | 'instruction'>): PlaybackResumeState | undefined {
+  const session = playing.session;
+  if (!session) return undefined;
+  const instruction = playing.instruction;
+  const preferences = session.preferences;
+  return {
+    chosenByViewer: instruction?.chosenByViewer ?? false,
+    mode: instruction?.mode ?? session.mode,
+    ...(instruction?.container ? { container: instruction.container } : {}),
+    ...(instruction?.quality !== undefined ? { quality: instruction.quality } : {}),
+    maxHeight: preferences.maxHeight,
+    audioStream: preferences.audioStream,
+    subtitleStream: preferences.subtitleStream,
+    ...(preferences.audioLanguage ? { audioLanguage: preferences.audioLanguage } : {}),
+    ...(preferences.subtitleLanguage ? { subtitleLanguage: preferences.subtitleLanguage } : {}),
+  };
+}
+
+/**
+ * The preferences that resume an entry as it was playing, for
+ * `PlaybackRuntime.play(request, resumePreferences(entry))`: the same file,
+ * the viewer's mode and container where they chose one (core chooses again
+ * where it chose, for the device and node of now), the cap, and the audio
+ * and subtitle choices. An entry saved before 2026-09-27 carries none of it,
+ * and resumes as a fresh start at its position.
+ */
+export function resumePreferences(progress: PlaybackProgress): PlaybackPreferencesUpdate {
+  const resume = progress.resume;
+  const out: PlaybackPreferencesUpdate = progress.fileMediaId ? { mediaId: progress.fileMediaId } : {};
+  if (!resume) return out;
+  if (resume.chosenByViewer) {
+    out.mode = resume.mode;
+    if (resume.container) out.container = resume.container;
+  }
+  if (resume.maxHeight !== undefined && resume.maxHeight !== null) out.maxHeight = resume.maxHeight;
+  if (resume.audioStream !== undefined && resume.audioStream !== null) out.audioStream = resume.audioStream;
+  else if (resume.audioLanguage) out.audioLanguage = resume.audioLanguage;
+  if (resume.subtitleStream !== undefined && resume.subtitleStream !== null && resume.subtitleStream >= 0) out.subtitleStream = resume.subtitleStream;
+  else if (resume.subtitleLanguage) out.subtitleLanguage = resume.subtitleLanguage;
+  return out;
 }
 
 export class ContinueWatchingStore {
@@ -81,7 +141,7 @@ export class ContinueWatchingStore {
   }
 
   update(progress: PlaybackProgress): PlaybackProgress[] {
-    const entries = this.read().filter((entry) => entry.mediaId !== progress.mediaId);
+    const entries = this.read().filter((entry) => entry.itemId !== progress.itemId);
 
     if (!isFinished(progress) && progress.positionMs >= MINIMUM_PROGRESS_MS) {
       entries.unshift(progress);
@@ -95,8 +155,8 @@ export class ContinueWatchingStore {
     return limited;
   }
 
-  clear(mediaId: string): PlaybackProgress[] {
-    this.write(this.read().filter((entry) => entry.mediaId !== mediaId));
+  clear(itemId: string): PlaybackProgress[] {
+    this.write(this.read().filter((entry) => entry.itemId !== itemId));
     return this.list();
   }
 
@@ -109,10 +169,15 @@ export class ContinueWatchingStore {
    * what they meant by pressing play on a finished title. The stored entry is
    * left alone — this is a question about resuming, not about the record.
    */
-  positionFor(mediaId: string): number {
-    const entry = this.read().find((candidate) => candidate.mediaId === mediaId);
-    if (!entry || isFinished(entry)) return 0;
-    return entry.positionMs;
+  positionFor(itemId: string): number {
+    const entry = this.entryFor(itemId);
+    return entry ? entry.positionMs : 0;
+  }
+
+  /** The entry to resume this item from, for `resumePreferences`; undefined when finished or absent. */
+  entryFor(itemId: string): PlaybackProgress | undefined {
+    const entry = this.read().find((candidate) => candidate.itemId === itemId);
+    return entry && !isFinished(entry) ? entry : undefined;
   }
 
   /**
@@ -167,7 +232,7 @@ export class ContinueWatchingStore {
       // Bad entries are dropped rather than the list discarded: the rest of
       // the history is still true, and refusing all of it costs the viewer
       // more than the one entry that is wrong.
-      return Array.isArray(parsed) ? parsed.filter(isPlaybackProgress) : undefined;
+      return Array.isArray(parsed) ? parsed.map(adoptItemId).filter(isPlaybackProgress) : undefined;
     } catch {
       return undefined;
     }
@@ -179,10 +244,23 @@ export class ContinueWatchingStore {
   }
 }
 
+/**
+ * An entry stored before 2026-09-27 names its title `mediaId`; read it as
+ * `itemId`, so no viewer loses their place. Rewritten in the new shape on the
+ * next save.
+ */
+function adoptItemId(entry: unknown): unknown {
+  if (!entry || typeof entry !== 'object') return entry;
+  const record = entry as Record<string, unknown>;
+  if (typeof record.itemId === 'string' || typeof record.mediaId !== 'string') return entry;
+  const { mediaId, ...rest } = record;
+  return { ...rest, itemId: mediaId };
+}
+
 function isPlaybackProgress(entry: unknown): entry is PlaybackProgress {
   if (!entry || typeof entry !== 'object') return false;
   const record = entry as Partial<PlaybackProgress>;
-  return typeof record.mediaId === 'string'
+  return typeof record.itemId === 'string'
     && typeof record.positionMs === 'number'
     && typeof record.durationMs === 'number'
     && typeof record.updatedAt === 'number';

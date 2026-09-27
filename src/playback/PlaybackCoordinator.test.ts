@@ -4295,6 +4295,15 @@ describe('versions and the quality ceiling', () => {
     expect(all.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
   });
 
+  it('keeps a named file when the mode is left to core, as a resume does', async () => {
+    const { api, coordinator } = start({ initialPreferences: { mediaId: 'fhd' } });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: false, mediaId: 'fhd', quality: 1080 });
+    // The buttons still offer every file's versions.
+    expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+  });
+
   it('reports the quality playing, automatic or picked', async () => {
     const auto = start({ ceiling: { quality: 1080, reason: 'ceiling-display' } });
     await auto.coordinator.start();
