@@ -46,7 +46,10 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-### Candidate: `0.20.0`, prepared 2026-09-27; not cut until Tom says so
+### Published: `0.20.0`, 2026-09-27
+npm `latest` is `0.20.0`, `gitHead` `d7b4057`, which is `main`'s merge. The annotated tag `0.20.0` is on `55b6a66`. `dist` hash `f7fd989fe6e8`; 1257 tests in 74 files; 69 commits since 0.19.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `55b6a66`'s message. All three clients said go: web 623 tests, Android TV 344 with its export, phone 337. They were told it is live and to switch main to `^0.20.0` on Tom's instruction; their confirmations follow. The candidate notes below stand as the detail.
+
+#### Candidate notes
 The candidate is now develop at `ae82922` (the version marked by file and cap; media lines at `29fa878`), dist `f7fd989fe6e8`, 1257 tests. The TV's runs on the set found three bugs, all fixed: a transcode resume looped for ever (`7bdc219`); a version switch across files named no audio stream (`7bdc219`); and a switch took a forced subtitle track for a full one (`7a79d49`). The TV's re-run passed the transcode resume twice. Checks at `e964514` were 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
 
 **Breaking:**
