@@ -61,14 +61,22 @@ export function resumeStateFrom(playing: Pick<PlaybackCoordinatorSnapshot, 'sess
   // Read defensively: a host driving the resolver itself builds this shape
   // by hand, and a missing block should cost the resume detail, not the save.
   const preferences: Partial<NonNullable<typeof session.preferences>> = session.preferences ?? {};
+  // The streams the node says it selected, where it says: under automatic
+  // play the preferences often name none, and the one that played is the one
+  // to come back to (the phone client's point, 2026-09-27).
+  const selected = session.selected;
+  const picked = (served: number | undefined, asked: number | null | undefined) =>
+    (served !== undefined && served >= 0 ? served : asked);
+  const served = session.output?.container?.toLowerCase();
+  const container = instruction?.container ?? (served === 'fmp4' || served === 'mpegts' ? served : undefined);
   return {
     chosenByViewer: instruction?.chosenByViewer ?? false,
     mode: instruction?.mode ?? session.mode,
-    ...(instruction?.container ? { container: instruction.container } : {}),
+    ...(container ? { container } : {}),
     ...(instruction?.quality !== undefined ? { quality: instruction.quality } : {}),
     maxHeight: preferences.maxHeight,
-    audioStream: preferences.audioStream,
-    subtitleStream: preferences.subtitleStream,
+    audioStream: picked(selected?.audioStream, preferences.audioStream),
+    subtitleStream: picked(selected?.subtitleStream, preferences.subtitleStream),
     ...(preferences.audioLanguage ? { audioLanguage: preferences.audioLanguage } : {}),
     ...(preferences.subtitleLanguage ? { subtitleLanguage: preferences.subtitleLanguage } : {}),
   };

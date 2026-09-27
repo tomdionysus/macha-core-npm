@@ -259,6 +259,19 @@ describe('resuming as if the viewer never left', () => {
     expect(automatic).not.toHaveProperty('mode');
   });
 
+  it('keeps the streams the node selected, where automatic play named none', () => {
+    const progress = progressFor(media, 600_000, 8_640_000, {
+      session: {
+        mediaId: 'macha:fhd', mode: 'remux', output: { container: 'fmp4' },
+        preferences: { mode: 'remux', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+        selected: { videoStream: 0, audioStream: 3, subtitleStream: -1 },
+      },
+      instruction: { mode: 'remux', chosenByViewer: false, reasons: [], assumed: [], withoutFacts: false },
+    } as never);
+    expect(progress.resume).toMatchObject({ audioStream: 3, subtitleStream: null, container: 'fmp4' });
+    expect(resumePreferences(progress)).toEqual({ mediaId: 'macha:fhd', audioStream: 3 });
+  });
+
   it('saves from a partial snapshot without throwing', () => {
     const progress = progressFor(media, 600_000, 8_640_000, { session: { mediaId: 'macha:fhd', mode: 'direct' } } as never);
     expect(progress).toMatchObject({ itemId: 'tmdb:movie:286217', fileMediaId: 'macha:fhd', resume: { chosenByViewer: false, mode: 'direct' } });
