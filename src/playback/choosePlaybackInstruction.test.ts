@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalContainers, chooseAmongFiles, choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
+import { canonicalContainers, chooseAmongFiles, choosePlaybackInstruction, degradeInstruction, streamsToName } from './choosePlaybackInstruction.js';
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 
 // The Samsung Tizen 3 set, as the TV actually advertises it.
@@ -543,5 +543,21 @@ describe('chooseAmongFiles', () => {
 
   it('is undefined for no files', () => {
     expect(chooseAmongFiles([], caps)).toBeUndefined();
+  });
+});
+
+describe('subtitles by language, full or forced', () => {
+  const sub = (index: number, forced: boolean, isDefault = false) => ({ index, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: isDefault, forced });
+  const profile = { mediaId: 'm', format: 'matroska', container: 'matroska', durationMs: 1, bitrate: 1, streams: [sub(9, true, true), sub(10, false)] };
+
+  it('takes the full track for a language unless forced is asked for', () => {
+    // The Android TV client, The Martian's 4K file: forced English first and default, full English after.
+    expect(streamsToName(profile, 'transcode', { subtitleLanguage: 'eng' }).subtitleStream).toBe(10);
+    expect(streamsToName(profile, 'transcode', { subtitleLanguage: 'eng', subtitleForced: true }).subtitleStream).toBe(9);
+  });
+
+  it('falls back to what the language has when the kind asked for is missing', () => {
+    const onlyForced = { ...profile, streams: [sub(9, true)] };
+    expect(streamsToName(onlyForced, 'transcode', { subtitleLanguage: 'eng' }).subtitleStream).toBe(9);
   });
 });

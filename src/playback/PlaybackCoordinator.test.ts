@@ -4325,8 +4325,11 @@ describe('versions and the quality ceiling', () => {
         { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: 'fre', default: true, forced: false },
         { index: 2, type: 'audio' as const, codec: 'aac', profile: '', language: 'eng', default: false, forced: false },
         { index: 3, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: false, forced: false },
+        ...(width > 2000 ? [{ index: 4, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: true, forced: true }] : []),
       ] },
     });
+    // The 4K file also has a forced English track, flagged default: the full
+    // one playing must still map to the full one (the TV, The Martian).
     const facts = [multi('uhd', 3840, 2160), multi('hd', 1280, 720)];
     const playing = session({ mode: 'direct', mediaId: 'hd',
       sourceInfo: { path: '/m', format: 'mp4', size: 1, bitrate: 1, streams: facts[1]!.profile.streams } as never,

@@ -569,8 +569,9 @@ export function defaultStream(streams: readonly MediaTechnicalStream[], type: 'v
  *   the default among several in it; else, for a remux or transcode of a file
  *   with several, the default stream. `direct` names nothing then, since the
  *   player picks its own tracks;
- * - subtitle: the named stream; else the one in the viewer's language, or the
- *   default among several in it (the first when none is flagged); else none.
+ * - subtitle: the named stream; else the one in the viewer's language, full or
+ *   forced as `subtitleForced` asks (full when unstated), then the default
+ *   among several, then the first; else none.
  *   A subtitle language the file lacks is no subtitles, not a refusal.
  */
 export function streamsToName(
@@ -582,6 +583,12 @@ export function streamsToName(
     subtitleStream?: number | null;
     audioLanguage?: string;
     subtitleLanguage?: string;
+    /**
+     * Whether the subtitles wanted are the forced track (foreign dialogue
+     * only) rather than the full one. Unstated, the full track is preferred:
+     * a viewer asking for subtitles in a language means them all.
+     */
+    subtitleForced?: boolean;
   },
 ): { videoStream?: number; audioStream?: number; subtitleStream?: number } {
   const named = (index: number | null | undefined) => index !== undefined && index !== null && index >= 0;
@@ -608,7 +615,13 @@ export function streamsToName(
 
   if (!named(preferences.subtitleStream)) {
     const matches = inLanguage('subtitle', preferences.subtitleLanguage);
-    const chosen = matches?.find((stream) => stream.default) ?? matches?.[0];
+    // Forced or full as wanted first (the Android TV client, The Martian,
+    // 2026-09-27: full English SubRip on one file became the other file's
+    // forced English track), then the default, then the first.
+    const forced = preferences.subtitleForced ?? false;
+    const kind = matches?.filter((stream) => stream.forced === forced);
+    const pool = kind && kind.length > 0 ? kind : matches;
+    const chosen = pool?.find((stream) => stream.default) ?? pool?.[0];
     if (chosen) out.subtitleStream = chosen.index;
   }
   return out;

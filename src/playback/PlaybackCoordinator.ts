@@ -1465,7 +1465,7 @@ export class PlaybackCoordinator {
   }
 
   /** The audio and subtitle languages playing now, else those the start asked for. */
-  private languagesPlaying(): { audioLanguage?: string; subtitleLanguage?: string } {
+  private languagesPlaying(): { audioLanguage?: string; subtitleLanguage?: string; subtitleForced?: boolean } {
     const session = this.snapshot.session;
     const initial = this.options.initialPreferences ?? {};
     const languageOf = (index: number | undefined) => (index !== undefined && index >= 0
@@ -1474,7 +1474,14 @@ export class PlaybackCoordinator {
     const audioLanguage = languageOf(session?.selected.audioStream) ?? (initial.audioLanguage || undefined);
     const subtitleOn = session ? session.selected.subtitleStream >= 0 : initial.subtitleLanguage !== undefined;
     const subtitleLanguage = subtitleOn ? languageOf(session?.selected.subtitleStream) ?? (initial.subtitleLanguage || undefined) : undefined;
-    return { ...(audioLanguage ? { audioLanguage } : {}), ...(subtitleLanguage ? { subtitleLanguage } : {}) };
+    const subtitleForced = subtitleOn && session
+      ? session.sourceInfo.streams.find((stream) => stream.index === session.selected.subtitleStream)?.forced
+      : undefined;
+    return {
+      ...(audioLanguage ? { audioLanguage } : {}),
+      ...(subtitleLanguage ? { subtitleLanguage } : {}),
+      ...(subtitleForced !== undefined ? { subtitleForced } : {}),
+    };
   }
 
   /** The capabilities the last instruction was formed for; see `drainMutations`. */
