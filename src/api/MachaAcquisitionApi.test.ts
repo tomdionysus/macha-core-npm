@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MachaAcquisitionApi, torrentHeldBy } from './MachaAcquisitionApi.js';
+import { acquisitionError, MachaAcquisitionApi, torrentHeldBy } from './MachaAcquisitionApi.js';
 import { endpointFailure, playbackFailureCode } from '../cluster/endpointFailure.js';
 import { fixedBearerToken } from './SessionManager.js';
 
@@ -125,6 +125,7 @@ describe('a torrent a job already holds (server 0.63.0)', () => {
     expect(torrentHeldBy(error)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
     const wrapped = endpointFailure('fi-1', 'http://node.test', error);
     expect(playbackFailureCode(wrapped)).toBe('torrent_already_added');
+    expect(acquisitionError(wrapped)).toMatchObject({ status: 409, code: 'torrent_already_added' });
     expect(torrentHeldBy(wrapped)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
   });
 
@@ -132,5 +133,7 @@ describe('a torrent a job already holds (server 0.63.0)', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'placement_failed', message: 'no', reason: 'add_failed' }, id: 'x' }, 409)));
     const error = await new MachaAcquisitionApi('http://node.test', fixedBearerToken('t')).submitMagnet('magnet:?').catch((e: unknown) => e);
     expect(torrentHeldBy(error)).toBeUndefined();
+    // The reason of any refusal, found behind the router's wrapping.
+    expect(acquisitionError(endpointFailure('fi-1', 'http://node.test', error))?.reason).toBe('add_failed');
   });
 });

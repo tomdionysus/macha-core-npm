@@ -46,20 +46,26 @@ export class MachaAcquisitionApiError extends Error {
 export const TORRENT_ALREADY_ADDED_CODE = 'torrent_already_added';
 
 /**
- * The job already holding a torrent, from a `torrent_already_added` refusal
- * wherever it sits in the error chain: the cluster router wraps it, as it
- * wraps every failure, so reading `.heldBy` off the thrown error finds
- * nothing. The same walk as `playbackFailureCode`.
+ * The acquisition refusal wherever it sits in the error chain, so a host can
+ * read its `code`, `reason`, `detail` and `heldBy`. The cluster router wraps
+ * every mutation failure in `MachaEndpointError`, so `instanceof` on what was
+ * caught never matches: the web client's `placement_failed` wording went
+ * unused that way until 2026-09-27. The same walk as `playbackFailureCode`.
  */
-export function torrentHeldBy(error: unknown): { id: string; nodeId?: string } | undefined {
+export function acquisitionError(error: unknown): MachaAcquisitionApiError | undefined {
   const seen = new Set<unknown>();
   let current = error;
   while (current && typeof current === 'object' && !seen.has(current)) {
     seen.add(current);
-    if (current instanceof MachaAcquisitionApiError && current.heldBy) return current.heldBy;
+    if (current instanceof MachaAcquisitionApiError) return current;
     current = (current as { cause?: unknown }).cause;
   }
   return undefined;
+}
+
+/** The job already holding a torrent, from a `torrent_already_added` refusal; see `acquisitionError`. */
+export function torrentHeldBy(error: unknown): { id: string; nodeId?: string } | undefined {
+  return acquisitionError(error)?.heldBy;
 }
 
 export class MachaAcquisitionApi implements AcquisitionApi {
