@@ -47,7 +47,7 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
 ### Candidate: `0.20.0`, prepared 2026-09-27; not cut until Tom says so
-From develop at `e964514`: 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
+The candidate is now develop at `7bdc219`, after the TV's run on the set found two bugs: a transcode resume looped for ever, and a version switch across files named no audio stream. Checks at `e964514` were 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
 
 **Breaking:**
 - `PlaybackProgress.mediaId` is removed; it is now `itemId` (the title), with `fileMediaId` (the file) and `resume` beside it. Stored entries are read as before.
@@ -119,7 +119,7 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
   - The Martian's `7b5743ad` (phone);
   - The Cannonball Run `macha:11c474bb…`, 1920x1072 AV1, which answers 503 "read media: extent unavailable" on fi-1 and macnessa (phone, 15:28:53Z).
 
-  The server session that owned this work ended; the refactor session now running passed the Cannonball Run report to Tom. The server is costing a cheap "all extents available" check for Tom first; the field's name, shape and version come before it ships.
+  Both are logged with the server; its session had only had its context cleared. The per-file readability design still needs Tom to decide where the fact goes. The server is costing a cheap "all extents available" check for Tom first; the field's name, shape and version come before it ships.
 - Next: the clients test against the live nodes on core `develop`, and then a core release.
 - Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.58.0, so the next phone release needs a published core that includes `0bce895`.
 - TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.58.0 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
