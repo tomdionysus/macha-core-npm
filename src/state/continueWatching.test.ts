@@ -289,3 +289,31 @@ describe('resuming as if the viewer never left', () => {
     expect(resumePreferences(entry)).toEqual({});
   });
 });
+
+describe("a viewer's mode the node carried differently", () => {
+  it('resumes as the mode the viewer picked, not the one performed', async () => {
+    // The phone on the A85, 2026-09-27: Remux on 2010 is carried as a
+    // transcode with the picture copied, since the device cannot decode AC-3.
+    // Resuming as `transcode` would re-encode the picture.
+    const { PlaybackCoordinator } = await import('../playback/PlaybackCoordinator.js');
+    const { FakePlayer } = await import('../testing/FakePlayer.js');
+    const served = {
+      sessionId: 's1', mediaId: 'macha:2010', mode: 'transcode', mimeType: 'application/vnd.apple.mpegurl', durationMs: 600_000, seekMs: 0,
+      preferences: { mode: 'remux', maxHeight: null, maxBitrate: null, audioStream: 2, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+      sourceInfo: { path: '/m', format: 'matroska', size: 1, bitrate: 1, streams: [] }, output: { container: 'fmp4' },
+      selected: { videoStream: 0, audioStream: 2, subtitleStream: -1 }, transform: { video: 'copy', audio: 'transcode' },
+      options: { modes: ['direct', 'remux', 'transcode'], qualityHeights: [], mediaIds: [], audioStreams: [], subtitleStreams: [], canSeek: true, canChangeQuality: true, canSwitchMedia: false },
+      source: { mediaId: 'macha:2010', url: '/g.m3u8', mimeType: 'application/vnd.apple.mpegurl', isManifest: true, mode: 'transcode', durationMs: 600_000 },
+    };
+    const coordinator = new PlaybackCoordinator({
+      media: { id: 'tmdb:movie:2010', kind: 'movie', title: '2010', mediaIds: ['macha:2010'] }, player: new FakePlayer(),
+      resolver: { available: true, resolve: async () => served, update: async () => served, stop: async () => undefined } as never,
+      capabilities: async () => ({ platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [] }),
+      initialPositionMs: 0, initialPreferences: { mode: 'remux' },
+    });
+    await coordinator.start();
+    const progress = progressFor({ id: 'tmdb:movie:2010', kind: 'movie', title: '2010', mediaIds: ['macha:2010'] }, 300_000, 600_000, coordinator.getSnapshot());
+    expect(progress.resume).toMatchObject({ chosenByViewer: true, mode: 'remux' });
+    expect(resumePreferences(progress)).toMatchObject({ mode: 'remux', mediaId: 'macha:2010', audioStream: 2 });
+  });
+});
