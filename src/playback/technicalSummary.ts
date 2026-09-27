@@ -165,6 +165,11 @@ export function technicalSummary(profile: CatalogueMediaProfile | MediaTechnical
  * combined, and the ids of the files each one stands for. Files identical in
  * length, resolution, codecs and bitrate are very likely one media stored
  * twice (Tom, 2026-09-27: one line for them).
+ *
+ * TODO: an entry with more than one media id is very likely a duplicate the
+ * server could flag. Report it once the server has a route for that; it is a
+ * server interaction, so it belongs here, not in each client (moved from the
+ * web client's call site, 2026-09-27).
  */
 export function fileSummaries(profiles: readonly (CatalogueMediaProfile | MediaTechnicalProfile)[]): Array<{ summary: TechnicalSummary; mediaIds: string[] }> {
   const combined = new Map<string, { summary: TechnicalSummary; mediaIds: string[] }>();
