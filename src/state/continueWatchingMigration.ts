@@ -12,9 +12,9 @@ export async function migrateEpisodeContext(
   entry: PlaybackProgress,
 ): Promise<PlaybackProgress> {
   if (!needsEpisodeContextMigration(entry)) return entry;
-  const media = await api.details(entry.mediaId);
+  const media = await api.details(entry.itemId);
   if (media.kind !== 'episode') {
-    throw new Error(`Legacy Continue Watching entry ${entry.mediaId} is no longer an episode.`);
+    throw new Error(`Legacy Continue Watching entry ${entry.itemId} is no longer an episode.`);
   }
   return { ...entry, media };
 }

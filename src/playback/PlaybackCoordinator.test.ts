@@ -4,9 +4,10 @@ import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource 
 import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
+import { playbackVersions, versionPreferences, type QualityCeiling } from './playbackVersions.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
+import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
   alternateRecoveryWindowMs,
 } from './PlaybackCoordinator.js';
 
@@ -1314,7 +1315,7 @@ describe('PlaybackCoordinator player failures', () => {
 
     expect(closed).toBe(true);
     expect(api.stop).toHaveBeenCalledWith('s2', { keepalive: true });
-    expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith('s1', expect.objectContaining({ keepalive: true }));
   });
 
   it('does not act on a stream error during an in-flight seek-driven generation replacement until the seek settles, then drops it as stale once the seek replaces the source', async () => {
@@ -1665,7 +1666,7 @@ describe('PlaybackCoordinator lease teardown', () => {
 
     await coordinator.close({ keepalive: true });
 
-    expect(api.stop).toHaveBeenCalledWith('s1', { keepalive: true });
+    expect(api.stop).toHaveBeenCalledWith('s1', expect.objectContaining({ keepalive: true }));
   });
 });
 
@@ -3841,6 +3842,29 @@ describe('a copied stream the player could not decode', () => {
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
   });
 
+  it("drops 'source-plays-as-is' from the reasons, which stopped being true", async () => {
+    const { coordinator, player, updates } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.reasons).toContain('source-plays-as-is');
+    player.fail(new PlaybackSourceError('decoder init failed', 'media'));
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(coordinator.getSnapshot().instruction?.reasons).toEqual(['player-could-not-decode']);
+  });
+
+  it("reports a mode the viewer chose partway through as the viewer's", async () => {
+    // Measured on the Android TV set: Transcode chosen during playback, and
+    // the report went on describing the automatic copy.
+    const { coordinator } = setup();
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction?.chosenByViewer).toBe(false);
+    const container = coordinator.getSnapshot().instruction?.container;
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ mode: 'transcode', chosenByViewer: true, reasons: [] });
+    expect(coordinator.getSnapshot().instruction?.container).toBe(container);
+  });
+
   it('ends playback as before when the viewer chose the mode at the start', async () => {
     const { coordinator, player, updates } = setup({ mode: 'direct' });
     await coordinator.start();
@@ -3924,5 +3948,613 @@ describe('a change queued as the previous one finishes', () => {
     coordinator.update({ preferences: { mode: 'transcode' } });
     await vi.waitFor(() => expect(updates).toHaveLength(2));
     expect(updates[1]?.preferences?.maxHeight).toBe(720);
+  });
+});
+
+/**
+ * Choosing among an item's files is the client's decision (Tom, 2026-09-24).
+ * Given only an item, the server played its first directly-playable file in
+ * stored order, while the chooser reasoned about whichever file the host
+ * handed it, so the two could disagree.
+ */
+describe('an item with several files', () => {
+  const file = (mediaId: string, codec: string) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec, profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  function start(facts: unknown, mediaIds: string[]) {
+    const api = resolver(session({ mode: 'direct' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => facts as never,
+    });
+    return { api, coordinator };
+  }
+
+  it('plays the file that plays best, and names it on the session', async () => {
+    const { api, coordinator } = start([file('hevc-file', 'hevc'), file('h264-file', 'h264')], ['hevc-file', 'h264-file']);
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'h264-file' });
+    expect(coordinator.getSnapshot().instruction?.mediaId).toBe('h264-file');
+  });
+
+  it('still picks the file when the viewer chose the mode: under direct, one it plays directly', async () => {
+    // Tom, 2026-09-25: on direct play, something still has to pick which file.
+    const api = resolver(session({ mode: 'direct' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['hevc-file', 'h264-file'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+      facts: async () => [file('hevc-file', 'hevc'), file('h264-file', 'h264')] as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'h264-file' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'h264-file' });
+  });
+
+  it('names the first file when there are no facts at all, rather than none', async () => {
+    const api = resolver(session({ mode: 'transcode' }));
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['first', 'second'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => undefined,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', mediaId: 'first' });
+  });
+
+  it('asks for no facts before starting when the viewer chose direct on a single-file item', async () => {
+    // Off the critical path: the start needs none. They are fetched once the
+    // session exists, for the modes to offer (`snapshot.modes`).
+    const order: string[] = [];
+    const facts = vi.fn(async () => { order.push('facts'); return undefined; });
+    const api = resolver(session({ mode: 'direct' }));
+    api.resolve.mockImplementation(async () => { order.push('resolve'); return session({ mode: 'direct' }); });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['only'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' }, facts,
+    });
+    await coordinator.start();
+    expect(order[0]).toBe('resolve');
+    expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('only');
+  });
+
+  it('takes the first of equals, as stored order had it', async () => {
+    const { api, coordinator } = start([file('a', 'h264'), file('b', 'h264')], ['a', 'b']);
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
+  });
+
+  it('names an only file even from facts that carry no id, and the first when it cannot know', async () => {
+    const single = { profile: file('x', 'h264').profile };
+    const one = start(single, ['only']);
+    await one.coordinator.start();
+    expect(one.api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('only');
+
+    const several = start(single, ['a', 'b']);
+    await several.coordinator.start();
+    // The server is to stop choosing, so a create never goes without a file.
+    expect(several.api.resolve.mock.calls[0]?.[3]?.mediaId).toBe('a');
+  });
+});
+
+/**
+ * Server 0.58.0 chooses nothing: a remux or transcode names its container,
+ * and a file with several video or audio streams names the one to play.
+ */
+describe('against a node that chooses nothing', () => {
+  const twoAudio = (container = 'matroska') => [{
+    mediaId: 'm1',
+    profile: { mediaId: 'm1', format: container, container, durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: 'eng', default: false, forced: false },
+      { index: 2, type: 'audio' as const, codec: 'aac', profile: '', language: 'fre', default: true, forced: false },
+    ] },
+  }];
+
+  function start(options: { initialPreferences?: PlaybackPreferencesUpdate; resolve?: (...args: any[]) => Promise<PlaybackSession> } = {}) {
+    const api = resolver(session({ mode: 'remux' }));
+    if (options.resolve) api.resolve.mockImplementation(options.resolve);
+    const facts = vi.fn(async () => twoAudio() as never);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts,
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { api, coordinator, facts };
+  }
+
+  it('names the default audio stream where there are several, and no video stream where there is one', async () => {
+    const { api, coordinator } = start();
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ mode: 'remux', audioStream: 2, container: 'fmp4' });
+    expect(sent.videoStream).toBeUndefined();
+  });
+
+  it("names the one stream in the viewer's language, and sends the stream rather than the language", async () => {
+    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'ENG' } });
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent.audioStream).toBe(1);
+    expect(sent).not.toHaveProperty('audioLanguage');
+  });
+
+  it('sends no language the file lacks, which the node would refuse outright', async () => {
+    // Until 0.58.0 the node fell back to the default track; now it answers
+    // choice_not_available, and the title does not play.
+    const { api, coordinator } = start({ initialPreferences: { audioLanguage: 'jpn', subtitleLanguage: 'deu' } });
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ audioStream: 2 });
+    expect(sent).not.toHaveProperty('audioLanguage');
+    expect(sent).not.toHaveProperty('subtitleLanguage');
+    expect(sent.subtitleStream ?? null).toBeNull();
+  });
+
+  it('names the container and the audio stream on a change from direct into a transcode', async () => {
+    // The web client's failure on 0.58.0: a session begun direct names
+    // neither, and the PATCH into a transcode was refused, so the title
+    // started and then stopped.
+    const streams = twoAudio()[0]!.profile.streams.map((stream) => ({ ...stream, profile: '', language: stream.language }));
+    const direct = session({ mode: 'direct', sourceInfo: { path: '/movie', format: 'matroska', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(direct, async (update) => { updates.push(update); return direct; });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => ({ ...capabilities(), containers: ['matroska', 'mp4'] }), initialPositionMs: 0,
+      facts: async () => twoAudio() as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct' });
+
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2 });
+  });
+
+  it("names the container and streams under a mode the viewer chose, even for an item's only file", async () => {
+    const { api, coordinator, facts } = start({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    expect(facts).toHaveBeenCalled();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2, mediaId: 'm1' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, container: 'fmp4' });
+  });
+
+  it("carries the node's refusal on update-failed, as data for the host to word", async () => {
+    const refusal = Object.assign(new Error('name one'), { status: 400, code: 'choice_required', choice: 'audio_stream', choices: [1, 2] });
+    const api = resolver(session({ mode: 'direct' }), async () => { throw refusal; });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, initialPreferences: { mode: 'direct' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().notice?.code).toBe('update-failed'));
+    expect(coordinator.getSnapshot().notice?.refusal).toEqual({ status: 400, code: 'choice_required', choice: 'audio_stream', choices: [1, 2] });
+  });
+
+  it('does not step the mode down over a choice the node says is open', async () => {
+    // choice_required is a question about the request, not a refusal to
+    // perform it; a transcode would ask the same question again.
+    const refusal = Object.assign(new Error('choose an audio stream'), { status: 400, code: 'choice_required' });
+    const { api, coordinator } = start({ resolve: async () => { throw refusal; } });
+    await coordinator.start().catch(() => undefined);
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('still steps down once over a plain refusal', async () => {
+    const refusal = Object.assign(new Error('cannot copy'), { status: 400 });
+    const { api, coordinator } = start({ resolve: async () => { throw refusal; } });
+    await coordinator.start().catch(() => undefined);
+    expect(api.resolve).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('preparePlaybackPatch, for a host that PATCHes without the coordinator', () => {
+  it('names the device container and the default audio stream on a change into a transcode', () => {
+    const streams = [
+      { index: 0, type: 'video', codec: 'h264', language: '', default: true },
+      { index: 1, type: 'audio', codec: 'aac', language: 'eng', default: false },
+      { index: 2, type: 'audio', codec: 'aac', language: 'fre', default: true },
+    ];
+    const direct = session({ mode: 'direct', sourceInfo: { path: '/m', format: 'matroska', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const prepared = preparePlaybackPatch({ preferences: { mode: 'transcode' } }, direct, capabilities());
+    expect(prepared.preferences).toMatchObject({ mode: 'transcode', container: 'fmp4', audioStream: 2 });
+  });
+});
+
+describe('versions and the quality ceiling', () => {
+  const sized = (mediaId: string, width: number, height: number) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width, height },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+  const files = () => [sized('uhd', 3840, 2160), sized('fhd', 1920, 1080)];
+
+  function start(options: { ceiling?: QualityCeiling; initialPreferences?: PlaybackPreferencesUpdate; facts?: unknown } = {}) {
+    const updates: PlaybackUpdate[] = [];
+    const initial = session({ mode: 'direct', mediaId: 'uhd' });
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => (options.facts ?? files()) as never,
+      ...(options.ceiling ? { qualityCeiling: () => options.ceiling } : {}),
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { api, coordinator, updates };
+  }
+
+  it('plays the largest file uncapped, and reports every step', async () => {
+    const { api, coordinator } = start();
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'uhd' });
+    expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+  });
+
+  it('keeps automatic play at or below the ceiling, and says the ceiling did it', async () => {
+    const ceiling: QualityCeiling = { quality: 1080, reason: 'ceiling-display' };
+    const { api, coordinator } = start({ ceiling });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().versions?.limitedBy).toEqual(ceiling);
+  });
+
+  it('transcodes down to a ceiling below every file', async () => {
+    const { api, coordinator } = start({ ceiling: { quality: 720, reason: 'ceiling-cellular' } });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'transcode', video: 'transcode', maxHeight: 720, mediaId: 'fhd', container: 'fmp4' });
+  });
+
+  it('never caps a version the viewer starts on', async () => {
+    const step = playbackVersions(files(), capabilities()).steps[0]!;
+    const { api, coordinator } = start({ ceiling: { quality: 720, reason: 'ceiling-cellular' }, initialPreferences: versionPreferences(step) });
+    await coordinator.start();
+    const sent = api.resolve.mock.calls[0]?.[3] as PlaybackPreferencesUpdate;
+    expect(sent).toMatchObject({ mode: 'direct', mediaId: 'uhd' });
+    expect(sent.maxHeight).toBeUndefined();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'uhd' });
+    expect(coordinator.getSnapshot().versions?.steps).toHaveLength(4);
+  });
+
+  it('switches file for a version on another file, as the viewer choice', async () => {
+    const { coordinator, updates } = start();
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1080)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toMatchObject({ mediaId: 'fhd', preferences: { mode: 'direct' } });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mediaId: 'fhd' });
+  });
+
+  it("does not carry the old file's stream indexes onto another file", async () => {
+    const streams = [
+      { index: 0, type: 'video', codec: 'h264', language: '', default: true, width: 3840, height: 2160 },
+      { index: 5, type: 'audio', codec: 'aac', language: 'eng', default: true },
+    ];
+    const updates: PlaybackUpdate[] = [];
+    const initial = session({ mode: 'direct', mediaId: 'uhd', sourceInfo: { path: '/m', format: 'mp4', size: 1, bitrate: 1, streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: 5, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => files() as never,
+    });
+    await coordinator.start();
+    const step = playbackVersions(files(), capabilities()).steps.find((candidate) => candidate.quality === 720)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toMatchObject({ mediaId: 'fhd', preferences: { mode: 'transcode', maxHeight: 720 } });
+    expect(updates[0]?.preferences?.audioStream).toBeUndefined();
+  });
+
+  it("clears a transcode step's cap when a file step that transcodes follows it", async () => {
+    // The file step names no cap of its own, and a PATCH into a transcode
+    // restates the session's: so the file came back still capped at 720.
+    const hevc = (mediaId: string) => ({ ...sized(mediaId, 3840, 2160), profile: { ...sized(mediaId, 3840, 2160).profile,
+      streams: sized(mediaId, 3840, 2160).profile.streams.map((stream) => stream.type === 'video' ? { ...stream, codec: 'hevc' } : stream) } });
+    const updates: PlaybackUpdate[] = [];
+    const capped = session({ mode: 'transcode', mediaId: 'uhd',
+      preferences: { mode: 'transcode', maxHeight: 720, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' } });
+    const api = resolver(capped, async (update) => { updates.push(update); return capped; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => [hevc('uhd')] as never,
+    });
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 2160)!;
+    expect(step).toMatchObject({ source: 'file', instruction: { mode: 'transcode' } });
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences?.maxHeight).toBeNull();
+    expect(coordinator.getSnapshot().instruction?.quality).toBe(2160);
+  });
+
+  it('offers only what the device plays, and everything when the viewer asks', async () => {
+    const run = async (offerAll: boolean) => {
+      const coordinator = new PlaybackCoordinator({
+        media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: resolver(session({ mode: 'direct', mediaId: 'fhd' })),
+        capabilities: async () => ({ ...capabilities(), maxWidth: 1920, maxHeight: 1080 }), initialPositionMs: 0,
+        facts: async () => files() as never, offerAll: () => offerAll,
+      });
+      await coordinator.start();
+      return coordinator.getSnapshot().versions!;
+    };
+    expect((await run(false)).steps.map((step) => step.quality)).toEqual([1080, 720]);
+    const all = await run(true);
+    expect(all.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+    expect(all.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+  });
+
+  it('keeps a named file when the mode is left to core, as a resume does', async () => {
+    const { api, coordinator } = start({ initialPreferences: { mediaId: 'fhd' } });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mode: 'direct', mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: false, mediaId: 'fhd', quality: 1080 });
+    // The buttons still offer every file's versions.
+    expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
+  });
+
+  it("marks the file's own quality for a viewer's uncapped transcode of it", async () => {
+    // The Android TV client, 2026-09-27: The Martian resumed as a viewer's
+    // transcode of the 720p file, and the Quality row marked nothing.
+    const { coordinator } = start({ initialPreferences: { mediaId: 'fhd', mode: 'transcode' } });
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, mode: 'transcode', quality: 1080 });
+  });
+
+  it('reports the quality playing, automatic or picked', async () => {
+    const auto = start({ ceiling: { quality: 1080, reason: 'ceiling-display' } });
+    await auto.coordinator.start();
+    expect(auto.coordinator.getSnapshot().instruction?.quality).toBe(1080);
+
+    const step = playbackVersions(files(), capabilities()).steps.find((candidate) => candidate.quality === 1440)!;
+    const picked = start({ initialPreferences: versionPreferences(step) });
+    await picked.coordinator.start();
+    expect(picked.coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, quality: 1440 });
+  });
+
+  it('names the new file\'s streams by the languages playing, even after a resume fixed an audio index', async () => {
+    // The Android TV client, The Martian, 2026-09-27: 720p to 2K across files
+    // named no audio stream, and the node refused it (8 audio streams).
+    const multi = (mediaId: string, width: number, height: number) => ({
+      mediaId,
+      profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+        { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width, height },
+        { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: 'fre', default: true, forced: false },
+        { index: 2, type: 'audio' as const, codec: 'aac', profile: '', language: 'eng', default: false, forced: false },
+        { index: 3, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: false, forced: false },
+        ...(width > 2000 ? [{ index: 4, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: true, forced: true }] : []),
+      ] },
+    });
+    // The 4K file also has a forced English track, flagged default: the full
+    // one playing must still map to the full one (the TV, The Martian).
+    const facts = [multi('uhd', 3840, 2160), multi('hd', 1280, 720)];
+    const playing = session({ mode: 'direct', mediaId: 'hd',
+      sourceInfo: { path: '/m', format: 'mp4', size: 1, bitrate: 1, streams: facts[1]!.profile.streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: 2, subtitleStream: 3, audioLanguage: '', subtitleLanguage: '' },
+      selected: { videoStream: 0, audioStream: 2, subtitleStream: 3 } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(playing, async (update) => { updates.push(update); return playing; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'hd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => facts as never,
+      initialPreferences: { mediaId: 'hd', audioStream: 2, subtitleStream: 3 },
+    });
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1440)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    // English audio and English subtitles, as were playing, found in the new file.
+    expect(updates[0]).toMatchObject({ mediaId: 'uhd', preferences: { mode: 'transcode', maxHeight: 1440, audioStream: 2, subtitleStream: 3 } });
+  });
+
+  it('caps a version on the same file with a transcode, and does not name the file again', async () => {
+    const { coordinator, updates } = start();
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1440)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.mediaId).toBeUndefined();
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', video: 'transcode', maxHeight: 1440 });
+  });
+});
+
+/**
+ * Tom, 2026-09-25: resuming from Continue Watching "sometimes" started at 0.
+ * Reproduced by the Android TV client: expo-video ticks position 0 from an
+ * idle player, and one such tick while the session was being made became the
+ * resume point.
+ */
+describe('a player event before anything is presented', () => {
+  function start(mode: 'direct' | 'transcode') {
+    const player = new FakePlayer();
+    const initial = session({ mode, seekMs: mode === 'direct' ? 0 : 300_000, ...(mode === 'direct' ? {} : { seekOffsetMs: 0 }) } as Partial<PlaybackSession>);
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(initial, async (update) => { updates.push(update); return initial; });
+    api.resolve.mockImplementation(async () => {
+      player.emit({ positionMs: 0, durationMs: 0, paused: true, ended: false });
+      return initial;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 300_000,
+      initialPreferences: { mode },
+    });
+    return { coordinator, player, updates };
+  }
+
+  it('does not move a direct resume back to the start', async () => {
+    const { coordinator, player } = start('direct');
+    await coordinator.start();
+    expect(player.playCalls[0]?.positionMs).toBe(300_000);
+  });
+
+  it('does not seek a transcode resume back to the start', async () => {
+    const { coordinator, updates } = start('transcode');
+    await coordinator.start();
+    await flush();
+    expect(updates.some((update) => update.seekMs === 0)).toBe(false);
+    expect(coordinator.getSnapshot().intent.positionMs).toBe(300_000);
+  });
+});
+
+/**
+ * The web client, 2026-09-25: a page reload left a 720p transcode alive on
+ * fi-1 for the node's five-minute idle rule, refusing the next viewer 429.
+ * `close()` waited for work in flight before its DELETE, and a page being
+ * unloaded does not wait for any of it.
+ */
+describe('closing for a page exit', () => {
+  it('sends the DELETE at once, not after the work in flight', async () => {
+    const initial = session({ mode: 'transcode' });
+    const hung = deferred<PlaybackSession>();
+    const api = resolver(initial, async () => hung.promise);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { maxHeight: 720 } });
+    await flush();
+    expect(api.update).toHaveBeenCalled(); // a PATCH is in flight and will never answer
+
+    void coordinator.close({ keepalive: true });
+    // With the signed stream URL, for the close that survives an unload.
+    expect(api.stop).toHaveBeenCalledWith(initial.sessionId, expect.objectContaining({ keepalive: true, streamUrl: initial.source.url }));
+  });
+
+  it('does not send it twice once the orderly close catches up', async () => {
+    const initial = session({ mode: 'transcode' });
+    const api = resolver(initial);
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    await coordinator.close({ keepalive: true });
+    expect(api.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the playing file's facts on the snapshot", () => {
+  const mkv = (operations?: unknown) => [{
+    mediaId: 'm1',
+    ...(operations ? { operations } : {}),
+    profile: { mediaId: 'm1', format: 'matroska', container: 'matroska', durationMs: 60_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width: 1920, height: 1080 },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  }];
+  const cannotCopy = {
+    direct: true, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: { video: false, audio: false },
+    transcodeVideo: true, transcodeAudio: true,
+  };
+
+  async function start(facts: unknown, initialPreferences?: PlaybackPreferencesUpdate) {
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => facts as never,
+      ...(initialPreferences ? { initialPreferences } : {}),
+    });
+    await coordinator.start();
+    return coordinator;
+  }
+
+  it("carries the node's operations, and offers no remux the node would refuse", async () => {
+    const coordinator = await start(mkv(cannotCopy));
+    expect(coordinator.getSnapshot().playingFile?.operations).toEqual(cannotCopy);
+    expect(coordinator.getSnapshot().modes?.map(({ mode, offered }) => [mode, offered])).toEqual([
+      ['direct', false], ['remux', false], ['transcode', true],
+    ]);
+  });
+
+  it('reports the versions and the quality playing after a start that needed no facts', async () => {
+    // The web client, tmdb:movie:185: one 1792x1080 file started from its
+    // 1080p button, and the buttons fell back to the node's heights.
+    const one = [{ ...mkv()[0]!, profile: { ...mkv()[0]!.profile, container: 'mp4', format: 'mov,mp4',
+      streams: mkv()[0]!.profile.streams.map((stream) => stream.type === 'video' ? { ...stream, width: 1792 } : stream) } }];
+    const step = playbackVersions(one as never, capabilities()).steps[0]!;
+    expect(step).toMatchObject({ quality: 1080, source: 'file', instruction: { mode: 'direct' } });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: resolver(session({ mode: 'direct' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => one as never,
+      initialPreferences: versionPreferences(step),
+    });
+    await coordinator.start();
+    await vi.waitFor(() => expect(coordinator.getSnapshot().versions?.steps.map((candidate) => candidate.quality)).toEqual([1080, 720]));
+    expect(coordinator.getSnapshot().instruction?.quality).toBe(1080);
+  });
+
+  it('fetches the facts after a start that needed none, for the modes', async () => {
+    const coordinator = await start(mkv(), { mode: 'direct' });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().modes).toBeDefined());
+    expect(coordinator.getSnapshot().modes?.find((mode) => mode.mode === 'remux')?.offered).toBe(true);
+  });
+});
+
+/**
+ * Server 0.60.0: a PATCH that leaves transcode releases the slot, so one back
+ * into transcode can be refused 429 resource_limit (scope: request) where
+ * another viewer took it meanwhile. The node leaves the playing generation as
+ * it was; the snapshot must say so.
+ */
+describe('a switch back into transcode refused for capacity', () => {
+  it('keeps playing what the node still serves, reports the refusal, and does not claim the transcode', async () => {
+    const direct = session({ mode: 'direct' });
+    let refuse = false;
+    const api = resolver(session({ mode: 'transcode' }), async (update) => {
+      if (refuse) throw Object.assign(new Error('transcode limit reached'), { status: 429, code: 'resource_limit' });
+      return update.preferences?.mode === 'direct' ? direct : session({ mode: 'transcode' });
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    coordinator.update({ preferences: { mode: 'direct' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('direct'));
+
+    refuse = true;
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().notice?.code).toBe('update-failed'));
+    const snapshot = coordinator.getSnapshot();
+    expect(snapshot.notice?.refusal).toMatchObject({ status: 429, code: 'resource_limit' });
+    expect(snapshot.session?.mode).toBe('direct');
+    expect(snapshot.fatalError).toBeUndefined();
+    // The report describes what the node still serves, not the refused ask.
+    expect(snapshot.instruction?.mode).toBe('direct');
+  });
+});
+
+/**
+ * The Android TV client, 2026-09-27: a transcode resumed from Continue
+ * Watching PATCHed a seek every ~1.5 s for ever and never showed a picture.
+ * The resume position is the player's own, fractional (1560055.99 ms); core
+ * sends it rounded, the node starts the generation at 1560056, and the
+ * unrounded position then read as 0.01 ms before the generation.
+ */
+describe('a fractional resume position into a transcode', () => {
+  it('activates the generation the node made, rather than asking again for ever', async () => {
+    const generation = session({ mode: 'transcode', seekMs: 300_000, seekOffsetMs: 0 } as Partial<PlaybackSession>);
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(generation, async (update) => { updates.push(update); return generation; });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 299_999.99, initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    await flush();
+    expect(updates).toHaveLength(0);
+    expect(player.playCalls).toHaveLength(1);
   });
 });

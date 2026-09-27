@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MachaAcquisitionApi } from './MachaAcquisitionApi.js';
+import { acquisitionError, MachaAcquisitionApi, torrentHeldBy } from './MachaAcquisitionApi.js';
+import { endpointFailure, playbackFailureCode } from '../cluster/endpointFailure.js';
 import { fixedBearerToken } from './SessionManager.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -108,5 +109,90 @@ describe('MachaAcquisitionApi', () => {
       '/api/v1/torrents/jobs/torrent-1/clear',
       '/api/v1/ingest/jobs/ingest-1/clear',
     ]);
+  });
+});
+
+describe('a torrent a job already holds (server 0.63.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries the holding job and its node, through the cluster wrapping too', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      status: 'torrent_already_added',
+      error: { code: 'torrent_already_added', message: 'job j-7 already holds this torrent' },
+      id: 'j-7', node_id: 'gbni-1',
+    }, 409)));
+    const error = await new MachaAcquisitionApi('http://node.test', fixedBearerToken('t')).submitMagnet('magnet:?xt=urn:btih:abc').catch((e: unknown) => e);
+    expect(torrentHeldBy(error)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
+    const wrapped = endpointFailure('fi-1', 'http://node.test', error);
+    expect(playbackFailureCode(wrapped)).toBe('torrent_already_added');
+    expect(acquisitionError(wrapped)).toMatchObject({ status: 409, code: 'torrent_already_added' });
+    expect(torrentHeldBy(wrapped)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
+  });
+
+  it('reads no holder from any other refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'placement_failed', message: 'no', reason: 'add_failed' }, id: 'x' }, 409)));
+    const error = await new MachaAcquisitionApi('http://node.test', fixedBearerToken('t')).submitMagnet('magnet:?').catch((e: unknown) => e);
+    expect(torrentHeldBy(error)).toBeUndefined();
+    // The reason of any refusal, found behind the router's wrapping.
+    expect(acquisitionError(endpointFailure('fi-1', 'http://node.test', error))?.reason).toBe('add_failed');
+  });
+});
+
+describe('cluster torrents (server 0.64.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const job = { id: 't-1', name: 'x', info_hash: 'ab', phase: 'awaiting_node', state: 'awaiting_node', desired: 'active', desired_applied: false, node_id: null, pinned_node_id: 'gbni-1', bytes_total: null, bytes_completed: null, download_rate: null, upload_rate: null, uploaded_total: null, peers: null, seeds: null, eta_seconds: null, progress: null, live_as_of_unix_ms: null, ingest_job_id: null, created_unix_ms: 1, updated_unix_ms: 1, error: null };
+
+  it('adds with a pin and a removal delay, and answers with the job', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', id: 't-1', info_hash: 'ab', node_id: 'gbni-1', job }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaAcquisitionApi('').submitMagnet('magnet:?', { nodeId: 'gbni-1', removeAfterMs: 0 });
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({ magnet: 'magnet:?', node_id: 'gbni-1', remove_after_ms: 0 });
+    expect(result).toMatchObject({ id: 't-1', infoHash: 'ab', pinnedNodeId: 'gbni-1', job: { phase: 'awaiting_node' } });
+  });
+
+  it('leaves the pin and the delay to the cluster when not given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 't-1', node_id: null }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaAcquisitionApi('').submitMagnet('magnet:?');
+    expect(JSON.parse(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body))).toEqual({ magnet: 'magnet:?' });
+    expect(result).toEqual({ id: 't-1', infoHash: null, pinnedNodeId: null });
+  });
+
+  it('updates the removal delay or the pin with a PATCH', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(job));
+    vi.stubGlobal('fetch', fetchMock);
+    await new MachaAcquisitionApi('').updateTorrent('t-1', { removeAfterMs: null, nodeId: null });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/torrents/jobs/t-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ remove_after_ms: null, node_id: null });
+  });
+
+  it('lists the torrent-capable nodes with the cluster default', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      status: 'ok', refresh_interval_ms: 5000, default_remove_after_ms: null,
+      nodes: [{ node_id: 'gbni-1', host: 'gbni-1', local: false, reachable: false, as_of_unix_ms: null, max_active: 3, active_jobs: 0, accepting: false, not_accepting_reason: 'unreachable', staging: { limit_bytes: 1, disk_bytes: 1, reserved_bytes: 0, free_bytes: 1 } }],
+    })));
+    const nodes = await new MachaAcquisitionApi('').torrentNodes();
+    expect(nodes).toMatchObject({ refreshIntervalMs: 5000, defaultRemoveAfterMs: null, nodes: [{ node_id: 'gbni-1', accepting: false, not_accepting_reason: 'unreachable' }] });
+  });
+
+  it("carries the lists' sources and refresh interval on the snapshot", async () => {
+    const sources = [{ node_id: 'fi-1', local: true, reachable: true, as_of_unix_ms: 5 }, { node_id: 'gbni-1', local: false, reachable: false, as_of_unix_ms: null }];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/status')) return jsonResponse({});
+      return jsonResponse({ jobs: url.includes('torrents') ? [job] : [], sources, refresh_interval_ms: 5000 });
+    }));
+    const snapshot = await new MachaAcquisitionApi('').snapshot();
+    expect(snapshot).toMatchObject({ refreshIntervalMs: 5000, torrentSources: sources, ingestSources: sources, torrentJobs: [{ id: 't-1', node_id: null }] });
+  });
+});
+
+describe('a refusal every node would give alike', () => {
+  it('is not walked to the next node', async () => {
+    const { retryableEndpointFailure } = await import('../cluster/endpointFailure.js');
+    const refusal = Object.assign(new Error('metadata not writable'), { status: 503, code: 'metadata_unavailable' });
+    expect(retryableEndpointFailure(refusal)).toBe(false);
+    expect(retryableEndpointFailure(Object.assign(new Error('x'), { status: 503, code: 'playback_unavailable' }))).toBe(true);
   });
 });

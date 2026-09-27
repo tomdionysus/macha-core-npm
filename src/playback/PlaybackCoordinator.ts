@@ -1,8 +1,10 @@
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackTransition, type Player } from '../platform/Platform.js';
-import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
+import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
+import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
+import { offeredModes, playbackVersions, type OfferedMode, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
@@ -11,8 +13,8 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
-import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
-import { choosePlaybackInstruction, degradeInstruction, segmentContainer, transcodeUndecodable, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
+import { chooseAmongFiles, degradeInstruction, segmentContainer, streamsToName, withoutLanguages, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -47,6 +49,32 @@ export interface PlaybackNotice {
   code: PlaybackNoticeCode;
   /** The failure behind it, for the two codes that have one. Its message is log text, not viewer text. */
   error?: Error;
+  /**
+   * What the node said when it refused, where it said anything: the HTTP
+   * status and error code, and for `choice_required` / `choice_not_available`
+   * which choice and its candidates. Data for a host to word; see
+   * `CHOICE_REQUIRED_CODE`.
+   */
+  refusal?: PlaybackRefusal;
+}
+
+export interface PlaybackRefusal {
+  status?: number;
+  code?: string;
+  choice?: string;
+  choices?: Array<number | string>;
+}
+
+function refusalOf(error: unknown): PlaybackRefusal | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const { status, code, choice, choices } = error as { status?: unknown; code?: unknown; choice?: unknown; choices?: unknown };
+  const refusal: PlaybackRefusal = {
+    ...(typeof status === 'number' ? { status } : {}),
+    ...(typeof code === 'string' ? { code } : {}),
+    ...(typeof choice === 'string' ? { choice } : {}),
+    ...(Array.isArray(choices) ? { choices: choices as Array<number | string> } : {}),
+  };
+  return Object.keys(refusal).length > 0 ? refusal : undefined;
 }
 
 export interface PlaybackCoordinatorSnapshot {
@@ -92,10 +120,35 @@ export interface PlaybackCoordinatorSnapshot {
    * not a symptom. Surface this somewhere a person can see it.
    */
   instruction?: PlaybackInstructionReport;
+  /**
+   * The qualities this item can be played at, and the one automatic play
+   * chose, once facts have answered; see `playbackVersions`. A host draws
+   * the per-quality buttons from `steps` and plays one with `playVersion`.
+   */
+  versions?: PlaybackVersions;
+  /**
+   * The facts of the file playing, the node's `operations` included, once
+   * they have answered: the one place a host reads them mid-play, since the
+   * session does not carry them.
+   */
+  playingFile?: FileFacts;
+  /**
+   * The modes to offer for the file playing, from `offeredModes` over
+   * `playingFile` with the node's operations, the capabilities, the policy
+   * overrides and `offerAll`. Absent until the facts answer; a host then
+   * falls back to the session's own profile.
+   */
+  modes?: OfferedMode[];
 }
 
 export interface PlaybackInstructionReport {
   mode: PlaybackMode;
+  /**
+   * The quality playing: the class of the `versions` step this is, so a host
+   * marks it among its buttons. Absent without facts, or for a choice that
+   * matches no step.
+   */
+  quality?: QualityClass;
   video?: 'copy' | 'transcode';
   audio?: 'copy' | 'transcode';
   reasons: PlaybackDecisionReason[];
@@ -162,6 +215,12 @@ export interface PlaybackInstructionReport {
   /** The viewer chose this mode themselves; the chooser was not consulted. */
   chosenByViewer: boolean;
   /**
+   * The file the chooser picked among the item's files, sent as the session's
+   * `media_id`. Absent when the chooser did not pick one: the viewer chose the
+   * mode, or there were no facts, on an item with several files.
+   */
+  mediaId?: string;
+  /**
    * True when the instruction is a fallback rather than a decision — the
    * facts were unavailable, so nothing could be reasoned from.
    */
@@ -217,10 +276,30 @@ export interface PlaybackCoordinatorOptions {
    * items over its lifetime, and a zero-argument thunk captured once returns
    * the first item's facts for every later title — a wrong instruction that
    * looks entirely reasonable.
+   *
+   * **Return every file.** An item can hold several files, and choosing among
+   * them is the client's decision, not the server's (Tom, 2026-09-24).
+   * `MachaPlaybackFactsApi.facts({ itemId })` returns one entry per file; hand
+   * the whole list over and the coordinator chooses the file and names it on
+   * the session. A single `PlaybackDecisionFacts` is still accepted, and then
+   * describes the item's only file, or whichever the host picked.
    */
-  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
+  /**
+   * The cap on automatic play, read at each start: the host builds it with
+   * `qualityCeiling` from the display it measured, the viewer's setting and,
+   * on a phone, the connection. Absent, automatic play is uncapped. A version
+   * the viewer picks is never capped.
+   */
+  qualityCeiling?: () => QualityCeiling | undefined;
+  /**
+   * Whether to offer steps above what the device can play, read with the
+   * versions: the viewer's `QualityPreference.offerAll`. Automatic play stays
+   * within the device either way.
+   */
+  offerAll?: () => boolean;
 }
 
 type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
@@ -467,8 +546,8 @@ const PLAYER_SILENCE_GUARD_MS = 15_000;
  * mechanism survives all of that, and the viewer was still frozen.**
  *
  * So this does not bound a suspect. It bounds *the work item* — "build a
- * replacement" — which is what Law 4's discipline actually asks for: backoff,
- * a failure budget, a parked state and an operator action, for the retried
+ * replacement" — which is what the retried-work discipline under Law 4 asks
+ * for: backoff, a failure budget, a parked state and an operator action, for the retried
  * unit rather than for each of its limbs. It converts every unnamed mechanism,
  * including ones nobody has thought of, from an indefinite freeze into a
  * bounded wait followed by the failover that already exists.
@@ -541,8 +620,14 @@ export function generationLocalPosition(
 ): number | undefined {
   if (session.mode === 'direct') return clampPosition(absolutePositionMs, session.durationMs);
   const generationStartMs = Math.max(0, session.seekMs);
-  if (absolutePositionMs < generationStartMs) return undefined;
-  return clampPosition(absolutePositionMs - generationStartMs, Math.max(0, session.durationMs - generationStartMs));
+  // Compared as the wire carries it, to the millisecond. A player reports
+  // fractional positions and core sends them rounded, so a node starting the
+  // generation exactly where it was asked (1560056 for 1560055.99) otherwise
+  // read as beginning after the viewer, and every renegotiation got the same
+  // answer: a transcode resume looped for ever (the Android TV client,
+  // 2026-09-27).
+  if (Math.round(absolutePositionMs) < generationStartMs) return undefined;
+  return clampPosition(Math.max(0, absolutePositionMs - generationStartMs), Math.max(0, session.durationMs - generationStartMs));
 }
 
 function rangeContainsPosition(
@@ -550,6 +635,16 @@ function rangeContainsPosition(
   positionMs: number,
 ): boolean {
   return ranges.some((range) => range.startMs <= positionMs && positionMs <= range.endMs);
+}
+
+/** What `facts` may return: one file's facts, or one entry per file of the item. */
+export type PlaybackFacts = PlaybackDecisionFacts | readonly PlaybackMediaFacts[];
+
+/** Nothing usable when the list is empty. */
+function filesFrom(supplied: PlaybackFacts | undefined): readonly FileFacts[] | undefined {
+  if (supplied === undefined) return undefined;
+  const files = Array.isArray(supplied) ? supplied as readonly PlaybackMediaFacts[] : [supplied as PlaybackDecisionFacts];
+  return files.length > 0 ? files : undefined;
 }
 
 function instructionPreferences(instruction: PlaybackInstruction): PlaybackPreferencesUpdate {
@@ -569,7 +664,12 @@ function instructionPreferences(instruction: PlaybackInstruction): PlaybackPrefe
  * should mask.
  */
 function isExecutorRefusal(error: unknown): boolean {
-  return !!error && typeof error === 'object' && (error as { status?: unknown }).status === 400;
+  if (!error || typeof error !== 'object' || (error as { status?: unknown }).status !== 400) return false;
+  // A choice left open, or one the node cannot honour, is a question about
+  // the request, not a refusal to perform it: stepping down the mode would
+  // answer a different question and hide the real one.
+  const code = (error as { code?: unknown }).code;
+  return code !== CHOICE_REQUIRED_CODE && code !== CHOICE_NOT_AVAILABLE_CODE;
 }
 
 function mergePreferences(
@@ -678,6 +778,7 @@ function completePreferences(session: PlaybackSession): PlaybackPreferencesUpdat
     mode: session.preferences.mode,
     maxHeight: session.preferences.maxHeight,
     maxBitrate: session.preferences.maxBitrate,
+    videoStream: session.preferences.videoStream ?? undefined,
     audioStream: session.preferences.audioStream,
     subtitleStream: session.preferences.subtitleStream,
     audioLanguage: session.preferences.audioLanguage,
@@ -741,6 +842,89 @@ export function restatePreferencesClearedByMode(
     }
   }
   return { ...update, preferences: withRestatedSegmentContainer(restated, requestedContainer) };
+}
+
+/**
+ * Which of the versions is playing, by file and cap alone. A file's own step
+ * has no cap and a capped transcode its own; the mode does not decide it, so
+ * a viewer's uncapped transcode of the 720p file is still that file's 720p
+ * (the Android TV client, 2026-09-27: after a resume nothing was marked).
+ * Undefined for a cap that is no step's.
+ */
+function qualityPlaying(versions: PlaybackVersions, mediaId: string | undefined, maxHeight: number | null | undefined): QualityClass | undefined {
+  const cap = maxHeight ?? undefined;
+  const onFile = (step: VersionStep) => step.mediaId === undefined || step.mediaId === mediaId;
+  if (cap !== undefined) return versions.steps.find((step) => onFile(step) && step.source === 'transcode' && step.maxHeight === cap)?.quality;
+  return versions.steps.find((step) => onFile(step) && step.source === 'file')?.quality;
+}
+
+/**
+ * Name the streams a PATCH would otherwise leave the node to choose.
+ *
+ * From server 0.58.0 a PATCH is held to the same choices as a create. A
+ * session begun as `direct` named no stream, since the player picks its own
+ * tracks there, so a change into a remux or transcode (the decode fallback,
+ * or the viewer's own) must now name them: refused otherwise, with
+ * `choice_required`, on every file with several audio streams. The same goes
+ * for a language the viewer picks mid-play, which the node refuses outright
+ * where the file lacks it. The streams come from the session's own source
+ * streams, which the node reported for this very file; a stream the session
+ * already plays is restated rather than chosen again.
+ */
+/**
+ * A PATCH as the node 0.58.0 needs it, for a host that calls
+ * `PlaybackResolver.update` itself rather than through the coordinator: the
+ * device's segment container on a change into remux or transcode, where the
+ * update names none, and the streams from `namedStreamsForPatch`. The
+ * coordinator does the same on its own updates.
+ */
+export function preparePlaybackPatch(
+  update: PlaybackUpdate,
+  session: PlaybackSession,
+  capabilities: PlaybackCapabilities,
+  overrides?: PlaybackPolicyOverrides,
+): PlaybackUpdate {
+  const mode = update.preferences?.mode;
+  const container = (mode === 'remux' || mode === 'transcode') && update.preferences?.container === undefined
+    ? segmentContainer(capabilities, overrides).container
+    : undefined;
+  const withContainer = container ? { ...update, preferences: { ...update.preferences, container } } : update;
+  return namedStreamsForPatch(withContainer, session);
+}
+
+function namedStreamsForPatch(update: PlaybackUpdate, session: PlaybackSession): PlaybackUpdate {
+  const preferences = update.preferences;
+  if (!preferences || session.sourceInfo.streams.length === 0) return update;
+  // Another file's streams are not this one's: a switch names its own, from
+  // that file's facts (see `playVersion`).
+  if (update.mediaId !== undefined && update.mediaId !== session.mediaId) return update;
+  const mode = preferences.mode !== undefined && preferences.mode !== 'choose' ? preferences.mode : session.mode;
+  const changesMode = preferences.mode !== undefined && preferences.mode !== 'choose';
+  const changesLanguage = preferences.audioLanguage !== undefined || preferences.subtitleLanguage !== undefined;
+  if (!changesMode && !changesLanguage) return update;
+  const current = session.preferences;
+  const kept = (index: number | null | undefined) => (index !== null && index !== undefined && index >= 0 ? index : undefined);
+  const wanted = {
+    videoStream: preferences.videoStream ?? kept(current.videoStream),
+    // A language the viewer just picked replaces the stream it chose before.
+    audioStream: preferences.audioStream ?? (preferences.audioLanguage !== undefined ? undefined : kept(current.audioStream)),
+    subtitleStream: preferences.subtitleStream ?? (preferences.subtitleLanguage !== undefined ? undefined : kept(current.subtitleStream)),
+    audioLanguage: preferences.audioLanguage ?? (current.audioLanguage || undefined),
+    subtitleLanguage: preferences.subtitleLanguage ?? (current.subtitleLanguage || undefined),
+  };
+  const named = streamsToName(technicalProfileFromSession(session), mode, wanted);
+  const restated: PlaybackPreferencesUpdate = { ...withoutLanguages(preferences) };
+  // A subtitle-only change keeps the picture and sound as they are on the
+  // node (its subtitle fast path), so nothing else is restated into it.
+  if (changesMode || preferences.audioLanguage !== undefined) {
+    if (wanted.videoStream !== undefined || named.videoStream !== undefined) restated.videoStream = wanted.videoStream ?? named.videoStream;
+    if (wanted.audioStream !== undefined || named.audioStream !== undefined) restated.audioStream = wanted.audioStream ?? named.audioStream;
+  }
+  if (preferences.subtitleStream !== undefined || named.subtitleStream !== undefined || preferences.subtitleLanguage !== undefined) {
+    // A subtitle language the file lacks is no subtitles.
+    restated.subtitleStream = preferences.subtitleStream ?? named.subtitleStream ?? (preferences.subtitleLanguage !== undefined ? null : undefined);
+  }
+  return { ...update, preferences: restated };
 }
 
 /**
@@ -1003,14 +1187,14 @@ export class PlaybackCoordinator {
    * An explicit choice always wins: the Mode control must mean what it says,
    * including when it is wrong, because it is the operator's escape hatch.
    */
-  private cachedFacts?: Promise<PlaybackDecisionFacts | undefined>;
+  private cachedFacts?: Promise<readonly FileFacts[] | undefined>;
   private factsError?: unknown;
   private factsAttempts = 0;
   private chosenInstruction?: PlaybackInstruction;
   private substitutionReportedFor?: string;
   private unclassifiedReportedFor?: string;
 
-  private facts(): Promise<PlaybackDecisionFacts | undefined> {
+  private facts(): Promise<readonly FileFacts[] | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
     // repeatedly without a round trip each time. The media's own facts are
     // immutable, so that part is always safe.
@@ -1033,6 +1217,7 @@ export class PlaybackCoordinator {
     // recovered even once the cluster was answering perfectly.
     if (this.cachedFacts) return this.cachedFacts;
     const attempt = Promise.resolve(this.options.facts?.(this.options.media))
+      .then(filesFrom)
       .catch((error: unknown) => {
         // Kept, not swallowed: a thrown lookup and an absent supplier both
         // yield undefined, and they are not the same thing at all.
@@ -1041,6 +1226,7 @@ export class PlaybackCoordinator {
       });
     this.cachedFacts = attempt;
     void attempt.then((facts) => {
+      if (facts !== undefined) this.factsSeen = facts;
       // Bounded: a failed attempt is forgotten so the next caller may try
       // again, up to a budget. Unbounded retry would put a request on the
       // viewer's critical path every time they touched the mode control while
@@ -1058,13 +1244,41 @@ export class PlaybackCoordinator {
     preferences: PlaybackPreferencesUpdate,
     capabilities: PlaybackCapabilities,
   ): Promise<PlaybackPreferencesUpdate> {
+    this.capabilitiesSeen = capabilities;
     if (preferences.mode !== undefined && preferences.mode !== 'choose') {
+      // The viewer chose how to play; which file is still core's to choose
+      // (Tom, 2026-09-25: "on direct play, something still has to pick which
+      // media to direct play"). The ranking's best file is the one that plays
+      // with least conversion, so under the viewer's direct it is a file this
+      // device plays directly, where the item has one. Facts are fetched only
+      // for an item with several files; one file names itself.
+      //
+      // From server 0.58.0 the node chooses nothing else either: a remux or a
+      // transcode names its container, and a file with several video or audio
+      // streams names the one to play. The container is the device's; the
+      // streams come from the file's facts where there are any, and a node
+      // that still finds a choice open says which (`choice_required`), which
+      // the resolver answers.
+      const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
+      // The buttons stay drawable after a version was picked: the qualities
+      // are the item's, whichever one is playing.
+      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false }) : undefined;
+      if (versions) this.patchSnapshot({ versions });
+      const quality = versions ? qualityPlaying(versions, mediaId, preferences.maxHeight) : undefined;
+      const container = preferences.container
+        ?? (preferences.mode === 'direct' ? undefined : segmentContainer(capabilities, this.options.policyOverrides).container);
+      const streams = profile ? streamsToName(profile, preferences.mode, preferences) : undefined;
       this.patchSnapshot({ instruction: {
         mode: preferences.mode, video: preferences.video, audio: preferences.audio,
-        container: preferences.container,
+        container,
         reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+        ...(mediaId ? { mediaId } : {}),
+        ...(quality !== undefined ? { quality } : {}),
       } });
-      return preferences;
+      // With facts the languages are resolved into `streams`, and sent as
+      // indexes; without, they go as given and the resolver drops one the
+      // node refuses.
+      return { ...(streams ? withoutLanguages(preferences) : preferences), ...streams, ...(container ? { container } : {}), ...(mediaId ? { mediaId } : {}) };
     }
 
     const facts = await this.facts();
@@ -1098,14 +1312,30 @@ export class PlaybackCoordinator {
         reasons: ['no-technical-facts'], assumed: [], chosenByViewer: false, withoutFacts: true,
         ...(this.factsError !== undefined ? { factsError: this.factsError } : {}),
       } });
-      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container });
-      return { ...preferences, mode: 'transcode', container };
+      const fileId = preferences.mediaId ?? this.noFactsMediaId();
+      this.log.warn('instruction-without-facts', { mediaId: this.options.media.id, container, fileId });
+      return { ...preferences, mode: 'transcode', container, ...(fileId ? { mediaId: fileId } : {}) };
     }
 
-    const instruction = choosePlaybackInstruction(facts.profile, capabilities, {
-      overrides: this.options.policyOverrides,
-      operations: facts.operations,
-    });
+    // Every quality the files offer, and the one automatic play takes: the
+    // best file at or below the ceiling, ranked as the server ranked them
+    // among files of one class (direct, then remux, then transcode, then
+    // stored order), or a capped transcode where every file is above it.
+    const ceiling = this.options.qualityCeiling?.();
+    // A named file with the mode left to core (a resume from Continue
+    // Watching) keeps its file: automatic play chooses how, not which.
+    const named = preferences.mediaId !== undefined ? facts.filter((file) => file.mediaId === preferences.mediaId) : [];
+    const candidates = named.length > 0 ? named : facts;
+    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    // The buttons still offer every file's versions.
+    const offered = candidates === facts ? versions
+      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    const step = versions.automatic!;
+    const instruction = step.instruction;
+    const chosenMediaId = step.mediaId ?? this.noFactsMediaId();
+    const profile = (candidates.find((file) => file.mediaId !== undefined && file.mediaId === step.mediaId) ?? candidates[0])!.profile;
+    const streams = streamsToName(profile, instruction.mode, preferences);
+    const cap = step.maxHeight !== undefined ? { maxHeight: step.maxHeight } : {};
     this.log.info('instruction-chosen', {
       mediaId: this.options.media.id,
       assumed: instruction.assumed,
@@ -1114,15 +1344,62 @@ export class PlaybackCoordinator {
       audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons,
+      chosenMediaId,
+      files: facts.length,
+      quality: step.quality,
+      ...cap,
+      ...(versions.limitedBy ? { limitedBy: versions.limitedBy.reason } : {}),
+      ...streams,
     });
     this.chosenInstruction = instruction;
-    this.patchSnapshot({ instruction: {
+    this.patchSnapshot({ versions: offered, instruction: {
       mode: instruction.mode, video: instruction.video, audio: instruction.audio,
       container: instruction.container,
       reasons: instruction.reasons, assumed: instruction.assumed,
-      chosenByViewer: false, withoutFacts: false,
+      chosenByViewer: false, withoutFacts: false, quality: step.quality,
+      ...(chosenMediaId ? { mediaId: chosenMediaId } : {}),
     } });
-    return { ...preferences, ...instructionPreferences(instruction) };
+    return { ...withoutLanguages(preferences), ...instructionPreferences(instruction), ...cap, ...streams, ...(chosenMediaId ? { mediaId: chosenMediaId } : {}) };
+  }
+
+  /**
+   * Play one of `snapshot.versions.steps`, or a step a host built with
+   * `playbackVersions` itself. It counts as the viewer's choice, as a mode
+   * picked in the middle of playback does: no fallback overrides it and no
+   * ceiling caps it. A step on another file switches the session to that
+   * file, naming its streams from its facts.
+   */
+  async playVersion(step: VersionStep): Promise<void> {
+    if (this.disposed) return;
+    const session = this.snapshot.session;
+    const switching = step.mediaId !== undefined && step.mediaId !== session?.mediaId;
+    const preferences: PlaybackPreferencesUpdate = {
+      ...instructionPreferences(step.instruction),
+      // Always stated: a file step's null clears the cap a transcode step
+      // left, which a PATCH into a transcode would otherwise restate (see
+      // `restatePreferencesClearedByMode`). Found by the phone client.
+      maxHeight: step.maxHeight ?? null,
+    };
+    if (switching) {
+      const facts = await this.facts();
+      if (this.disposed) return;
+      const profile = facts?.find((file) => file.mediaId === step.mediaId)?.profile;
+      // Another file's stream indexes mean nothing here, so the viewer's
+      // choices cross by language: the language of what is playing now,
+      // matched in the new file. Passing the start's own preferences named
+      // nothing once a resume had fixed an audio index, and the node refused
+      // the switch for want of an audio stream (the Android TV client, The
+      // Martian, 2026-09-27); it also dropped subtitles that were on.
+      if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.languagesPlaying()));
+    }
+    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
+    this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
+    if (this.snapshot.instruction) {
+      this.patchSnapshot({ instruction: {
+        ...this.snapshot.instruction, quality: step.quality,
+        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
+      } });
+    }
   }
 
   /**
@@ -1160,6 +1437,65 @@ export class PlaybackCoordinator {
       );
     }
   }
+
+  /**
+   * The file to play under a mode the viewer chose, and its profile where
+   * facts gave one; see `instructedPreferences`. Facts are fetched for an item
+   * with several files, to rank them and report its versions, and for any
+   * mode but direct, to name streams; a direct play of an item's only file
+   * needs none.
+   */
+  private async fileForViewerMode(
+    mode: PlaybackMode,
+    named: string | undefined,
+    capabilities: PlaybackCapabilities,
+  ): Promise<{ mediaId?: string; profile?: MediaTechnicalProfile; facts?: readonly FileFacts[] }> {
+    const mediaIds = this.options.media.mediaIds;
+    // Several files are several versions, and their facts draw the buttons,
+    // so only an item's only file, played direct, goes without.
+    if (mode === 'direct' && mediaIds.length <= 1) return { mediaId: named ?? mediaIds[0] };
+    const facts = await this.facts();
+    // Without facts there is nothing to rank, and the server no longer
+    // chooses for us, so the first file stands in (see `noFactsMediaId`).
+    if (!facts) return { mediaId: named ?? this.noFactsMediaId() };
+    if (named !== undefined) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile, facts };
+    const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds);
+    return { mediaId: choice?.mediaId ?? this.noFactsMediaId(), profile: choice ? facts[choice.index]?.profile : undefined, facts };
+  }
+
+  /**
+   * The file to name when there are no facts to choose from: the item's
+   * first, in stored order. The server is to stop choosing among an item's
+   * files and refuse a create that names none, so naming nothing is not an
+   * option. With no facts the instruction is a transcode, which any file can
+   * serve.
+   */
+  private noFactsMediaId(): string | undefined {
+    return this.options.media.mediaIds[0];
+  }
+
+  /** The audio and subtitle languages playing now, else those the start asked for. */
+  private languagesPlaying(): { audioLanguage?: string; subtitleLanguage?: string; subtitleForced?: boolean } {
+    const session = this.snapshot.session;
+    const initial = this.options.initialPreferences ?? {};
+    const languageOf = (index: number | undefined) => (index !== undefined && index >= 0
+      ? session?.sourceInfo.streams.find((stream) => stream.index === index)?.language || undefined
+      : undefined);
+    const audioLanguage = languageOf(session?.selected.audioStream) ?? (initial.audioLanguage || undefined);
+    const subtitleOn = session ? session.selected.subtitleStream >= 0 : initial.subtitleLanguage !== undefined;
+    const subtitleLanguage = subtitleOn ? languageOf(session?.selected.subtitleStream) ?? (initial.subtitleLanguage || undefined) : undefined;
+    const subtitleForced = subtitleOn && session
+      ? session.sourceInfo.streams.find((stream) => stream.index === session.selected.subtitleStream)?.forced
+      : undefined;
+    return {
+      ...(audioLanguage ? { audioLanguage } : {}),
+      ...(subtitleLanguage ? { subtitleLanguage } : {}),
+      ...(subtitleForced !== undefined ? { subtitleForced } : {}),
+    };
+  }
+
+  /** The capabilities the last instruction was formed for; see `drainMutations`. */
+  private capabilitiesSeen?: PlaybackCapabilities;
 
   /**
    * The viewer named the mode themselves, so nothing here may quietly change
@@ -1350,7 +1686,10 @@ export class PlaybackCoordinator {
   }
 
   close(options: PlaybackStopOptions = {}): Promise<void> {
-    if (options.keepalive) this.closeOptions = { ...this.closeOptions, keepalive: true };
+    if (options.keepalive) {
+      this.closeOptions = { ...this.closeOptions, keepalive: true };
+      this.stopEverythingNowForPageExit();
+    }
     if (this.closePromise) return this.closePromise;
 
     this.disposed = true;
@@ -1400,7 +1739,7 @@ export class PlaybackCoordinator {
       const retired = [...this.releaseAfterCut].filter((id) => id !== session?.sessionId);
       this.releaseAfterCut.clear();
       await Promise.all(retired.map((id) => this.stopOnDisposal(id)));
-      if (session) {
+      if (session && !this.stoppedForPageExit.has(session.sessionId)) {
         try {
           await this.options.resolver.stop(session.sessionId, this.closeOptions);
         } catch (error) {
@@ -1408,7 +1747,7 @@ export class PlaybackCoordinator {
         }
       }
       for (const alternate of this.alternateSessions.values()) {
-        if (alternate.sessionId === session?.sessionId) continue;
+        if (alternate.sessionId === session?.sessionId || this.stoppedForPageExit.has(alternate.sessionId)) continue;
         await this.options.resolver.stop(alternate.sessionId, this.closeOptions).catch((error) => {
           this.log.warn('alternate-session-close-failed', { sessionId: alternate.sessionId, error });
         });
@@ -1419,6 +1758,80 @@ export class PlaybackCoordinator {
       this.listeners.clear();
     })();
     return this.closePromise;
+  }
+
+  /** The report before a viewer's mode change, until it lands; see `update`. */
+  private instructionBeforeModeChange?: PlaybackInstructionReport;
+
+  /** The last facts that answered; see `facts`. */
+  private factsSeen?: readonly FileFacts[];
+
+  /**
+   * The versions, and the quality playing, for a start that needed no facts:
+   * without them the per-quality buttons fall back to the node's heights. No
+   * ceiling, since such a start is the viewer's pick, and a pick is not
+   * capped. Found by the web client, 2026-09-25.
+   */
+  private versionsAfterStart(facts: readonly FileFacts[] | undefined, session: PlaybackSession): Partial<PlaybackCoordinatorSnapshot> {
+    const capabilities = this.capabilitiesSeen;
+    if (!facts || !capabilities || this.snapshot.versions) return {};
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false });
+    const quality = qualityPlaying(versions, session.mediaId, session.preferences.maxHeight);
+    const instruction = this.snapshot.instruction;
+    return {
+      versions,
+      ...(instruction && quality !== undefined && instruction.quality === undefined ? { instruction: { ...instruction, quality } } : {}),
+    };
+  }
+
+  /** `playingFile` and `modes` for a session, from the facts seen so far. */
+  private playingFileFor(session: PlaybackSession): { playingFile?: FileFacts; modes?: OfferedMode[] } {
+    const facts = this.factsSeen;
+    const file = facts?.find((candidate) => candidate.mediaId === session.mediaId)
+      ?? (facts?.length === 1 && facts[0]!.mediaId === undefined ? facts[0] : undefined);
+    if (!file) return { playingFile: undefined, modes: undefined };
+    const capabilities = this.capabilitiesSeen;
+    return {
+      playingFile: file,
+      modes: capabilities
+        ? offeredModes(file.profile, capabilities, { operations: file.operations, overrides: this.options.policyOverrides, offerAll: this.options.offerAll?.() ?? false })
+        : undefined,
+    };
+  }
+
+  /** Sessions already sent their DELETE by `stopEverythingNowForPageExit`. */
+  private readonly stoppedForPageExit = new Set<string>();
+
+  /**
+   * On a page exit, the DELETE for every session core holds, sent in this
+   * turn rather than after the work in flight.
+   *
+   * `close()` otherwise waits for a start, a PATCH, a failover, a
+   * regeneration and any alternate preparation to settle before it stops the
+   * session, which is right for an orderly close: a session made during that
+   * wait is stopped too. A page being unloaded waits for none of it, so when
+   * any of it was on the network the DELETE was never sent. The web client
+   * measured it on 2026-09-25: a reload left a 720p transcode on fi-1 until
+   * the node's five-minute idle rule, and every start on that one-slot node
+   * was refused 429 meanwhile. A session made after this point dies with the
+   * page either way, as it always did.
+   */
+  private stopEverythingNowForPageExit(): void {
+    // Each with its signed stream URL where core has it, for the close that
+    // survives an unload (see `MachaPlaybackResolver.closeBySignedUrl`).
+    const ids = new Map<string, string | undefined>();
+    for (const session of [this.serverSession, this.snapshot.session, ...this.alternateSessions.values()]) {
+      if (session && !ids.get(session.sessionId)) ids.set(session.sessionId, session.source.url);
+    }
+    for (const id of this.releaseAfterCut) if (!ids.has(id)) ids.set(id, undefined);
+    for (const [id, streamUrl] of ids) {
+      if (this.stoppedForPageExit.has(id)) continue;
+      this.stoppedForPageExit.add(id);
+      this.log.info('session-stop-page-exit', { sessionId: id });
+      void this.options.resolver.stop(id, { ...this.closeOptions, keepalive: true, ...(streamUrl ? { streamUrl } : {}) }).catch((error: unknown) => {
+        this.log.warn('session-stop-page-exit-failed', { sessionId: id, error });
+      });
+    }
   }
 
   ownedSessionId(): string | undefined {
@@ -1576,9 +1989,38 @@ export class PlaybackCoordinator {
     // Only here: core's own changes go through `applyUpdate` and say nothing
     // about what the viewer wants.
     if (this.snapshot.session && update.preferences?.mode !== undefined) {
+      // Kept until the change lands, to put back if the node refuses it.
+      this.instructionBeforeModeChange ??= this.snapshot.instruction;
       this.viewerModeChoice = update.preferences.mode !== 'choose';
+      if (update.preferences.mode !== 'choose') this.reportViewerChoice(update.preferences);
     }
     this.applyUpdate(update);
+  }
+
+  /**
+   * Report a mode the viewer chose partway through as theirs.
+   *
+   * The report was set only where the chooser ran, at the start or on
+   * "decide for me", so a concrete mode chosen mid-playback left the
+   * automatic decision in the snapshot. Measured on the Android TV set
+   * 2026-09-24: Transcode chosen during playback, and the screen went on
+   * saying the device played the file as it was. The container is kept when
+   * the viewer did not name one, because later changes restate it from here.
+   */
+  private reportViewerChoice(preferences: PlaybackPreferencesUpdate): void {
+    this.chosenInstruction = undefined;
+    this.patchSnapshot({ instruction: {
+      mode: preferences.mode as PlaybackMode,
+      video: preferences.video,
+      audio: preferences.audio,
+      container: preferences.container ?? this.snapshot.instruction?.container,
+      reasons: [], assumed: [], chosenByViewer: true, withoutFacts: false,
+      // A mode picked mid-play keeps the file, so the quality stands; a cap
+      // it names makes it none of the steps.
+      ...(this.snapshot.instruction?.quality !== undefined && preferences.maxHeight === undefined
+        ? { quality: this.snapshot.instruction.quality } : {}),
+      ...(this.snapshot.instruction?.mediaId !== undefined ? { mediaId: this.snapshot.instruction.mediaId } : {}),
+    } });
   }
 
   private applyUpdate(update: PlaybackUpdate): void {
@@ -1913,11 +2355,18 @@ export class PlaybackCoordinator {
       const positioned = pending.reason === 'subtitle' || !current.options.canSeek
         ? pending.update
         : { ...pending.update, seekMs: this.snapshot.intent.positionMs };
-      const update = restatePreferencesClearedByMode(
-        positioned,
-        current,
-        this.snapshot.instruction?.container,
-      );
+      // A generation begun as direct asked for no container, and from server
+      // 0.58.0 a remux or transcode must name one, so a change into either
+      // names the device's own.
+      const changedMode = positioned.preferences?.mode;
+      const capabilities = this.capabilitiesSeen
+        ?? ((changedMode === 'remux' || changedMode === 'transcode') && !this.snapshot.instruction?.container
+          ? await this.options.capabilities() : undefined);
+      const requestedContainer = this.snapshot.instruction?.container
+        ?? ((changedMode === 'remux' || changedMode === 'transcode') && positioned.preferences?.container === undefined && capabilities
+          ? segmentContainer(capabilities, this.options.policyOverrides).container
+          : undefined);
+      const update = namedStreamsForPatch(restatePreferencesClearedByMode(positioned, current, requestedContainer), current);
       const requestedPositionMs = update.seekMs ?? this.snapshot.intent.positionMs;
       const requestedPositionRevision = this.positionRevision;
       const startedAt = machaHost().now();
@@ -1975,6 +2424,7 @@ export class PlaybackCoordinator {
         }
 
         this.activateSession(next, currentDesired, pending.reason === 'seek' ? 'relocate' : 'continue');
+        if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
         if (!this.disposed) this.patchSnapshot({ notice: undefined });
       } catch (error) {
         if (this.disposed) return;
@@ -1992,7 +2442,17 @@ export class PlaybackCoordinator {
           update,
           error,
         });
-        this.patchSnapshot({ notice: { code: 'update-failed', error: asError(error) } });
+        const refusal = refusalOf(error);
+        // A refused mode change leaves the node serving what it served, so the
+        // report goes back to describing that. From server 0.60.0 this is
+        // ordinary: leaving transcode gives up the slot, and a switch back can
+        // be refused 429 resource_limit once another viewer has it.
+        const restored = update.preferences?.mode !== undefined && !this.pendingMutation ? this.instructionBeforeModeChange : undefined;
+        if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
+        this.patchSnapshot({
+          notice: { code: 'update-failed', error: asError(error), ...(refusal ? { refusal } : {}) },
+          ...(restored ? { instruction: restored } : {}),
+        });
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;
@@ -2518,7 +2978,15 @@ export class PlaybackCoordinator {
   }
 
   private setSession(session: PlaybackSession): void {
-    this.patchSnapshot({ session, instruction: this.instructionWithServed(session) });
+    this.patchSnapshot({ session, instruction: this.instructionWithServed(session), ...this.playingFileFor(session) });
+    // A start that needed no facts (a direct play of an item's only file)
+    // fetches them now, off the critical path, for the modes to offer.
+    if (!this.factsSeen && this.options.facts && session.mediaId) {
+      void this.facts().then((facts) => {
+        if (this.disposed || this.snapshot.session?.sessionId !== session.sessionId) return;
+        this.patchSnapshot({ ...this.playingFileFor(session), ...this.versionsAfterStart(facts, session) });
+      });
+    }
     for (const retired of [...this.releaseAfterCut]) {
       if (retired === session.sessionId || retired === this.serverSession?.sessionId) continue;
       this.releaseAfterCut.delete(retired);
@@ -2574,6 +3042,13 @@ export class PlaybackCoordinator {
 
   private onPlayerEvent(next: PlaybackEvent): void {
     if (this.disposed) return;
+    // Nothing of core's is on the player until the first source is presented,
+    // so what it reports before then describes nothing: an idle expo-video
+    // player ticks position 0 every 250 ms with no source at all. Taken as a
+    // position, one such tick during the start became the resume point, and
+    // Continue Watching "sometimes" started at 0 (Tom, 2026-09-25; found by
+    // the Android TV client). `present()` pins the start position itself.
+    if (!this.snapshot.session) return;
     // Stamped before any branch, because both paths out of here patch the
     // snapshot and both figures are read long afterwards.
     this.lastPlayerEventAt = machaHost().now();
@@ -3234,6 +3709,7 @@ export class PlaybackCoordinator {
    * on a return value for, so a silent failure here is a leak with no trace.
    */
   private async stopOnDisposal(sessionId: string): Promise<void> {
+    if (this.stoppedForPageExit.has(sessionId)) return;
     await this.options.resolver.stop(sessionId, this.closeOptions).catch((error: unknown) => {
       this.log.warn('recovered-session-close-failed', { sessionId, error });
     });

@@ -46,10 +46,129 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-### Release candidate, 2026-09-24 — FROZEN, waiting on Tom's word and version
-`develop` at `d7aa96d`, `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. `f235a99` after it is README only. All three clients were told of the freeze and the candidate. Proposed version: **`0.19.0`**, because it is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced). Procedure: `npm version 0.19.0 --no-git-tag-version`, commit, merge to `main`, annotated bare-semver tag, push, `npm publish`, `git checkout develop`, build last. Then tell every client, which will each verify `main` against the registry copy.
+### Candidate: `0.20.0`, prepared 2026-09-27; not cut until Tom says so
+The candidate is now develop at `ae82922` (the version marked by file and cap; media lines at `29fa878`), dist `f7fd989fe6e8`, 1257 tests. The TV's runs on the set found three bugs, all fixed: a transcode resume looped for ever (`7bdc219`); a version switch across files named no audio stream (`7bdc219`); and a switch took a forced subtitle track for a full one (`7a79d49`). The TV's re-run passed the transcode resume twice. Checks at `e964514` were 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
+
+**Breaking:**
+- `PlaybackProgress.mediaId` is removed; it is now `itemId` (the title), with `fileMediaId` (the file) and `resume` beside it. Stored entries are read as before.
+- `AcquisitionApi.submitMagnet(magnet, options?)` returns a `TorrentAddResult`, not a string. `AcquisitionApi` gains `updateTorrent` and `torrentNodes`, and `PlaybackFactsApi` gains `factsReport`, so implementers must add them.
+- `TorrentJob`'s live fields and `node_id` are nullable. Unions gain members: `TorrentJobState` has `awaiting_node` and `verify_queued`; the error codes have `duplicate_torrent`, `torrent_fault` and `adopt_failed`; the catalogue hint results have `path_not_yet_visible`.
+- The chooser now honours `maxWidth` / `maxHeight` and the new `videoCodecMaxSize`, where before it ignored them. Automatic play ranks a file that needs no re-encode first, then the larger picture.
+
+**Added:**
+- Versions: `qualityClass`, `displayQualityClass`, `deviceQualityClass`, `qualityCeiling`, `playbackVersions`, `versionPreferences`, `playVersion`, `offeredModes`, and `QualityPreferenceStore` with `offerAll`.
+- On the snapshot: `snapshot.versions`, `.modes`, `.playingFile`, `instruction.quality` and `notice.refusal`.
+- `technicalSummary`, `fileSummaries`, `codecLabel` and `qualityLabel`.
+- `resumePreferences`, and `progressFor` taking the snapshot.
+- `preparePlaybackPatch`, `acquisitionError` and `torrentHeldBy`.
+- Cluster torrents (server 0.64.0).
+
+**Fixed:**
+- Playing on server 0.58.0+: container, streams and languages are named on create and PATCH, and a refused choice is answered once.
+- A resume could start at 0.
+- The page-exit close now uses the signed URL (server 0.60.0).
+- A refused switch back into transcode no longer leaves the report claiming it.
+- Facts for a file one node could not read are asked of the next node.
+- A stale cap no longer survives a version switch.
+
+**Release procedure:**
+- Core: `npm version 0.20.0 --no-git-tag-version`, commit `0.20.0` on develop, then an annotated tag `0.20.0` on that commit.
+- Merge `--no-ff` develop into main with the message `0.20.0`, push main, develop and the tag, return to develop, and build last. Tom publishes.
+- Each client, once it is on npm: merge develop into its main, set main to `^0.20.0` against the registry copy, commit, push, and return to develop with the `file:../macha-ts` link restored.
+
+### Published: `0.19.0`, 2026-09-24
+npm `latest` is `0.19.0`, `gitHead` `4e1746a`, which is the annotated tag `0.19.0`. `main` has the merge `1377dac`. `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. Tom published it; core cut, tagged, merged and pushed. It is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced), and the release notes are in `4e1746a`'s message.
+
+All three clients verified the candidate through the link before release (web 542 tests, Android TV 297, phone 290) and were told it is on npm. Each moves its `main` to `^0.19.0` against the registry copy on Tom's word:
+- the Android TV client plans its `0.7.0` on it;
+- the phone waits on the A85 returning to ADB;
+- the web client's own release question, node moves waiting on its handover P0, is with Tom.
+
+### Choosing among an item's files is the client's — Tom, 2026-09-24
+Built in `284e52e`, after `0.19.0`. The facts supplier returns every file, the coordinator picks the best by the server's old ranking, and the choice is sent as `media_id` and restated on every replacement.
+- Closed since: a viewer-chosen mode runs the chooser over the files (`580473f`), and no facts names the item's first file (`b94b468`).
+- The web client moves `App.tsx`'s facts supplier to the whole list.
+
+### Server 0.58.0: the server chooses nothing — live on fi-1 and gbni-1, 2026-09-25
+Deployed as "0.57.1" and renumbered 0.58.0 by Tom because the change breaks old clients. The contract is identical byte for byte (server `develop` `37440df`, the same code as `7c44643`), and "0.57.1" was never tagged. Health now reports 0.58.0 on both nodes: fi-1 from 23:03:13Z, writable from 23:04:30Z, and gbni-1 from 23:03:51Z, writable from 23:03:52Z.
+Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accepted` on every create, as Tom accepted.
+- Create sends `media_id` and never `item_id`. Remux and transcode always carry a container: the host's preferred segment container.
+- Core names the video stream or the audio stream wherever a file has several. The rule is the viewer's choice first. Next comes a language that exactly one stream has, which is left to the node. Otherwise core names the default-flagged stream, and failing that the first. The rule is `streamsToName`.
+- Each stream now carries its own `copy_into`, and it wins over the `operations` pair. An older node's pair is still read.
+- A `choice_required` still left open is answered once per kind, with the first choice the node offers, and logged as `stream-unchosen-defaulted`. `choice_required` and `choice_not_available` are never treated as an executor refusal, so they never step the mode down.
+- **Broke playback on 0.58.0, fixed after `0cbf584`.** The web client's titles began direct and then failed a PATCH into a transcode (the decode fallback on HEVC), which the node refused. Two causes:
+  - the PATCH named no container, because a direct generation has none;
+  - it named no audio stream on files with several.
+  A third cause was found in the node's `chosen_stream`: a language preference the file lacks is now refused outright, even under direct and for subtitles, where until 0.58.0 the node fell back to the default track. Core now resolves the viewer's languages into stream indexes from the facts, and from the session's own streams on a PATCH, and never sends a language the node would refuse. Where core has no facts, the resolver drops a refused language and asks again, on POST and PATCH alike. `update-failed` now carries `refusal` (`status`, `code`, `choice`, `choices`).
+- Tom, 2026-09-25: no core release yet.
+- Measured on the Android TV set .133, 2026-09-25 (TV 9a117d14, core 42cebd6, fi-1 on server 0.60.0):
+  - the slot is released and reacquired both ways;
+  - the stale-cap fix holds;
+  - a direct resume from Continue Watching kept its place (1404050);
+  - `instruction.quality` marks correctly;
+  - the transcode container is fMP4, as core intends: MPEG-TS only on a stated `preferSegmentContainer`, which is the Samsung web host's policy, not the TV's.
+  - Decoder size: the set reports 4096x2176, the largest over all its decoders, so class 2160 and 4K keeps direct play. A codec whose own decoder is smaller (VP8 stops at 1920x1088 per the vendor XML) is still claimed 2160. Per-codec limits were declined for now: the decode fallback catches the rare case.
+  Still to measure: a transcode resume and a `resource_limit` refusal.
+- Page-exit leak: a reload left the session holding fi-1's single transcode slot until the node's five-minute idle rule.
+  - 7bf1de1 sends the keepalive DELETE synchronously in pagehide, and it lands from a live page (204).
+  - On a real reload it doesn't land, though core held the session id (web client, 11:31:52Z, session 97b3d5be).
+  - The likely cause is the CORS preflight a cross-origin DELETE with Authorization needs.
+  - Proposed to the server: a capability-authorised close with no Authorization header, a CORS simple request, e.g. `POST /api/v1/playback/stream/{session}/cap/{cap}/close`. Core would use it on page exit only. Tom approved it, 2026-09-25: "As long as it's authorised by the signed URL, yes." The server's journal couldn't settle whether the DELETE arrived, since it doesn't log session DELETEs. Core sends it from the commit following this note: the coordinator passes each session's `source.url` as `PlaybackStopOptions.streamUrl`, and `MachaPlaybackResolver` POSTs to `signedCloseUrl(streamUrl)` beside the DELETE, on page exit only. Server 0.60.0 (7c1d210) is live on fi-1 from 12:42Z and gbni-1 from 12:43Z, and the server's smoke test got 204 for the close and 405 for a GET. Settled by the web client, 2026-09-25, and the leak was the web client's own. Its `usePlaybackRuntime` skipped `terminateForPageExit` on a `pagehide` with `persisted: true`, and Chrome caches a playing page on an ordinary navigation. With it closing on every pagehide (web 9a05438, core 42cebd6, server 0.60.0), navigating away from a 720p transcode freed fi-1's slot within 3 s. The signed close answers 204, and the DELETE after it gets 404.
+  **So the CORS-preflight explanation was never proven.** The page never called the close at all. Whether a signed-in keepalive DELETE survives an unload on its own remains untested. The signed close stays as the one that needs no preflight either way. The same release frees the transcode slot on a PATCH out of transcode.
+- Unreadable files: tmdb:episode:110090 (`macha:4e1230739de9...`) and tmdb:movie:122 (`macha:af0b9adfbfd3...`) answer `503 playback_unavailable`, "read media: extent unavailable", and their direct byte reads die partway, yet the facts say `operations.direct: true`. tmdb:movie:122 has a readable matroska, `macha:b3bcbf961043...`. Core will skip a file the facts mark unreadable, once the server names the field. More titles with lost extents, 2026-09-27:
+  - The Martian's `7b5743ad` (phone);
+  - The Cannonball Run `macha:11c474bb…`, 1920x1072 AV1, which answers 503 "read media: extent unavailable" on fi-1 and macnessa (phone, 15:28:53Z).
+
+  Both are logged with the server; its session had only had its context cleared. The per-file readability design still needs Tom to decide where the fact goes. The server is costing a cheap "all extents available" check for Tom first; the field's name, shape and version come before it ships.
+- Next: the clients test against the live nodes on core `develop`, and then a core release.
+- Phone, 2026-09-25: typechecks and passes 306 tests on `0bce895`. Its only reads of the removed fields fed the Version section, which no longer shows. It has not played on the live nodes, because the A85 has been off ADB since the 24th. The tagged phone `0.9.0` pins core `0.19.0` and cannot start playback on 0.58.0, so the next phone release needs a published core that includes `0bce895`.
+- TV, 2026-09-25: replayed core `0.19.0`'s create against fi-1. The node answers `400 item_id_not_accepted`, and its message points to `GET /api/v1/playback/media?item_id=`. So the released TV `0.7.0` cannot play on 0.58.0 either, and a TV `0.7.1` needs the same published core. TV `develop` is linked to `0bce895`. The hardware exercises wait for the .133 set, which is powered off.
+
+### Per-quality Play and the device ceiling: rulings settled — Tom, 2026-09-25
+Built in `src/playback/playbackVersions.ts` and the coordinator; the commit follows this note. Tom confirmed these rulings in core's session. They reached core relayed by the web client.
+- Qualities cap down only, from the best file's class to 720.
+- Where the best file is below 720p, its own class is offered anyway, e.g. 480p beside Play, and never a class above it. `qualityClass` needs classes below 720: 576, 480 and 360.
+- With no setting chosen, automatic play caps at the display's resolution class. The host states its display: on the web, screen size times devicePixelRatio; on the TV, the panel. The TV's value is the panel's physical mode (`Display.getMode`: 3840x2160 on .133, so 2160), not the 1920x1080 UI size that React Native reports. So the API takes a resolution the host has measured, and never reads a screen size itself. An explicit setting overrides it, and a reason code is given when the cap limits the choice.
+- The phone has Wi-Fi and mobile-data ceilings, the mobile one lower, with a reason shown and an override in settings.
+- An explicit pick is never capped.
+- API: `qualityClass`, `qualityCeiling`, `playbackVersions` (files, steps, automatic, limitedBy), `versionPreferences(step)` for a start, `playVersion(step)` on the coordinator and the runtime, `snapshot.versions`, and the `qualityCeiling` option on both.
+- Core's own choices, not rulings:
+  - the cellular default is 720 (`DEFAULT_CELLULAR_CEILING`);
+  - automatic play ranks a file that needs no re-encode above one that does, then the larger picture. So a remux of 2160p beats a direct 1080p, which changes the ranking for items with files of different sizes;
+  - a capped transcode is fitted to the source's shape.
+- The per-device setting is kept by `QualityPreferenceStore` at `macha.qualityPreference.v1`, core's key, one for every client. The TV had begun its own key, `macha.quality-preference.v1`, and was asked to move.
+- `instruction.quality` is the step playing. `limitedBy` is on `versions` only, by design.
+- The mobile-data default of 720 is put to Tom as an open question (via the phone).
+- Tom, 2026-09-25, in core's session: "limit to the device capabilities for direct on all clients - but, all clients should also have a setting to disable this." Built as follows:
+  - the chooser objects to a picture larger than the stated `maxWidth` / `maxHeight` (`video-size-exceeds-client`); it ignored them before;
+  - `playbackVersions` offers no step above `deviceQualityClass(capabilities)`, and automatic play stays within the device (`ceiling-device`) even with the setting on;
+  - `offeredModes(profile, capabilities, { offerAll })` says, per mode, whether this device can play the file that way, with the chooser's reasons;
+  - the setting is `QualityPreference.offerAll`, set with `QualityPreferenceStore.setOfferAll`, and reaches the coordinator and runtime through their `offerAll` option.
+  The TV states `maxWidth` / `maxHeight` from its decoders' largest supported size, a true capability. The phone states none and filtered by screen on its own, with its own `macha.offer-everything` key; it is asked to state a size and adopt this. The web states none, so nothing limits it.
+
+### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
+Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
+- **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
+- **Waiting on the server,** whose proposal A-G is with Tom via the web client:
+  - A: provider search and match by `ref`;
+  - D: parent ids on `/manual`;
+  - E: artwork options and choice;
+  - F: a parent filter;
+  - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
+  Core wraps each when the server names its version, behind the same `identifyUnmatched`.
+
+### Continue Watching resumes as if the viewer never left — Tom, 2026-09-27 (relayed by the TV client)
+"Continue watching likely needs to store both the item id AND the media ID. It should also store the mode (direct, remux, transcode), resolution, subtitle settings, and all other data needed to resume as if you'd never left." Built in the commit following this note:
+- `PlaybackProgress` holds `itemId` (formerly `mediaId`, removed so that every caller fails to compile) and `fileMediaId`, plus `resume` for the mode and whether the viewer chose it, the container, quality, cap, and audio and subtitle choices.
+- `progressFor(media, pos, dur, snapshot)` fills them in. `resumePreferences(entry)` restates the file and the viewer's choices; where the mode was core's, core chooses again for the device and node of now.
+- The automatic path keeps a named file.
+- Entries stored under `mediaId` are read as `itemId`.
+- Hosts must now pass the snapshot when they save.
+- The TV found its own progress never written since 0.58.0: it compared the session's `mediaId` (the file) with the item's id. The web and phone were asked to check theirs.
 
 ### Core writes no viewer text — Tom, 2026-09-24
+**Refined 2026-09-27, relayed by the phone client:** "Format, codec, bitrate etc details are non i18n and technical. They are core's responsibility, but should be supplied to clients in a structured object. The client should still 'format' them, in terms of layout." Built as `technicalSummary` / `fileSummaries` (`src/playback/technicalSummary.ts`). Each field comes raw and labelled, plus `parts` in the web's order, with the labels ported from web e31635a and its tests. Sentences, such as the quality-cap one, stay the clients'. Clients delete their copies down to layout.
+
 **Every word a viewer sees is the client's.** Core supplies data: ids, numbers, server titles, ancestry, and codes and kinds wherever something has to be said. The hard cut landed in four commits: `826e38a` (media), `f016815` (playback), `8db0a12` (connection, startup, status, playlists) and `e28d6ad` (API errors). Details:
 - An error's `message` is log text.
 - Every API error carries `detail`, the server's own sentence only, for a host that wants the server's words.
@@ -75,7 +194,7 @@ Tonight's composers are gone: `episodeLabel`, `episodeSubtitle`, `albumLabel`, `
 
 **ramaroja is offline for the foreseeable** (Tom, 2026-09-24). All three clients were told to reconfigure. The A85 still has it configured and will be fixed when next attached.
 
-**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and not yet live.** It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
+**Server 0.56.0, "codes are primary", is modelled in `a5b08f0` and LIVE since 2026-09-24 18:57Z, inside server `0.57.0` on gbni-1 and fi-1.** Shipped in core `0.19.0`. Not yet checked against a live node; the web and Android TV clients were asked to. The search `kind` filter is still not shipped, so core still filters locally. (Superseded text follows.) It is committed at macha `60ce47a`. es-1 (the build node) and fi-1 have been unreachable since about 14:03Z. The server names the version per node when it lands; then a client verifies core against it.
 - `/manage/unmatched` carries no `error_code`, by design: it lists only no-match hints, whose error is cleared.
 - The same review fixed core reading media-info's 202 "pending" as an invalid profile.
 
@@ -479,8 +598,7 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 
 ## Waiting on Tom
 
-### Three small questions from 2026-09-24
-- **Specials.** `episodeLabel` names a season-0 episode "Season 0 Episode 1". Should it be something else, such as the season's own title, "Specials"?
+### Three small questions from 2026-09-24 (a fourth, on Specials, fell away with `episodeLabel`: clients word episodes now)
 - **"Plan A" is searched as "Plan".** This is a consequence of dropping "the", "an" and "a" anywhere in a query. It is Tom's rule as relayed, and this is its edge.
 - **Two links on a TV card.** The Android TV client says a card is a single focus target, so it cannot hold separate series and season links as the ruling describes. It reaches both by Back instead: TV Shows → series → season sits beneath every episode. If Tom wants separate focusable targets there, that is a different design and the TV client wants his call.
 - **Refresh stored snapshots on read?** `PlaylistStore` and `PlaybackQueueStore` (core's) keep each item as stored, so anything stored before `839e190` shows no artist or album on the phone until re-added. Refreshing on read would put a catalogue read behind a store read. The phone client owes no migration and is writing none. Macha has not shipped.
@@ -508,7 +626,10 @@ In [COMPLETED.md](COMPLETED.md) under `0.18.0`. Kept as a heading because item 3
 
 **Worth knowing before deciding: core is already the natural place.** The chooser lives here precisely so every client decides the same way from the same facts, and a speed figure is another fact of exactly that kind. The alternative — the server explaining it to three clients separately — is the shape that produced two of the divergences already recorded in this file.
 
-### ~~The law numbers mean different things in core and on the server~~ — RULED 2026-09-20, do not spend more time on it
+### ~~The law numbers mean different things in core and on the server~~ — RESOLVED 2026-09-24: one numbering everywhere
+
+**Resolved.** Tom ruled that every Macha project standardises on this repo's `docs/principles-and-laws.md` numbering and order: 1 control, 2 viewer, 3 loader, 4 unchanged. The server renumbered every citation in `c85ba51` (macha develop, 136 citations in 33 files). Core's note that the numberings disagree is removed, and the clients were told to correct any verbatim copy. The history below is kept for the reasoning.
+
 
 Core raised that `docs/principles-and-laws.md` numbers the laws control/viewer/loader 1-2-3 while the server's `ARCHITECTURE.md` numbers them viewer/loader/control, and that both trees cite by number.
 
@@ -601,7 +722,7 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Eleven entries that stood here marked *BUILT on `develop`, unreleased* shipped in `0.18.0` and moved to [COMPLETED.md](COMPLETED.md)** — so an entry below that says "the entry above" or "below" about one of these is pointing at that file now: the recovery supervision (`superviseRecovery`), the transform restatement (`withRestatedTransforms`, `recoverWithPreferences`, `interchangeableGeneration`), the playlist `404` reaching the host (`HlsManifestUnavailableError`), the runway re-read (`spentSince`, `emptyBufferIsEvidence`, `readAheadBytes`), advisory status routing, `close()` awaiting its recoveries, the session manager's `generation`, the health loop surviving a storage write, the `/users` envelope comment, the `signIn` obligation, and `find`'s `onAbsence`.
 
-**Ordered against the laws on 2026-09-20, not by age or by who found them.** *Numbering is core's, per `docs/principles-and-laws.md`; the server numbers the same three differently — see the entry in* Waiting on Tom. Law 2 first — anything that makes the viewer wait or stall. Then Law 1 — control work reaching into the viewer's data path, which the principles call a correctness failure rather than a benchmark. Then failures the contract says must be *visible and actionable* and are currently neither. Then the two remaining places core still holds a private copy of server configuration, which is the class `0.14.0` set out to end. The rest is real, verified, and cheaper. Everything here is core's to do; the items that need a decision first have moved up to *Waiting on Tom*.
+**Ordered against the laws on 2026-09-20, not by age or by who found them.** *Numbering is core's, per `docs/principles-and-laws.md`, now shared by every Macha project (2026-09-24).* Law 2 first — anything that makes the viewer wait or stall. Then Law 1 — control work reaching into the viewer's data path, which the principles call a correctness failure rather than a benchmark. Then failures the contract says must be *visible and actionable* and are currently neither. Then the two remaining places core still holds a private copy of server configuration, which is the class `0.14.0` set out to end. The rest is real, verified, and cheaper. Everything here is core's to do; the items that need a decision first have moved up to *Waiting on Tom*.
 
 ### A regeneration waits for ever on a close nobody bounded — bound shipped in `0.18.0`, **cause NOT confirmed**
 
@@ -613,7 +734,7 @@ The viewer got `MEDIA_ELEMENT_ERROR: Format error` — **which reads as a broken
 
 **Not the retry ladder, which was the obvious suspect and is innocent.** `FAILED_SESSION_CLOSE_ATTEMPTS` and its 1/2/4/8/16 s backoff run in the background; `firstAttempt` resolves on the first settle either way. The ladder could have cost 31 s. This cost minutes, which is the tell.
 
-**Why nothing threw, and this is the general lesson.** **A hang is not an error.** Every bounded thing on the path was waiting on the one unbounded thing above it, so the attempt deadline never fired — it wraps a request that had not been issued yet. No `generation-regenerate-failed`, no `client_endpoint_deadline`, no failover. **Law 4's discipline names this exactly**: *"every retried work item gets backoff, a failure budget, a parked state and an operator action."* The close ladder had backoff and a budget; the thing waiting on it had neither.
+**Why nothing threw, and this is the general lesson.** **A hang is not an error.** Every bounded thing on the path was waiting on the one unbounded thing above it, so the attempt deadline never fired — it wraps a request that had not been issued yet. No `generation-regenerate-failed`, no `client_endpoint_deadline`, no failover. **The retried-work discipline under Law 4 names this exactly**: *"every retried work item gets backoff, a failure budget, a parked state and an operator action."* The close ladder had backoff and a budget; the thing waiting on it had neither.
 
 **The fix.** `releaseWithin` races the close against the same budget the create uses and proceeds either way, **never rejecting** — the caller's next act is bounded and can fail honestly, so rejecting would turn a slow close into a failure the node never reported. If the slot really is still held, the node refuses, that throws, failover runs: bounded and visible. The ladder continues in the background and `failed-session-close-timeout` (warn) says so, because the node is then holding a slot nothing will release before `session_idle`.
 
@@ -893,7 +1014,7 @@ Server `0.46.2` reports `startup_timeout_ms` and `segment_timeout_ms` per node, 
 
 **Not a live bug.** Both nodes run the 60,000 default, so nothing is broken on this cluster today. It is the same class as the 12,000-against-15,000 attempt budget: a core constant whose safety depends on a server value core cannot read, which held until someone reconfigured a node.
 
-**Why it is not already done.** It is reported on `GET /api/v1/playback/status`, a per-endpoint route core does not poll. Reading it there means a second per-endpoint request every cycle alongside the health probe, which is the Law 1 cost we deliberately declined when choosing where the other two budgets should live — and it cannot ride on the existing probe, because `probeEndpoint` tolerates a session without `media_viewer` on purpose so a gated node ends up ungraded rather than condemned (`EndpointHealthMonitor.ts:141`).
+**Why it is not already done.** It is reported on `GET /api/v1/playback/status`, a per-endpoint route core does not poll. Reading it there means a second per-endpoint request every cycle alongside the health probe, which is the cost the principle *Work is bounded and event-driven* declines (it rules out polling), and which we declined when choosing where the other two budgets should live. *This cited Law 1 until 2026-09-24; Law 1 is control not waiting behind bulk data, which this is not.* — and it cannot ride on the existing probe, because `probeEndpoint` tolerates a session without `media_viewer` on purpose so a gated node ends up ungraded rather than condemned (`EndpointHealthMonitor.ts:141`).
 
 **The ask, when the channel reopens:** move or copy `pipeline_idle_ms` into the same per-node `playback` object as the other two. It is each node's statement about itself, it moves under `reconfigure()` exactly as they do, and core already reads that payload every 10 s for endpoint discovery and capacity. Zero new requests, and the standby window stops being a guess. If the server prefers to leave it where it is, the fallback is for core to bound `ALTERNATE_RECOVERY_WINDOW_MS` by the configured floor of 10,000 rather than the default — correct but wasteful, since it would shorten every standby on every node to protect against a configuration almost nobody runs.
 
@@ -1293,6 +1414,9 @@ Two conventions have now produced the same incident on three clients — the pho
 ---
 
 ## P3
+
+### Ebooks are the server's, not core's — Tom, 2026-09-25
+Tom corrected an earlier note here: **ebooks and deploying are server tasks, and core does neither, now or later.** The proposal is `../macha/docs/macha-ebooks-proposal.md`, in the server's tree. Core acts only when a shipped server contract gives it something to wrap, and the server says so.
 
 ### Music library state moves into core — approved, not started
 **Waiting on:** core. **Tom, 2026-09-13:** yes — *"capabilities differ, but the core should handle this"*, which says the per-client differences are not an argument against the move, they are the thing core absorbs.

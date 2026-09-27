@@ -81,6 +81,10 @@ function failureReason(error: unknown): string | undefined {
 }
 
 export function retryableEndpointFailure(error: unknown): boolean {
+  // Cluster-wide, and said so (server 0.64.0: error.scope "cluster",
+  // alternative_may_succeed false): metadata is unwritable, so every node
+  // would refuse the same, and walking to the next only multiplies it.
+  if (CLUSTER_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   const reason = failureReason(error);
   // A stated reason outranks the status. A node reporting a 5xx for a file it
   // cannot decode is telling the truth about the file, and asking its
@@ -109,6 +113,9 @@ export function retryableEndpointFailure(error: unknown): boolean {
   // cluster-wide terminal result. Mutation routers still execute only once.
   return status === 429 || (status !== undefined && status >= 500 && status <= 599);
 }
+
+/** Refusals every node gives alike; see `retryableEndpointFailure`. */
+const CLUSTER_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['metadata_unavailable']);
 
 /**
  * Server error codes that describe one title's outcome on a node, not the

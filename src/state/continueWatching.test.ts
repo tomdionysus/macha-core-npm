@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ContinueWatchingStore, isFinished, progressFor } from './continueWatching.js';
+import { ContinueWatchingStore, isFinished, progressFor, resumePreferences } from './continueWatching.js';
 import type { MediaSummary, PlaybackProgress } from '../types.js';
 
 class MemoryStorage implements Storage {
@@ -14,7 +14,7 @@ class MemoryStorage implements Storage {
 
 function progress(mediaId: string, positionMs: number, durationMs = 100_000, updatedAt = positionMs): PlaybackProgress {
   return {
-    mediaId,
+    itemId: mediaId,
     positionMs,
     durationMs,
     updatedAt,
@@ -29,7 +29,7 @@ describe('ContinueWatchingStore', () => {
     store.update(progress('two', 32_000, 100_000, 2));
     store.update(progress('three', 33_000, 100_000, 3));
     store.update(progress('four', 34_000, 100_000, 4));
-    expect(store.list().map((entry) => entry.mediaId)).toEqual(['four', 'three', 'two']);
+    expect(store.list().map((entry) => entry.itemId)).toEqual(['four', 'three', 'two']);
   });
 
   it('drops one unusable entry rather than every entry behind it', () => {
@@ -45,7 +45,7 @@ describe('ContinueWatchingStore', () => {
     ]));
     const store = new ContinueWatchingStore('client', storage);
 
-    expect(store.list().map((entry) => entry.mediaId)).toEqual(['good']);
+    expect(store.list().map((entry) => entry.itemId)).toEqual(['good']);
   });
 
   it('does not clutter continue watching with accidental starts', () => {
@@ -58,8 +58,8 @@ describe('ContinueWatchingStore', () => {
     const store = new ContinueWatchingStore('client', new MemoryStorage());
     store.update(progress('one', 50_000, 100_000, 1));
     store.update(progress('two', 50_000, 100_000, 2));
-    expect(store.clear('two').map((entry) => entry.mediaId)).toEqual(['one']);
-    expect(store.list().map((entry) => entry.mediaId)).toEqual(['one']);
+    expect(store.clear('two').map((entry) => entry.itemId)).toEqual(['one']);
+    expect(store.list().map((entry) => entry.itemId)).toEqual(['one']);
   });
 
   it('removes media once it is effectively finished', () => {
@@ -177,7 +177,7 @@ describe('ContinueWatchingStore', () => {
       const media: MediaSummary = { id: 'm1', kind: 'movie', title: 'Clerks', durationMs: 100_000, mediaIds: ['m1'] };
       const record = progressFor(media, 40_000, 100_000);
 
-      expect(record).toMatchObject({ mediaId: 'm1', positionMs: 40_000, durationMs: 100_000, media });
+      expect(record).toMatchObject({ itemId: 'm1', positionMs: 40_000, durationMs: 100_000, media });
       expect(record.updatedAt).toBeGreaterThan(0);
     });
   });
@@ -202,7 +202,7 @@ describe('safety for a reactive caller', () => {
     store.update(progress('b', 40_000));
     const after = store.getSnapshot();
     expect(after).not.toBe(before);
-    expect(after.map((entry) => entry.mediaId)).toEqual(['b', 'a']);
+    expect(after.map((entry) => entry.itemId)).toEqual(['b', 'a']);
   });
 
   it('notifies on update, clear and clearAll', () => {
@@ -224,5 +224,96 @@ describe('safety for a reactive caller', () => {
     expect(store.getSnapshot()).toHaveLength(1);
     store.clearAll();
     expect(store.getSnapshot()).toHaveLength(0);
+  });
+});
+
+/**
+ * Tom, 2026-09-27: store "both the item id AND the media ID", and "the mode
+ * (direct, remux, transcode), resolution, subtitle settings, and all other
+ * data needed to resume as if you'd never left".
+ */
+describe('resuming as if the viewer never left', () => {
+  const media: MediaSummary = { id: 'tmdb:movie:286217', kind: 'movie', title: 'The Martian', durationMs: 8_640_000, mediaIds: ['macha:uhd', 'macha:fhd'] };
+  const playing = (chosenByViewer: boolean) => ({
+    session: {
+      mediaId: 'macha:fhd', mode: 'transcode',
+      preferences: { mode: 'transcode', maxHeight: 720, maxBitrate: null, audioStream: 2, subtitleStream: 4, audioLanguage: '', subtitleLanguage: '' },
+    },
+    instruction: { mode: 'transcode', container: 'fmp4', quality: 720, chosenByViewer, reasons: [], assumed: [], withoutFacts: false, mediaId: 'macha:fhd' },
+  }) as never;
+
+  it('keeps the title and the file apart, and how it was playing', () => {
+    const progress = progressFor(media, 600_000, 8_640_000, playing(true));
+    expect(progress).toMatchObject({
+      itemId: 'tmdb:movie:286217', fileMediaId: 'macha:fhd',
+      resume: { chosenByViewer: true, mode: 'transcode', container: 'fmp4', quality: 720, maxHeight: 720, audioStream: 2, subtitleStream: 4 },
+    });
+  });
+
+  it("restates the viewer's mode, and leaves core's own choice to be made again, on the same file", () => {
+    expect(resumePreferences(progressFor(media, 600_000, 8_640_000, playing(true)))).toEqual({
+      mediaId: 'macha:fhd', mode: 'transcode', container: 'fmp4', maxHeight: 720, audioStream: 2, subtitleStream: 4,
+    });
+    const automatic = resumePreferences(progressFor(media, 600_000, 8_640_000, playing(false)));
+    expect(automatic).toEqual({ mediaId: 'macha:fhd', maxHeight: 720, audioStream: 2, subtitleStream: 4 });
+    expect(automatic).not.toHaveProperty('mode');
+  });
+
+  it('keeps the streams the node selected, where automatic play named none', () => {
+    const progress = progressFor(media, 600_000, 8_640_000, {
+      session: {
+        mediaId: 'macha:fhd', mode: 'remux', output: { container: 'fmp4' },
+        preferences: { mode: 'remux', maxHeight: null, maxBitrate: null, audioStream: null, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+        selected: { videoStream: 0, audioStream: 3, subtitleStream: -1 },
+      },
+      instruction: { mode: 'remux', chosenByViewer: false, reasons: [], assumed: [], withoutFacts: false },
+    } as never);
+    expect(progress.resume).toMatchObject({ audioStream: 3, subtitleStream: null, container: 'fmp4' });
+    expect(resumePreferences(progress)).toEqual({ mediaId: 'macha:fhd', audioStream: 3 });
+  });
+
+  it('saves from a partial snapshot without throwing', () => {
+    const progress = progressFor(media, 600_000, 8_640_000, { session: { mediaId: 'macha:fhd', mode: 'direct' } } as never);
+    expect(progress).toMatchObject({ itemId: 'tmdb:movie:286217', fileMediaId: 'macha:fhd', resume: { chosenByViewer: false, mode: 'direct' } });
+  });
+
+  it('reads an entry stored under the old name as the title, and resumes it as a fresh start', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('macha.continueWatching.v1.client', JSON.stringify([
+      { mediaId: 'tmdb:movie:1', positionMs: 60_000, durationMs: 100_000, updatedAt: 1 },
+    ]));
+    const store = new ContinueWatchingStore('client', storage);
+    expect(store.positionFor('tmdb:movie:1')).toBe(60_000);
+    const entry = store.entryFor('tmdb:movie:1')!;
+    expect(entry.itemId).toBe('tmdb:movie:1');
+    expect(resumePreferences(entry)).toEqual({});
+  });
+});
+
+describe("a viewer's mode the node carried differently", () => {
+  it('resumes as the mode the viewer picked, not the one performed', async () => {
+    // The phone on the A85, 2026-09-27: Remux on 2010 is carried as a
+    // transcode with the picture copied, since the device cannot decode AC-3.
+    // Resuming as `transcode` would re-encode the picture.
+    const { PlaybackCoordinator } = await import('../playback/PlaybackCoordinator.js');
+    const { FakePlayer } = await import('../testing/FakePlayer.js');
+    const served = {
+      sessionId: 's1', mediaId: 'macha:2010', mode: 'transcode', mimeType: 'application/vnd.apple.mpegurl', durationMs: 600_000, seekMs: 0,
+      preferences: { mode: 'remux', maxHeight: null, maxBitrate: null, audioStream: 2, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' },
+      sourceInfo: { path: '/m', format: 'matroska', size: 1, bitrate: 1, streams: [] }, output: { container: 'fmp4' },
+      selected: { videoStream: 0, audioStream: 2, subtitleStream: -1 }, transform: { video: 'copy', audio: 'transcode' },
+      options: { modes: ['direct', 'remux', 'transcode'], qualityHeights: [], mediaIds: [], audioStreams: [], subtitleStreams: [], canSeek: true, canChangeQuality: true, canSwitchMedia: false },
+      source: { mediaId: 'macha:2010', url: '/g.m3u8', mimeType: 'application/vnd.apple.mpegurl', isManifest: true, mode: 'transcode', durationMs: 600_000 },
+    };
+    const coordinator = new PlaybackCoordinator({
+      media: { id: 'tmdb:movie:2010', kind: 'movie', title: '2010', mediaIds: ['macha:2010'] }, player: new FakePlayer(),
+      resolver: { available: true, resolve: async () => served, update: async () => served, stop: async () => undefined } as never,
+      capabilities: async () => ({ platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [] }),
+      initialPositionMs: 0, initialPreferences: { mode: 'remux' },
+    });
+    await coordinator.start();
+    const progress = progressFor({ id: 'tmdb:movie:2010', kind: 'movie', title: '2010', mediaIds: ['macha:2010'] }, 300_000, 600_000, coordinator.getSnapshot());
+    expect(progress.resume).toMatchObject({ chosenByViewer: true, mode: 'remux' });
+    expect(resumePreferences(progress)).toMatchObject({ mode: 'remux', mediaId: 'macha:2010', audioStream: 2 });
   });
 });

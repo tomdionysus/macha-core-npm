@@ -94,3 +94,38 @@ describe('ClusterPlaybackFactsApi', () => {
     expect(result.operations.transcodeVideo).toBe(false);
   });
 });
+
+describe('an item with a file one node could not read', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const second = { ...facts.media[0]!, media_id: 'macha:def' };
+  const partial = { item_id: 'movie:1', media: facts.media, unavailable: [{ media_id: 'macha:def', reason: 'probe_timeout', message: 'probe timed out' }] };
+
+  function nodes(answer: (url: string) => Response) {
+    const fetchMock = vi.fn(async (url: string) => answer(url));
+    vi.stubGlobal('fetch', fetchMock);
+    return { fetchMock, registry: new EndpointRegistry(bootstrapEndpoints(['http://fi-1', 'http://gbni-1'])) };
+  }
+
+  it('asks the next node for the missing file, and reports the item whole', async () => {
+    // The Android TV client, The Martian, 2026-09-27: one node answered with
+    // one of two files, and the host drew versions from that one alone.
+    const { registry } = nodes((url) => url.startsWith('http://fi-1')
+      ? json(partial)
+      : json({ media: [second] }));
+    const report = await new ClusterPlaybackFactsApi(registry).factsReport({ itemId: 'movie:1' });
+    expect(report.files.map((file) => file.mediaId)).toEqual(['macha:abc', 'macha:def']);
+    expect(report.unavailable).toEqual([]);
+  });
+
+  it('says which file no node could read, rather than answering short in silence', async () => {
+    const { registry } = nodes((url) => url.startsWith('http://fi-1')
+      ? json(partial)
+      : json({ error: { code: 'facts_unavailable', message: 'no', reason: 'read_failed' } }, 422));
+    const api = new ClusterPlaybackFactsApi(registry);
+    const report = await api.factsReport({ itemId: 'movie:1' });
+    expect(report.files.map((file) => file.mediaId)).toEqual(['macha:abc']);
+    expect(report.unavailable).toEqual([{ mediaId: 'macha:def', reason: 'probe_timeout', message: 'probe timed out' }]);
+    // `facts` keeps its shape: the files that answered.
+    expect((await api.facts({ itemId: 'movie:1' })).map((file) => file.mediaId)).toEqual(['macha:abc']);
+  });
+});

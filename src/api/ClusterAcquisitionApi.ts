@@ -1,4 +1,4 @@
-import type { AcquisitionApi, AcquisitionSnapshot, IngestJob, TorrentJob } from './AcquisitionApi.js';
+import type { AcquisitionApi, AcquisitionSnapshot, IngestJob, TorrentAddOptions, TorrentAddResult, TorrentJob, TorrentJobUpdate, TorrentNodes } from './AcquisitionApi.js';
 import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { MachaAcquisitionApi } from './MachaAcquisitionApi.js';
@@ -10,7 +10,7 @@ export class ClusterAcquisitionApi implements AcquisitionApi {
 
   snapshot(): Promise<AcquisitionSnapshot> { return this.read((api) => api.snapshot()); }
   submitPath(path: string): Promise<string> { return this.write((api) => api.submitPath(path)); }
-  submitMagnet(magnet: string): Promise<string> { return this.write((api) => api.submitMagnet(magnet)); }
+  submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult> { return this.write((api) => api.submitMagnet(magnet, options)); }
   pauseIngest(id: string): Promise<IngestJob> { return this.write((api) => api.pauseIngest(id)); }
   resumeIngest(id: string): Promise<IngestJob> { return this.write((api) => api.resumeIngest(id)); }
   cancelIngest(id: string): Promise<IngestJob> { return this.write((api) => api.cancelIngest(id)); }
@@ -20,6 +20,8 @@ export class ClusterAcquisitionApi implements AcquisitionApi {
   retryTorrent(id: string): Promise<TorrentJob> { return this.write((api) => api.retryTorrent(id)); }
   cancelTorrent(id: string): Promise<TorrentJob> { return this.write((api) => api.cancelTorrent(id)); }
   clearTorrent(id: string): Promise<void> { return this.write((api) => api.clearTorrent(id)); }
+  updateTorrent(id: string, update: TorrentJobUpdate): Promise<TorrentJob> { return this.write((api) => api.updateTorrent(id, update)); }
+  torrentNodes(): Promise<TorrentNodes> { return this.read((api) => api.torrentNodes()); }
 
   private async read<T>(operation: (api: MachaAcquisitionApi) => Promise<T>): Promise<T> {
     return this.router.request((endpoint) => operation(this.api(endpoint)));

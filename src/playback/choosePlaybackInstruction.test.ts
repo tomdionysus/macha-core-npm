@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalContainers, choosePlaybackInstruction, degradeInstruction } from './choosePlaybackInstruction.js';
+import { canonicalContainers, chooseAmongFiles, choosePlaybackInstruction, degradeInstruction, streamsToName } from './choosePlaybackInstruction.js';
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 
 // The Samsung Tizen 3 set, as the TV actually advertises it.
@@ -187,6 +187,11 @@ describe('degradeInstruction', () => {
     expect(next?.reasons).toContain('executor-refused-copy');
   });
 
+  it("drops 'source-plays-as-is', which stops being true once anything is converted", () => {
+    const direct = { ...remuxCopyBoth, mode: 'direct' as const, reasons: ['source-plays-as-is' as const] };
+    expect(degradeInstruction(direct)?.reasons).toEqual(['executor-refused-copy']);
+  });
+
   it('gives up the video copy only when the audio copy is already gone', () => {
     const next = degradeInstruction({ ...remuxCopyBoth, audio: 'transcode' });
     expect(next).toMatchObject({ mode: 'transcode', video: 'transcode', audio: 'transcode' });
@@ -233,6 +238,25 @@ describe('executor operations as an input', () => {
     );
     expect(decision).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
+  });
+
+  it("takes a stream's own copy answer over the pair, from server 0.58.0", () => {
+    // The pair spoke for the first streams only; the stream that plays says
+    // for itself, in either direction.
+    const refusing = { ...eac3, copyInto: { fmp4: false, mpegts: true } };
+    const refused = choosePlaybackInstruction(
+      profile('matroska', [h264, refusing]), samsung,
+      { operations: { ...canDoEverything, copyIntoMpegts: noMpegtsCopy } },
+    );
+    expect(refused).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode' });
+    expect(refused.reasons).toContain('executor-cannot-copy-audio');
+
+    const accepting = { ...eac3, copyInto: { fmp4: true, mpegts: false } };
+    const accepted = choosePlaybackInstruction(
+      profile('matroska', [h264, accepting]), samsung,
+      { operations: { ...canDoEverything, copyIntoFmp4: { video: true, audio: false }, copyIntoMpegts: noMpegtsCopy } },
+    );
+    expect(accepted.reasons).not.toContain('executor-cannot-copy-audio');
   });
 
   it('does not instruct direct when the node says it cannot', () => {
@@ -495,5 +519,45 @@ describe('preferSegmentContainer', () => {
     });
     expect(decision).toMatchObject({ mode: 'transcode', video: 'copy', audio: 'transcode', container: 'mpegts' });
     expect(decision.reasons).toContain('executor-cannot-copy-audio');
+  });
+});
+
+describe('chooseAmongFiles', () => {
+  const caps = { platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [] } as PlaybackCapabilities;
+  const file = (mediaId: string | undefined, codec: string) => ({
+    ...(mediaId ? { mediaId } : {}),
+    profile: { mediaId: mediaId ?? 'x', format: 'mov,mp4', container: 'mp4', durationMs: 1, bitrate: 1, streams: [
+      { index: 0, type: 'video' as const, codec, profile: '', language: '', default: true, forced: false },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  it('plays the best file, ties to stored order', () => {
+    expect(chooseAmongFiles([file('a', 'hevc'), file('b', 'h264'), file('c', 'h264')], caps)).toMatchObject({ mediaId: 'b', index: 1, instruction: { mode: 'direct' } });
+  });
+
+  it('names an only file from the item when the facts carry no id, and nothing it cannot know', () => {
+    expect(chooseAmongFiles([file(undefined, 'h264')], caps, {}, ['only'])?.mediaId).toBe('only');
+    expect(chooseAmongFiles([file(undefined, 'h264')], caps, {}, ['a', 'b'])?.mediaId).toBeUndefined();
+  });
+
+  it('is undefined for no files', () => {
+    expect(chooseAmongFiles([], caps)).toBeUndefined();
+  });
+});
+
+describe('subtitles by language, full or forced', () => {
+  const sub = (index: number, forced: boolean, isDefault = false) => ({ index, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: isDefault, forced });
+  const profile = { mediaId: 'm', format: 'matroska', container: 'matroska', durationMs: 1, bitrate: 1, streams: [sub(9, true, true), sub(10, false)] };
+
+  it('takes the full track for a language unless forced is asked for', () => {
+    // The Android TV client, The Martian's 4K file: forced English first and default, full English after.
+    expect(streamsToName(profile, 'transcode', { subtitleLanguage: 'eng' }).subtitleStream).toBe(10);
+    expect(streamsToName(profile, 'transcode', { subtitleLanguage: 'eng', subtitleForced: true }).subtitleStream).toBe(9);
+  });
+
+  it('falls back to what the language has when the kind asked for is missing', () => {
+    const onlyForced = { ...profile, streams: [sub(9, true)] };
+    expect(streamsToName(onlyForced, 'transcode', { subtitleLanguage: 'eng' }).subtitleStream).toBe(9);
   });
 });

@@ -1,5 +1,21 @@
 export type IngestJobState = 'queued' | 'scanning' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
-export type TorrentJobState = 'queued' | 'metadata' | 'downloading' | 'verifying' | 'downloaded' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
+/**
+ * `verify_queued` (server 0.61.0) is waiting to check the pieces already on
+ * disk while another torrent is checked, which libtorrent does one at a time;
+ * not terminal, and it takes pause and cancel as `queued` does. Before 0.61.0
+ * it read as `verifying` with no progress, which looked like a stall.
+ * `verifying` is a check in progress on this job, with `eta_seconds` from
+ * 0.61.0. `awaiting_node` (0.64.0) is a cluster request no node has claimed
+ * yet, and coincides with phase `awaiting_node`. A claimed job whose owner
+ * has no live view reports its phase's name here (`downloading`,
+ * `importing`, ...).
+ *
+ * `failed` is not final from server 0.62.0 while the job's linked ingest can
+ * still be resumed: resuming that ingest by any route brings the torrent job
+ * back to `importing`, then `cataloguing` and `completed`. Before, only the
+ * torrent's own retry did.
+ */
+export type TorrentJobState = 'awaiting_node' | 'queued' | 'metadata' | 'downloading' | 'verify_queued' | 'verifying' | 'downloaded' | 'importing' | 'cataloguing' | 'paused' | 'blocked' | 'completed' | 'cancelled' | 'failed';
 
 export interface StagingStatus {
   path: string;
@@ -42,7 +58,38 @@ export type IngestJobErrorCode =
  */
 export type TorrentJobErrorCode =
   | 'restore_failed' | 'ingest_missing' | 'ingest_cancelled' | 'torrent_error' | 'staging_full'
-  | 'ingest_submit_failed' | 'ingest_failed' | 'torrent_failed' | IngestJobErrorCode;
+  | 'ingest_submit_failed' | 'ingest_failed' | 'torrent_failed'
+  // Server 0.63.0, both on a `failed` job and neither retryable; clear it and
+  // add the torrent again. `duplicate_torrent`: two jobs held one torrent
+  // before 0.63.0, and the newer lost it at restart. `torrent_fault`: the
+  // download engine faulted on this job alone.
+  | 'duplicate_torrent' | 'torrent_fault'
+  // Server 0.64.0: the node that claimed the job could not start it.
+  | 'adopt_failed'
+  | IngestJobErrorCode;
+
+/**
+ * Where a torrent job stands in the cluster, from server 0.64.0: the level to
+ * group or filter on. `state` is the detail within it, `desired` the intent.
+ */
+export type TorrentJobPhase = 'awaiting_node' | 'downloading' | 'importing' | 'completed' | 'failed' | 'cancelled';
+
+/** What the operator asked for, which `phase` and `state` follow (0.64.0). */
+export type TorrentJobDesired = 'active' | 'paused' | 'cancelled';
+
+/** Why a job's `desired` cannot be applied yet (0.64.0). */
+export type TorrentDesiredBlockedReason = 'owner_unreachable' | 'pinned_node_unavailable' | 'no_capable_node';
+
+/**
+ * Which node a list was read from, and how fresh (0.64.0), so a node missing
+ * or stale is visible instead of silently absent.
+ */
+export interface AcquisitionSource {
+  node_id: string;
+  local: boolean;
+  reachable: boolean;
+  as_of_unix_ms: number | null;
+}
 
 export interface IngestJob {
   id: string;
@@ -84,18 +131,48 @@ export interface TorrentCatalogueSummary {
   state: TorrentCatalogueState;
 }
 
+/**
+ * A torrent job. From server 0.64.0 torrents belong to the cluster: a job is
+ * requested of the cluster, claimed by a torrent-capable node (or the one it
+ * is pinned to), and served by every node from memory.
+ *
+ * **Actions record intent.** Pause, resume, retry and cancel answer with the
+ * job carrying the new `desired`, while `state` still shows what was; the
+ * owner applies it within one `refreshIntervalMs`, and `desired_applied` turns
+ * true. A host shows the change as pending until then, and as stale once
+ * twice `refreshIntervalMs` has passed with it still false.
+ */
 export interface TorrentJob {
   id: string;
   name: string;
   info_hash: string | null;
+  /** Absent on a node older than 0.64.0. */
+  phase?: TorrentJobPhase;
   state: TorrentJobState;
-  bytes_total: number;
-  bytes_completed: number;
-  download_rate: number;
-  upload_rate: number;
-  uploaded_total: number;
-  peers: number;
-  seeds: number;
+  /** Absent on a node older than 0.64.0. */
+  desired?: TorrentJobDesired;
+  desired_changed_unix_ms?: number;
+  /** True once the owner has acted on the current `desired`. */
+  desired_applied?: boolean;
+  desired_blocked_reason?: TorrentDesiredBlockedReason | (string & {}) | null;
+  /**
+   * The live fields below are null when the owner's live view is unavailable
+   * (0.64.0); `live_as_of_unix_ms` says how old they are when present.
+   */
+  bytes_total: number | null;
+  bytes_completed: number | null;
+  download_rate: number | null;
+  upload_rate: number | null;
+  uploaded_total: number | null;
+  peers: number | null;
+  seeds: number | null;
+  live_as_of_unix_ms?: number | null;
+  /** The node pinned at add, if any (0.64.0). */
+  pinned_node_id?: string | null;
+  /** How long after completion the job is removed; null is never (0.64.0). */
+  remove_after_ms?: number | null;
+  remove_at_unix_ms?: number | null;
+  completed_unix_ms?: number | null;
   /**
    * Absent on a node older than 0.28.1, which does not report it. The package
    * supports mixed-version clusters, so absent stays absent: never a default.
@@ -104,9 +181,8 @@ export interface TorrentJob {
   eta_seconds: number | null;
   progress: number | null;
   ingest_job_id: string | null;
-  // Present only in the cluster-wide job listing, which tags each job with the
-  // node running it; a single-job action response carries the job alone.
-  node_id?: string;
+  /** The node running it, null while no node has claimed it (0.64.0). */
+  node_id?: string | null;
   created_unix_ms: number;
   updated_unix_ms: number;
   /** The server's English, for people. Act on `error_code`. */
@@ -120,12 +196,64 @@ export interface AcquisitionSnapshot {
   torrentStatus: TorrentStatus;
   ingestJobs: IngestJob[];
   torrentJobs: TorrentJob[];
+  /** Which nodes each list was read from (0.64.0); empty from an older node. */
+  ingestSources: AcquisitionSource[];
+  torrentSources: AcquisitionSource[];
+  /** How often to poll the lists, as the server states it (0.64.0). */
+  refreshIntervalMs?: number;
+}
+
+/** Where to run a torrent, and whether to remove it once done (0.64.0). */
+export interface TorrentAddOptions {
+  /** Pin to one torrent-capable node; absent lets the cluster choose. */
+  nodeId?: string;
+  /** Remove after completion: 0..86_400_000 ms, null for never, absent for the cluster default. */
+  removeAfterMs?: number | null;
+}
+
+export interface TorrentAddResult {
+  id: string;
+  infoHash: string | null;
+  /** The node it was pinned to; null when the cluster chooses. */
+  pinnedNodeId: string | null;
+  /** The new job, from 0.64.0; absent from an older node. */
+  job?: TorrentJob;
+}
+
+export interface TorrentJobUpdate {
+  /** 0..86_400_000 ms, or null for never. */
+  removeAfterMs?: number | null;
+  /** Pin to a node, or null to let the cluster choose; only before a node claims it. */
+  nodeId?: string | null;
+}
+
+/** A torrent-capable node, for the selector on add (`GET /api/v1/torrents/nodes`, 0.64.0). */
+export interface TorrentNode {
+  node_id: string;
+  host: string;
+  local: boolean;
+  reachable: boolean;
+  as_of_unix_ms: number | null;
+  max_active: number;
+  active_jobs: number;
+  /** Whether it takes a new job now. */
+  accepting: boolean;
+  not_accepting_reason: 'slots_full' | 'staging_full' | 'draining' | 'unreachable' | (string & {}) | null;
+  staging: { limit_bytes: number; disk_bytes: number; reserved_bytes: number; free_bytes: number };
+}
+
+export interface TorrentNodes {
+  nodes: TorrentNode[];
+  refreshIntervalMs?: number;
+  /** The cluster's remove-after-completion default; null is never. */
+  defaultRemoveAfterMs?: number | null;
 }
 
 export interface AcquisitionApi {
   snapshot(): Promise<AcquisitionSnapshot>;
   submitPath(path: string): Promise<string>;
-  submitMagnet(magnet: string): Promise<string>;
+  /** Adds a torrent to the cluster. The job comes back from 0.64.0, so it can show at once. */
+  submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult>;
   pauseIngest(id: string): Promise<IngestJob>;
   resumeIngest(id: string): Promise<IngestJob>;
   cancelIngest(id: string): Promise<IngestJob>;
@@ -135,4 +263,13 @@ export interface AcquisitionApi {
   retryTorrent(id: string): Promise<TorrentJob>;
   cancelTorrent(id: string): Promise<TorrentJob>;
   clearTorrent(id: string): Promise<void>;
+  /**
+   * Changes a job's removal after completion, or its pin (0.64.0). Applied at
+   * once, answering the job. A pin is changed only while the phase is
+   * `awaiting_node`, otherwise 409 `invalid_state`; one to a node that cannot
+   * run torrents is 409 `placement_failed`, reason `node_not_torrent_capable`.
+   */
+  updateTorrent(id: string, update: TorrentJobUpdate): Promise<TorrentJob>;
+  /** The torrent-capable nodes, for choosing one on add (0.64.0). */
+  torrentNodes(): Promise<TorrentNodes>;
 }

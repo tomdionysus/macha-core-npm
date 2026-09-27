@@ -24,7 +24,9 @@ title is, what its streams are and what operations it can perform. Choosing
 between Direct Play, remux and transcode is the client's, made from its own
 measured capabilities — and it is made in `@machafoundation/core` rather than in any one
 client, so every client decides the same way from the same facts. The server
-obeys the result; it does not pick on the client's behalf.
+obeys the result; it does not pick on the client's behalf. Choosing among an
+item's files is part of the same negotiation: the client matches each file's
+facts to its own capabilities and names the file it will play.
 
 The catalogue wire model mirrors the server contract. The client must not infer
 cluster truth, invent a parallel server model, transcode media, or treat a local
@@ -111,18 +113,6 @@ preloaded or embedded.
    resolving rather than refusing**; and **a bound smaller than one unit of its
    own work is not a bound**. (The fifth, keeping snapshot size a function of
    the live namespace, is the server's.)
-
-> **The numbering here and the server's do not agree, and both repositories
-> cite laws by number.** This document has control at 1, viewer at 2 and
-> loader at 3. The server's `ARCHITECTURE.md`, as of 2026-09-20, has viewer at
-> 1, loader at 2 and control at 3 — so a citation of "Law 1" means the opposite
-> thing in each tree, and core's own `TODO/ACTIVE.md` cites the numbering below.
-> The *content* of the three is the same in both; only the order differs, along
-> with how the control law is framed (a strict class order here, a floor the
-> viewer law may not eat through there). **Law 4 is unambiguous because neither
-> tree previously had a fourth.** Do not renumber either side to match without
-> Tom: every existing citation in both trees moves with it. Raised with the
-> server session 2026-09-20; recorded in *Waiting on Tom*.
 
 These laws define priority, not polling. Viewer demand, resource availability,
 durability completion, queue transitions and pressure thresholds must wake or

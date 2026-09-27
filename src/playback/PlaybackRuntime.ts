@@ -2,11 +2,12 @@ import { MachaPlaybackError } from './MachaPlaybackResolver.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { PlaybackHost, Platform, Player } from '../platform/Platform.js';
 import type { PlaybackPolicyOverrides } from './choosePlaybackInstruction.js';
-import type { PlaybackDecisionFacts } from '../api/PlaybackFactsApi.js';
+import { versionPreferences, type QualityCeiling, type VersionStep } from './playbackVersions.js';
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import {
   PlaybackCoordinator,
   type PlaybackCoordinatorSnapshot,
+  type PlaybackFacts,
   type PlaybackInstructionReport,
   type PlaybackMoveOptions,
 } from './PlaybackCoordinator.js';
@@ -64,6 +65,8 @@ function retriedCarriage(
     video: instruction.video,
     audio: instruction.audio,
     container: instruction.container,
+    // The file the viewer's version named, which a retry must not re-rank.
+    ...(instruction.mediaId ? { mediaId: instruction.mediaId } : {}),
   };
 }
 
@@ -115,9 +118,13 @@ function requestError(media: MediaSummary): Error | undefined {
  */
 export interface PlaybackRuntimeOptions {
   /** What the media is and what the node can do with it. See `PlaybackCoordinatorOptions`. */
-  facts?: (media: MediaSummary) => Promise<PlaybackDecisionFacts | undefined>;
+  facts?: (media: MediaSummary) => Promise<PlaybackFacts | undefined>;
   /** Platform truths no capability probe can discover. */
   policyOverrides?: PlaybackPolicyOverrides;
+  /** See `PlaybackCoordinatorOptions.qualityCeiling`. */
+  qualityCeiling?: () => QualityCeiling | undefined;
+  /** See `PlaybackCoordinatorOptions.offerAll`. */
+  offerAll?: () => boolean;
 }
 
 export class PlaybackRuntime {
@@ -261,6 +268,8 @@ export class PlaybackRuntime {
         initialPreferences: initialPreferences ? { ...initialPreferences } : undefined,
         facts: this.options.facts,
         policyOverrides: this.options.policyOverrides,
+        qualityCeiling: this.options.qualityCeiling,
+        offerAll: this.options.offerAll,
       });
       this.coordinator = coordinator;
       this.unsubscribeCoordinator = coordinator.subscribe((snapshot) => {
@@ -342,6 +351,19 @@ export class PlaybackRuntime {
     if (this.coordinator) return this.coordinator.seekBy(deltaMs);
     if (this.lifecycle.phase !== 'failed' || !this.lifecycle.request) return false;
     return this.seek(this.lifecycle.request.startPositionMs + deltaMs);
+  }
+
+  /**
+   * Play one of the snapshot's `versions.steps` as the viewer's choice; see
+   * `PlaybackCoordinator.playVersion`. After a terminal failure it starts a
+   * fresh generation on that version, as `retry` would.
+   */
+  playVersion(step: VersionStep): Promise<void> {
+    if (this.coordinator) return this.coordinator.playVersion(step);
+    if (this.lifecycle.phase === 'failed' && this.lifecycle.request) {
+      return this.play({ ...this.lifecycle.request }, versionPreferences(step));
+    }
+    return Promise.resolve();
   }
 
   update(update: PlaybackUpdate): void {

@@ -1,10 +1,10 @@
-# Handover — end of 2026-09-23
+# Handover — updated 2026-09-24, after 0.19.0
 
 For the next session on `@machafoundation/core`. The detail is in [ACTIVE.md](ACTIVE.md), whose head says the same things at length, and in the top entry of [COMPLETED.md](COMPLETED.md). This page says where things stand and what to do first.
 
 ## Where it stands
 
-- **Published: `0.18.0`.** npm `latest`, `gitHead` `a3b40ca`. `main` holds it. All three client trees pin `^0.18.0` on `main` and link this tree on `develop`.
+- **Published: `0.19.0`** on 2026-09-24. npm `latest`, `gitHead` `4e1746a` (tag `0.19.0`), `main` at merge `1377dac`. The clients move their `main` from `^0.18.0` to `^0.19.0` on Tom's word. ACTIVE's *Published: `0.19.0`* section and `4e1746a`'s message say what it carries. The rest of this page is from 2026-09-23 and is superseded where ACTIVE says otherwise.
 - **`develop` is pushed, level with origin, and 26+ commits past `0.18.0`, unreleased.** The last source commit is `3e611b8`. `dist` hashes **`66d79d1f8e4b`** by `npm run dist:hash`, and every commit since is records only. 1052 tests in 67 files, all green, with typecheck, platform lint, build and `dist:check` clean.
 - **Publishing needs Tom's word.** Nothing is published without it. When he gives it: `npm version <x.y.z> --no-git-tag-version` (it now stamps `*vX.Y.Z*` under the README title as well), commit, merge to `main`, annotated bare-semver tag, push, then `git checkout develop` and build last. The full procedure is in ACTIVE under *Start here*.
 

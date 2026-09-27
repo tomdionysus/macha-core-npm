@@ -150,12 +150,44 @@ export interface LibraryHome {
   albums: MediaSummary[];
 }
 
+/**
+ * Where a viewer was in a title, and how it was playing, so a resume starts
+ * as if they had never left. Tom, 2026-09-27: "Continue watching likely needs
+ * to store both the item id AND the media ID. It should also store the mode
+ * (direct, remux, transcode), resolution, subtitle settings, and all other
+ * data needed to resume as if you'd never left."
+ */
 export interface PlaybackProgress {
-  mediaId: string;
+  /**
+   * The catalogue item: the title. Named `mediaId` before 2026-09-27, when
+   * it was the only id and a session's `mediaId` still named the title too;
+   * from server 0.58.0 a session names the file, and comparing the two left
+   * the Android TV client writing no progress at all.
+   */
+  itemId: string;
+  /** The file that was playing, where known: the session's `mediaId`. */
+  fileMediaId?: string;
   positionMs: number;
   durationMs: number;
   updatedAt: number;
   media?: MediaSummary;
+  /** How it was playing; see `resumePreferences`. Absent on an entry saved before 2026-09-27. */
+  resume?: PlaybackResumeState;
+}
+
+/** The playback choices a resume restores; see `PlaybackProgress.resume`. */
+export interface PlaybackResumeState {
+  /** Whether the viewer chose the mode (or a version); if not, core chooses again. */
+  chosenByViewer: boolean;
+  mode: PlaybackMode;
+  container?: 'fmp4' | 'mpegts';
+  /** The version playing, where it was one of the item's steps. */
+  quality?: number;
+  maxHeight?: number | null;
+  audioStream?: number | null;
+  audioLanguage?: string;
+  subtitleStream?: number | null;
+  subtitleLanguage?: string;
 }
 
 export type VideoCodec = 'h264' | 'hevc' | 'vp9' | 'av1' | 'mpeg2' | string;
@@ -176,6 +208,15 @@ export interface PlaybackCapabilities {
   /** Optional decoder/platform limits. Web deliberately leaves these unset. */
   maxWidth?: number;
   maxHeight?: number;
+  /**
+   * The largest frame each video codec's own decoder takes, where it is less
+   * than `maxWidth` / `maxHeight`: the A85 decodes AVC, HEVC and VP9 at
+   * 1920x1080 but AV1 only at 1280x720, and the Android TV set VP8 only at
+   * 1920x1088 against 4096x2176 for the rest. Keyed by codec as in
+   * `videoCodecs`. A stream larger than its codec's limit is not played
+   * directly (`video-size-exceeds-client`).
+   */
+  videoCodecMaxSize?: Partial<Record<string, { width: number; height: number }>>;
   videoCodecs: VideoCodec[];
   audioCodecs: AudioCodec[];
   containers: string[];
@@ -242,6 +283,12 @@ export interface PlaybackCapabilities {
 export interface MediaTechnicalStream {
   index: number;
   type: 'video' | 'audio' | 'subtitle' | 'other';
+  /**
+   * Whether the node can copy this stream into each HLS container, from
+   * server 0.58.0, where it moved from `operations` onto each stream. Absent
+   * from an older node, where `operations` answers for the default stream.
+   */
+  copyInto?: { fmp4: boolean; mpegts: boolean };
   codec: string;
   profile: string;
   language: string;

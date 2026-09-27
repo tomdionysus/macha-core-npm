@@ -1,5 +1,5 @@
 import type { MediaTechnicalProfile, MediaTechnicalStream, PlaybackCapabilities, PlaybackMode } from '../types.js';
-import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
+import type { PlaybackDecisionFacts, PlaybackOperations } from '../api/PlaybackFactsApi.js';
 
 export type StreamInstruction = 'copy' | 'transcode';
 export type SegmentContainer = 'fmp4' | 'mpegts';
@@ -17,6 +17,8 @@ export type PlaybackDecisionReason =
   | 'video-codec-not-playable'
   | 'video-codec-not-deliverable-over-hls'
   | 'video-bit-depth-exceeds-client'
+  // Larger than the `maxWidth` / `maxHeight` the host stated.
+  | 'video-size-exceeds-client'
   | 'video-transfer-not-presentable'
   | 'video-dolby-vision-not-supported'
   | 'audio-codec-not-playable'
@@ -209,6 +211,14 @@ export function videoStreamObjection(
   if (!has(capabilities.videoCodecs, stream.codec)) return 'video-codec-not-playable';
   if (stream.bitDepth !== undefined && capabilities.videoBitDepth !== undefined
     && stream.bitDepth > capabilities.videoBitDepth) return 'video-bit-depth-exceeds-client';
+  // A limit the host stated, and only then: web leaves both unset. Tom,
+  // 2026-09-25: limit to the device's capabilities for direct, on all clients.
+  const codecLimit = capabilities.videoCodecMaxSize?.[stream.codec.toLowerCase()] ?? capabilities.videoCodecMaxSize?.[stream.codec];
+  const maxWidth = Math.min(capabilities.maxWidth ?? Infinity, codecLimit?.width ?? Infinity);
+  const maxHeight = Math.min(capabilities.maxHeight ?? Infinity, codecLimit?.height ?? Infinity);
+  if ((stream.width !== undefined && stream.width > maxWidth) || (stream.height !== undefined && stream.height > maxHeight)) {
+    return 'video-size-exceeds-client';
+  }
 
   const transfer = stream.colorTransfer?.toLowerCase();
   if (transfer !== undefined && !SDR_TRANSFERS.has(transfer) && !has(capabilities.hdr, transfer)) {
@@ -275,15 +285,27 @@ export function segmentContainer(
  * takes AV1 and Opus that MPEG-TS refuses. Asking `copyIntoFmp4` about a
  * MPEG-TS session would answer a question nobody asked.
  *
+ * From server 0.58.0 each stream answers for itself, and that answer wins: the
+ * node's `operations` pair spoke only for the first video and audio stream,
+ * which is not the one played when another is named. An older node's pair
+ * answers where a stream carries nothing.
+ *
  * With no facts at all, assume the node can copy — the chooser's behaviour
  * before the facts endpoint existed, and the 400 is the loud, recoverable leg.
  */
 function copyInto(
   container: SegmentContainer | undefined,
   operations: PlaybackOperations | undefined,
+  video: MediaTechnicalStream | undefined,
+  audio: MediaTechnicalStream | undefined,
 ): { video: boolean; audio: boolean } {
-  if (!operations) return { video: true, audio: true };
-  return container === 'mpegts' ? operations.copyIntoMpegts : operations.copyIntoFmp4;
+  const key = container === 'mpegts' ? 'mpegts' : 'fmp4';
+  const pair = !operations ? { video: true, audio: true }
+    : container === 'mpegts' ? operations.copyIntoMpegts : operations.copyIntoFmp4;
+  return {
+    video: video?.copyInto ? video.copyInto[key] : pair.video,
+    audio: audio?.copyInto ? audio.copyInto[key] : pair.audio,
+  };
 }
 
 export interface ChooseInstructionOptions {
@@ -333,10 +355,10 @@ export function choosePlaybackInstruction(
 
   const video = options.videoStream !== undefined
     ? streams.find((s) => s.index === options.videoStream)
-    : streams.find((s) => s.type === 'video');
+    : defaultStream(streams, 'video');
   const audio = options.audioStream !== undefined
     ? streams.find((s) => s.index === options.audioStream)
-    : streams.find((s) => s.type === 'audio' && s.default) ?? streams.find((s) => s.type === 'audio');
+    : defaultStream(streams, 'audio');
 
   const { container, preferred: containerPreferred } = segmentContainer(capabilities, overrides);
   if (containerPreferred) reasons.push('host-policy-prefers-container');
@@ -377,7 +399,7 @@ export function choosePlaybackInstruction(
 
   // The streams themselves are fine — only the wrapper, or one track, is not.
   // Copying the video is the whole point of the per-stream instruction.
-  const executorCanCopy = copyInto(container, operations);
+  const executorCanCopy = copyInto(container, operations, video, audio);
 
   if (!videoObjection) {
     // ...unless HLS delivery uses a different decoder that cannot take it.
@@ -436,6 +458,16 @@ export function choosePlaybackInstruction(
  * stream it could not handle, and the fallback is taken only once. Undefined
  * when nothing was being copied.
  */
+/**
+ * A step down's reasons: the instruction's own, less `source-plays-as-is`,
+ * which stops being true the moment anything is converted, plus why it
+ * stepped down. The Android TV set showed "plays the file as it is" beside
+ * "could not decode the original streams" on 2026-09-24.
+ */
+function steppedDownReasons(reasons: readonly PlaybackDecisionReason[], why: PlaybackDecisionReason): PlaybackDecisionReason[] {
+  return [...reasons.filter((reason) => reason !== 'source-plays-as-is'), why];
+}
+
 export function transcodeUndecodable(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
   if (instruction.video !== 'copy' && instruction.audio !== 'copy') return undefined;
   return {
@@ -443,12 +475,12 @@ export function transcodeUndecodable(instruction: PlaybackInstruction): Playback
     mode: 'transcode',
     video: instruction.video === 'copy' ? 'transcode' : instruction.video,
     audio: instruction.audio === 'copy' ? 'transcode' : instruction.audio,
-    reasons: [...instruction.reasons, 'player-could-not-decode'],
+    reasons: steppedDownReasons(instruction.reasons, 'player-could-not-decode'),
   };
 }
 
 export function degradeInstruction(instruction: PlaybackInstruction): PlaybackInstruction | undefined {
-  const reasons: PlaybackDecisionReason[] = [...instruction.reasons, 'executor-refused-copy'];
+  const reasons = steppedDownReasons(instruction.reasons, 'executor-refused-copy');
 
   // Audio first: re-encoding a soundtrack costs far less than re-encoding
   // video, and an unsupported copy is more often the audio codec.
@@ -468,4 +500,140 @@ export function degradeInstruction(instruction: PlaybackInstruction): PlaybackIn
     return { ...instruction, mode: 'transcode', video: 'transcode', reasons };
   }
   return undefined;
+}
+
+/** One file's facts, and which file, where the facts say. */
+export type FileFacts = PlaybackDecisionFacts & { mediaId?: string };
+
+/** The file to play, the instruction for it, and where it stood in the list. */
+export interface FileChoice {
+  instruction: PlaybackInstruction;
+  /** Undefined when the facts name no file and the item has more than one. */
+  mediaId?: string;
+  index: number;
+}
+
+/** The server's own ranking, from when it chose: direct, then remux, then transcode. */
+const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode: 2 };
+
+/**
+ * Which of an item's files to play, and how. Choosing among an item's files
+ * is the client's decision (Tom, 2026-09-24), and this is the one ranking every
+ * client uses, the coordinator included: an instruction for each file, then
+ * the best by mode, with ties to stored order, as the server ranked them. A
+ * file whose facts carry no id is named from `mediaIds` when the item has
+ * exactly one. Undefined for an empty list.
+ */
+export function chooseAmongFiles(
+  files: readonly FileFacts[],
+  capabilities: PlaybackCapabilities,
+  options: { overrides?: ChooseInstructionOptions['overrides'] } = {},
+  mediaIds: readonly string[] = [],
+): FileChoice | undefined {
+  let best: FileChoice | undefined;
+  files.forEach((file, index) => {
+    const instruction = choosePlaybackInstruction(file.profile, capabilities, { overrides: options.overrides, operations: file.operations });
+    if (!best || MODE_RANK[instruction.mode] < MODE_RANK[best.instruction.mode]) {
+      best = { instruction, mediaId: file.mediaId, index };
+    }
+  });
+  if (best && best.mediaId === undefined && mediaIds.length === 1) best = { ...best, mediaId: mediaIds[0] };
+  return best;
+}
+
+/**
+ * The stream of a type core plays when nothing names one: the stream flagged
+ * default, else the first. From server 0.58.0 the node chooses no stream, so
+ * this rule is core's, and it is the same rule the node used to apply.
+ */
+export function defaultStream(streams: readonly MediaTechnicalStream[], type: 'video' | 'audio'): MediaTechnicalStream | undefined {
+  const ofType = streams.filter((stream) => stream.type === type);
+  return ofType.find((stream) => stream.default) ?? ofType[0];
+}
+
+/**
+ * The streams to name so a node has nothing to choose, from the file's facts.
+ *
+ * From server 0.58.0 a node refuses any choice it would otherwise make, and a
+ * language is no exception: one no stream has is `choice_not_available`, and
+ * one several share is `choice_required`, for audio and subtitles alike and
+ * even under `direct`. Until 0.58.0 it fell back to the default track, so a
+ * viewer's language preference was safe to send whatever the file held. It no
+ * longer is, and core resolves it here, against the same exact, case-blind
+ * match the node makes. A caller sends these indexes in place of the
+ * languages; see `withoutLanguages`.
+ *
+ * - video: the default stream, where a remux or transcode has several and
+ *   none is named;
+ * - audio: the named stream; else the one stream in the viewer's language, or
+ *   the default among several in it; else, for a remux or transcode of a file
+ *   with several, the default stream. `direct` names nothing then, since the
+ *   player picks its own tracks;
+ * - subtitle: the named stream; else the one in the viewer's language, full or
+ *   forced as `subtitleForced` asks (full when unstated), then the default
+ *   among several, then the first; else none.
+ *   A subtitle language the file lacks is no subtitles, not a refusal.
+ */
+export function streamsToName(
+  profile: MediaTechnicalProfile,
+  mode: PlaybackMode,
+  preferences: {
+    videoStream?: number | null;
+    audioStream?: number | null;
+    subtitleStream?: number | null;
+    audioLanguage?: string;
+    subtitleLanguage?: string;
+    /**
+     * Whether the subtitles wanted are the forced track (foreign dialogue
+     * only) rather than the full one. Unstated, the full track is preferred:
+     * a viewer asking for subtitles in a language means them all.
+     */
+    subtitleForced?: boolean;
+  },
+): { videoStream?: number; audioStream?: number; subtitleStream?: number } {
+  const named = (index: number | null | undefined) => index !== undefined && index !== null && index >= 0;
+  const inLanguage = (type: MediaTechnicalStream['type'], language: string | undefined) => {
+    const wanted = language?.trim().toLowerCase();
+    return wanted ? profile.streams.filter((stream) => stream.type === type && stream.language.toLowerCase() === wanted) : undefined;
+  };
+  const out: { videoStream?: number; audioStream?: number; subtitleStream?: number } = {};
+
+  const videos = profile.streams.filter((stream) => stream.type === 'video');
+  if (mode !== 'direct' && videos.length > 1 && !named(preferences.videoStream)) {
+    const chosen = defaultStream(profile.streams, 'video');
+    if (chosen) out.videoStream = chosen.index;
+  }
+
+  if (!named(preferences.audioStream)) {
+    const audios = profile.streams.filter((stream) => stream.type === 'audio');
+    const matches = inLanguage('audio', preferences.audioLanguage);
+    const chosen = matches && matches.length > 0 ? defaultStream(matches, 'audio')
+      : mode !== 'direct' && audios.length > 1 ? defaultStream(profile.streams, 'audio')
+        : undefined;
+    if (chosen) out.audioStream = chosen.index;
+  }
+
+  if (!named(preferences.subtitleStream)) {
+    const matches = inLanguage('subtitle', preferences.subtitleLanguage);
+    // Forced or full as wanted first (the Android TV client, The Martian,
+    // 2026-09-27: full English SubRip on one file became the other file's
+    // forced English track), then the default, then the first.
+    const forced = preferences.subtitleForced ?? false;
+    const kind = matches?.filter((stream) => stream.forced === forced);
+    const pool = kind && kind.length > 0 ? kind : matches;
+    const chosen = pool?.find((stream) => stream.default) ?? pool?.[0];
+    if (chosen) out.subtitleStream = chosen.index;
+  }
+  return out;
+}
+
+/**
+ * Preferences with the viewer's languages taken out, for a request whose
+ * streams `streamsToName` has already resolved from them. A named index wins
+ * on the node, but where nothing was named (a `direct` play, or no subtitle in
+ * that language) a language left in would be refused outright.
+ */
+export function withoutLanguages<T extends { audioLanguage?: string; subtitleLanguage?: string }>(preferences: T): T {
+  const { audioLanguage: _audio, subtitleLanguage: _subtitle, ...rest } = preferences;
+  return rest as T;
 }

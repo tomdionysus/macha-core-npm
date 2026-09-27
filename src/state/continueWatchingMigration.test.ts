@@ -4,7 +4,7 @@ import type { MediaApi } from '../api/MediaApi.js';
 import type { MediaSummary, PlaybackHierarchyContext, PlaybackProgress } from '../types.js';
 
 const entry = (media?: Partial<MediaSummary>): PlaybackProgress => ({
-  mediaId: 'macha:ep-1',
+  itemId: 'macha:ep-1',
   positionMs: 40_000,
   durationMs: 100_000,
   updatedAt: 1,

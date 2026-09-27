@@ -172,7 +172,7 @@ describe('against the store', () => {
 
   function attempt(store: ContinueWatchingStore, watermark: ProgressWatermark, positionMs: number, nowMs: number): ProgressWatermark {
     const progress = progressFor(media, positionMs, media.durationMs);
-    const landed = store.update(progress).some((entry) => entry.mediaId === progress.mediaId);
+    const landed = store.update(progress).some((entry) => entry.itemId === progress.itemId);
     return nextWatermark(watermark, false, nowMs, landed);
   }
 

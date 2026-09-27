@@ -398,7 +398,7 @@ describe('PlaybackRuntime ownership state machine', () => {
 
     runtime.terminateForPageExit();
 
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('session:A', { keepalive: true }));
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('session:A', expect.objectContaining({ keepalive: true })));
   });
 
   it('rejects non-playable catalogue requests without acquiring a server session', async () => {
@@ -558,7 +558,7 @@ describe('PlaybackRuntime lifecycle edges', () => {
 
     runtime.terminateForPageExit();
 
-    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('session:A', { keepalive: true }));
+    await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('session:A', expect.objectContaining({ keepalive: true })));
   });
 });
 

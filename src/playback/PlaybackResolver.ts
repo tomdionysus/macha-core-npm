@@ -114,6 +114,8 @@ export interface PlaybackPreferences {
   mode: PlaybackMode;
   maxHeight: number | null;
   maxBitrate: number | null;
+  /** Echoed from server 0.58.0; absent from an older node, which does not take it. */
+  videoStream?: number | null;
   audioStream: number | null;
   subtitleStream: number | null;
   audioLanguage: string;
@@ -232,6 +234,21 @@ export interface PlaybackPreferencesUpdate {
    * decide which wins.
    */
   mode?: PlaybackMode | 'choose';
+  /**
+   * Which of the item's files to play, sent as the session's `media_id` when
+   * a session is created. The client chooses among an item's files, not the
+   * server (Tom, 2026-09-24): `PlaybackCoordinator` sets it from the chooser,
+   * and replacement generations restate the file being served. Ignored by an
+   * update; switching file mid-session is `PlaybackUpdate.mediaId`.
+   */
+  mediaId?: string;
+  /**
+   * Which video stream, when the file has several. From server 0.58.0 a node
+   * chooses no stream: with several video or audio streams and none named it
+   * refuses with `choice_required`. The coordinator names them; see
+   * `streamsToName`. A 0.57.0 node ignores this field.
+   */
+  videoStream?: number;
   /** Per-stream instruction, overriding the `mode` shorthand when given. */
   video?: 'copy' | 'transcode';
   audio?: 'copy' | 'transcode';
@@ -254,6 +271,12 @@ export interface PlaybackUpdate {
 export interface PlaybackStopOptions {
   /** Keep the teardown request alive while the browser is navigating away. */
   keepalive?: boolean;
+  /**
+   * The session's signed stream URL, for a close that needs no Authorization
+   * header; see `signedCloseUrl`. Used on a page exit only, where a signed-in
+   * DELETE does not survive the unload.
+   */
+  streamUrl?: string;
   /**
    * This node has already been charged for the outage that made this close
    * necessary, so the close itself must not charge it again.

@@ -126,6 +126,12 @@ function withServedSegmentContainer(
   preferences: PlaybackPreferencesUpdate,
   servingSession: PlaybackSession,
 ): PlaybackPreferencesUpdate {
+  // The file being served, unless the caller named one. A replacement is the
+  // same title in the same file: a failover that let the node pick again could
+  // land on a different file of a multi-file item.
+  if (preferences.mediaId === undefined && servingSession.mediaId) {
+    preferences = { ...preferences, mediaId: servingSession.mediaId };
+  }
   if (preferences.container !== undefined) return preferences;
   const mode = preferences.mode ?? servingSession.mode;
   if (mode !== 'remux' && mode !== 'transcode') return preferences;

@@ -3,7 +3,8 @@ import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
 import { MachaApiError } from './MachaCatalogueApi.js';
 import type { MediaTechnicalProfile, MediaTechnicalStream } from '../types.js';
-import type { PlaybackFactsApi, PlaybackMediaFacts, PlaybackOperations } from './PlaybackFactsApi.js';
+import { defaultStream } from '../playback/choosePlaybackInstruction.js';
+import type { PlaybackFactsApi, PlaybackFactsReport, PlaybackMediaFacts, PlaybackOperations, UnavailableMedia } from './PlaybackFactsApi.js';
 
 interface WireFactsStream {
   index: number;
@@ -23,6 +24,8 @@ interface WireFactsStream {
   color_transfer?: string;
   dolby_vision_profile?: number;
   dolby_vision_compatibility?: number;
+  /** From server 0.58.0; see `MediaTechnicalStream.copyInto`. */
+  copy_into?: { fmp4?: boolean; mpegts?: boolean };
 }
 
 function mapStream(stream: WireFactsStream): MediaTechnicalStream {
@@ -44,6 +47,9 @@ function mapStream(stream: WireFactsStream): MediaTechnicalStream {
     colorTransfer: stream.color_transfer || undefined,
     dolbyVisionProfile: stream.dolby_vision_profile,
     dolbyVisionCompatibility: stream.dolby_vision_compatibility,
+    ...(stream.copy_into && typeof stream.copy_into === 'object'
+      ? { copyInto: { fmp4: stream.copy_into.fmp4 === true, mpegts: stream.copy_into.mpegts === true } }
+      : {}),
   };
 }
 
@@ -52,15 +58,22 @@ function streamPair(field: unknown): { video: boolean; audio: boolean } {
   return { video: pair.video === true, audio: pair.audio === true };
 }
 
-function mapOperations(value: unknown): PlaybackOperations {
+function mapOperations(value: unknown, streams: readonly MediaTechnicalStream[]): PlaybackOperations {
   const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  // Server 0.58.0 moved copy support onto each stream and dropped the pair
+  // from `operations`. The pair is then the default streams' answer, which is
+  // what an older node's pair meant, so a consumer reading `operations` sees
+  // one shape from either. The chooser reads the stream's own answer first.
+  const video = defaultStream(streams, 'video');
+  const audio = defaultStream(streams, 'audio');
+  const fromStreams = (key: 'fmp4' | 'mpegts') => ({ video: video?.copyInto?.[key] === true, audio: audio?.copyInto?.[key] === true });
   // Absent reads as "cannot", not "can". This gates instructions, so an
   // unknown answer must never be optimistic — the whole point is to stop
   // asking for something the node will refuse.
   return {
     direct: record.direct === true,
-    copyIntoFmp4: streamPair(record.copy_into_fmp4),
-    copyIntoMpegts: streamPair(record.copy_into_mpegts),
+    copyIntoFmp4: record.copy_into_fmp4 !== undefined ? streamPair(record.copy_into_fmp4) : fromStreams('fmp4'),
+    copyIntoMpegts: record.copy_into_mpegts !== undefined ? streamPair(record.copy_into_mpegts) : fromStreams('mpegts'),
     transcodeVideo: record.transcode_video === true,
     transcodeAudio: record.transcode_audio === true,
   };
@@ -74,6 +87,10 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
   }
 
   async facts(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackMediaFacts[]> {
+    return (await this.factsReport(ref, signal)).files;
+  }
+
+  async factsReport(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport> {
     const query = queryString([
       ['item_id', ref.itemId],
       ['media_id', ref.mediaId],
@@ -91,9 +108,18 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
       throw new MachaApiError(`Macha playback facts failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
     }
 
-    const record = body as { item_id?: string; media?: unknown[] } | undefined;
+    const record = body as { item_id?: string; media?: unknown[]; unavailable?: unknown[] } | undefined;
     const media = Array.isArray(record?.media) ? record.media : [];
-    return media.flatMap((entry) => {
+    const unavailable = (Array.isArray(record?.unavailable) ? record.unavailable : []).flatMap((entry): UnavailableMedia[] => {
+      const item = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+      if (typeof item.media_id !== 'string') return [];
+      return [{
+        mediaId: item.media_id,
+        reason: typeof item.reason === 'string' ? item.reason : 'unknown',
+        ...(typeof item.message === 'string' && item.message ? { message: item.message } : {}),
+      }];
+    });
+    const files = media.flatMap((entry) => {
       const item = entry as Record<string, unknown>;
       const mediaId = typeof item.media_id === 'string' ? item.media_id : undefined;
       if (!mediaId) return [];
@@ -116,8 +142,9 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
         path: typeof item.path === 'string' ? item.path : undefined,
         sizeBytes: profile.sizeBytes,
         profile,
-        operations: mapOperations(item.operations),
+        operations: mapOperations(item.operations, profile.streams),
       }];
     });
+    return { files, unavailable };
   }
 }

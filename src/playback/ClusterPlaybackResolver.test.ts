@@ -623,13 +623,14 @@ describe('the carriage a replacement generation asks for', () => {
     expect(await failoverFrom('fmp4', { mode: 'remux', container: 'mpegts' })).toMatchObject({ container: 'mpegts' });
   });
 
-  it('asks for nothing when the node reported no container', async () => {
-    // No grounds to choose one, so today's behaviour is the right no-op.
-    expect(await failoverFrom(undefined)).not.toHaveProperty('container');
+  it("asks for the device's own container when the node reported none", async () => {
+    // From server 0.58.0 a remux names its container; there is no node default
+    // to fall back on. The served one is unknown, so the device's preference.
+    expect(await failoverFrom(undefined)).toMatchObject({ container: 'fmp4' });
   });
 
-  it('asks for nothing when the node reported a container it does not recognise', async () => {
-    expect(await failoverFrom('matroska')).not.toHaveProperty('container');
+  it("asks for the device's own when the node reported one it does not recognise", async () => {
+    expect(await failoverFrom('matroska')).toMatchObject({ container: 'fmp4' });
   });
 
   it('leaves a direct generation alone, which has no carriage to choose', async () => {
@@ -1009,8 +1010,9 @@ describe('a regeneration whose close never comes back', () => {
   });
 
   it('says the close timed out rather than letting it pass unrecorded', async () => {
-    // The node is now holding a transcode slot nothing has released, which is
-    // the operator-visible half of Law 4's discipline. It is a warn because
+    // The node is now holding a transcode slot nothing has released: the
+    // operator action that the retried-work discipline under Law 4 requires
+    // (backoff, a failure budget, a parked state and an operator action). It is a warn because
     // the recovery continued; the leak is real and needs somewhere to be read.
     clearClientDiagnostics();
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
@@ -1480,5 +1482,26 @@ describe('ClusterPlaybackResolver.prepareOn and throughput', () => {
       await resolver.prepareOn('http://b', active, media, capabilities, 5_000, { mode: 'transcode' });
       expect(postsToB()).toBe(1);
     });
+  });
+});
+
+describe('a replacement generation keeps the file being served', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('restates it as media_id on failover, unless the caller named another', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(wireSession(`s${bodies.length}`)), { status: 201, headers: { 'Content-Type': 'application/json' } });
+    }));
+    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c'])));
+    const active = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+
+    await resolver.failover(active, media, capabilities, 0, { mode: 'direct' });
+    expect(bodies.at(-1)).toMatchObject({ media_id: 'macha:media' });
+
+    const second = await resolver.resolve(media, capabilities, undefined, { mode: 'direct' });
+    await resolver.failover(second, media, capabilities, 0, { mode: 'direct', mediaId: 'macha:other' });
+    expect(bodies.at(-1)).toMatchObject({ media_id: 'macha:other' });
   });
 });

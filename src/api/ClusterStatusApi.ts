@@ -266,7 +266,20 @@ export interface ClusterStatusSnapshot {
   startup?: ClusterStartupStatus;
   nodes: ClusterNodeStatus[];
   connectivity?: PublicConnectivityStatus;
+  /** One entry per server thread, from server 0.63.0. Operator diagnostics. */
+  threads?: ServerThreadStatus[];
   generated_at_unix_ms: number;
+}
+
+/** A server thread's health, as `/api/v1/status` states it from 0.63.0. */
+export interface ServerThreadStatus {
+  name: string;
+  running: number;
+  restarting: number;
+  faults: number;
+  last_fault_code: 'exception' | 'unknown_exception' | (string & {}) | null;
+  last_fault: string | null;
+  last_fault_unix_ms: number | null;
 }
 
 export interface ConnectivityResult {

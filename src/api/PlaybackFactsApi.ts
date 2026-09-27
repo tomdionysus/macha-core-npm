@@ -60,5 +60,29 @@ export interface PlaybackMediaFacts extends PlaybackDecisionFacts {
  * so it answers for media that has no immutable catalogue profile.
  */
 export interface PlaybackFactsApi {
+  /** The files that answered; see `factsReport` for the ones that did not. */
   facts(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackMediaFacts[]>;
+  /**
+   * The files that answered, and the ones that could not be read. An item
+   * with a file whose probe failed or timed out is still answered with the
+   * rest: without this a host drew an item's versions from fewer files than
+   * it has and could not tell (the Android TV client, The Martian,
+   * 2026-09-27).
+   */
+  factsReport(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport>;
+}
+
+/** A file of the item the node could not read, from the facts endpoint's `unavailable`. */
+export interface UnavailableMedia {
+  mediaId: string;
+  /** The node's code: `source_unsupported`, a probe failure or timeout, or `not_found`. */
+  reason: string;
+  /** The server's sentence, for a host that shows it. */
+  message?: string;
+}
+
+export interface PlaybackFactsReport {
+  files: PlaybackMediaFacts[];
+  /** Empty when every file answered. */
+  unavailable: UnavailableMedia[];
 }

@@ -41,6 +41,7 @@ export const MACHA_STORAGE_KEYS = [
   'macha-server-endpoints-v1',
   'macha-bootstrap-endpoints-v1',
   'macha-discovered-endpoints-v1',
+  'macha.qualityPreference.v1',
 ] as const;
 
 /**
