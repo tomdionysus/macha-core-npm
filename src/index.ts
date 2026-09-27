@@ -87,6 +87,7 @@ export * from './cluster/endpointRouting.js';
 export * from './playback/BufferedTimeline.js';
 export * from './playback/choosePlaybackInstruction.js';
 export * from './playback/playbackVersions.js';
+export * from './playback/technicalSummary.js';
 export * from './playback/ClusterPlaybackResolver.js';
 export * from './playback/generationStart.js';
 export * from './playback/hlsWalk.js';
