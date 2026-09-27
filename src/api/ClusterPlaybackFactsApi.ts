@@ -2,7 +2,7 @@ import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistr
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { failureBlamesEndpoint, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { MachaPlaybackFactsApi } from './MachaPlaybackFactsApi.js';
-import type { PlaybackFactsApi, PlaybackMediaFacts } from './PlaybackFactsApi.js';
+import type { PlaybackFactsApi, PlaybackFactsReport, PlaybackMediaFacts } from './PlaybackFactsApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { abortError } from '../errors.js';
 
@@ -51,15 +51,31 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
    * with that answer.
    */
   async facts(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackMediaFacts[]> {
+    return (await this.factsReport(ref, signal)).files;
+  }
+
+  /**
+   * As `facts`, and then, where the answering node could not read some of the
+   * item's files, the same question of the remaining nodes for those.
+   *
+   * A file one node cannot read in time another often can: fi-1 fetches
+   * nearly every extent from gbni-1 over the WAN, so its probe of a large
+   * file can time out where gbni-1's answers at once. The first answer
+   * decides the item; a later node only fills in the files the earlier ones
+   * listed as unavailable, and a node that fails outright is passed over.
+   * What no node could read stays in `unavailable`, with the last reason.
+   */
+  async factsReport(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport> {
+    const candidates = this.router.registry.candidates().map(({ endpoint }) => endpoint);
     let lastError: unknown;
     let attempted = 0;
-    for (const { endpoint } of this.router.registry.candidates()) {
+    for (const [position, endpoint] of candidates.entries()) {
       if (signal?.aborted) throw signal.reason ?? abortError();
       attempted += 1;
       try {
-        const facts = await this.api(endpoint).facts(ref, signal);
+        const report = await this.api(endpoint).factsReport(ref, signal);
         this.router.registry.recordSuccess(endpoint.id);
-        return facts;
+        return await this.fillUnavailable(report, candidates.slice(position + 1), signal);
       } catch (error) {
         const status = (error as { status?: unknown }).status;
         if (status !== 404 && !retryableEndpointFailure(error)) throw error;
@@ -72,6 +88,23 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
     }
     if (attempted === 0) throw new Error('No Macha API endpoint is configured.');
     throw lastError;
+  }
+
+  private async fillUnavailable(report: PlaybackFactsReport, rest: readonly MachaEndpoint[], signal?: AbortSignal): Promise<PlaybackFactsReport> {
+    let { files, unavailable } = report;
+    for (const endpoint of rest) {
+      if (unavailable.length === 0 || signal?.aborted) break;
+      const missing = unavailable;
+      const answers = await Promise.all(missing.map((file) => this.api(endpoint).factsReport({ mediaId: file.mediaId }, signal)
+        .then((answer) => ({ file, answer }), () => ({ file, answer: undefined }))));
+      const found = answers.flatMap(({ answer }) => answer?.files ?? []);
+      files = [...files, ...found.filter((file) => !files.some((known) => known.mediaId === file.mediaId))];
+      unavailable = answers.flatMap(({ file, answer }) => {
+        if (answer?.files.some((candidate) => candidate.mediaId === file.mediaId)) return [];
+        return [answer?.unavailable.find((candidate) => candidate.mediaId === file.mediaId) ?? file];
+      });
+    }
+    return { files, unavailable };
   }
 
   private api(endpoint: MachaEndpoint): MachaPlaybackFactsApi {

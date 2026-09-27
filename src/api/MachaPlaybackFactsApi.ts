@@ -4,7 +4,7 @@ import { parseErrorEnvelope } from './errorEnvelope.js';
 import { MachaApiError } from './MachaCatalogueApi.js';
 import type { MediaTechnicalProfile, MediaTechnicalStream } from '../types.js';
 import { defaultStream } from '../playback/choosePlaybackInstruction.js';
-import type { PlaybackFactsApi, PlaybackMediaFacts, PlaybackOperations } from './PlaybackFactsApi.js';
+import type { PlaybackFactsApi, PlaybackFactsReport, PlaybackMediaFacts, PlaybackOperations, UnavailableMedia } from './PlaybackFactsApi.js';
 
 interface WireFactsStream {
   index: number;
@@ -87,6 +87,10 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
   }
 
   async facts(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackMediaFacts[]> {
+    return (await this.factsReport(ref, signal)).files;
+  }
+
+  async factsReport(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport> {
     const query = queryString([
       ['item_id', ref.itemId],
       ['media_id', ref.mediaId],
@@ -104,9 +108,18 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
       throw new MachaApiError(`Macha playback facts failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
     }
 
-    const record = body as { item_id?: string; media?: unknown[] } | undefined;
+    const record = body as { item_id?: string; media?: unknown[]; unavailable?: unknown[] } | undefined;
     const media = Array.isArray(record?.media) ? record.media : [];
-    return media.flatMap((entry) => {
+    const unavailable = (Array.isArray(record?.unavailable) ? record.unavailable : []).flatMap((entry): UnavailableMedia[] => {
+      const item = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+      if (typeof item.media_id !== 'string') return [];
+      return [{
+        mediaId: item.media_id,
+        reason: typeof item.reason === 'string' ? item.reason : 'unknown',
+        ...(typeof item.message === 'string' && item.message ? { message: item.message } : {}),
+      }];
+    });
+    const files = media.flatMap((entry) => {
       const item = entry as Record<string, unknown>;
       const mediaId = typeof item.media_id === 'string' ? item.media_id : undefined;
       if (!mediaId) return [];
@@ -132,5 +145,6 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
         operations: mapOperations(item.operations, profile.streams),
       }];
     });
+    return { files, unavailable };
   }
 }
