@@ -265,8 +265,9 @@ export interface AcquisitionApi {
   clearTorrent(id: string): Promise<void>;
   /**
    * Changes a job's removal after completion, or its pin (0.64.0). Applied at
-   * once, answering the job. Re-pinning a claimed job is refused 409
-   * `invalid_state`.
+   * once, answering the job. A pin is changed only while the phase is
+   * `awaiting_node`, otherwise 409 `invalid_state`; one to a node that cannot
+   * run torrents is 409 `placement_failed`, reason `node_not_torrent_capable`.
    */
   updateTorrent(id: string, update: TorrentJobUpdate): Promise<TorrentJob>;
   /** The torrent-capable nodes, for choosing one on add (0.64.0). */
