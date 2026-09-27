@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MachaAcquisitionApi } from './MachaAcquisitionApi.js';
+import { MachaAcquisitionApi, torrentHeldBy } from './MachaAcquisitionApi.js';
+import { endpointFailure, playbackFailureCode } from '../cluster/endpointFailure.js';
 import { fixedBearerToken } from './SessionManager.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -108,5 +109,28 @@ describe('MachaAcquisitionApi', () => {
       '/api/v1/torrents/jobs/torrent-1/clear',
       '/api/v1/ingest/jobs/ingest-1/clear',
     ]);
+  });
+});
+
+describe('a torrent a job already holds (server 0.63.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries the holding job and its node, through the cluster wrapping too', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      status: 'torrent_already_added',
+      error: { code: 'torrent_already_added', message: 'job j-7 already holds this torrent' },
+      id: 'j-7', node_id: 'gbni-1',
+    }, 409)));
+    const error = await new MachaAcquisitionApi('http://node.test', fixedBearerToken('t')).submitMagnet('magnet:?xt=urn:btih:abc').catch((e: unknown) => e);
+    expect(torrentHeldBy(error)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
+    const wrapped = endpointFailure('fi-1', 'http://node.test', error);
+    expect(playbackFailureCode(wrapped)).toBe('torrent_already_added');
+    expect(torrentHeldBy(wrapped)).toEqual({ id: 'j-7', nodeId: 'gbni-1' });
+  });
+
+  it('reads no holder from any other refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'placement_failed', message: 'no', reason: 'add_failed' }, id: 'x' }, 409)));
+    const error = await new MachaAcquisitionApi('http://node.test', fixedBearerToken('t')).submitMagnet('magnet:?').catch((e: unknown) => e);
+    expect(torrentHeldBy(error)).toBeUndefined();
   });
 });

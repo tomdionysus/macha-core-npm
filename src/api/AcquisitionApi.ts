@@ -55,7 +55,13 @@ export type IngestJobErrorCode =
  */
 export type TorrentJobErrorCode =
   | 'restore_failed' | 'ingest_missing' | 'ingest_cancelled' | 'torrent_error' | 'staging_full'
-  | 'ingest_submit_failed' | 'ingest_failed' | 'torrent_failed' | IngestJobErrorCode;
+  | 'ingest_submit_failed' | 'ingest_failed' | 'torrent_failed'
+  // Server 0.63.0, both on a `failed` job and neither retryable; clear it and
+  // add the torrent again. `duplicate_torrent`: two jobs held one torrent
+  // before 0.63.0, and the newer lost it at restart. `torrent_fault`: the
+  // download engine faulted on this job alone.
+  | 'duplicate_torrent' | 'torrent_fault'
+  | IngestJobErrorCode;
 
 export interface IngestJob {
   id: string;

@@ -30,10 +30,36 @@ export class MachaAcquisitionApiError extends Error {
      * or the target node's own code.
      */
     public readonly reason?: string,
+    /**
+     * On `torrent_already_added` (409, server 0.63.0): the job that already
+     * holds this torrent, and its node, so a host can go straight to it. To
+     * download it again, clear that job first.
+     */
+    public readonly heldBy?: { id: string; nodeId?: string },
   ) {
     super(message);
     this.name = 'MachaAcquisitionApiError';
   }
+}
+
+/** A torrent a job on the target node already holds; see `MachaAcquisitionApiError.heldBy`. */
+export const TORRENT_ALREADY_ADDED_CODE = 'torrent_already_added';
+
+/**
+ * The job already holding a torrent, from a `torrent_already_added` refusal
+ * wherever it sits in the error chain: the cluster router wraps it, as it
+ * wraps every failure, so reading `.heldBy` off the thrown error finds
+ * nothing. The same walk as `playbackFailureCode`.
+ */
+export function torrentHeldBy(error: unknown): { id: string; nodeId?: string } | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof MachaAcquisitionApiError && current.heldBy) return current.heldBy;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
 }
 
 export class MachaAcquisitionApi implements AcquisitionApi {
@@ -137,6 +163,10 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     const { body, wasJson } = await readResponseBody(response);
     if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
     const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-    throw new MachaAcquisitionApiError(`Macha acquisition request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail, parsed.reason);
+    const record = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    const heldBy = parsed.code === TORRENT_ALREADY_ADDED_CODE && typeof record.id === 'string'
+      ? { id: record.id, ...(typeof record.node_id === 'string' ? { nodeId: record.node_id } : {}) }
+      : undefined;
+    throw new MachaAcquisitionApiError(`Macha acquisition request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail, parsed.reason, heldBy);
   }
 }
