@@ -7,7 +7,10 @@ import type { CatalogueKind } from './CatalogueApi.js';
  */
 export type CatalogueHintResult =
   | 'matched' | 'outside_catalogue_roots' | 'not_media_file' | 'no_media_candidate' | 'no_provider_match'
-  | 'already_stored' | 'profile_prepared' | 'media_not_live' | 'manual_existing_item' | 'manual_metadata';
+  | 'already_stored' | 'profile_prepared' | 'media_not_live' | 'manual_existing_item' | 'manual_metadata'
+  // Server 0.64.0: deferred, the file is newer than the namespace snapshot its
+  // batch read; retried next batch.
+  | 'path_not_yet_visible';
 
 export interface UnmatchedFile {
   id: string;
