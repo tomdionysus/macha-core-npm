@@ -259,6 +259,11 @@ describe('resuming as if the viewer never left', () => {
     expect(automatic).not.toHaveProperty('mode');
   });
 
+  it('saves from a partial snapshot without throwing', () => {
+    const progress = progressFor(media, 600_000, 8_640_000, { session: { mediaId: 'macha:fhd', mode: 'direct' } } as never);
+    expect(progress).toMatchObject({ itemId: 'tmdb:movie:286217', fileMediaId: 'macha:fhd', resume: { chosenByViewer: false, mode: 'direct' } });
+  });
+
   it('reads an entry stored under the old name as the title, and resumes it as a fresh start', () => {
     const storage = new MemoryStorage();
     storage.setItem('macha.continueWatching.v1.client', JSON.stringify([

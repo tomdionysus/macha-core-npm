@@ -58,7 +58,9 @@ export function resumeStateFrom(playing: Pick<PlaybackCoordinatorSnapshot, 'sess
   const session = playing.session;
   if (!session) return undefined;
   const instruction = playing.instruction;
-  const preferences = session.preferences;
+  // Read defensively: a host driving the resolver itself builds this shape
+  // by hand, and a missing block should cost the resume detail, not the save.
+  const preferences: Partial<NonNullable<typeof session.preferences>> = session.preferences ?? {};
   return {
     chosenByViewer: instruction?.chosenByViewer ?? false,
     mode: instruction?.mode ?? session.mode,
