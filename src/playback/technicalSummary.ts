@@ -30,15 +30,18 @@ export interface TechnicalSummary {
   bitDepth?: { bits: number; label: string };
   /** A track's: "96 kHz". */
   sampleRate?: { hz: number; label: string };
-  /** A track's: "Mono", "Stereo", "5.1", "7.1", else "6ch". */
+  /** The default audio track's layout: "Mono", "Stereo", "5.1", "7.1", else "6ch". */
   channels?: { count: number; label: string };
   /** "47.4 Mbps" for a film, "2,304 kbps" for a track. */
   bitrate?: { bps: number; label: string };
   /**
    * The labels of the one-line summary every client shows, in order: for a
-   * film length, resolution, video codec, audio codec, bitrate; for a track
-   * length, codec, bit depth, sample rate, channels, bitrate. A client joins
-   * them with its own separator and wraps between them.
+   * film length, resolution with its class ("3840×2160 (4K)"), video codec,
+   * audio codec, channels, bitrate; for a track length, codec, bit depth,
+   * sample rate, channels, bitrate. A client joins them with its own
+   * separator and wraps between them. Tom, 2026-09-27: "add a (4K), (2K),
+   * (1080p) etc after the physical resolution. Also add a channel count after
+   * the audio codec, like 5.1".
    */
   parts: string[];
 }
@@ -154,8 +157,12 @@ export function technicalSummary(profile: CatalogueMediaProfile | MediaTechnical
   }
   if (video.codec) summary.videoCodec = { codec: video.codec, label: codecLabel(video.codec) };
   if (audio?.codec) summary.audioCodec = { codec: audio.codec, label: codecLabel(audio.codec) };
+  if (positive(audio?.channels)) summary.channels = { count: audio.channels, label: channelsLabel(audio.channels) };
   if (bitrate > 0) summary.bitrate = { bps: bitrate, label: `${(bitrate / 1_000_000).toFixed(1)} Mbps` };
-  summary.parts = [summary.duration, summary.resolution, summary.videoCodec, summary.audioCodec, summary.bitrate]
+  const resolution = summary.resolution && summary.quality
+    ? { label: `${summary.resolution.label} (${summary.quality.label})` }
+    : summary.resolution;
+  summary.parts = [summary.duration, resolution, summary.videoCodec, summary.audioCodec, summary.channels, summary.bitrate]
     .flatMap((field) => (field ? [field.label] : []));
   return summary;
 }
@@ -181,5 +188,8 @@ export function fileSummaries(profiles: readonly (CatalogueMediaProfile | MediaT
     if (entry) entry.mediaIds.push(mediaId);
     else combined.set(key, { summary, mediaIds: [mediaId] });
   }
-  return [...combined.values()];
+  // Highest resolution first (Tom, 2026-09-27: "sort by descending
+  // resolution"), stored order between equals; a track has none and keeps it.
+  const pixels = (summary: TechnicalSummary) => (summary.resolution ? summary.resolution.width * summary.resolution.height : 0);
+  return [...combined.values()].sort((a, b) => pixels(b.summary) - pixels(a.summary));
 }

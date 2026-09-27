@@ -20,7 +20,7 @@ describe('mediaProfileSummary', () => {
       ],
     };
 
-    expect(mediaProfileSummary(profile)).toBe('1h 37m · 1920×1040 · H.264 · AAC · 4.5 Mbps');
+    expect(mediaProfileSummary(profile)).toBe('1h 37m · 1920×1040 (1080p) · H.264 · AAC · Stereo · 4.5 Mbps');
   });
 });
 
@@ -34,7 +34,7 @@ describe('a film with several audio tracks', () => {
         { index: 2, type: 'audio', codec: 'truehd', profile: '', language: 'eng', width: 0, height: 0, channels: 8, sample_rate: 48_000, bit_depth: 24, default: true, forced: false, bitrate: 0, attached_picture: false },
       ],
     };
-    expect(mediaProfileSummary(profile)).toBe('2h 31m · 3840×2160 · HEVC · TRUEHD · 47.4 Mbps');
+    expect(mediaProfileSummary(profile)).toBe('2h 31m · 3840×2160 (4K) · HEVC · TRUEHD · 7.1 · 47.4 Mbps');
   });
 });
 
@@ -85,6 +85,17 @@ describe('the structured summary', () => {
       ],
     });
     expect(summary.parts.join(' · ')).toBe('3:45 · FLAC · 24-bit · 96 kHz · Stereo · 2,304 kbps');
+  });
+
+  it('lists the files highest resolution first', () => {
+    const film = (mediaId: string, width: number, height: number): CatalogueMediaProfile => ({
+      schema_version: 1, media_id: mediaId, format: 'mp4', duration_ms: 9_060_000, bitrate: 1_000_000,
+      streams: [{ index: 0, type: 'video', codec: 'h264', profile: '', language: 'und', width, height, channels: 0, sample_rate: 0, bit_depth: 8, default: true, forced: false, bitrate: 0, attached_picture: false }],
+    });
+    // The Martian's three, as the TV listed them unsorted.
+    const order = fileSummaries([film('fhd', 1920, 1080), film('hd', 1280, 534), film('uhd', 3840, 2160)]);
+    expect(order.map((entry) => entry.mediaIds[0])).toEqual(['uhd', 'fhd', 'hd']);
+    expect(order[0]?.summary.parts[1]).toBe('3840×2160 (4K)');
   });
 
   it('combines files that read the same, naming each', () => {
