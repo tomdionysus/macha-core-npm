@@ -46,6 +46,36 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
+### Candidate: `0.20.0`, prepared 2026-09-27; not cut until Tom says so
+From develop at `e964514`: 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
+
+**Breaking:**
+- `PlaybackProgress.mediaId` is removed; it is now `itemId` (the title), with `fileMediaId` (the file) and `resume` beside it. Stored entries are read as before.
+- `AcquisitionApi.submitMagnet(magnet, options?)` returns a `TorrentAddResult`, not a string. `AcquisitionApi` gains `updateTorrent` and `torrentNodes`, and `PlaybackFactsApi` gains `factsReport`, so implementers must add them.
+- `TorrentJob`'s live fields and `node_id` are nullable. Unions gain members: `TorrentJobState` has `awaiting_node` and `verify_queued`; the error codes have `duplicate_torrent`, `torrent_fault` and `adopt_failed`; the catalogue hint results have `path_not_yet_visible`.
+- The chooser now honours `maxWidth` / `maxHeight` and the new `videoCodecMaxSize`, where before it ignored them. Automatic play ranks a file that needs no re-encode first, then the larger picture.
+
+**Added:**
+- Versions: `qualityClass`, `displayQualityClass`, `deviceQualityClass`, `qualityCeiling`, `playbackVersions`, `versionPreferences`, `playVersion`, `offeredModes`, and `QualityPreferenceStore` with `offerAll`.
+- On the snapshot: `snapshot.versions`, `.modes`, `.playingFile`, `instruction.quality` and `notice.refusal`.
+- `technicalSummary`, `fileSummaries`, `codecLabel` and `qualityLabel`.
+- `resumePreferences`, and `progressFor` taking the snapshot.
+- `preparePlaybackPatch`, `acquisitionError` and `torrentHeldBy`.
+- Cluster torrents (server 0.64.0).
+
+**Fixed:**
+- Playing on server 0.58.0+: container, streams and languages are named on create and PATCH, and a refused choice is answered once.
+- A resume could start at 0.
+- The page-exit close now uses the signed URL (server 0.60.0).
+- A refused switch back into transcode no longer leaves the report claiming it.
+- Facts for a file one node could not read are asked of the next node.
+- A stale cap no longer survives a version switch.
+
+**Release procedure:**
+- Core: `npm version 0.20.0 --no-git-tag-version`, commit `0.20.0` on develop, then an annotated tag `0.20.0` on that commit.
+- Merge `--no-ff` develop into main with the message `0.20.0`, push main, develop and the tag, return to develop, and build last. Tom publishes.
+- Each client, once it is on npm: merge develop into its main, set main to `^0.20.0` against the registry copy, commit, push, and return to develop with the `file:../macha-ts` link restored.
+
 ### Published: `0.19.0`, 2026-09-24
 npm `latest` is `0.19.0`, `gitHead` `4e1746a`, which is the annotated tag `0.19.0`. `main` has the merge `1377dac`. `dist` hash `fd176b93dc4a`, 1147 tests in 70 files. Tom published it; core cut, tagged, merged and pushed. It is breaking (the viewer-text cut, `MediaSummary.subtitle` removed, `ServerStatus.message` replaced), and the release notes are in `4e1746a`'s message.
 
