@@ -4315,6 +4315,38 @@ describe('versions and the quality ceiling', () => {
     expect(picked.coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: true, quality: 1440 });
   });
 
+  it('names the new file\'s streams by the languages playing, even after a resume fixed an audio index', async () => {
+    // The Android TV client, The Martian, 2026-09-27: 720p to 2K across files
+    // named no audio stream, and the node refused it (8 audio streams).
+    const multi = (mediaId: string, width: number, height: number) => ({
+      mediaId,
+      profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+        { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false, width, height },
+        { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: 'fre', default: true, forced: false },
+        { index: 2, type: 'audio' as const, codec: 'aac', profile: '', language: 'eng', default: false, forced: false },
+        { index: 3, type: 'subtitle' as const, codec: 'subrip', profile: '', language: 'eng', default: false, forced: false },
+      ] },
+    });
+    const facts = [multi('uhd', 3840, 2160), multi('hd', 1280, 720)];
+    const playing = session({ mode: 'direct', mediaId: 'hd',
+      sourceInfo: { path: '/m', format: 'mp4', size: 1, bitrate: 1, streams: facts[1]!.profile.streams } as never,
+      preferences: { mode: 'direct', maxHeight: null, maxBitrate: null, audioStream: 2, subtitleStream: 3, audioLanguage: '', subtitleLanguage: '' },
+      selected: { videoStream: 0, audioStream: 2, subtitleStream: 3 } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(playing, async (update) => { updates.push(update); return playing; });
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'hd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0, facts: async () => facts as never,
+      initialPreferences: { mediaId: 'hd', audioStream: 2, subtitleStream: 3 },
+    });
+    await coordinator.start();
+    const step = coordinator.getSnapshot().versions!.steps.find((candidate) => candidate.quality === 1440)!;
+    await coordinator.playVersion(step);
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    // English audio and English subtitles, as were playing, found in the new file.
+    expect(updates[0]).toMatchObject({ mediaId: 'uhd', preferences: { mode: 'transcode', maxHeight: 1440, audioStream: 2, subtitleStream: 3 } });
+  });
+
   it('caps a version on the same file with a transcode, and does not name the file again', async () => {
     const { coordinator, updates } = start();
     await coordinator.start();
@@ -4489,5 +4521,29 @@ describe('a switch back into transcode refused for capacity', () => {
     expect(snapshot.fatalError).toBeUndefined();
     // The report describes what the node still serves, not the refused ask.
     expect(snapshot.instruction?.mode).toBe('direct');
+  });
+});
+
+/**
+ * The Android TV client, 2026-09-27: a transcode resumed from Continue
+ * Watching PATCHed a seek every ~1.5 s for ever and never showed a picture.
+ * The resume position is the player's own, fractional (1560055.99 ms); core
+ * sends it rounded, the node starts the generation at 1560056, and the
+ * unrounded position then read as 0.01 ms before the generation.
+ */
+describe('a fractional resume position into a transcode', () => {
+  it('activates the generation the node made, rather than asking again for ever', async () => {
+    const generation = session({ mode: 'transcode', seekMs: 300_000, seekOffsetMs: 0 } as Partial<PlaybackSession>);
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(generation, async (update) => { updates.push(update); return generation; });
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(),
+      initialPositionMs: 299_999.99, initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    await flush();
+    expect(updates).toHaveLength(0);
+    expect(player.playCalls).toHaveLength(1);
   });
 });

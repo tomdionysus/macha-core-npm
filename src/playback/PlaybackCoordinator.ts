@@ -620,8 +620,14 @@ export function generationLocalPosition(
 ): number | undefined {
   if (session.mode === 'direct') return clampPosition(absolutePositionMs, session.durationMs);
   const generationStartMs = Math.max(0, session.seekMs);
-  if (absolutePositionMs < generationStartMs) return undefined;
-  return clampPosition(absolutePositionMs - generationStartMs, Math.max(0, session.durationMs - generationStartMs));
+  // Compared as the wire carries it, to the millisecond. A player reports
+  // fractional positions and core sends them rounded, so a node starting the
+  // generation exactly where it was asked (1560056 for 1560055.99) otherwise
+  // read as beginning after the viewer, and every renegotiation got the same
+  // answer: a transcode resume looped for ever (the Android TV client,
+  // 2026-09-27).
+  if (Math.round(absolutePositionMs) < generationStartMs) return undefined;
+  return clampPosition(Math.max(0, absolutePositionMs - generationStartMs), Math.max(0, session.durationMs - generationStartMs));
 }
 
 function rangeContainsPosition(
@@ -1368,7 +1374,13 @@ export class PlaybackCoordinator {
       const facts = await this.facts();
       if (this.disposed) return;
       const profile = facts?.find((file) => file.mediaId === step.mediaId)?.profile;
-      if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.options.initialPreferences ?? {}));
+      // Another file's stream indexes mean nothing here, so the viewer's
+      // choices cross by language: the language of what is playing now,
+      // matched in the new file. Passing the start's own preferences named
+      // nothing once a resume had fixed an audio index, and the node refused
+      // the switch for want of an audio stream (the Android TV client, The
+      // Martian, 2026-09-27); it also dropped subtitles that were on.
+      if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.languagesPlaying()));
     }
     this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
     this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
@@ -1450,6 +1462,19 @@ export class PlaybackCoordinator {
    */
   private noFactsMediaId(): string | undefined {
     return this.options.media.mediaIds[0];
+  }
+
+  /** The audio and subtitle languages playing now, else those the start asked for. */
+  private languagesPlaying(): { audioLanguage?: string; subtitleLanguage?: string } {
+    const session = this.snapshot.session;
+    const initial = this.options.initialPreferences ?? {};
+    const languageOf = (index: number | undefined) => (index !== undefined && index >= 0
+      ? session?.sourceInfo.streams.find((stream) => stream.index === index)?.language || undefined
+      : undefined);
+    const audioLanguage = languageOf(session?.selected.audioStream) ?? (initial.audioLanguage || undefined);
+    const subtitleOn = session ? session.selected.subtitleStream >= 0 : initial.subtitleLanguage !== undefined;
+    const subtitleLanguage = subtitleOn ? languageOf(session?.selected.subtitleStream) ?? (initial.subtitleLanguage || undefined) : undefined;
+    return { ...(audioLanguage ? { audioLanguage } : {}), ...(subtitleLanguage ? { subtitleLanguage } : {}) };
   }
 
   /** The capabilities the last instruction was formed for; see `drainMutations`. */
