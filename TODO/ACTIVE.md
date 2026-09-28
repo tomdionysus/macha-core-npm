@@ -187,7 +187,7 @@ Also: a DELETE drops a pending replacement, and the ready long-poll carries the 
 Core wraps it once the server states the final shape and version:
 - async only on nodes whose status carries `startup_no_progress_ms`;
 - the deadline counted from the last progress change, replacing `generationAttemptBudgetMs` for async starts, as the TV said: a 0.33x node still decoding must not be abandoned;
-- each long-poll at most 15 s, under the cap, because macnessa's https front has an unmeasured idle timeout and a cut long-poll must not read as a failed start.
+- each long-poll at most 15 s, under the cap. macnessa's front is haproxy on gbni-1 with client and server timeouts of 1 h (configured, not measured, read 2026-09-28), so it doesn't bind. 15 s stays for the hops no one can see, such as carrier NAT and the client's own stack, where a cut long-poll must not read as a failed start.
 
 ### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
 Chrome converts each buffered byte range to time as `byte / size × duration`. So a Direct Play scrubber draws an estimate: on gbni-1, a phantom range sat 95 s behind the playhead. HLS ranges are real and unaffected.
