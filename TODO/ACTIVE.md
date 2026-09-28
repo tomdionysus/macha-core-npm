@@ -174,7 +174,20 @@ The operator's decision: stop guessing a start time. With `?start=async`, create
 - the id and fields in the body;
 - the long-poll cap.
 
-Core wraps it once the server states the final shape and version. It uses async only on nodes whose status carries `startup_no_progress_ms`, and counts its deadline from the last progress change.
+All six were accepted by the server (plan section 7, `51620fc` and the commit after it):
+- the 202 carries the signed close URL, and a pending PATCH carries its own;
+- a replayed key answers the same pending session;
+- a failed start frees its slot at once and stays readable for 60 s (`start_failed_retention_ms`);
+- direct play answers a synchronous 201;
+- the body carries everything;
+- `start_wait_max_ms` (about 25 s) clamps.
+
+Also: a DELETE drops a pending replacement, and the ready long-poll carries the replacement's URLs.
+
+Core wraps it once the server states the final shape and version:
+- async only on nodes whose status carries `startup_no_progress_ms`;
+- the deadline counted from the last progress change, replacing `generationAttemptBudgetMs` for async starts, as the TV said: a 0.33x node still decoding must not be abandoned;
+- each long-poll at most 15 s, under the cap, because macnessa's https front has an unmeasured idle timeout and a cut long-poll must not read as a failed start.
 
 ### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
 Chrome converts each buffered byte range to time as `byte / size × duration`. So a Direct Play scrubber draws an estimate: on gbni-1, a phantom range sat 95 s behind the playhead. HLS ranges are real and unaffected.
