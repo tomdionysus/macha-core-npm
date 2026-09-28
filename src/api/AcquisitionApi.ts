@@ -131,6 +131,15 @@ export interface TorrentCatalogueSummary {
   state: TorrentCatalogueState;
 }
 
+/** A job's extent publication, as `TorrentJob.publication` reports it. */
+export interface TorrentPublication {
+  published_extents: number;
+  extents: number;
+  published_bytes: number;
+  bytes: number;
+  progress_age_ms: number;
+}
+
 /**
  * A torrent job. From server 0.64.0 torrents belong to the cluster: a job is
  * requested of the cluster, claimed by a torrent-capable node (or the one it
@@ -173,6 +182,25 @@ export interface TorrentJob {
   remove_after_ms?: number | null;
   remove_at_unix_ms?: number | null;
   completed_unix_ms?: number | null;
+  /**
+   * Publication of a finished download's extents into the store, before its
+   * ingest is submitted (server 0.71.0), for a progress indicator on the
+   * stage that otherwise shows `downloaded` at progress 1 with nothing
+   * moving. Present from the first verified piece until the ingest is
+   * submitted; null during importing, when the owner has no live view, or
+   * with no publication record; absent from a node before 0.71.0.
+   * "Publishing now" is `published_extents < extents`, not presence.
+   * `progress_age_ms` is how long ago `published_extents` last advanced, on
+   * the owner's clock at `live_as_of_unix_ms`: a fraction that stops rising
+   * while that grows is stalled, not slow. After 10 minutes without progress
+   * the owner imports anyway and copies the rest.
+   */
+  publication?: TorrentPublication | null;
+  /**
+   * Why a job is waiting (server 0.71.0): `extent_publication` while it is
+   * `downloaded` and publication is incomplete; null otherwise.
+   */
+  waiting_reason?: 'extent_publication' | (string & {}) | null;
   /**
    * Absent on a node older than 0.28.1, which does not report it. The package
    * supports mixed-version clusters, so absent stays absent: never a default.

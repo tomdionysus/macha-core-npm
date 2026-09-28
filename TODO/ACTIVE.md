@@ -174,7 +174,7 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
-### Torrent publication progress: server proposal, 2026-09-28; waiting on the version
+### Torrent publication progress: modelled for server 0.71.0 (`b454c53`, not deployed), 2026-09-28
 `TorrentJob.publication?: { published_extents, extents, published_bytes, bytes } | null`, for Tom's progress indicator on the stage after a download finishes, while the owner publishes extents before the ingest. Avengers Endgame sat at state "downloaded", progress 1, with 378 of 624 extents left.
 
 As the server settled it:
@@ -185,7 +185,7 @@ As the server settled it:
 - **The ingest starts** when they meet, or after 10 minutes with no progress.
 - **Freshness:** a live field, covered by `live_as_of_unix_ms`.
 
-The final field names may still change with the web client; core adds the type when the server names a version.
+**As built:** `publication` also carries `progress_age_ms`, and it is null during importing (a correction to the proposal: it is present only until the ingest is submitted). `waiting_reason` is `extent_publication` while the job is `downloaded` with publication incomplete. Both are in core's `TorrentJob`.
 
 ### A quality no node can produce at real speed stops cycling: Tom, 2026-09-28
 The web client found The Martian's 4K HEVC 10-bit source, transcoding at about 0.33x on both nodes, failing over back and forth for ever with the viewer at 0:02.
