@@ -201,7 +201,11 @@ describe('adding a torrent paused (server 0.71.0)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('sends paused only when asked', async () => {
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ id: 't-1', node_id: null }, 202));
+    // A 0.71.0 node, which records the job paused when asked.
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const paused = JSON.parse(String(init?.body ?? '{}')).paused === true;
+      return jsonResponse({ id: 't-1', node_id: null, job: { id: 't-1', desired: paused ? 'paused' : 'active' } }, 202);
+    });
     vi.stubGlobal('fetch', fetchMock);
     const api = new MachaAcquisitionApi('');
     await api.submitMagnet('magnet:?', { paused: true });
@@ -209,5 +213,27 @@ describe('adding a torrent paused (server 0.71.0)', () => {
     const bodies = (fetchMock.mock.calls as Array<[string, RequestInit]>).map(([, init]) => JSON.parse(String(init.body)));
     expect(bodies[0]).toEqual({ magnet: 'magnet:?', paused: true });
     expect(bodies[1]).toEqual({ magnet: 'magnet:?' });
+  });
+});
+
+describe('a paused add on a node that ignores paused', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('pauses the job at once when the node started it anyway', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => (url.endsWith('/pause')
+      ? jsonResponse({ id: 't-1', desired: 'paused', state: 'queued' }, 202)
+      : jsonResponse({ id: 't-1', node_id: null, job: { id: 't-1', desired: 'active', state: 'awaiting_node' } }, 202)));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaAcquisitionApi('').submitMagnet('magnet:?', { paused: true });
+    expect((fetchMock.mock.calls as Array<[string]>).map(([url]) => url)).toEqual(['/api/v1/torrents/jobs', '/api/v1/torrents/jobs/t-1/pause']);
+    expect(result).toMatchObject({ id: 't-1', pausedAfterAdd: true, job: { desired: 'paused' } });
+  });
+
+  it('leaves a job the node recorded paused alone', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ id: 't-1', node_id: null, job: { id: 't-1', desired: 'paused', state: 'awaiting_node' } }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaAcquisitionApi('').submitMagnet('magnet:?', { paused: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.pausedAfterAdd).toBeUndefined();
   });
 });

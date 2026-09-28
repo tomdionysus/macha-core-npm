@@ -140,12 +140,20 @@ export class MachaAcquisitionApi implements AcquisitionApi {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return {
+    const result: TorrentAddResult = {
       id: response.id,
       infoHash: typeof response.info_hash === 'string' ? response.info_hash : null,
       pinnedNodeId: typeof response.node_id === 'string' ? response.node_id : null,
       ...(response.job ? { job: response.job } : {}),
     };
+    // A node before 0.71.0 ignores `paused` and starts the job. Said by the
+    // job it answers with (`desired` not paused), so it is paused at once:
+    // a moment's start at worst, never a download nobody asked for.
+    if (options.paused === true && response.job?.desired !== 'paused') {
+      const paused = await this.pauseTorrent(response.id);
+      return { ...result, job: paused, pausedAfterAdd: true };
+    }
+    return result;
   }
 
   updateTorrent(id: string, update: TorrentJobUpdate): Promise<TorrentJob> {

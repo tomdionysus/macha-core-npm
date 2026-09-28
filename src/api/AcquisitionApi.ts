@@ -224,6 +224,11 @@ export interface TorrentAddResult {
   pinnedNodeId: string | null;
   /** The new job, from 0.64.0; absent from an older node. */
   job?: TorrentJob;
+  /**
+   * Set when a paused add reached a node before 0.71.0, which ignored
+   * `paused`, so core paused the job just after adding it.
+   */
+  pausedAfterAdd?: boolean;
 }
 
 export interface TorrentJobUpdate {
