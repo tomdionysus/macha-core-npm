@@ -44,7 +44,33 @@ export type PlaybackNoticeCode =
   | 'not-ready'
   | 'instruction-failed'
   | 'subtitles-loading'
-  | 'update-failed';
+  | 'update-failed'
+  // Automatic play stepped down a quality because the node could not produce
+  // the one it chose at real speed; `error.code` is TOO_SLOW_TO_PLAY_CODE.
+  | 'quality-stepped-down';
+
+/**
+ * The code on a stream core stopped because the node could not produce the
+ * quality at real speed: on a quality the viewer chose (Tom: a clear,
+ * visible "Macha can't play this quality because…", with a way to try
+ * again), or on core's own choice when no lower version was left; and on a
+ * `quality-stepped-down` notice. See `PlaybackCoordinator.tooSlowToPlay`.
+ */
+export const TOO_SLOW_TO_PLAY_CODE = 'too_slow_to_play';
+
+/**
+ * Notices that describe how playback now runs, rather than a moment: they
+ * stay once the change that caused them lands, and go when the viewer
+ * changes something or playback starts again.
+ */
+const LASTING_NOTICES: ReadonlySet<PlaybackNoticeCode> = new Set(['quality-stepped-down', 'decode-fallback', 'copy-refused']);
+
+function isLastingNotice(notice: PlaybackNotice | undefined): boolean {
+  return notice !== undefined && LASTING_NOTICES.has(notice.code);
+}
+
+/** Media a generation must play before a stall stops counting as the node being too slow; see `tooSlowToPlay`. */
+export const EARLY_STALL_MEDIA_MS = 15_000;
 
 export interface PlaybackNotice {
   code: PlaybackNoticeCode;
@@ -1379,6 +1405,20 @@ export class PlaybackCoordinator {
    */
   async playVersion(step: VersionStep): Promise<void> {
     if (this.disposed) return;
+    const update = await this.versionUpdate(step);
+    if (!update || this.disposed) return;
+    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching: update.mediaId !== undefined });
+    this.update(update);
+    if (this.snapshot.instruction) {
+      this.patchSnapshot({ instruction: {
+        ...this.snapshot.instruction, quality: step.quality,
+        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
+      } });
+    }
+  }
+
+  /** The update that plays a version: its mode, cap, and on another file that file and its streams. */
+  private async versionUpdate(step: VersionStep): Promise<PlaybackUpdate | undefined> {
     const session = this.snapshot.session;
     const switching = step.mediaId !== undefined && step.mediaId !== session?.mediaId;
     const preferences: PlaybackPreferencesUpdate = {
@@ -1400,14 +1440,74 @@ export class PlaybackCoordinator {
       // Martian, 2026-09-27); it also dropped subtitles that were on.
       if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.languagesPlaying()));
     }
-    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
-    this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
-    if (this.snapshot.instruction) {
-      this.patchSnapshot({ instruction: {
-        ...this.snapshot.instruction, quality: step.quality,
-        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
-      } });
+    return { preferences, ...(switching ? { mediaId: step.mediaId } : {}) };
+  }
+
+  /** Where the generation on screen began on the title's timeline; see `tooSlowToPlay`. */
+  private presentedFromMs?: number;
+  private earlyStallKey?: string;
+  private earlyStalls = 0;
+
+  /**
+   * Whether a stalled stream is a quality the node cannot produce at real
+   * speed, not a node that has failed, and if so what to do instead of
+   * failing over.
+   *
+   * The web client, 2026-09-28: The Martian's 4K HEVC 10-bit source
+   * transcodes at about 0.33x on both nodes, so each delivered its first
+   * fragment and stalled, and core failed over back and forth for ever with
+   * the viewer at 0:02 and no word why. A stall that comes before the
+   * generation has played `EARLY_STALL_MEDIA_MS`, on a stream the node is
+   * producing (not Direct Play, where a stall is the network), is failed over
+   * once as before; if the replacement stalls the same way, the second node
+   * shares the limit and another would too.
+   *
+   * Then, Tom, 2026-09-28: a quality the viewer chose stops, with a stated
+   * reason (`TOO_SLOW_TO_PLAY_CODE`) for the host to show clearly, with a way
+   * to try again. A quality core chose steps down to the next lower version,
+   * and says so (`quality-stepped-down`); with none lower, it stops the same
+   * way.
+   */
+  private tooSlowToPlay(session: PlaybackSession, error: Error): boolean {
+    if (session.mode === 'direct' || this.presentedFromMs === undefined) return false;
+    const played = (this.lastObservedPositionMs ?? this.presentedFromMs) - this.presentedFromMs;
+    if (played >= EARLY_STALL_MEDIA_MS) {
+      this.earlyStalls = 0;
+      return false;
     }
+    const key = `${session.mediaId}|${session.mode}|${session.preferences.maxHeight ?? ''}`;
+    if (key !== this.earlyStallKey) {
+      this.earlyStallKey = key;
+      this.earlyStalls = 0;
+    }
+    this.earlyStalls += 1;
+    if (this.earlyStalls < 2) return false;
+    this.earlyStalls = 0;
+    const tooSlow = Object.assign(
+      new Error(`Macha could not produce ${session.mediaId} as ${session.mode} at real speed on two nodes.`, { cause: error }),
+      { code: TOO_SLOW_TO_PLAY_CODE },
+    );
+    const quality = this.snapshot.instruction?.quality;
+    const lower = !this.viewerChoseMode && quality !== undefined
+      ? this.snapshot.versions?.steps.find((step) => step.quality < quality)
+      : undefined;
+    this.log.warn('too-slow-to-play', { sessionId: session.sessionId, mediaId: session.mediaId, mode: session.mode, quality, steppingDownTo: lower?.quality, viewerChose: this.viewerChoseMode });
+    if (!lower) {
+      this.failTerminal(tooSlow);
+      return true;
+    }
+    void this.versionUpdate(lower).then((update) => {
+      if (!update || this.disposed) return;
+      this.applyUpdate(update);
+      this.patchSnapshot({
+        notice: { code: 'quality-stepped-down', error: tooSlow },
+        ...(this.snapshot.instruction ? { instruction: {
+          ...this.snapshot.instruction, quality: lower.quality, chosenByViewer: false,
+          ...(lower.mediaId !== undefined ? { mediaId: lower.mediaId } : {}),
+        } } : {}),
+      });
+    });
+    return true;
   }
 
   /**
@@ -2448,7 +2548,9 @@ export class PlaybackCoordinator {
 
         this.activateSession(next, currentDesired, pending.reason === 'seek' ? 'relocate' : 'continue');
         if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
-        if (!this.disposed) this.patchSnapshot({ notice: undefined });
+        // A notice that says how playback now runs outlives the change that
+        // made it: the viewer must be able to read why the quality dropped.
+        if (!this.disposed && !isLastingNotice(this.snapshot.notice)) this.patchSnapshot({ notice: undefined });
       } catch (error) {
         if (this.disposed) return;
         if (controller.signal.aborted) {
@@ -2577,6 +2679,7 @@ export class PlaybackCoordinator {
       this.seekIntentActive = true;
       this.seekIntentPositionMs = undefined;
       this.seekIntentPinnedByPresentation = true;
+      this.presentedFromMs = absoluteStartMs;
       this.patchSnapshot({
         intent: { ...this.snapshot.intent, positionMs: absoluteStartMs },
         event: {
@@ -3369,6 +3472,7 @@ export class PlaybackCoordinator {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       return;
     }
+    if (failedSession && isEndpointRetryablePlaybackFailure(fatalError) && this.tooSlowToPlay(failedSession, fatalError)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);

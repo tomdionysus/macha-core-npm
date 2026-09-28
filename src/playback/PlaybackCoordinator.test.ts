@@ -7,7 +7,7 @@ import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { playbackVersions, versionPreferences, type QualityCeiling } from './playbackVersions.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
+import { TOO_SLOW_TO_PLAY_CODE, equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
   alternateRecoveryWindowMs,
 } from './PlaybackCoordinator.js';
 
@@ -4625,5 +4625,82 @@ describe('a failover start that reports progress', () => {
     replacement.resolve(session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' } }));
     await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
     expect(coordinator.getSnapshot().startProgress).toBeUndefined();
+  });
+});
+
+/**
+ * The web client, 2026-09-28: a 4K HEVC transcode at 0.33x on both nodes
+ * failed over back and forth for ever, the viewer at 0:02. Tom: a quality the
+ * viewer chose stops with a stated reason; core's own choice steps down.
+ */
+describe('a quality no node can produce at real speed', () => {
+  const stall = () => new PlaybackSourceError('Playback stopped and nothing arrived for 7s.', 'stream');
+  const hevc = (mediaId: string, width: number, height: number) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 600_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'hevc', profile: '', language: '', default: true, forced: false, width, height },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  function setup(options: { initialPreferences?: PlaybackPreferencesUpdate; facts?: unknown } = {}) {
+    const player = new FakePlayer();
+    const first = session({ mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const second = session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...first.source, url: 'http://b/replacement.m3u8' } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(first, async (update) => { updates.push(update); return first; }) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => second);
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      ...(options.facts ? { facts: async () => options.facts as never } : {}),
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { player, api, coordinator, updates };
+  }
+
+  it("stops a quality the viewer chose once a second node stalls the same way, with the stated code", async () => {
+    const { player, api, coordinator } = setup({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(playbackFailureCode(coordinator.getSnapshot().fatalError)).toBe(TOO_SLOW_TO_PLAY_CODE);
+    // One failover, not an endless cycle.
+    expect(api.failover).toHaveBeenCalledTimes(1);
+  });
+
+  it("steps core's own choice down a quality instead, and says so", async () => {
+    const { player, api, coordinator, updates } = setup({ facts: [hevc('uhd', 3840, 2160), hevc('fhd', 1920, 1080)] });
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: false, quality: 2160 });
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', maxHeight: 1440 });
+    expect(coordinator.getSnapshot().notice?.code).toBe('quality-stepped-down');
+    expect(playbackFailureCode(coordinator.getSnapshot().notice?.error)).toBe(TOO_SLOW_TO_PLAY_CODE);
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ quality: 1440, chosenByViewer: false });
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    expect(api.failover).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails over as before when the stream had been playing', async () => {
+    const { player, api, coordinator } = setup({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    player.emit({ positionMs: 60_000, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 120_000, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(2));
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
   });
 });

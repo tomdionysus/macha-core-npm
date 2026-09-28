@@ -174,6 +174,21 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
+### A quality no node can produce at real speed stops cycling: Tom, 2026-09-28
+The web client found The Martian's 4K HEVC 10-bit source, transcoding at about 0.33x on both nodes, failing over back and forth for ever with the viewer at 0:02.
+
+Tom ruled for a quality the viewer chose: "stop with a stated reason - but it has to be clear, consise, and visible 'Macha can't play this quality because...' with a try again option."
+
+Built in `PlaybackCoordinator.tooSlowToPlay`:
+- a stall before a transformed generation has played `EARLY_STALL_MEDIA_MS` (15 s) fails over once;
+- if the replacement stalls the same way, core stops cycling;
+- a viewer's choice ends with `fatalError` coded `TOO_SLOW_TO_PLAY_CODE`, which the clients word and pair with retry;
+- core's own choice steps down to the next lower version, with a `quality-stepped-down` notice (coded the same). With none lower, it stops as for the viewer.
+
+`quality-stepped-down`, `decode-fallback` and `copy-refused` are now lasting notices: they stay once their change lands, where the decode fallback's used to vanish on activation.
+
+Next, to prevent rather than recover: the server's plan `f0277a1`, in which a node states how fast it transcodes a kind of source.
+
 ### Playback start reports progress: built in core against server 0.69.0 (`e2d25a4`, not deployed), 2026-09-28
 The operator's decision: stop guessing a start time. With `?start=async`, create and PATCH answer 202 once admitted, and GET, long-polled with `after`/`wait_ms`, reports stage and progress counters. A start fails only when progress stops (`startup_no_progress_ms`). Core's review raised six points:
 - the signed close for a pending start;
