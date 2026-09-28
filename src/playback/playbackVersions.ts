@@ -186,6 +186,16 @@ export interface VersionStep {
   maxHeight?: number;
 }
 
+/** The larger file automatic play passed over, and what it would convert; see `PlaybackVersions.passedOver`. */
+export interface PassedOverVersion {
+  quality: QualityClass;
+  mediaId?: string;
+  /** Which of its streams would be re-encoded. */
+  converts: { video: boolean; audio: boolean };
+  /** The chooser's reasons, such as `audio-codec-not-playable`. */
+  reasons: PlaybackDecisionReason[];
+}
+
 export interface PlaybackVersions {
   files: VersionFile[];
   /**
@@ -199,6 +209,15 @@ export interface PlaybackVersions {
   automatic?: VersionStep;
   /** Set when the ceiling kept automatic play off a larger file. */
   limitedBy?: QualityCeiling;
+  /**
+   * Set when automatic play chose a smaller file than the largest within the
+   * ceiling, because that larger one would need converting and a file that
+   * plays as it is ranks first. The ranking, not the ceiling, so `limitedBy`
+   * cannot say it: The Martian's 4K file with TrueHD audio on a 4K Android TV,
+   * which plays the 1080p file (the Android TV client, 2026-09-28). Data for
+   * the host to word.
+   */
+  passedOver?: PassedOverVersion;
 }
 
 const MODE_RANK = { direct: 0, remux: 1, transcode: 2 } as const;
@@ -320,6 +339,18 @@ export function playbackVersions(
     : options.ceiling;
   const within = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
   const automatic = within.length > 0 ? fileStep(best(within)!) : stepAt(ceiling!.quality);
+  const largest = within.length > 0 ? Math.max(...within.map((file) => file.quality)) : undefined;
+  const skipped = largest !== undefined && automatic.quality < largest
+    ? best(within.filter((file) => file.quality === largest))
+    : undefined;
+  const passedOver: PassedOverVersion | undefined = skipped
+    ? {
+      quality: skipped.quality,
+      ...(skipped.mediaId !== undefined ? { mediaId: skipped.mediaId } : {}),
+      converts: { video: skipped.instruction.video === 'transcode', audio: skipped.instruction.audio === 'transcode' },
+      reasons: skipped.instruction.reasons.filter((reason) => reason !== 'source-plays-as-is' && reason !== 'host-policy-prefers-container'),
+    }
+    : undefined;
   return {
     files,
     steps,
@@ -328,6 +359,7 @@ export function playbackVersions(
     // Only where the ceiling excluded a file: a larger file passed over
     // because it needs re-encoding is the ranking, not the ceiling.
     ...(ceiling && files.some((file) => file.quality > ceiling.quality) ? { limitedBy: ceiling } : {}),
+    ...(passedOver ? { passedOver } : {}),
   };
 }
 

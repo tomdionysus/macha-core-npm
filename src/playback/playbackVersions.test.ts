@@ -103,6 +103,27 @@ describe('playbackVersions', () => {
     expect(versions.automatic?.mediaId).toBe('fhd');
     // The ranking, not the ceiling, passed the larger file over.
     expect(versions.limitedBy).toBeUndefined();
+    expect(versions.passedOver).toMatchObject({ quality: 2160, mediaId: 'hevc', converts: { video: true, audio: false } });
+  });
+
+  it("says which larger file was passed over and what it would convert, as for The Martian's TrueHD", () => {
+    // The Android TV client, 2026-09-28: a 4K screen, and automatic play took
+    // the 1080p file because the 4K file's audio needs converting.
+    const truehd = file('uhd', 3840, 2160);
+    truehd.profile.streams[1] = { ...truehd.profile.streams[1]!, codec: 'truehd', channels: 8 };
+    const versions = playbackVersions([truehd, file('fhd', 1920, 1080)], web, { ceiling: { quality: 2160, reason: 'ceiling-display' } });
+    expect(versions.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+    expect(versions.limitedBy).toBeUndefined();
+    expect(versions.passedOver).toEqual({
+      quality: 2160, mediaId: 'uhd', converts: { video: false, audio: true },
+      reasons: expect.arrayContaining(['audio-codec-not-playable']),
+    });
+  });
+
+  it('passes nothing over when automatic play took the largest file within the ceiling', () => {
+    const versions = playbackVersions([file('uhd', 3840, 2160), file('fhd', 1920, 1080)], web, { ceiling: { quality: 1080, reason: 'ceiling-display' } });
+    expect(versions.automatic?.mediaId).toBe('fhd');
+    expect(versions.passedOver).toBeUndefined();
   });
 });
 
