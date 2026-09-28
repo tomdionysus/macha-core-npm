@@ -382,3 +382,28 @@ describe('immutable media profile schema versions', () => {
       .rejects.toMatchObject({ code: 'invalid_media_profile' });
   });
 });
+
+describe('catalogue edits and filtered search (server 0.67.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('patches only the fields given, with the revision', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'tmdb:movie:1', kind: 'movie', title: 'New', revision: 4, artwork: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await new MachaCatalogueApi('http://n').patch('tmdb:movie:1', { title: 'New', synopsis: null, lock: false }, 3);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://n/api/v1/catalogue/items/tmdb%3Amovie%3A1');
+    expect(init.method).toBe('PATCH');
+    expect(new Headers(init.headers).get('If-Match')).toBe('"rev-3"');
+    expect(JSON.parse(String(init.body))).toEqual({ title: 'New', synopsis: null, lock: false });
+  });
+
+  it('searches by kinds and parent on the server', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await new MachaCatalogueApi('http://n').search('plan', 20, undefined, { kinds: ['movie', 'show'], parent: 'tmdb:show:9' });
+    const url = new URL((fetchMock.mock.calls[0] as [string])[0]);
+    expect(url.searchParams.getAll('kind')).toEqual(['movie', 'show']);
+    expect(url.searchParams.get('parent')).toBe('tmdb:show:9');
+    expect(url.searchParams.get('q')).toBe('plan');
+  });
+});

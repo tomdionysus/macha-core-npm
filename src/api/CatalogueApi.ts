@@ -159,13 +159,42 @@ export interface ArtworkSource {
   ready?: boolean;
 }
 
+/** A partial item edit; see `CatalogueApi.patch`. */
+export type CatalogueItemPatch = {
+  [K in keyof CatalogueItem as K extends 'id' | 'kind' | 'revision' | 'updated_ns' ? never : K]?: CatalogueItem[K] | null;
+} & { lock?: boolean };
+
+/** Where a search looks; see `CatalogueApi.search`. */
+export interface CatalogueSearchFilter {
+  kinds?: readonly CatalogueKind[];
+  parent?: string;
+}
+
 export interface CatalogueApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
   list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]>;
   get(id: string, signal?: AbortSignal): Promise<CatalogueItem>;
+  /**
+   * Replace an item's descriptive fields (PUT). From server 0.67.0 its files
+   * and artwork change only where the body names them, and an edit locks the
+   * item against the scanner unless the body says `lock: false`.
+   */
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem>;
+  /**
+   * Change only the fields given (server 0.67.0, proposal G); `null` clears
+   * an optional one. The metadata editor's edit: nothing it leaves out,
+   * files included, can be lost by omission. A `parent_id` must name an
+   * existing item of the right kind (`400 parent_not_found`,
+   * `400 bad_parent_kind`). Locks the item unless `lock` is false.
+   */
+  patch(id: string, fields: CatalogueItemPatch, expectedRevision?: number): Promise<CatalogueItem>;
   clearMetadata(id: string, expectedRevision?: number): Promise<void>;
-  search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]>;
+  /**
+   * `filter` narrows the search on the server, before `limit` (server
+   * 0.67.0, proposal F): `kinds` to those kinds, `parent` to one item's
+   * children. An older node ignores it.
+   */
+  search(query: string, limit?: number, signal?: AbortSignal, filter?: CatalogueSearchFilter): Promise<CatalogueItem[]>;
   putArtwork(itemId: string, role: string, mimeType: string, data: Blob): Promise<CatalogueArtwork>;
   artwork(id: string, signal?: AbortSignal): Promise<Blob>;
   /**

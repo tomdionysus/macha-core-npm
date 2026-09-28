@@ -157,7 +157,16 @@ Built in `src/playback/playbackVersions.ts` and the coordinator; the commit foll
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
 - **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
-- **Waiting on the server,** whose proposal A-G is with Tom via the web client:
+- **Built against server 0.67.0 (live in 0.69.0), 2026-09-28:**
+  - A: `ManageApi.providerSearch`;
+  - C: `matchProvider` and `Identification { from: 'provider' }`;
+  - D: `ManualMetadata` parents by id, and `lock`;
+  - E: `providerArtwork` and `chooseArtwork`;
+  - F: `CatalogueApi.search(…, filter)` with `kinds` and `parent`;
+  - G: `CatalogueApi.patch`.
+
+  The server's docs are `docs/management.md` and `docs/catalogue.md`. The list as it stood before:
+- **(Superseded) Waiting on the server,** whose proposal A-G is with Tom via the web client:
   - A: provider search and match by `ref`;
   - D: parent ids on `/manual`;
   - E: artwork options and choice;

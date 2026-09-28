@@ -7,6 +7,8 @@ import type {
   CatalogueMediaProfile,
   CatalogueStatus,
   KeyframeIndex,
+  CatalogueItemPatch,
+  CatalogueSearchFilter,
 } from './CatalogueApi.js';
 import { MachaApiError, MachaCatalogueApi } from './MachaCatalogueApi.js';
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
@@ -90,8 +92,8 @@ export class ClusterCatalogueApi implements CatalogueApi {
     return this.consumeMediaProfile(mediaId, request, consumer, signal);
   }
 
-  search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]> {
-    return this.read((api) => api.search(query, limit, signal), signal);
+  search(query: string, limit?: number, signal?: AbortSignal, filter?: CatalogueSearchFilter): Promise<CatalogueItem[]> {
+    return this.read((api) => api.search(query, limit, signal, filter), signal);
   }
 
   /**
@@ -148,6 +150,10 @@ export class ClusterCatalogueApi implements CatalogueApi {
 
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem> {
     return this.write((api) => api.update(item, expectedRevision));
+  }
+
+  patch(id: string, fields: CatalogueItemPatch, expectedRevision?: number): Promise<CatalogueItem> {
+    return this.write((api) => api.patch(id, fields, expectedRevision));
   }
 
   clearMetadata(id: string, expectedRevision?: number): Promise<void> {

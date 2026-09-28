@@ -14,7 +14,8 @@ function manage() {
   return {
     match: vi.fn(async () => undefined),
     manual: vi.fn(async () => ({ leaf_item_id: 'leaf', items: [] })),
-  } as unknown as ManageApi & { match: ReturnType<typeof vi.fn>; manual: ReturnType<typeof vi.fn> };
+    matchProvider: vi.fn(async () => ({ leaf_item_id: 'tmdb:movie:1', items: [] })),
+  } as unknown as ManageApi & { match: ReturnType<typeof vi.fn>; manual: ReturnType<typeof vi.fn>; matchProvider: ReturnType<typeof vi.fn> };
 }
 
 describe('manualFromCandidate', () => {
@@ -63,5 +64,16 @@ describe('identifyUnmatched', () => {
     await expect(identifyUnmatched(api, 'f1', { from: 'candidate', probe: probe({ kind: 'track', title: 'Jóga' }) }))
       .rejects.toMatchObject({ code: CANDIDATE_INCOMPLETE_CODE });
     expect(api.manual).not.toHaveBeenCalled();
+  });
+});
+
+describe('identifying by a provider record', () => {
+  it('matches through the provider route, and nothing else', async () => {
+    const api = manage();
+    const result = await identifyUnmatched(api, 'hint:one', { from: 'provider', target: { ref: 'tmdb:movie:1' } });
+    expect(api.matchProvider).toHaveBeenCalledWith('hint:one', { ref: 'tmdb:movie:1' });
+    expect(api.match).not.toHaveBeenCalled();
+    expect(api.manual).not.toHaveBeenCalled();
+    expect(result).toEqual({ applied: 'provider', result: { leaf_item_id: 'tmdb:movie:1', items: [] } });
   });
 });

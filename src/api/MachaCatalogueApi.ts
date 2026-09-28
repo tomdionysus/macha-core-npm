@@ -9,6 +9,8 @@ import type {
   CatalogueItem,
   CatalogueKind,
   CatalogueMediaProfile,
+  CatalogueItemPatch,
+  CatalogueSearchFilter,
   CatalogueStatus,
   KeyframeIndex,
   KeyframeStream,
@@ -168,6 +170,17 @@ export class MachaCatalogueApi implements CatalogueApi {
     }));
   }
 
+  async patch(id: string, fields: CatalogueItemPatch, expectedRevision?: number): Promise<CatalogueItem> {
+    return this.withAbsoluteArtworkUrls(await this.request(`/api/v1/catalogue/items/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(expectedRevision !== undefined ? { 'If-Match': `"rev-${expectedRevision}"` } : {}),
+      },
+      body: JSON.stringify(fields),
+    }));
+  }
+
   clearMetadata(id: string, expectedRevision?: number): Promise<void> {
     return this.request(`/api/v1/catalogue/items/${encodeURIComponent(id)}/metadata`, {
       method: 'DELETE',
@@ -182,8 +195,12 @@ export class MachaCatalogueApi implements CatalogueApi {
     return [{ url: `${this.baseUrl}/api/v1/catalogue/artwork/${encodeURIComponent(id)}`, requiresAuthorization: true }];
   }
 
-  async search(query: string, limit = 50, signal?: AbortSignal): Promise<CatalogueItem[]> {
-    const params = queryString([['q', query], ['limit', String(limit)]]);
+  async search(query: string, limit = 50, signal?: AbortSignal, filter: CatalogueSearchFilter = {}): Promise<CatalogueItem[]> {
+    const params = queryString([
+      ['q', query], ['limit', String(limit)],
+      ...(filter.kinds ?? []).map((kind): [string, string] => ['kind', kind]),
+      ['parent', filter.parent],
+    ]);
     const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/search?${params}`, signal);
     return this.items(response).map((item) => this.withAbsoluteArtworkUrls(item));
   }

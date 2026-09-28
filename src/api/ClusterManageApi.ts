@@ -2,7 +2,8 @@ import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type {
   IdentityAssociationResetRequest, IdentityAssociationResetResult, MachaDfsDirectory,
-  ManageApi, ManualMetadata, ManualMetadataResult, MatchSearchResult, UnmatchedDetail, UnmatchedFile,
+  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole,
+  ProviderMatchRef, ProviderSearchKind, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
 } from './ManageApi.js';
 import { MachaManageApi } from './MachaManageApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
@@ -17,6 +18,16 @@ export class ClusterManageApi implements ManageApi {
   retry(id: string): Promise<void> { return this.write((api) => api.retry(id)); }
   match(id: string, catalogueItemId: string): Promise<void> { return this.write((api) => api.match(id, catalogueItemId)); }
   manual(id: string, metadata: ManualMetadata): Promise<ManualMetadataResult> { return this.write((api) => api.manual(id, metadata)); }
+  matchProvider(id: string, target: ProviderMatchRef): Promise<ManualMetadataResult> { return this.write((api) => api.matchProvider(id, target)); }
+  providerSearch(query: string, kind: ProviderSearchKind, options?: { year?: number; artist?: string; limit?: number }): Promise<ProviderSearchResult[]> {
+    return this.read((api) => api.providerSearch(query, kind, options));
+  }
+  providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]> {
+    return this.read((api) => api.providerArtwork(ref, role, numbers));
+  }
+  chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options?: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean }): Promise<ManageCatalogueMatch> {
+    return this.write((api) => api.chooseArtwork(itemId, role, optionId, options));
+  }
   deleteUnmatched(id: string): Promise<void> { return this.write((api) => api.deleteUnmatched(id)); }
   browse(path: string): Promise<MachaDfsDirectory> { return this.read((api) => api.browse(path)); }
   mkdir(path: string): Promise<void> { return this.write((api) => api.mkdir(path)); }

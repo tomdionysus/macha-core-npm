@@ -1,4 +1,4 @@
-import type { ManageApi, ManualMetadata, ManualMetadataResult, MediaProbeCandidate } from './ManageApi.js';
+import type { ManageApi, ManualMetadata, ManualMetadataResult, MediaProbeCandidate, ProviderMatchRef } from './ManageApi.js';
 
 /**
  * What to identify an unmatched file as, whichever way the viewer arrived at
@@ -9,22 +9,25 @@ import type { ManageApi, ManualMetadata, ManualMetadataResult, MediaProbeCandida
  *   returns them;
  * - `catalogue`: an item already in the catalogue, from `prospectiveMatches`
  *   or a search;
- * - `manual`: metadata the viewer entered.
+ * - `manual`: metadata the viewer entered, which from server 0.67.0 may name
+ *   its parents by id (`ManualMetadata`);
+ * - `provider`: a provider record, from `ManageApi.providerSearch`, with the
+ *   numbers that pick the episode or track (server 0.67.0).
  *
- * A fourth, `provider`, joins when the server ships a provider search that
- * returns results a match can refer to; parent links by id and a choice of
- * artwork join when the server accepts them. None is modelled before its
- * route exists.
+ * Artwork is chosen after, on the item written, with
+ * `ManageApi.providerArtwork` and `chooseArtwork`.
  */
 export type Identification =
   | { from: 'candidate'; probe: MediaProbeCandidate }
   | { from: 'catalogue'; catalogueItemId: string }
-  | { from: 'manual'; metadata: ManualMetadata };
+  | { from: 'manual'; metadata: ManualMetadata }
+  | { from: 'provider'; target: ProviderMatchRef };
 
 /** What applying an identification did. */
 export type IdentificationResult =
   | { applied: 'matched'; catalogueItemId: string }
-  | { applied: 'created'; result: ManualMetadataResult };
+  | { applied: 'created'; result: ManualMetadataResult }
+  | { applied: 'provider'; result: ManualMetadataResult };
 
 /**
  * A candidate the server can catalogue as it stands, or undefined when it is
@@ -72,8 +75,8 @@ export function manualFromCandidate(probe: MediaProbeCandidate): ManualMetadata 
 
 /**
  * Identify an unmatched file, by whichever route the identification needs:
- * `match` for an existing catalogue item, `manual` for a candidate or entered
- * metadata. The one place that knows which call each path takes, so every
+ * `match` for an existing catalogue item or a provider record, `manual` for a
+ * candidate or entered metadata. The one place that knows which call each path takes, so every
  * client applies the same way.
  *
  * Throws `IdentificationError` with code `candidate_incomplete` for a
@@ -81,6 +84,9 @@ export function manualFromCandidate(probe: MediaProbeCandidate): ManualMetadata 
  * error, as the API threw it.
  */
 export async function identifyUnmatched(manage: ManageApi, fileId: string, identification: Identification): Promise<IdentificationResult> {
+  if (identification.from === 'provider') {
+    return { applied: 'provider', result: await manage.matchProvider(fileId, identification.target) };
+  }
   if (identification.from === 'catalogue') {
     await manage.match(fileId, identification.catalogueItemId);
     return { applied: 'matched', catalogueItemId: identification.catalogueItemId };
