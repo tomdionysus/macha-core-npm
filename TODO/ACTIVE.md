@@ -187,6 +187,7 @@ Also: a DELETE drops a pending replacement, and the ready long-poll carries the 
 Core wraps it once the server states the final shape and version:
 - async only on nodes whose status carries `startup_no_progress_ms`;
 - the deadline counted from the last progress change, replacing `generationAttemptBudgetMs` for async starts, as the TV said: a 0.33x node still decoding must not be abandoned;
+- the long-poll lives in the resolver, not the coordinator. The phone drives `ClusterPlaybackResolver` directly (the phone client, via the server), so a progress state only on the coordinator's snapshot would never reach it. `resolve()` and `update()` wait out an async start themselves, still answer the ready session, and report each progress step through an optional callback (for example `onStartProgress`). The coordinator passes one to put progress on its snapshot. The phone's downloads use direct sessions, which never go pending;
 - each long-poll at most 15 s, under the cap. macnessa's front is haproxy on gbni-1 with client and server timeouts of 1 h (configured, not measured, read 2026-09-28), so it doesn't bind. 15 s stays for the hops no one can see, such as carrier NAT and the client's own stack, where a cut long-poll must not read as a failed start.
 
 ### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
