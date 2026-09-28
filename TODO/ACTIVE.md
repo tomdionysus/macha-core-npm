@@ -165,6 +165,17 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
+### Playback start reports progress: server design for 0.69.0, reviewed 2026-09-28; not built
+The operator's decision: stop guessing a start time. With `?start=async`, create and PATCH answer 202 once admitted, and GET, long-polled with `after`/`wait_ms`, reports stage and progress counters. A start fails only when progress stops (`startup_no_progress_ms`). Core's review raised six points:
+- the signed close for a pending start;
+- idempotency while pending;
+- a failed start's slot and how long it can still be read;
+- direct play answered synchronously;
+- the id and fields in the body;
+- the long-poll cap.
+
+Core wraps it once the server states the final shape and version. It uses async only on nodes whose status carries `startup_no_progress_ms`, and counts its deadline from the last progress change.
+
 ### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
 Chrome converts each buffered byte range to time as `byte / size × duration`. So a Direct Play scrubber draws an estimate: on gbni-1, a phantom range sat 95 s behind the playhead. HLS ranges are real and unaffected.
 
