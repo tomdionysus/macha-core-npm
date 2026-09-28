@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from '../api/MachaCatalogueApi.js';
-import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS, signedCloseUrl } from './MachaPlaybackResolver.js';
+import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS, signedCloseUrl, START_NO_PROGRESS_CODE } from './MachaPlaybackResolver.js';
 import { MachaConnectionError } from '../api/serverConnection.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
 import { configureMachaHost, resetMachaHost } from '../runtime/host.js';
@@ -801,7 +801,7 @@ describe('a start that reports progress (server 0.69.0, start=async)', () => {
     vi.stubGlobal('fetch', fetchMock);
     await expect(new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, 0, { mode: 'transcode' }, {
       asyncStart: { noProgressMs: 15_000 },
-    })).rejects.toMatchObject({ status: 504, code: 'start_no_progress' });
+    })).rejects.toMatchObject({ status: 504, code: START_NO_PROGRESS_CODE });
     expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(true);
   });
 

@@ -226,6 +226,13 @@ interface WireStart {
   error?: { code?: string; message?: string; reason?: string; start_stage?: string };
 }
 
+/**
+ * The code on a start core gave up on because its progress stopped (server
+ * 0.69.0, `start=async`): status 504, a failure of the node to progress, not
+ * of the server to answer. A host words it from this code.
+ */
+export const START_NO_PROGRESS_CODE = 'start_no_progress';
+
 /** The longest a start's long-poll asks the node to hold, whatever the node allows; see `followStart`. */
 export const START_LONG_POLL_MS = 15_000;
 
@@ -739,7 +746,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         throw new MachaPlaybackError(
           `Macha playback start made no progress for ${noProgressMs} ms.`,
           504,
-          'start_no_progress',
+          START_NO_PROGRESS_CODE,
         );
       }
       const controller = new AbortController();
