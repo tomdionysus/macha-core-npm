@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
-import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
+import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackStartProgress, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { playbackVersions, versionPreferences, type QualityCeiling } from './playbackVersions.js';
@@ -118,7 +118,7 @@ describe('PlaybackCoordinator transport invariants', () => {
       await vi.advanceTimersByTimeAsync(1);
       await flush();
       expect(api.update).toHaveBeenCalledTimes(1);
-      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 30_000 }), expect.any(AbortSignal));
+      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 30_000 }), expect.any(AbortSignal), expect.anything());
       await coordinator.close();
     } finally {
       vi.useRealTimers();
@@ -233,7 +233,7 @@ describe('PlaybackCoordinator transport invariants', () => {
 
     expect(player.seekCalls).toEqual([]);
     await vi.waitFor(() => {
-      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 240_000 }), expect.any(AbortSignal));
+      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 240_000 }), expect.any(AbortSignal), expect.anything());
     });
   });
 
@@ -4556,5 +4556,42 @@ describe('a fractional resume position into a transcode', () => {
     await flush();
     expect(updates).toHaveLength(0);
     expect(player.playCalls).toHaveLength(1);
+  });
+});
+
+describe('a start that reports progress', () => {
+  it('shows the progress on the snapshot while it waits, and clears it once ready', async () => {
+    const ready = deferred<PlaybackSession>();
+    const api = resolver(session({ mode: 'transcode' }));
+    let report: ((progress: PlaybackStartProgress) => void) | undefined;
+    api.resolve.mockImplementation(async (_m: unknown, _c: unknown, _p: unknown, _pref: unknown, options?: { onStartProgress?: (progress: PlaybackStartProgress) => void }) => {
+      report = options?.onStartProgress;
+      return ready.promise;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    const starting = coordinator.start();
+    await vi.waitFor(() => expect(report).toBeDefined());
+    report!({ kind: 'start', stage: 'preroll', progressSeq: 4, elapsedMs: 4_000, prerollDecodedMs: 1_200, prerollTotalMs: 5_005 });
+    expect(coordinator.getSnapshot().startProgress).toMatchObject({ stage: 'preroll', prerollDecodedMs: 1_200 });
+    ready.resolve(session({ mode: 'transcode' }));
+    await starting;
+    expect(coordinator.getSnapshot().startProgress).toBeUndefined();
+  });
+
+  it('closes a start still pending on a page exit', async () => {
+    const api = resolver(session({ mode: 'transcode' })) as ReturnType<typeof resolver> & { closePendingForPageExit: ReturnType<typeof vi.fn> };
+    api.closePendingForPageExit = vi.fn();
+    api.resolve.mockImplementation(() => new Promise(() => undefined));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    void coordinator.start();
+    await vi.waitFor(() => expect(api.resolve).toHaveBeenCalled());
+    void coordinator.close({ keepalive: true });
+    expect(api.closePendingForPageExit).toHaveBeenCalledTimes(1);
   });
 });

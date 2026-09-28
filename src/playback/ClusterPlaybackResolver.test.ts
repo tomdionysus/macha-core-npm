@@ -1505,3 +1505,34 @@ describe('a replacement generation keeps the file being served', () => {
     expect(bodies.at(-1)).toMatchObject({ media_id: 'macha:other' });
   });
 });
+
+describe('starting without blocking where a node states it can (server 0.69.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('asks start=async of a node stating startup_no_progress_ms, and reports progress through', async () => {
+    const accepted = { ...wireSession('s-async'), start: { stage: 'planning', progress_seq: 1, elapsed_ms: 10 }, stream: { url: null, mime_type: 'application/vnd.apple.mpegurl' } };
+    const ready = { ...wireSession('s-async'), start: { stage: 'ready', progress_seq: 2, elapsed_ms: 20 } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(accepted), { status: 202, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(ready), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
+    registry.recordPlaybackBudgets('http://b', { startupTimeoutMs: 15_000, startupNoProgressMs: 15_000, startWaitMaxMs: 25_000, observedAt: 1 });
+    const stages: string[] = [];
+    const session = await new ClusterPlaybackResolver(registry).resolve(media, capabilities, 0, { mode: 'transcode' }, {
+      onStartProgress: (progress) => stages.push(progress.stage),
+    });
+    expect((fetchMock.mock.calls[0] as [string])[0]).toContain('start=async');
+    expect(stages).toEqual(['planning', 'ready']);
+    expect(session.endpoint?.id).toBe('http://b');
+  });
+
+  it('asks as before of a node that states nothing about it', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(wireSession('s-block')), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
+    registry.recordPlaybackBudgets('http://b', { startupTimeoutMs: 15_000, observedAt: 1 });
+    await new ClusterPlaybackResolver(registry).resolve(media, capabilities, 0, { mode: 'transcode' });
+    expect((fetchMock.mock.calls[0] as [string])[0]).not.toContain('start=async');
+  });
+});

@@ -101,6 +101,10 @@ export interface EndpointCapacity {
 export interface EndpointPlaybackBudgets {
   /** The node's `startup_timeout_ms`: how long it may take to bring a stream up. */
   startupTimeoutMs?: number;
+  /** The node's `startup_no_progress_ms` (0.69.0); present only where it starts without blocking. */
+  startupNoProgressMs?: number;
+  /** The node's `start_wait_max_ms` (0.69.0). */
+  startWaitMaxMs?: number;
   /** The node's `segment_timeout_ms`: how long it holds a fragment it has not produced. */
   segmentTimeoutMs?: number;
   /**

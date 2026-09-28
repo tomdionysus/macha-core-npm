@@ -165,7 +165,7 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
-### Playback start reports progress: server design for 0.69.0, reviewed 2026-09-28; not built
+### Playback start reports progress: built in core against server 0.69.0 (`e2d25a4`, not deployed), 2026-09-28
 The operator's decision: stop guessing a start time. With `?start=async`, create and PATCH answer 202 once admitted, and GET, long-polled with `after`/`wait_ms`, reports stage and progress counters. A start fails only when progress stops (`startup_no_progress_ms`). Core's review raised six points:
 - the signed close for a pending start;
 - idempotency while pending;
@@ -184,7 +184,7 @@ All six were accepted by the server (plan section 7, `51620fc` and the commit af
 
 Also: a DELETE drops a pending replacement, and the ready long-poll carries the replacement's URLs.
 
-Core wraps it once the server states the final shape and version:
+**Built.** `resolve` and `update` take a `PlaybackRequestOptions` (`signal`, `idempotencyKey`, `onStartProgress`, `asyncStart`); `resolve`'s fifth argument became that object, a hard cut, and only core's own cluster resolver passed more than four. The Macha resolver's `followStart` long-polls and reports progress. The cluster sets `asyncStart` from the node's stated `startupNoProgressMs`, and drops the elapsed deadline there. `closePendingForPageExit` closes pending creates by their signed URL. The coordinator shows `snapshot.startProgress`. The plan it follows:
 - async only on nodes whose status carries `startup_no_progress_ms`;
 - the deadline counted from the last progress change, replacing `generationAttemptBudgetMs` for async starts, as the TV said: a 0.33x node still decoding must not be abandoned;
 - the long-poll lives in the resolver, not the coordinator. The phone drives `ClusterPlaybackResolver` directly (the phone client, via the server), so a progress state only on the coordinator's snapshot would never reach it. `resolve()` and `update()` wait out an async start themselves, still answer the ready session, and report each progress step through an optional callback (for example `onStartProgress`). The coordinator passes one to put progress on its snapshot. The phone's downloads use direct sessions, which never go pending;

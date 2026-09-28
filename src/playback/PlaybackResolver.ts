@@ -369,6 +369,44 @@ export function segmentHoldMs(stated?: StatedNodeBudgets): number {
 }
 
 /** Server-side playback negotiation and session-control seam. */
+/** Where a start is (server 0.69.0, `start=async`), from the node's `start` object. */
+export type PlaybackStartStage = 'planning' | 'preroll' | 'encoding' | 'ready' | 'failed';
+
+/**
+ * A start's progress as the node reports it: counters, never estimates, so a
+ * host computes any rate or fraction itself. A counter a stage cannot measure
+ * is absent, not zero. `kind` says whether this is a new session starting or
+ * a change to a playing one, which keeps playing meanwhile.
+ */
+export interface PlaybackStartProgress {
+  kind: 'start' | 'change';
+  stage: PlaybackStartStage;
+  progressSeq: number;
+  elapsedMs: number;
+  sourceBytesRead?: number;
+  /** A transcode seek between keyframes: decoding from the keyframe up to the origin. */
+  prerollDecodedMs?: number;
+  prerollTotalMs?: number;
+  /** Media past the origin that has reached the output; the first fragment is ready at `firstFragmentMs`. */
+  outputMediaMs?: number;
+  firstFragmentMs?: number;
+}
+
+/** Options on a create or an update. */
+export interface PlaybackRequestOptions {
+  signal?: AbortSignal;
+  /** A create's idempotency key; a fresh one per logical attempt. */
+  idempotencyKey?: string;
+  /** Called on each progress step of a start that reports progress. */
+  onStartProgress?: (progress: PlaybackStartProgress) => void;
+  /**
+   * Start without blocking and follow progress (server 0.69.0), where the
+   * node states it can: the cluster resolver sets this from the node's
+   * status. Failure is no progress for `noProgressMs`, not elapsed time.
+   */
+  asyncStart?: { noProgressMs: number; waitMaxMs?: number };
+}
+
 export interface PlaybackResolver {
   readonly available: boolean;
   resolve(
@@ -376,8 +414,15 @@ export interface PlaybackResolver {
     capabilities: PlaybackCapabilities,
     seekMs?: number,
     preferences?: PlaybackPreferencesUpdate,
+    options?: PlaybackRequestOptions,
   ): Promise<PlaybackSession>;
-  update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession>;
+  update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal, options?: PlaybackRequestOptions): Promise<PlaybackSession>;
+  /**
+   * On a page exit, close every start still pending, by its signed close URL
+   * (a pending start has no session a caller knows of yet). Sent in this
+   * turn, not awaited.
+   */
+  closePendingForPageExit?(): void;
   stop(sessionId: string, options?: PlaybackStopOptions): Promise<void>;
   /** Recreate client-owned playback intent on another node after source failure. */
   failover?(

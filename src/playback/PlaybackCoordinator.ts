@@ -9,6 +9,7 @@ import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
   PlaybackSession,
+  PlaybackStartProgress,
   PlaybackStopOptions,
   PlaybackUpdate,
 } from './PlaybackResolver.js';
@@ -126,6 +127,13 @@ export interface PlaybackCoordinatorSnapshot {
    * the per-quality buttons from `steps` and plays one with `playVersion`.
    */
   versions?: PlaybackVersions;
+  /**
+   * A start, or a change to what is playing, that the node is preparing and
+   * reporting progress on (server 0.69.0); a change keeps the current picture
+   * playing meanwhile. Counters, never estimates: a host shows the stage and
+   * works out any fraction itself. Absent when nothing is being prepared.
+   */
+  startProgress?: PlaybackStartProgress;
   /**
    * The facts of the file playing, the node's `operations` included, once
    * they have answered: the one place a host reads them mid-play, since the
@@ -1423,8 +1431,9 @@ export class PlaybackCoordinator {
     positionMs: number,
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
+    const progress = { onStartProgress: this.reportStartProgress };
     try {
-      return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences);
+      return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences, progress);
     } catch (error) {
       const degraded = this.degradedInstructionFor(error);
       if (!degraded) throw error;
@@ -1434,9 +1443,21 @@ export class PlaybackCoordinator {
         capabilities,
         positionMs,
         { ...preferences, ...instructionPreferences(degraded) },
+        progress,
       );
+    } finally {
+      if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
     }
   }
+
+  /**
+   * A start or change reporting progress (server 0.69.0), onto the snapshot
+   * for a host to show while it waits; gone once it is ready or has failed.
+   */
+  private readonly reportStartProgress = (progress: PlaybackStartProgress): void => {
+    if (this.disposed) return;
+    this.patchSnapshot({ startProgress: progress.stage === 'ready' || progress.stage === 'failed' ? undefined : progress });
+  };
 
   /**
    * The file to play under a mode the viewer chose, and its profile where
@@ -1817,6 +1838,8 @@ export class PlaybackCoordinator {
    * page either way, as it always did.
    */
   private stopEverythingNowForPageExit(): void {
+    // A start still pending has no session here yet; the resolver knows it.
+    this.options.resolver.closePendingForPageExit?.();
     // Each with its signed stream URL where core has it, for the close that
     // survives an unload (see `MachaPlaybackResolver.closeBySignedUrl`).
     const ids = new Map<string, string | undefined>();
@@ -2380,7 +2403,7 @@ export class PlaybackCoordinator {
         // makes cancellation non-blocking on older TV engines whose fetch may
         // accept a signal but fail to terminate the underlying request.
         const next = await awaitUnlessAborted(
-          this.options.resolver.update(current.sessionId, update, controller.signal),
+          this.options.resolver.update(current.sessionId, update, controller.signal, { onStartProgress: this.reportStartProgress }),
           controller.signal,
         );
         if (this.disposed) return;
@@ -2456,6 +2479,7 @@ export class PlaybackCoordinator {
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;
+        if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
         resolveSettled();
       }
     }

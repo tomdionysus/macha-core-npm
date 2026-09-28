@@ -100,6 +100,16 @@ export interface NodePlaybackBudgets {
    */
   startup_timeout_ms?: number;
   /**
+   * Server 0.69.0, `start=async`: a start fails only when its progress has
+   * not moved for this long. Its absence means the node cannot start
+   * without blocking.
+   */
+  startup_no_progress_ms?: number;
+  /** The longest a start's long-poll is held (0.69.0). */
+  start_wait_max_ms?: number;
+  /** How long a failed start stays readable before 404 (0.69.0). */
+  start_failed_retention_ms?: number;
+  /**
    * How long this node holds a request for a fragment it has not produced yet
    * before answering `500 segment_not_ready` — its `segment_timeout_ms`.
    *

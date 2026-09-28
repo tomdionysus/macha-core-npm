@@ -323,6 +323,12 @@ export async function discoverClusterEndpoints(
         ...(node.playback?.startup_timeout_ms !== undefined
           ? { startupTimeoutMs: node.playback.startup_timeout_ms }
           : {}),
+        ...(node.playback?.startup_no_progress_ms !== undefined
+          ? { startupNoProgressMs: node.playback.startup_no_progress_ms }
+          : {}),
+        ...(node.playback?.start_wait_max_ms !== undefined
+          ? { startWaitMaxMs: node.playback.start_wait_max_ms }
+          : {}),
         ...(node.playback?.segment_timeout_ms !== undefined
           ? { segmentTimeoutMs: node.playback.segment_timeout_ms }
           : {}),
