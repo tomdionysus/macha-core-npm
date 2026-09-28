@@ -201,13 +201,18 @@ export interface CatalogueApi {
 
 /** One stream's entries in a `KeyframeIndex`. */
 export interface KeyframeStream {
-  /** The stream's index in the file, as `PlaybackSession.selected` names it. */
+  /**
+   * The container's stream index: the same number as `PlaybackSession.selected`
+   * and the session's source streams carry (server docs/catalogue.md, d8cd5d5).
+   */
   index: number;
   type: 'video' | 'audio';
   codec: string;
   /**
    * `[timeMs, byteOffset]`, sorted by byte offset; times need not rise in
-   * that order. Video: its keyframes. Audio: samples, at most one per second
+   * that order. Times are decode times (DTS), so with B-frames a keyframe
+   * reads early by its composition offset: they place bytes, not frames,
+   * which is what a buffered bar needs. Video: its keyframes. Audio: samples, at most one per second
    * of media. Matroska often cues only its video, so audio may hold one
    * entry or none.
    */
