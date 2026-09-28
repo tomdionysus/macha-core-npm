@@ -150,8 +150,15 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     // job it answers with (`desired` not paused), so it is paused at once:
     // a moment's start at worst, never a download nobody asked for.
     if (options.paused === true && response.job?.desired !== 'paused') {
-      const paused = await this.pauseTorrent(response.id);
-      return { ...result, job: paused, pausedAfterAdd: true };
+      try {
+        const paused = await this.pauseTorrent(response.id);
+        return { ...result, job: paused, pausedAfterAdd: true };
+      } catch (error) {
+        // The add succeeded; only the pause did not. Throwing would report a
+        // failed add for a torrent that is in fact running, unseen: the
+        // outcome this option exists to prevent (the web client).
+        return { ...result, pausedAfterAdd: false, pauseError: error };
+      }
     }
     return result;
   }

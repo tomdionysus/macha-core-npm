@@ -226,9 +226,13 @@ export interface TorrentAddResult {
   job?: TorrentJob;
   /**
    * Set when a paused add reached a node before 0.71.0, which ignored
-   * `paused`, so core paused the job just after adding it.
+   * `paused`: true when core paused the job just after adding it; false when
+   * that pause failed, so the torrent was added and is running, and a host
+   * should say so and offer to pause it from the list.
    */
   pausedAfterAdd?: boolean;
+  /** Why the pause after the add failed, where it did (`pausedAfterAdd: false`). */
+  pauseError?: unknown;
 }
 
 export interface TorrentJobUpdate {

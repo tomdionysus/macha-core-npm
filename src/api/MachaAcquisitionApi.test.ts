@@ -237,3 +237,17 @@ describe('a paused add on a node that ignores paused', () => {
     expect(result.pausedAfterAdd).toBeUndefined();
   });
 });
+
+describe('a paused add whose follow-up pause fails', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('answers the add, saying the pause did not take, rather than failing the add', async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => (url.endsWith('/pause')
+      ? jsonResponse({ error: { code: 'internal', message: 'boom' } }, 500)
+      : jsonResponse({ id: 't-1', node_id: null, job: { id: 't-1', desired: 'active', state: 'awaiting_node' } }, 202)));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaAcquisitionApi('').submitMagnet('magnet:?', { paused: true });
+    expect(result).toMatchObject({ id: 't-1', pausedAfterAdd: false, job: { desired: 'active' } });
+    expect(result.pauseError).toBeDefined();
+  });
+});
