@@ -825,3 +825,33 @@ describe('the remembered list across a restart where the remembered nodes are sl
     expect(configuration.discoveredEndpoints()).toEqual([]);
   });
 });
+
+describe("a node's name from status", () => {
+  const node = (fields: Record<string, unknown>) => ({ id: 'peer', state: 'online', api_endpoint: 'https://peer.example', runtime: {}, ...fields } as unknown as ClusterNodeStatus);
+
+  it("shows the operator's node_name (server 0.70.0) over the host", async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([node({ host: 'corvus-fi-1', node_name: 'Corvus FI-1' })]));
+    expect(registry.nodeName('https://peer.example')).toBe('Corvus FI-1');
+  });
+
+  it('falls back to the host where the node has no name', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([node({ host: 'corvus-fi-1', node_name: null })]));
+    expect(registry.nodeName('https://peer.example')).toBe('corvus-fi-1');
+  });
+});
+
+describe('transcode rates from status (server 0.70.0)', () => {
+  it("records a node's video rates by source kind", async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([{
+      id: 'peer', state: 'online', api_endpoint: 'https://peer.example', runtime: {}, host: 'corvus-fi-1',
+      playback: { transcode_rates: [
+        { kind: 'video', codec: 'HEVC', bit_depth: 10, height_class: 2160, rate: 0.33, observations: 16, concurrent: 1 },
+        { kind: 'audio', codec: 'truehd', rate: 40, observations: 16, concurrent: 1 },
+      ] },
+    } as unknown as ClusterNodeStatus]));
+    expect(registry.bestTranscodeRate({ codec: 'hevc', bitDepth: 10, heightClass: 2160 })).toBe(0.33);
+  });
+});

@@ -747,3 +747,14 @@ describe("a node's own name", () => {
     expect(registry.nodeName('http://10.35.1.50:7438')).toBe('corvus-fi-1');
   });
 });
+
+describe('transcode rates (server 0.70.0)', () => {
+  it('answers the best rate any node measured for a kind, and nothing for a kind none has', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const uhd10 = { codec: 'hevc', bitDepth: 10, heightClass: 2160 };
+    registry.recordPlaybackBudgets('http://a', { observedAt: 1, transcodeRates: [{ ...uhd10, rate: 0.33 }] });
+    registry.recordPlaybackBudgets('http://b', { observedAt: 1, transcodeRates: [{ ...uhd10, rate: 0.41 }, { codec: 'h264', bitDepth: 8, heightClass: 1080, rate: 3.2 }] });
+    expect(registry.bestTranscodeRate(uhd10)).toBe(0.41);
+    expect(registry.bestTranscodeRate({ codec: 'av1', bitDepth: 10, heightClass: 2160 })).toBeUndefined();
+  });
+});

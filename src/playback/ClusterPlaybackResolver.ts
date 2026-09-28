@@ -1,4 +1,4 @@
-import type { EndpointPlaybackBudgets, EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
+import type { EndpointPlaybackBudgets, EndpointRegistry, MachaEndpoint, TranscodeSource } from '../cluster/EndpointRegistry.js';
 import { PRODUCED_POLL_INTERVAL_MS } from './streamProtocol.js';
 import { generationStartKind } from './generationStart.js';
 import {
@@ -1016,6 +1016,10 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   private sessionEndpoint(endpoint: MachaEndpoint): NonNullable<PlaybackSession['endpoint']> {
     const name = this.registry.nodeName(endpoint.id);
     return { id: endpoint.id, baseUrl: endpoint.baseUrl, ...(name ? { name } : {}) };
+  }
+
+  transcodeRate(source: TranscodeSource): number | undefined {
+    return this.registry.bestTranscodeRate(source);
   }
 
   closePendingForPageExit(): void {

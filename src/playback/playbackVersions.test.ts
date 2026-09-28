@@ -184,3 +184,33 @@ describe('a codec whose own decoder is smaller than the device', () => {
     expect(offeredModes(file('av1-720', 1280, 720, 'av1').profile, a85)[0]).toMatchObject({ offered: true });
   });
 });
+
+describe('automatic play and what the nodes can transcode (server 0.70.0)', () => {
+  // Both files transcode here (the web plays no HEVC); the 4K one is 10-bit.
+  const uhd10 = () => {
+    const f = file('uhd', 3840, 2160, 'hevc');
+    f.profile.streams[0] = { ...f.profile.streams[0]!, bitDepth: 10 };
+    return f;
+  };
+  const facts = () => [uhd10(), file('fhd', 1920, 1080, 'hevc')];
+  const rates = (uhdRate?: number) => (source: { codec: string; bitDepth: number; heightClass: number }) =>
+    (source.heightClass === 2160 && source.bitDepth === 10 ? uhdRate : undefined);
+
+  it('passes over a picture no node has transcoded at real speed, and says why', () => {
+    const versions = playbackVersions(facts(), web, { transcodeRate: rates(0.33) });
+    expect(versions.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+    expect(versions.passedOver).toMatchObject({ quality: 2160, mediaId: 'uhd', converts: { video: true } });
+    expect(versions.passedOver?.reasons).toContain('transcode-below-real-time');
+    // Still offered for the viewer to pick.
+    expect(versions.steps.map((step) => step.quality)).toContain(2160);
+  });
+
+  it('takes it where a node keeps up, or where no node has measured it', () => {
+    expect(playbackVersions(facts(), web, { transcodeRate: rates(1.4) }).automatic?.mediaId).toBe('uhd');
+    expect(playbackVersions(facts(), web, { transcodeRate: rates(undefined) }).automatic?.mediaId).toBe('uhd');
+  });
+
+  it('keeps it when nothing else is left to play', () => {
+    expect(playbackVersions([uhd10()], web, { transcodeRate: rates(0.33) }).automatic?.mediaId).toBe('uhd');
+  });
+});

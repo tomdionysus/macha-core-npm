@@ -187,7 +187,13 @@ Built in `PlaybackCoordinator.tooSlowToPlay`:
 
 `quality-stepped-down`, `decode-fallback` and `copy-refused` are now lasting notices: they stay once their change lands, where the decode fallback's used to vanish on activation.
 
-Next, to prevent rather than recover: the server's plan `f0277a1`, in which a node states how fast it transcodes a kind of source.
+**Prevention built against server 0.70.0 (`a922660`):**
+- status gives `transcode_rates`, and core records the video rates per node;
+- `PlaybackResolver.transcodeRate` answers the best rate any node has measured for a kind;
+- automatic play passes over a file whose picture would transcode below real time on every node that has measured it, where anything else is left, with `passedOver.reasons` including `transcode-below-real-time`;
+- a viewer can still pick it, and a kind no node has measured is not avoided.
+
+0.70.0 also gives `node_name`, which core now shows before the host.
 
 ### Playback start reports progress: built in core against server 0.69.0 (`e2d25a4`, not deployed), 2026-09-28
 The operator's decision: stop guessing a start time. With `?start=async`, create and PATCH answer 202 once admitted, and GET, long-polled with `after`/`wait_ms`, reports stage and progress counters. A start fails only when progress stops (`startup_no_progress_ms`). Core's review raised six points:

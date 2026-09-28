@@ -1,4 +1,5 @@
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
+import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import type { PlaybackPreferencesUpdate } from './PlaybackResolver.js';
 import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
 import type { PlaybackMode } from '../types.js';
@@ -286,6 +287,23 @@ export interface PlaybackVersionsOptions {
   ceiling?: QualityCeiling;
   /** Offer steps above the device's limit too; see `QualityPreference.offerAll`. */
   offerAll?: boolean;
+  /**
+   * The best rate any node has measured for transcoding a kind of source
+   * (server 0.70.0), as `PlaybackResolver.transcodeRate` answers it.
+   * Automatic play passes over a file whose picture would be transcoded where
+   * that rate is below real time, and says so in `passedOver`.
+   */
+  transcodeRate?: (source: TranscodeSource) => number | undefined;
+}
+
+/** A file's video, as the server keys its transcode rates. */
+export function transcodeSourceOf(profile: MediaTechnicalProfile): TranscodeSource | undefined {
+  const video = profile.streams.find((stream) => stream.type === 'video' && stream.default)
+    ?? profile.streams.find((stream) => stream.type === 'video');
+  if (!video) return undefined;
+  // The server's classes start at 576; a smaller picture is counted there.
+  const heightClass = Math.max(576, qualityClass(video.width, video.height));
+  return { codec: video.codec.toLowerCase(), bitDepth: video.bitDepth ?? 8, heightClass };
 }
 
 /**
@@ -337,18 +355,32 @@ export function playbackVersions(
   const ceiling = deviceLimit !== undefined && (!options.ceiling || deviceLimit < options.ceiling.quality)
     ? { quality: deviceLimit, reason: 'ceiling-device' as const }
     : options.ceiling;
-  const within = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
+  const inCeiling = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
+  // A picture no node has transcoded at real speed is left out of automatic
+  // play where anything else remains: fi-1 decodes 4K HEVC 10-bit at about
+  // 0.33x, and choosing it meant a stall at 0:02. A viewer can still pick it.
+  const tooSlow = (file: VersionFile): boolean => {
+    if (file.instruction.video !== 'transcode' || !options.transcodeRate) return false;
+    const source = transcodeSourceOf(facts[file.index]!.profile);
+    const rate = source ? options.transcodeRate(source) : undefined;
+    return rate !== undefined && rate < 1;
+  };
+  const keepsUp = inCeiling.filter((file) => !tooSlow(file));
+  const within = keepsUp.length > 0 ? keepsUp : inCeiling;
   const automatic = within.length > 0 ? fileStep(best(within)!) : stepAt(ceiling!.quality);
-  const largest = within.length > 0 ? Math.max(...within.map((file) => file.quality)) : undefined;
+  const largest = inCeiling.length > 0 ? Math.max(...inCeiling.map((file) => file.quality)) : undefined;
   const skipped = largest !== undefined && automatic.quality < largest
-    ? best(within.filter((file) => file.quality === largest))
+    ? best(inCeiling.filter((file) => file.quality === largest))
     : undefined;
   const passedOver: PassedOverVersion | undefined = skipped
     ? {
       quality: skipped.quality,
       ...(skipped.mediaId !== undefined ? { mediaId: skipped.mediaId } : {}),
       converts: { video: skipped.instruction.video === 'transcode', audio: skipped.instruction.audio === 'transcode' },
-      reasons: skipped.instruction.reasons.filter((reason) => reason !== 'source-plays-as-is' && reason !== 'host-policy-prefers-container'),
+      reasons: [
+        ...skipped.instruction.reasons.filter((reason) => reason !== 'source-plays-as-is' && reason !== 'host-policy-prefers-container'),
+        ...(tooSlow(skipped) ? ['transcode-below-real-time' as const] : []),
+      ],
     }
     : undefined;
   return {

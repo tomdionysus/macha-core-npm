@@ -4704,3 +4704,25 @@ describe('a quality no node can produce at real speed', () => {
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
   });
 });
+
+describe("automatic play avoids what no node transcodes at real speed", () => {
+  it("uses the resolver's rates to leave the too-slow file out", async () => {
+    const hevc = (mediaId: string, width: number, height: number, bitDepth: number) => ({
+      mediaId,
+      profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+        { index: 0, type: 'video' as const, codec: 'hevc', profile: '', language: '', default: true, forced: false, width, height, bitDepth },
+        { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+      ] },
+    });
+    const api = resolver(session({ mode: 'transcode' })) as ReturnType<typeof resolver> & { transcodeRate: (source: { heightClass: number }) => number | undefined };
+    api.transcodeRate = (source) => (source.heightClass === 2160 ? 0.33 : undefined);
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => [hevc('uhd', 3840, 2160, 10), hevc('fhd', 1920, 1080, 8)] as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().versions?.passedOver?.reasons).toContain('transcode-below-real-time');
+  });
+});

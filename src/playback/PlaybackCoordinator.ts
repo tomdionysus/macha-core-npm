@@ -4,6 +4,7 @@ import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackT
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
+import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import { offeredModes, playbackVersions, type OfferedMode, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
@@ -1296,7 +1297,7 @@ export class PlaybackCoordinator {
       const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
       // The buttons stay drawable after a version was picked: the qualities
       // are the item's, whichever one is playing.
-      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false }) : undefined;
+      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate }) : undefined;
       if (versions) this.patchSnapshot({ versions });
       const quality = versions ? qualityPlaying(versions, mediaId, preferences.maxHeight) : undefined;
       const container = preferences.container
@@ -1360,10 +1361,10 @@ export class PlaybackCoordinator {
     // Watching) keeps its file: automatic play chooses how, not which.
     const named = preferences.mediaId !== undefined ? facts.filter((file) => file.mediaId === preferences.mediaId) : [];
     const candidates = named.length > 0 ? named : facts;
-    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate, ...(ceiling ? { ceiling } : {}) });
     // The buttons still offer every file's versions.
     const offered = candidates === facts ? versions
-      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate, ...(ceiling ? { ceiling } : {}) });
     const step = versions.automatic!;
     const instruction = step.instruction;
     const chosenMediaId = step.mediaId ?? this.noFactsMediaId();
@@ -1614,6 +1615,9 @@ export class PlaybackCoordinator {
       ...(subtitleForced !== undefined ? { subtitleForced } : {}),
     };
   }
+
+  /** The resolver's transcode rates (server 0.70.0), for `playbackVersions`. */
+  private readonly transcodeRate = (source: TranscodeSource): number | undefined => this.options.resolver.transcodeRate?.(source);
 
   /** The capabilities the last instruction was formed for; see `drainMutations`. */
   private capabilitiesSeen?: PlaybackCapabilities;
@@ -1896,7 +1900,7 @@ export class PlaybackCoordinator {
   private versionsAfterStart(facts: readonly FileFacts[] | undefined, session: PlaybackSession): Partial<PlaybackCoordinatorSnapshot> {
     const capabilities = this.capabilitiesSeen;
     if (!facts || !capabilities || this.snapshot.versions) return {};
-    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false });
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate });
     const quality = qualityPlaying(versions, session.mediaId, session.preferences.maxHeight);
     const instruction = this.snapshot.instruction;
     return {

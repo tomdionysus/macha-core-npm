@@ -303,9 +303,11 @@ export async function discoverClusterEndpoints(
     // have none. Self-reported load is the only measurement held about a node
     // this client is *not* currently talking to.
     // Every node's own name, online or not, for the player to show in place
-    // of an address.
+    // of an address: the operator's `node_name` (server 0.70.0, such as
+    // "Corvus FI-1"), else the host. Tom: show the names the server sends.
     for (const node of nodes) {
-      if (typeof node.id === 'string' && typeof node.host === 'string') registry.recordNodeName(node.id, node.host);
+      const name = typeof node.node_name === 'string' && node.node_name.trim() ? node.node_name : node.host;
+      if (typeof node.id === 'string' && typeof name === 'string') registry.recordNodeName(node.id, name);
     }
     const observedAt = machaHost().now();
     for (const node of online) {
@@ -333,6 +335,13 @@ export async function discoverClusterEndpoints(
           : {}),
         ...(node.playback?.start_wait_max_ms !== undefined
           ? { startWaitMaxMs: node.playback.start_wait_max_ms }
+          : {}),
+        ...(node.playback?.transcode_rates
+          ? { transcodeRates: node.playback.transcode_rates.flatMap((rate) => (
+            rate.kind === 'video' && typeof rate.rate === 'number' && typeof rate.height_class === 'number'
+              ? [{ codec: rate.codec.toLowerCase(), bitDepth: rate.bit_depth ?? 8, heightClass: rate.height_class, rate: rate.rate }]
+              : []
+          )) }
           : {}),
         ...(node.playback?.segment_timeout_ms !== undefined
           ? { segmentTimeoutMs: node.playback.segment_timeout_ms }

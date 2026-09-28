@@ -1,3 +1,4 @@
+import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
 import { SERVER_SEGMENT_HOLD_MS, SERVER_STARTUP_TIMEOUT_MS, type PlaybackProduction } from './streamProtocol.js';
 
@@ -424,6 +425,12 @@ export interface PlaybackResolver {
    * turn, not awaited.
    */
   closePendingForPageExit?(): void;
+  /**
+   * The best rate any node has measured for transcoding this kind of video
+   * source (server 0.70.0), or undefined where none has; below 1 means no
+   * node that has tried keeps up with it. See `playbackVersions`.
+   */
+  transcodeRate?(source: TranscodeSource): number | undefined;
   stop(sessionId: string, options?: PlaybackStopOptions): Promise<void>;
   /** Recreate client-owned playback intent on another node after source failure. */
   failover?(

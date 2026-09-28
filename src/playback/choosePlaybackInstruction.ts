@@ -33,7 +33,10 @@ export type PlaybackDecisionReason =
   | 'executor-cannot-copy-video'
   | 'executor-cannot-copy-audio'
   // The player could not decode the copied streams, so they are converted.
-  | 'player-could-not-decode';
+  | 'player-could-not-decode'
+  // No node that has transcoded this kind of source has kept up with it
+  // (server 0.70.0 rates), so automatic play passed the file over.
+  | 'transcode-below-real-time';
 
 /**
  * Platform truths that no probe can discover.
