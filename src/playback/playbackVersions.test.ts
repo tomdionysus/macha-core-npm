@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaTechnicalStream, PlaybackCapabilities } from '../types.js';
-import { deviceQualityClass, offeredModes, playbackVersions, qualityCeiling, qualityClass } from './playbackVersions.js';
+import { deviceQualityClass, offeredModes, playbackVersions, qualityCeiling, qualityClass, rateHeightClass } from './playbackVersions.js';
 
 const web: PlaybackCapabilities = {
   platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
@@ -212,5 +212,11 @@ describe('automatic play and what the nodes can transcode (server 0.70.0)', () =
 
   it('keeps it when nothing else is left to play', () => {
     expect(playbackVersions([uhd10()], web, { transcodeRate: rates(0.33) }).automatic?.mediaId).toBe('uhd');
+  });
+});
+
+describe("the server's height class for transcode rates", () => {
+  it('buckets by height alone, at or above, as the server does', () => {
+    expect([480, 576, 600, 720, 800, 1080, 1100, 1600, 2160, 2400].map(rateHeightClass)).toEqual([576, 576, 720, 720, 1080, 1080, 1440, 2160, 2160, 4320]);
   });
 });

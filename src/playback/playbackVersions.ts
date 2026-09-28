@@ -301,9 +301,18 @@ export function transcodeSourceOf(profile: MediaTechnicalProfile): TranscodeSour
   const video = profile.streams.find((stream) => stream.type === 'video' && stream.default)
     ?? profile.streams.find((stream) => stream.type === 'video');
   if (!video) return undefined;
-  // The server's classes start at 576; a smaller picture is counted there.
-  const heightClass = Math.max(576, qualityClass(video.width, video.height));
-  return { codec: video.codec.toLowerCase(), bitDepth: video.bitDepth ?? 8, heightClass };
+  return { codec: video.codec.toLowerCase(), bitDepth: video.bitDepth ?? 8, heightClass: rateHeightClass(video.height ?? 0) };
+}
+
+/**
+ * The server's height class for its transcode rates, exactly as it buckets
+ * them (TranscodeRateBook::height_class): the first of 576, 720, 1080, 1440,
+ * 2160 at or above the height, else 4320. By height alone, unlike
+ * `qualityClass`, so a 1024x600 picture is 720 here though `qualityClass`
+ * rates it 576: the key must be the server's or it reads another class's rate.
+ */
+export function rateHeightClass(height: number): number {
+  return [576, 720, 1080, 1440, 2160].find((cls) => height <= cls) ?? 4320;
 }
 
 /**
