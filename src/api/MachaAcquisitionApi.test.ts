@@ -196,3 +196,18 @@ describe('a refusal every node would give alike', () => {
     expect(retryableEndpointFailure(Object.assign(new Error('x'), { status: 503, code: 'playback_unavailable' }))).toBe(true);
   });
 });
+
+describe('adding a torrent paused (server 0.71.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('sends paused only when asked', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => jsonResponse({ id: 't-1', node_id: null }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaAcquisitionApi('');
+    await api.submitMagnet('magnet:?', { paused: true });
+    await api.submitMagnet('magnet:?', { paused: false });
+    const bodies = (fetchMock.mock.calls as Array<[string, RequestInit]>).map(([, init]) => JSON.parse(String(init.body)));
+    expect(bodies[0]).toEqual({ magnet: 'magnet:?', paused: true });
+    expect(bodies[1]).toEqual({ magnet: 'magnet:?' });
+  });
+});

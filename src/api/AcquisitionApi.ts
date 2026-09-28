@@ -209,6 +209,12 @@ export interface TorrentAddOptions {
   nodeId?: string;
   /** Remove after completion: 0..86_400_000 ms, null for never, absent for the cluster default. */
   removeAfterMs?: number | null;
+  /**
+   * Add it already paused (server 0.71.0): recorded paused in the same write
+   * as the add, so no node starts it before a later pause could land. Sent
+   * only when true, so an older node sees the request it always did.
+   */
+  paused?: boolean;
 }
 
 export interface TorrentAddResult {

@@ -134,6 +134,7 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     const body: Record<string, unknown> = { magnet };
     if (options.nodeId !== undefined) body.node_id = options.nodeId;
     if (options.removeAfterMs !== undefined) body.remove_after_ms = options.removeAfterMs;
+    if (options.paused === true) body.paused = true;
     const response = await this.request<{ id: string; info_hash?: unknown; node_id?: unknown; job?: TorrentJob }>('/api/v1/torrents/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
