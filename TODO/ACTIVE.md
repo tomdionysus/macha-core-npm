@@ -165,6 +165,15 @@ Tom wants the unmatched-file match page and the metadata editor merged into one 
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
 
+### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
+Chrome converts each buffered byte range to time as `byte / size × duration`. So a Direct Play scrubber draws an estimate: on gbni-1, a phantom range sat 95 s behind the playhead. HLS ranges are real and unaffected.
+
+The server is building `GET /api/v1/catalogue/media/{id}/keyframes` (time to byte offset) and will announce it before shipping. When it lands, core adds:
+- a fetch on the media API, cached per media id, since the index is immutable;
+- a pure function from the index, the file size and byte ranges to time ranges, linear between entries, returning the minimum playable across streams when the index is per-stream.
+
+This is a utility the web client calls, not something the coordinator applies to every event, because the native players report real time. Nothing is built before the announcement.
+
 ### Continue Watching resumes as if the viewer never left — Tom, 2026-09-27 (relayed by the TV client)
 "Continue watching likely needs to store both the item id AND the media ID. It should also store the mode (direct, remux, transcode), resolution, subtitle settings, and all other data needed to resume as if you'd never left." Built in the commit following this note:
 - `PlaybackProgress` holds `itemId` (formerly `mediaId`, removed so that every caller fails to compile) and `fileMediaId`, plus `resume` for the mode and whether the viewer chose it, the container, quality, cap, and audio and subtitle choices.
