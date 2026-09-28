@@ -962,7 +962,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         ...(stated?.pipelineIdleMs !== undefined ? { pipelineIdleMs: stated.pipelineIdleMs } : {}),
       },
     };
-    session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
+    session.endpoint = this.sessionEndpoint(endpoint);
     const nodeSessionId = session.sessionId;
     session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
     this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
@@ -986,7 +986,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       });
       const nodeSessionId = session.sessionId;
       session.sessionId = sessionId;
-      session.endpoint = { id: owned.endpoint.id, baseUrl: owned.endpoint.baseUrl };
+      session.endpoint = this.sessionEndpoint(owned.endpoint);
       owned.nodeSessionId = nodeSessionId;
       this.registry.recordSuccess(owned.endpoint.id);
       return session;
@@ -1012,6 +1012,12 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * question cost the node something, which is how a diagnostic turns into the
    * fault it was meant to diagnose.
    */
+  /** A session's endpoint, with the node's own name where the registry knows it. */
+  private sessionEndpoint(endpoint: MachaEndpoint): NonNullable<PlaybackSession['endpoint']> {
+    const name = this.registry.nodeName(endpoint.id);
+    return { id: endpoint.id, baseUrl: endpoint.baseUrl, ...(name ? { name } : {}) };
+  }
+
   closePendingForPageExit(): void {
     for (const resolver of this.resolvers.values()) resolver.closePendingForPageExit();
   }

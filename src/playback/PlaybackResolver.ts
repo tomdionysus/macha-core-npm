@@ -125,7 +125,8 @@ export interface PlaybackPreferences {
 export interface PlaybackSession {
   sessionId: string;
   /** Node/API provenance for this disposable playback generation. */
-  endpoint?: { id: string; baseUrl: string };
+  /** The node serving it. `name` is the cluster's own name for it ("corvus-fi-1") where core has learnt it. */
+  endpoint?: { id: string; baseUrl: string; name?: string };
   itemId?: string;
   mediaId: string;
   mode: PlaybackMode;

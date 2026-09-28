@@ -1536,3 +1536,16 @@ describe('starting without blocking where a node states it can (server 0.69.0)',
     expect((fetchMock.mock.calls[0] as [string])[0]).not.toContain('start=async');
   });
 });
+
+describe("a session's node name", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("carries the cluster's own name for the node that served it", async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(wireSession('s-named')), { status: 201, headers: { 'Content-Type': 'application/json' } })));
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://b']));
+    registry.claimNodeId('http://b', 'node-b');
+    registry.recordNodeName('node-b', 'corvus-fi-1');
+    const session = await new ClusterPlaybackResolver(registry).resolve(media, capabilities, 0, { mode: 'direct' });
+    expect(session.endpoint).toEqual({ id: 'http://b', baseUrl: 'http://b', name: 'corvus-fi-1' });
+  });
+});

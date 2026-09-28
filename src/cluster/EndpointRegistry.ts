@@ -448,6 +448,8 @@ export class EndpointRegistry {
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
   private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
+  /** Each node's own name (`host` on status), by node id. */
+  private readonly nodeNames = new Map<string, string>();
   private readonly generationStarts = new Map<string, GenerationStartSample[]>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
@@ -905,6 +907,23 @@ export class EndpointRegistry {
    * keeping the last value would let a figure outlive the configuration that
    * produced it.
    */
+  /** Record a node's name as its status gives it (`host`, such as "corvus-fi-1"). */
+  recordNodeName(nodeId: string, name: string): void {
+    if (name.trim()) this.nodeNames.set(nodeId, name.trim());
+  }
+
+  /**
+   * The name of the node behind an endpoint, as the cluster calls it, where
+   * core has learnt both the endpoint's node and that node's name; otherwise
+   * undefined, and a host falls back to the address. Every client names
+   * nodes the same way in the player (Tom, 2026-09-28), and none has to join
+   * status to sessions itself.
+   */
+  nodeName(endpointIdValue: string): string | undefined {
+    const nodeId = this.endpoints.find((endpoint) => endpoint.id === endpointIdValue)?.nodeId;
+    return nodeId ? this.nodeNames.get(nodeId) : undefined;
+  }
+
   recordPlaybackBudgets(endpointIdValue: string, budgets: EndpointPlaybackBudgets): void {
     this.playbackBudgetsById.set(endpointIdValue, budgets);
   }

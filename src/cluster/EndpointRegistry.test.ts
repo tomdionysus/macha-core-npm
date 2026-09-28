@@ -737,3 +737,13 @@ describe('learning an identity must not restate membership', () => {
     expect(registry.candidates()[0].endpoint.nodeId).toBe('gbni-1');
   });
 });
+
+describe("a node's own name", () => {
+  it('names the node behind an endpoint once both are learnt', () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://10.35.1.50:7438']));
+    expect(registry.nodeName('http://10.35.1.50:7438')).toBeUndefined();
+    registry.claimNodeId('http://10.35.1.50:7438', '855716bd');
+    registry.recordNodeName('855716bd', 'corvus-fi-1');
+    expect(registry.nodeName('http://10.35.1.50:7438')).toBe('corvus-fi-1');
+  });
+});

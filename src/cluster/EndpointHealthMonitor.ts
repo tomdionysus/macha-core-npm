@@ -302,6 +302,11 @@ export async function discoverClusterEndpoints(
     // the node already in use, so the alternates a failover would pick from
     // have none. Self-reported load is the only measurement held about a node
     // this client is *not* currently talking to.
+    // Every node's own name, online or not, for the player to show in place
+    // of an address.
+    for (const node of nodes) {
+      if (typeof node.id === 'string' && typeof node.host === 'string') registry.recordNodeName(node.id, node.host);
+    }
     const observedAt = machaHost().now();
     for (const node of online) {
       registry.recordCapacity(endpointId(node.api_endpoint!), {
