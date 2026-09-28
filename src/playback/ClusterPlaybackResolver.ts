@@ -272,6 +272,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     seekMs: number,
     preferences: PlaybackPreferencesUpdate,
     preparedAlternate?: PlaybackSession,
+    options: Pick<PlaybackRequestOptions, 'onStartProgress'> = {},
   ): Promise<PlaybackSession> {
     // Shares the exact bookkeeping PlaybackCoordinator calls explicitly for a
     // silent (no-reload) transition — see recordEndpointFailure below — so
@@ -297,6 +298,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       this.failoverExclusion(failedSession),
       true,
       this.generationAttemptTimeoutMs,
+      options.onStartProgress,
     );
   }
 

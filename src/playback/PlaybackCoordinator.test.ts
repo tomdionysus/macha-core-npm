@@ -996,6 +996,7 @@ describe('PlaybackCoordinator player failures', () => {
       240_000,
       expect.any(Object),
       undefined,
+      expect.anything(),
     ));
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
@@ -1276,6 +1277,7 @@ describe('PlaybackCoordinator player failures', () => {
       42_000,
       expect.objectContaining({ mode: 'remux', maxHeight: 720, subtitleLanguage: 'eng' }),
       undefined,
+      expect.anything(),
     );
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
     expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b');
@@ -1404,6 +1406,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.objectContaining({ audioStream: 2, audioLanguage: 'fra' }),
       undefined,
+      expect.anything(),
     ));
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
     stuckUpdate.resolve(initial);
@@ -1511,6 +1514,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.any(Object),
       alternate,
+      expect.anything(),
     );
   });
 
@@ -1546,6 +1550,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.any(Object),
       alternate,
+      expect.anything(),
     );
   });
 
@@ -4593,5 +4598,32 @@ describe('a start that reports progress', () => {
     await vi.waitFor(() => expect(api.resolve).toHaveBeenCalled());
     void coordinator.close({ keepalive: true });
     expect(api.closePendingForPageExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a failover start that reports progress', () => {
+  it('shows the replacement\'s progress while it is built, and clears it after', async () => {
+    const player = new FakePlayer();
+    const initial = session({ mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = deferred<PlaybackSession>();
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    let report: ((progress: PlaybackStartProgress) => void) | undefined;
+    api.failover = vi.fn(async (...args: unknown[]) => {
+      report = (args[6] as { onStartProgress?: (progress: PlaybackStartProgress) => void } | undefined)?.onStartProgress;
+      return replacement.promise;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.fail(new Error('node A stream failed'));
+    await vi.waitFor(() => expect(report).toBeDefined());
+    report!({ kind: 'start', stage: 'preroll', progressSeq: 2, elapsedMs: 3_000 });
+    expect(coordinator.getSnapshot().startProgress).toMatchObject({ kind: 'start', stage: 'preroll' });
+    replacement.resolve(session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' } }));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    expect(coordinator.getSnapshot().startProgress).toBeUndefined();
   });
 });

@@ -432,6 +432,8 @@ export interface PlaybackResolver {
     seekMs: number,
     preferences: PlaybackPreferencesUpdate,
     preparedAlternate?: PlaybackSession,
+    /** Progress of the replacement's start, where the node reports it (0.69.0). */
+    options?: Pick<PlaybackRequestOptions, 'onStartProgress'>,
   ): Promise<PlaybackSession>;
   /**
    * Whether the node that issued this generation still holds it.

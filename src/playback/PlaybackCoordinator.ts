@@ -3765,6 +3765,9 @@ export class PlaybackCoordinator {
         requestedPositionMs,
         preferences,
         preparedAlternate,
+        // The replacement's start, where the node reports progress on it: a
+        // failover is a new stream the viewer waits for too.
+        { onStartProgress: this.reportStartProgress },
       ));
       if (this.disposed) {
         await this.stopOnDisposal(next.sessionId);
@@ -3806,6 +3809,8 @@ export class PlaybackCoordinator {
         error: failoverError,
       });
       this.failTerminal(terminalRecoveryError(error, failoverError));
+    } finally {
+      if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
     }
   }
 
