@@ -190,4 +190,37 @@ export interface CatalogueApi {
   artworkUrls(id: string): ArtworkSource[];
   /** Immutable technical facts; absence is temporary while catalogue hydration catches up. */
   mediaProfile(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined>;
+  /**
+   * A Direct Play file's keyframe byte index (server 0.68.0), for
+   * `bufferedTimeRanges`. Undefined when no node has one: a container that
+   * keeps no byte index (only MP4 and Matroska do), a file no node could
+   * read, or a node older than the route. Immutable per media id.
+   */
+  keyframes(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | undefined>;
+}
+
+/** One stream's entries in a `KeyframeIndex`. */
+export interface KeyframeStream {
+  /** The stream's index in the file, as `PlaybackSession.selected` names it. */
+  index: number;
+  type: 'video' | 'audio';
+  codec: string;
+  /**
+   * `[timeMs, byteOffset]`, sorted by byte offset; times need not rise in
+   * that order. Video: its keyframes. Audio: samples, at most one per second
+   * of media. Matroska often cues only its video, so audio may hold one
+   * entry or none.
+   */
+  entries: ReadonlyArray<readonly [number, number]>;
+}
+
+/** `GET /api/v1/catalogue/media/{id}/keyframes`, server 0.68.0. */
+export interface KeyframeIndex {
+  mediaId: string;
+  container: 'mp4' | 'matroska' | 'webm' | (string & {});
+  /** `sample`: the exact position (MP4). `cluster`: the Matroska cluster holding the entry, at or just before it. */
+  offsets: 'sample' | 'cluster' | (string & {});
+  sizeBytes: number;
+  durationMs: number;
+  streams: KeyframeStream[];
 }

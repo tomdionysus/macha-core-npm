@@ -6,6 +6,7 @@ import type {
   CatalogueKind,
   CatalogueMediaProfile,
   CatalogueStatus,
+  KeyframeIndex,
 } from './CatalogueApi.js';
 import { MachaApiError, MachaCatalogueApi } from './MachaCatalogueApi.js';
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
@@ -37,6 +38,9 @@ function abortReason(signal: AbortSignal): unknown {
 export class ClusterCatalogueApi implements CatalogueApi {
   private readonly apis = new Map<string, MachaCatalogueApi>();
   private readonly mediaProfiles = new Map<string, CatalogueMediaProfile>();
+  /** `null` is a container with no byte index, remembered; see `keyframes`. */
+  private readonly keyframeIndexes = new Map<string, KeyframeIndex | null>();
+  private readonly keyframeRequests = new Map<string, Promise<KeyframeIndex | undefined>>();
   private readonly mediaProfileRequests = new Map<string, MediaProfileRequest>();
   private mediaProfileAbandonmentSequence = 0;
 
@@ -88,6 +92,33 @@ export class ClusterCatalogueApi implements CatalogueApi {
 
   search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]> {
     return this.read((api) => api.search(query, limit, signal), signal);
+  }
+
+  /**
+   * The keyframe index, from the first node that has it, cached per media id
+   * for the life of this client: it is immutable, and the first request for
+   * an older file can take seconds while a node builds it. A node that cannot
+   * find or read the file passes to the next; a container with no byte index
+   * ends the search, and is remembered as such. Concurrent callers share one
+   * request.
+   */
+  keyframes(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | undefined> {
+    if (signal?.aborted) return Promise.reject(abortReason(signal));
+    if (this.keyframeIndexes.has(mediaId)) return Promise.resolve(this.keyframeIndexes.get(mediaId) ?? undefined);
+    let request = this.keyframeRequests.get(mediaId);
+    if (!request) {
+      request = this.router.find((endpoint) => this.api(endpoint).keyframesHere(mediaId)
+        .then((found) => (found === null ? { unsupported: true as const } : found)))
+        .then((found) => {
+          const index = found && !('unsupported' in found) ? found : undefined;
+          // Remember a definite answer, not an absence another minute might fill.
+          if (found) this.keyframeIndexes.set(mediaId, index ?? null);
+          return index;
+        })
+        .finally(() => this.keyframeRequests.delete(mediaId));
+      this.keyframeRequests.set(mediaId, request);
+    }
+    return request;
   }
 
   artwork(id: string, signal?: AbortSignal): Promise<Blob> {

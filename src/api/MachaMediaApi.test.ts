@@ -41,6 +41,7 @@ class FakeCatalogue implements CatalogueApi {
   }
 
   mediaProfile(): Promise<undefined> { return Promise.resolve(undefined); }
+  keyframes(): Promise<undefined> { return Promise.resolve(undefined); }
   status(): Promise<CatalogueStatus> { throw new Error('not used'); }
   update(item: CatalogueItem): Promise<CatalogueItem> { return Promise.resolve(item); }
   clearMetadata(): Promise<void> { return Promise.resolve(); }
@@ -379,6 +380,7 @@ describe('keeping an artwork URL byte-identical across an endpoint swap', () => 
       requiresAuthorization: true,
     })),
     mediaProfile: async () => undefined,
+    keyframes: async () => undefined,
   });
 
   const ref = (signingHost: string) => ({
@@ -642,6 +644,7 @@ describe('choosing the artwork host by what it costs this viewer', () => {
         ...(latencyMs === undefined ? {} : { latencyMs }),
       })),
       mediaProfile: async () => undefined,
+      keyframes: async () => undefined,
     };
   }
   const storage = () => {

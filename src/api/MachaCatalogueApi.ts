@@ -10,6 +10,8 @@ import type {
   CatalogueKind,
   CatalogueMediaProfile,
   CatalogueStatus,
+  KeyframeIndex,
+  KeyframeStream,
 } from './CatalogueApi.js';
 import { machaHost } from '../runtime/host.js';
 
@@ -45,6 +47,31 @@ export class MachaApiError extends Error {
   ) {
     super(message);
   }
+}
+
+/** The wire index, checked and mapped; see `KeyframeIndex`. */
+function keyframeIndexFrom(wire: Record<string, unknown> | undefined, mediaId: string): KeyframeIndex {
+  const invalid = () => new MachaApiError('Macha catalogue returned an invalid keyframe index.', 502, 'invalid_keyframe_index');
+  if (!wire || typeof wire.schema_version !== 'number' || wire.schema_version < 1 || wire.media_id !== mediaId
+    || typeof wire.size_bytes !== 'number' || typeof wire.duration_ms !== 'number' || !Array.isArray(wire.streams)) {
+    throw invalid();
+  }
+  const streams = wire.streams.flatMap((entry): KeyframeStream[] => {
+    const stream = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+    if (typeof stream.index !== 'number' || (stream.type !== 'video' && stream.type !== 'audio')) return [];
+    const entries = (Array.isArray(stream.entries) ? stream.entries : []).flatMap((pair): Array<readonly [number, number]> => (
+      Array.isArray(pair) && typeof pair[0] === 'number' && typeof pair[1] === 'number' ? [[pair[0], pair[1]] as const] : []
+    ));
+    return [{ index: stream.index, type: stream.type, codec: typeof stream.codec === 'string' ? stream.codec : '', entries }];
+  });
+  return {
+    mediaId,
+    container: typeof wire.container === 'string' ? wire.container : '',
+    offsets: typeof wire.offsets === 'string' ? wire.offsets : '',
+    sizeBytes: wire.size_bytes,
+    durationMs: wire.duration_ms,
+    streams,
+  };
 }
 
 export class MachaCatalogueApi implements CatalogueApi {
@@ -101,6 +128,33 @@ export class MachaCatalogueApi implements CatalogueApi {
       if (error instanceof MachaApiError && error.status === 404) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * This node's keyframe index for a file: `undefined` when it cannot give
+   * one here (not found, or the file could not be read, which another node
+   * may manage), `null` when no node can (`keyframes_not_supported`, a fact
+   * about the container).
+   */
+  async keyframesHere(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | null | undefined> {
+    if (!mediaId.startsWith('macha:')) return null;
+    try {
+      const wire = await this.request<Record<string, unknown> | undefined>(
+        `/api/v1/catalogue/media/${encodeURIComponent(mediaId)}/keyframes`,
+        { method: 'GET', signal },
+      );
+      return keyframeIndexFrom(wire, mediaId);
+    } catch (error) {
+      if (error instanceof MachaApiError) {
+        if (error.code === 'keyframes_not_supported' || error.code === 'bad_media_id') return null;
+        if (error.status === 404 || error.code === 'keyframes_failed') return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async keyframes(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | undefined> {
+    return (await this.keyframesHere(mediaId, signal)) ?? undefined;
   }
 
   async update(item: CatalogueItem, expectedRevision = item.revision): Promise<CatalogueItem> {

@@ -172,7 +172,7 @@ The server is building `GET /api/v1/catalogue/media/{id}/keyframes` (time to byt
 - a fetch on the media API, cached per media id, since the index is immutable;
 - a pure function from the index, the file size and byte ranges to time ranges, linear between entries, returning the minimum playable across streams when the index is per-stream.
 
-This is a utility the web client calls, not something the coordinator applies to every event, because the native players report real time. Nothing is built before the announcement.
+This is a utility the web client calls, not something the coordinator applies to every event, because the native players report real time. **Built** after the server announced 0.68.0 (committed as `8135c66`, not deployed): `CatalogueApi.keyframes(mediaId)` (the cluster fetch is cached, asks the next node on `not_found` or `keyframes_failed`, and stops on `keyframes_not_supported`) and `bufferedTimeRanges(index, heldBytes, playing)`.
 
 ### Continue Watching resumes as if the viewer never left — Tom, 2026-09-27 (relayed by the TV client)
 "Continue watching likely needs to store both the item id AND the media ID. It should also store the mode (direct, remux, transcode), resolution, subtitle settings, and all other data needed to resume as if you'd never left." Built in the commit following this note:
