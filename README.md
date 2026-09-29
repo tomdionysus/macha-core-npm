@@ -1,6 +1,6 @@
 # @machafoundation/core
 
-*v0.20.0*
+*v0.21.0*
 
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
