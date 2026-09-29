@@ -197,7 +197,38 @@ export interface ClusterNodeStatus {
   runtime: NodeRuntimeStatus;
   /** The deadlines this node enforces on playback. Absent on a node that cannot say. */
   playback?: NodePlaybackBudgets;
+  /**
+   * This node's traffic to and from other nodes, by frame class (server
+   * 0.73.0). Null when the node did not report it; absent before 0.73.0.
+   * Operator diagnostics: core routes on none of it.
+   */
+  traffic?: NodeTrafficStatus | null;
   identity_association_reset: IdentityAssociationReset | null;
+}
+
+/** A node's frame classes, from server 0.73.0. The set may grow, so keep a code this does not name. */
+export type NodeTrafficClass = 'control' | 'foreground' | 'read_ahead' | 'speculative' | 'loader' | (string & {});
+
+export interface NodeTrafficClassStatus {
+  class: NodeTrafficClass;
+  /** Totals since the node started. */
+  in_bytes: number;
+  out_bytes: number;
+  /** Over the last `window_ms`; null on the node's first sample after start. */
+  in_bytes_per_s: number | null;
+  out_bytes_per_s: number | null;
+}
+
+/**
+ * Macha's own traffic between nodes: every sealed frame a node's channels
+ * send and receive, overhead included. HTTP to clients is not in it. Summing
+ * it across nodes counts each byte twice, as one node's out and another's in.
+ */
+export interface NodeTrafficStatus {
+  as_of_unix_ms: number;
+  /** The interval the rates cover; null on the node's first sample after start, while the totals are present. */
+  window_ms: number | null;
+  classes: NodeTrafficClassStatus[];
 }
 
 export interface ClusterSummaryStatus {

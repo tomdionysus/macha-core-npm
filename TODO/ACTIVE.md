@@ -46,6 +46,9 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
+### Server 0.73.0: per-node inter-node traffic, typed for the Status pages, 2026-09-29
+Live on fi-1 and gbni-1 from 15:34Z. `ClusterNodeStatus.traffic` is `NodeTrafficStatus | null`: `as_of_unix_ms`, `window_ms` (null on a node's first sample), and per class (`NodeTrafficClass`, open-ended) the byte totals and the rates (null with `window_ms`). Types only: the body already reached the clients untouched, and core routes on none of it. Requested by the web for its Status cards and node pages; the web words the class codes. Shape checked against the server's CHANGELOG 0.73.0. Unreleased; next core release.
+
 ### Published: `0.21.0`, 2026-09-29
 npm `latest` is `0.21.0`, `gitHead` `5569ddd`, which is `main`'s merge. The annotated tag `0.21.0` is on `5773c48`. `dist` hash `f1e168298660`; 1313 tests in 75 files; 32 commits since 0.20.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `5773c48`'s message. All three clients said go: web 668 tests, Android TV 376 with its export, phone 359. All three are on it, each pushed on Tom's word and checked on each client's remote:
 - web 0.20.0: `main` `1fa0bc4`, tag `0.20.0`, `^0.21.0`, 668 tests; `develop` `2b9d01e` back on the link;
