@@ -68,10 +68,74 @@ export interface MatchSearchResult {
   matches: ManageCatalogueMatch[];
 }
 
+/**
+ * Metadata entered by hand for an unmatched file. From server 0.67.0 an
+ * episode or track may name its parents by id and join an existing
+ * hierarchy, such as a show the scanner matched, instead of creating a
+ * `manual:` one beside it (proposal D):
+ * - an episode takes `season_id`, or `series_id` with `season_number`, or the
+ *   titles `series` (and `series_year`) with `season_number`;
+ * - a track takes `album_id`, or `artist_id` with `album`, or the titles
+ *   `artist` and `album`.
+ * A named parent that does not exist is `404 parent_not_found`, one of the
+ * wrong kind `400 bad_parent_kind`. Every item written carries the metadata
+ * lock against the scanner unless `lock` is false.
+ */
 export type ManualMetadata =
-  | { kind: 'movie'; title: string; year?: number; synopsis?: string }
-  | { kind: 'episode'; series: string; series_year?: number; season_number: number; episode_number: number; title?: string; synopsis?: string }
-  | { kind: 'track'; artist: string; album: string; title: string; year?: number; disc_number?: number; track_number?: number; synopsis?: string };
+  | { kind: 'movie'; title: string; year?: number; synopsis?: string; lock?: boolean }
+  | {
+    kind: 'episode'; episode_number: number; title?: string; synopsis?: string; lock?: boolean;
+    series?: string; series_year?: number; season_number?: number; series_id?: string; season_id?: string;
+  }
+  | {
+    kind: 'track'; title: string; year?: number; disc_number?: number; track_number?: number; synopsis?: string; lock?: boolean;
+    artist?: string; album?: string; artist_id?: string; album_id?: string;
+  };
+
+/**
+ * A provider record to match an unmatched file to (server 0.67.0, proposal
+ * C): `tmdb:movie:<id>`; `tmdb:tv:<id>` with season and episode numbers; or
+ * `musicbrainz:release:<mbid>` with a track number (and disc, where needed).
+ * The server fetches the record, builds its hierarchy (reusing items already
+ * catalogued under the same ids), stages its default artwork and binds the
+ * file, as a scan match does.
+ */
+export interface ProviderMatchRef {
+  ref: string;
+  season_number?: number;
+  episode_number?: number;
+  track_number?: number;
+  disc_number?: number;
+}
+
+/** A provider search result (proposal A); `ref` is what `matchProvider` takes. */
+export interface ProviderSearchResult {
+  ref: string;
+  provider: 'tmdb' | 'musicbrainz' | (string & {});
+  kind: 'movie' | 'show' | 'album';
+  title: string;
+  year: number | null;
+  overview?: string;
+  /** An album's artist. */
+  artist?: string;
+  /** Present when the catalogue already holds the item a match would write. */
+  catalogue_item_id?: string;
+}
+
+export type ProviderSearchKind = 'movie' | 'show' | 'album';
+
+/** Which artwork a provider reference offers: posters and backdrops for a movie or show, a season's poster, an episode's still, an album's cover. */
+export type ProviderArtworkRole = 'poster' | 'backdrop' | 'still' | 'cover';
+
+/** One image a provider offers for a role (proposal E); `preview_url` is the provider's own small image, to show directly. */
+export interface ProviderArtworkOption {
+  option_id: string;
+  role: ProviderArtworkRole | (string & {});
+  width: number | null;
+  height: number | null;
+  language: string | null;
+  preview_url: string;
+}
 
 export interface ManualMetadataResult {
   leaf_item_id: string;
@@ -130,6 +194,21 @@ export interface ManageApi {
   retry(id: string): Promise<void>;
   match(id: string, catalogueItemId: string): Promise<void>;
   manual(id: string, metadata: ManualMetadata): Promise<ManualMetadataResult>;
+  /** Match an unmatched file to a provider record (server 0.67.0); see `ProviderMatchRef`. */
+  matchProvider(id: string, target: ProviderMatchRef): Promise<ManualMetadataResult>;
+  /**
+   * Search the metadata provider for a kind (server 0.67.0): TMDB for a movie
+   * or show, MusicBrainz releases for an album. Needs the manager role.
+   */
+  providerSearch(query: string, kind: ProviderSearchKind, options?: { year?: number; artist?: string; limit?: number }): Promise<ProviderSearchResult[]>;
+  /** The images a provider has for one role of a reference (server 0.67.0). */
+  providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]>;
+  /**
+   * Make a provider's image the item's only artwork for the role (server
+   * 0.67.0). An item with no provider reference of its own (a manual item)
+   * names one. Locks the item unless `lock` is false. Answers the item.
+   */
+  chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options?: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean }): Promise<ManageCatalogueMatch>;
   deleteUnmatched(id: string): Promise<void>;
   browse(path: string): Promise<MachaDfsDirectory>;
   mkdir(path: string): Promise<void>;

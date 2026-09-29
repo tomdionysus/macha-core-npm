@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaSummary } from '../types.js';
-import { PlaybackQueueStore } from './playbackQueue.js';
+import { PlaybackQueueStore, PERSISTED_QUEUE_LIMIT, persistedQueue } from './playbackQueue.js';
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -196,5 +196,51 @@ describe('safety for a reactive caller', () => {
     expect(store.getSnapshot()?.items).toHaveLength(1);
     store.clear();
     expect(store.getSnapshot()).toBeUndefined();
+  });
+});
+
+/**
+ * The phone client, A85, 2026-09-28: one track played from the Tracks tab
+ * queued the whole library, and the saved row outgrew Android's ~2 MB SQLite
+ * CursorWindow, unreadable at the next start.
+ */
+describe('a queue of a whole library', () => {
+  const track = (n: number): MediaSummary => ({ id: `track:${n}`, kind: 'track', title: `Track ${n}`, mediaIds: [`macha:${n}`] });
+  const library = Array.from({ length: 5_000 }, (_, n) => track(n));
+
+  it('plays whole, and saves only a window around the current item', () => {
+    const storage = new MemoryStorage();
+    const store = new PlaybackQueueStore('client', storage);
+    store.replace(library, 2_500);
+    expect(store.getSnapshot()?.items).toHaveLength(5_000);
+    const saved = JSON.parse(storage.getItem('macha.playbackQueue.v1.client')!) as { items: MediaSummary[]; currentIndex: number };
+    expect(saved.items).toHaveLength(PERSISTED_QUEUE_LIMIT);
+    expect(saved.items[saved.currentIndex]?.id).toBe('track:2500');
+    // What was playing and what comes next.
+    expect(saved.items[0]?.id).toBe('track:2450');
+    // A restart resumes the window, on the same item.
+    expect(new PlaybackQueueStore('client', storage).getSnapshot()?.items[saved.currentIndex]?.id).toBe('track:2500');
+  });
+
+  it('keeps the window within the queue at either end', () => {
+    expect(persistedQueue({ items: library, currentIndex: 0, positionMs: 0, updatedAt: 1 })).toMatchObject({ currentIndex: 0 });
+    const atEnd = persistedQueue({ items: library, currentIndex: 4_999, positionMs: 0, updatedAt: 1 });
+    expect(atEnd.items).toHaveLength(PERSISTED_QUEUE_LIMIT);
+    expect(atEnd.items[atEnd.currentIndex]?.id).toBe('track:4999');
+  });
+
+  it('goes on playing when the storage refuses the save', () => {
+    const refusing = new MemoryStorage();
+    refusing.setItem = () => { throw new Error('QuotaExceededError'); };
+    const store = new PlaybackQueueStore('client', refusing);
+    expect(store.replace(library.slice(0, 10), 3).currentIndex).toBe(3);
+    expect(store.getSnapshot()?.items[3]?.id).toBe('track:3');
+  });
+
+  it('adds to the live queue, not to the saved window', () => {
+    const store = new PlaybackQueueStore('client', new MemoryStorage());
+    store.replace(library, 0);
+    store.append([track(9_999)]);
+    expect(store.getSnapshot()?.items).toHaveLength(5_001);
   });
 });

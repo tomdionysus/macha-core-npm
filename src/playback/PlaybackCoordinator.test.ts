@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlaybackSourceError, type Player } from '../platform/Platform.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackEvent, PlaybackSource } from '../types.js';
-import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackUpdate } from './PlaybackResolver.js';
+import type { PlaybackPreferences, PlaybackPreferencesUpdate, PlaybackResolver, PlaybackSession, PlaybackStartProgress, PlaybackUpdate } from './PlaybackResolver.js';
 import { FakePlayer } from '../testing/FakePlayer.js';
 import { MOVE_LEAD_MARGIN_MS } from './generationStart.js';
 import { playbackVersions, versionPreferences, type QualityCeiling } from './playbackVersions.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
-import { equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
+import { TOO_SLOW_TO_PLAY_CODE, equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
   alternateRecoveryWindowMs,
 } from './PlaybackCoordinator.js';
 
@@ -118,7 +118,7 @@ describe('PlaybackCoordinator transport invariants', () => {
       await vi.advanceTimersByTimeAsync(1);
       await flush();
       expect(api.update).toHaveBeenCalledTimes(1);
-      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 30_000 }), expect.any(AbortSignal));
+      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 30_000 }), expect.any(AbortSignal), expect.anything());
       await coordinator.close();
     } finally {
       vi.useRealTimers();
@@ -233,7 +233,7 @@ describe('PlaybackCoordinator transport invariants', () => {
 
     expect(player.seekCalls).toEqual([]);
     await vi.waitFor(() => {
-      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 240_000 }), expect.any(AbortSignal));
+      expect(api.update).toHaveBeenCalledWith('s1', expect.objectContaining({ seekMs: 240_000 }), expect.any(AbortSignal), expect.anything());
     });
   });
 
@@ -996,6 +996,7 @@ describe('PlaybackCoordinator player failures', () => {
       240_000,
       expect.any(Object),
       undefined,
+      expect.anything(),
     ));
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
@@ -1276,6 +1277,7 @@ describe('PlaybackCoordinator player failures', () => {
       42_000,
       expect.objectContaining({ mode: 'remux', maxHeight: 720, subtitleLanguage: 'eng' }),
       undefined,
+      expect.anything(),
     );
     expect(coordinator.getSnapshot().fatalError).toBeUndefined();
     expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b');
@@ -1404,6 +1406,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.objectContaining({ audioStream: 2, audioLanguage: 'fra' }),
       undefined,
+      expect.anything(),
     ));
     await vi.waitFor(() => expect(player.playCalls.at(-1)?.source.url).toBe('http://b/replacement.mp4'));
     stuckUpdate.resolve(initial);
@@ -1511,6 +1514,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.any(Object),
       alternate,
+      expect.anything(),
     );
   });
 
@@ -1546,6 +1550,7 @@ describe('PlaybackCoordinator player failures', () => {
       0,
       expect.any(Object),
       alternate,
+      expect.anything(),
     );
   });
 
@@ -4556,5 +4561,168 @@ describe('a fractional resume position into a transcode', () => {
     await flush();
     expect(updates).toHaveLength(0);
     expect(player.playCalls).toHaveLength(1);
+  });
+});
+
+describe('a start that reports progress', () => {
+  it('shows the progress on the snapshot while it waits, and clears it once ready', async () => {
+    const ready = deferred<PlaybackSession>();
+    const api = resolver(session({ mode: 'transcode' }));
+    let report: ((progress: PlaybackStartProgress) => void) | undefined;
+    api.resolve.mockImplementation(async (_m: unknown, _c: unknown, _p: unknown, _pref: unknown, options?: { onStartProgress?: (progress: PlaybackStartProgress) => void }) => {
+      report = options?.onStartProgress;
+      return ready.promise;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    const starting = coordinator.start();
+    await vi.waitFor(() => expect(report).toBeDefined());
+    report!({ kind: 'start', stage: 'preroll', progressSeq: 4, elapsedMs: 4_000, prerollDecodedMs: 1_200, prerollTotalMs: 5_005 });
+    expect(coordinator.getSnapshot().startProgress).toMatchObject({ stage: 'preroll', prerollDecodedMs: 1_200 });
+    ready.resolve(session({ mode: 'transcode' }));
+    await starting;
+    expect(coordinator.getSnapshot().startProgress).toBeUndefined();
+  });
+
+  it('closes a start still pending on a page exit', async () => {
+    const api = resolver(session({ mode: 'transcode' })) as ReturnType<typeof resolver> & { closePendingForPageExit: ReturnType<typeof vi.fn> };
+    api.closePendingForPageExit = vi.fn();
+    api.resolve.mockImplementation(() => new Promise(() => undefined));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player: new FakePlayer(), resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    void coordinator.start();
+    await vi.waitFor(() => expect(api.resolve).toHaveBeenCalled());
+    void coordinator.close({ keepalive: true });
+    expect(api.closePendingForPageExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a failover start that reports progress', () => {
+  it('shows the replacement\'s progress while it is built, and clears it after', async () => {
+    const player = new FakePlayer();
+    const initial = session({ mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = deferred<PlaybackSession>();
+    const api = resolver(initial) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    let report: ((progress: PlaybackStartProgress) => void) | undefined;
+    api.failover = vi.fn(async (...args: unknown[]) => {
+      report = (args[6] as { onStartProgress?: (progress: PlaybackStartProgress) => void } | undefined)?.onStartProgress;
+      return replacement.promise;
+    });
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      initialPreferences: { mode: 'transcode' },
+    });
+    await coordinator.start();
+    player.emit({ positionMs: 0, durationMs: 600_000, paused: false, ended: false });
+    player.fail(new Error('node A stream failed'));
+    await vi.waitFor(() => expect(report).toBeDefined());
+    report!({ kind: 'start', stage: 'preroll', progressSeq: 2, elapsedMs: 3_000 });
+    expect(coordinator.getSnapshot().startProgress).toMatchObject({ kind: 'start', stage: 'preroll' });
+    replacement.resolve(session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' } }));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    expect(coordinator.getSnapshot().startProgress).toBeUndefined();
+  });
+});
+
+/**
+ * The web client, 2026-09-28: a 4K HEVC transcode at 0.33x on both nodes
+ * failed over back and forth for ever, the viewer at 0:02. Tom: a quality the
+ * viewer chose stops with a stated reason; core's own choice steps down.
+ */
+describe('a quality no node can produce at real speed', () => {
+  const stall = () => new PlaybackSourceError('Playback stopped and nothing arrived for 7s.', 'stream');
+  const hevc = (mediaId: string, width: number, height: number) => ({
+    mediaId,
+    profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 600_000, bitrate: 1_000, streams: [
+      { index: 0, type: 'video' as const, codec: 'hevc', profile: '', language: '', default: true, forced: false, width, height },
+      { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+    ] },
+  });
+
+  function setup(options: { initialPreferences?: PlaybackPreferencesUpdate; facts?: unknown } = {}) {
+    const player = new FakePlayer();
+    const first = session({ mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const second = session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-b', baseUrl: 'http://b' },
+      source: { ...first.source, url: 'http://b/replacement.m3u8' } });
+    const updates: PlaybackUpdate[] = [];
+    const api = resolver(first, async (update) => { updates.push(update); return first; }) as ReturnType<typeof resolver> & { failover: ReturnType<typeof vi.fn> };
+    api.failover = vi.fn(async () => second);
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+      ...(options.facts ? { facts: async () => options.facts as never } : {}),
+      ...(options.initialPreferences ? { initialPreferences: options.initialPreferences } : {}),
+    });
+    return { player, api, coordinator, updates };
+  }
+
+  it("stops a quality the viewer chose once a second node stalls the same way, with the stated code", async () => {
+    const { player, api, coordinator } = setup({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().fatalError).toBeDefined());
+    expect(playbackFailureCode(coordinator.getSnapshot().fatalError)).toBe(TOO_SLOW_TO_PLAY_CODE);
+    // One failover, not an endless cycle.
+    expect(api.failover).toHaveBeenCalledTimes(1);
+  });
+
+  it("steps core's own choice down a quality instead, and says so", async () => {
+    const { player, api, coordinator, updates } = setup({ facts: [hevc('uhd', 3840, 2160), hevc('fhd', 1920, 1080)] });
+    await coordinator.start();
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ chosenByViewer: false, quality: 2160 });
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 1_900, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]?.preferences).toMatchObject({ mode: 'transcode', maxHeight: 1440 });
+    expect(coordinator.getSnapshot().notice?.code).toBe('quality-stepped-down');
+    expect(playbackFailureCode(coordinator.getSnapshot().notice?.error)).toBe(TOO_SLOW_TO_PLAY_CODE);
+    expect(coordinator.getSnapshot().instruction).toMatchObject({ quality: 1440, chosenByViewer: false });
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+    expect(api.failover).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails over as before when the stream had been playing', async () => {
+    const { player, api, coordinator } = setup({ initialPreferences: { mode: 'transcode' } });
+    await coordinator.start();
+    player.emit({ positionMs: 60_000, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.endpoint?.id).toBe('node-b'));
+    player.emit({ positionMs: 120_000, durationMs: 600_000, paused: false, ended: false });
+    player.fail(stall());
+    await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(2));
+    expect(coordinator.getSnapshot().fatalError).toBeUndefined();
+  });
+});
+
+describe("automatic play avoids what no node transcodes at real speed", () => {
+  it("uses the resolver's rates to leave the too-slow file out", async () => {
+    const hevc = (mediaId: string, width: number, height: number, bitDepth: number) => ({
+      mediaId,
+      profile: { mediaId, format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+        { index: 0, type: 'video' as const, codec: 'hevc', profile: '', language: '', default: true, forced: false, width, height, bitDepth },
+        { index: 1, type: 'audio' as const, codec: 'aac', profile: '', language: '', default: true, forced: false },
+      ] },
+    });
+    const api = resolver(session({ mode: 'transcode' })) as ReturnType<typeof resolver> & { transcodeRate: (source: { heightClass: number }) => number | undefined };
+    api.transcodeRate = (source) => (source.heightClass === 2160 ? 0.33 : undefined);
+    const coordinator = new PlaybackCoordinator({
+      media: { ...media(), mediaIds: ['uhd', 'fhd'] }, player: new FakePlayer(), resolver: api,
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts: async () => [hevc('uhd', 3840, 2160, 10), hevc('fhd', 1920, 1080, 8)] as never,
+    });
+    await coordinator.start();
+    expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'fhd' });
+    expect(coordinator.getSnapshot().versions?.passedOver?.reasons).toContain('transcode-below-real-time');
   });
 });

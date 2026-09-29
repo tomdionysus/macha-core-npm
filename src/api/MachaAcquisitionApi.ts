@@ -134,17 +134,33 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     const body: Record<string, unknown> = { magnet };
     if (options.nodeId !== undefined) body.node_id = options.nodeId;
     if (options.removeAfterMs !== undefined) body.remove_after_ms = options.removeAfterMs;
+    if (options.paused === true) body.paused = true;
     const response = await this.request<{ id: string; info_hash?: unknown; node_id?: unknown; job?: TorrentJob }>('/api/v1/torrents/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    return {
+    const result: TorrentAddResult = {
       id: response.id,
       infoHash: typeof response.info_hash === 'string' ? response.info_hash : null,
       pinnedNodeId: typeof response.node_id === 'string' ? response.node_id : null,
       ...(response.job ? { job: response.job } : {}),
     };
+    // A node before 0.71.0 ignores `paused` and starts the job. Said by the
+    // job it answers with (`desired` not paused), so it is paused at once:
+    // a moment's start at worst, never a download nobody asked for.
+    if (options.paused === true && response.job?.desired !== 'paused') {
+      try {
+        const paused = await this.pauseTorrent(response.id);
+        return { ...result, job: paused, pausedAfterAdd: true };
+      } catch (error) {
+        // The add succeeded; only the pause did not. Throwing would report a
+        // failed add for a torrent that is in fact running, unseen: the
+        // outcome this option exists to prevent (the web client).
+        return { ...result, pausedAfterAdd: false, pauseError: error };
+      }
+    }
+    return result;
   }
 
   updateTorrent(id: string, update: TorrentJobUpdate): Promise<TorrentJob> {

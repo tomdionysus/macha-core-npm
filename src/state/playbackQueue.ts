@@ -35,6 +35,33 @@ function validState(value: unknown): value is PlaybackQueueState {
     && Number.isFinite(candidate.updatedAt);
 }
 
+/**
+ * The most items a saved queue keeps: a window around the current item, up to
+ * `PERSISTED_QUEUE_BEHIND` before it and the rest after.
+ *
+ * A queue of a whole library is a legitimate thing to play and not a thing to
+ * save whole. The phone played one track from its Tracks tab with the whole
+ * library as the queue, and the saved row outgrew Android's ~2 MB SQLite
+ * CursorWindow: at the next start it could not be read at all, and with it
+ * went every other key read in the same batch (the phone client, A85,
+ * 2026-09-28). The web's localStorage quota (about 5 MB) is the same wall
+ * further off. The live queue stays whole in memory; a restart resumes the
+ * window, which holds what was playing and what comes next.
+ */
+export const PERSISTED_QUEUE_LIMIT = 200;
+const PERSISTED_QUEUE_BEHIND = 50;
+
+/** The saved form of a queue: the window around the current item, the index rebased into it. */
+export function persistedQueue(state: PlaybackQueueState): PlaybackQueueState {
+  if (state.items.length <= PERSISTED_QUEUE_LIMIT) return state;
+  const start = Math.max(0, Math.min(state.currentIndex - PERSISTED_QUEUE_BEHIND, state.items.length - PERSISTED_QUEUE_LIMIT));
+  return {
+    ...state,
+    items: state.items.slice(start, start + PERSISTED_QUEUE_LIMIT),
+    currentIndex: state.currentIndex - start,
+  };
+}
+
 export class PlaybackQueueStore {
   private readonly key: string;
   private readonly listeners = new Set<() => void>();
@@ -85,11 +112,29 @@ export class PlaybackQueueStore {
     return readValidatedJson(this.storage, this.key, validState);
   }
 
-  /** Persist and notify. Every mutation goes through here or `clear()`. */
+  /**
+   * Persist and notify. Every mutation goes through here or `clear()`.
+   *
+   * The whole queue is kept in memory and is what every caller sees; only a
+   * window of it is saved (`persistedQueue`). A save the storage refuses, a
+   * quota reached, leaves the live queue playing rather than failing the
+   * viewer's action.
+   */
   private commit(next: PlaybackQueueState): PlaybackQueueState {
-    const written = writeJson(this.storage, this.key, next);
-    this.changed();
-    return written;
+    try {
+      writeJson(this.storage, this.key, persistedQueue(next));
+    } catch {
+      // The saved queue is a convenience for the next start; the live one stands.
+    }
+    this.cached = next;
+    this.cacheLoaded = true;
+    for (const listener of this.listeners) listener();
+    return next;
+  }
+
+  /** The live queue: the whole of it this run, else what was saved. */
+  private current(): PlaybackQueueState | undefined {
+    return this.getSnapshot();
   }
 
   replace(items: readonly MediaSummary[], currentIndex = 0): PlaybackQueueState {
@@ -130,7 +175,7 @@ export class PlaybackQueueStore {
       this.clear();
       return undefined;
     }
-    const current = this.load();
+    const current = this.current();
     if (!current) return this.replace(playableItems, currentIndex);
     const boundedIndex = Math.max(0, Math.min(playableItems.length - 1, currentIndex));
     const wasPlaying = current.items[current.currentIndex]?.id;
@@ -145,14 +190,14 @@ export class PlaybackQueueStore {
   }
 
   select(currentIndex: number): PlaybackQueueState | undefined {
-    const current = this.load();
+    const current = this.current();
     if (!current || currentIndex < 0 || currentIndex >= current.items.length) return current;
     const next = { ...current, currentIndex, positionMs: 0, updatedAt: Date.now() };
     return this.commit(next);
   }
 
   updatePosition(positionMs: number): PlaybackQueueState | undefined {
-    const current = this.load();
+    const current = this.current();
     if (!current) return undefined;
     const next = { ...current, positionMs: Number.isFinite(positionMs) ? Math.max(0, positionMs) : 0, updatedAt: Date.now() };
     return this.commit(next);
@@ -160,8 +205,8 @@ export class PlaybackQueueStore {
 
   insertNext(items: readonly MediaSummary[]): PlaybackQueueState | undefined {
     const additions = items.filter(isPlayable);
-    if (additions.length === 0) return this.load();
-    const current = this.load();
+    if (additions.length === 0) return this.current();
+    const current = this.current();
     if (!current) return this.replace(additions, 0);
     const insertAt = current.currentIndex + 1;
     const next: PlaybackQueueState = {
@@ -174,8 +219,8 @@ export class PlaybackQueueStore {
 
   append(items: readonly MediaSummary[]): PlaybackQueueState | undefined {
     const additions = items.filter(isPlayable);
-    if (additions.length === 0) return this.load();
-    const current = this.load();
+    if (additions.length === 0) return this.current();
+    const current = this.current();
     if (!current) return this.replace(additions, 0);
     const next: PlaybackQueueState = {
       ...current,

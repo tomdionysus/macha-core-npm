@@ -84,6 +84,8 @@ function copyDelivery(session: PlaybackSession): PlaybackDelivery {
 export interface PlaybackStatusDescription {
   /** The origin serving the picture: scheme, host and port only, or `same-origin`. */
   endpoint?: string;
+  /** The cluster's own name for the node serving it ("corvus-fi-1"), where known; show it before `endpoint`. */
+  endpointName?: string;
   /** See `servedContainer`. Undefined when the node did not report one. */
   container?: string;
   /**
@@ -141,6 +143,18 @@ function endpointDescription(session: PlaybackSession, activeStreamOrigin?: stri
 }
 
 /**
+ * The session's node name, only while that node is the one serving the
+ * picture: a Direct Play failover can move the transfer to another node while
+ * the session stays put, and the name would then name the wrong machine.
+ */
+function servingNodeName(session: PlaybackSession, activeStreamOrigin?: string): string | undefined {
+  const name = session.endpoint?.name;
+  if (!name || !session.endpoint) return undefined;
+  if (activeStreamOrigin && safeOrigin(activeStreamOrigin) !== safeOrigin(session.endpoint.baseUrl)) return undefined;
+  return name;
+}
+
+/**
  * Describe what the server says it is doing to each selected stream.
  *
  * Source and output metadata are both server-authoritative. The per-stream
@@ -157,6 +171,7 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
     : undefined;
   const result: PlaybackStatusDescription = {
     endpoint: endpointDescription(session, activeStreamOrigin),
+    ...(servingNodeName(session, activeStreamOrigin) ? { endpointName: servingNodeName(session, activeStreamOrigin) } : {}),
     container: servedContainer(session),
   };
 

@@ -1,4 +1,5 @@
 import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
+import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import type { PlaybackPreferencesUpdate } from './PlaybackResolver.js';
 import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
 import type { PlaybackMode } from '../types.js';
@@ -186,6 +187,16 @@ export interface VersionStep {
   maxHeight?: number;
 }
 
+/** The larger file automatic play passed over, and what it would convert; see `PlaybackVersions.passedOver`. */
+export interface PassedOverVersion {
+  quality: QualityClass;
+  mediaId?: string;
+  /** Which of its streams would be re-encoded. */
+  converts: { video: boolean; audio: boolean };
+  /** The chooser's reasons, such as `audio-codec-not-playable`. */
+  reasons: PlaybackDecisionReason[];
+}
+
 export interface PlaybackVersions {
   files: VersionFile[];
   /**
@@ -199,6 +210,15 @@ export interface PlaybackVersions {
   automatic?: VersionStep;
   /** Set when the ceiling kept automatic play off a larger file. */
   limitedBy?: QualityCeiling;
+  /**
+   * Set when automatic play chose a smaller file than the largest within the
+   * ceiling, because that larger one would need converting and a file that
+   * plays as it is ranks first. The ranking, not the ceiling, so `limitedBy`
+   * cannot say it: The Martian's 4K file with TrueHD audio on a 4K Android TV,
+   * which plays the 1080p file (the Android TV client, 2026-09-28). Data for
+   * the host to word.
+   */
+  passedOver?: PassedOverVersion;
 }
 
 const MODE_RANK = { direct: 0, remux: 1, transcode: 2 } as const;
@@ -267,6 +287,32 @@ export interface PlaybackVersionsOptions {
   ceiling?: QualityCeiling;
   /** Offer steps above the device's limit too; see `QualityPreference.offerAll`. */
   offerAll?: boolean;
+  /**
+   * The best rate any node has measured for transcoding a kind of source
+   * (server 0.70.0), as `PlaybackResolver.transcodeRate` answers it.
+   * Automatic play passes over a file whose picture would be transcoded where
+   * that rate is below real time, and says so in `passedOver`.
+   */
+  transcodeRate?: (source: TranscodeSource) => number | undefined;
+}
+
+/** A file's video, as the server keys its transcode rates. */
+export function transcodeSourceOf(profile: MediaTechnicalProfile): TranscodeSource | undefined {
+  const video = profile.streams.find((stream) => stream.type === 'video' && stream.default)
+    ?? profile.streams.find((stream) => stream.type === 'video');
+  if (!video) return undefined;
+  return { codec: video.codec.toLowerCase(), bitDepth: video.bitDepth ?? 8, heightClass: rateHeightClass(video.height ?? 0) };
+}
+
+/**
+ * The server's height class for its transcode rates, exactly as it buckets
+ * them (TranscodeRateBook::height_class): the first of 576, 720, 1080, 1440,
+ * 2160 at or above the height, else 4320. By height alone, unlike
+ * `qualityClass`, so a 1024x600 picture is 720 here though `qualityClass`
+ * rates it 576: the key must be the server's or it reads another class's rate.
+ */
+export function rateHeightClass(height: number): number {
+  return [576, 720, 1080, 1440, 2160].find((cls) => height <= cls) ?? 4320;
 }
 
 /**
@@ -318,8 +364,34 @@ export function playbackVersions(
   const ceiling = deviceLimit !== undefined && (!options.ceiling || deviceLimit < options.ceiling.quality)
     ? { quality: deviceLimit, reason: 'ceiling-device' as const }
     : options.ceiling;
-  const within = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
+  const inCeiling = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
+  // A picture no node has transcoded at real speed is left out of automatic
+  // play where anything else remains: fi-1 decodes 4K HEVC 10-bit at about
+  // 0.33x, and choosing it meant a stall at 0:02. A viewer can still pick it.
+  const tooSlow = (file: VersionFile): boolean => {
+    if (file.instruction.video !== 'transcode' || !options.transcodeRate) return false;
+    const source = transcodeSourceOf(facts[file.index]!.profile);
+    const rate = source ? options.transcodeRate(source) : undefined;
+    return rate !== undefined && rate < 1;
+  };
+  const keepsUp = inCeiling.filter((file) => !tooSlow(file));
+  const within = keepsUp.length > 0 ? keepsUp : inCeiling;
   const automatic = within.length > 0 ? fileStep(best(within)!) : stepAt(ceiling!.quality);
+  const largest = inCeiling.length > 0 ? Math.max(...inCeiling.map((file) => file.quality)) : undefined;
+  const skipped = largest !== undefined && automatic.quality < largest
+    ? best(inCeiling.filter((file) => file.quality === largest))
+    : undefined;
+  const passedOver: PassedOverVersion | undefined = skipped
+    ? {
+      quality: skipped.quality,
+      ...(skipped.mediaId !== undefined ? { mediaId: skipped.mediaId } : {}),
+      converts: { video: skipped.instruction.video === 'transcode', audio: skipped.instruction.audio === 'transcode' },
+      reasons: [
+        ...skipped.instruction.reasons.filter((reason) => reason !== 'source-plays-as-is' && reason !== 'host-policy-prefers-container'),
+        ...(tooSlow(skipped) ? ['transcode-below-real-time' as const] : []),
+      ],
+    }
+    : undefined;
   return {
     files,
     steps,
@@ -328,6 +400,7 @@ export function playbackVersions(
     // Only where the ceiling excluded a file: a larger file passed over
     // because it needs re-encoding is the ranking, not the ceiling.
     ...(ceiling && files.some((file) => file.quality > ceiling.quality) ? { limitedBy: ceiling } : {}),
+    ...(passedOver ? { passedOver } : {}),
   };
 }
 

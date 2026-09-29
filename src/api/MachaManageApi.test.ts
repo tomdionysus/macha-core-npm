@@ -293,3 +293,56 @@ describe('how a management failure is reported', () => {
     await expect(api().retry('hint:one')).resolves.toBeUndefined();
   });
 });
+
+function paramsOf(url: URL): Record<string, string> {
+  const out: Record<string, string> = {};
+  url.searchParams.forEach((value, key) => { out[key] = value; });
+  return out;
+}
+
+describe('the metadata editor (server 0.67.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const calls = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls as Array<[string, RequestInit]>;
+
+  it('matches an unmatched file to a provider record with the numbers that pick the episode', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'matched', leaf_item_id: 'tmdb:episode:1', items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await new MachaManageApi('http://n').matchProvider('hint:one', { ref: 'tmdb:tv:1399', season_number: 1, episode_number: 4 });
+    const [url, init] = calls(fetchMock)[0]!;
+    expect(url).toBe('http://n/api/v1/manage/unmatched/hint%3Aone/match');
+    expect(JSON.parse(String(init.body))).toEqual({ ref: 'tmdb:tv:1399', season_number: 1, episode_number: 4 });
+    expect(result.leaf_item_id).toBe('tmdb:episode:1');
+  });
+
+  it('searches the provider by kind, with the optional narrowing', async () => {
+    const result = { ref: 'musicbrainz:release:x', provider: 'musicbrainz', kind: 'album', title: 'Kid A', year: 2000, artist: 'Radiohead' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', results: [result] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await new MachaManageApi('http://n').providerSearch('kid a', 'album', { artist: 'Radiohead', limit: 5 });
+    const url = new URL(calls(fetchMock)[0]![0]);
+    expect(url.pathname).toBe('/api/v1/manage/providers/search');
+    expect(paramsOf(url)).toEqual({ q: 'kid a', kind: 'album', artist: 'Radiohead', limit: '5' });
+    expect(results).toEqual([result]);
+  });
+
+  it("lists a role's artwork options and chooses one", async () => {
+    const option = { option_id: 'o1', role: 'still', width: 1920, height: 1080, language: null, preview_url: 'https://image/w300.jpg' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: 'ok', options: [option] }))
+      .mockResolvedValueOnce(jsonResponse({ status: 'chosen', item: { id: 'manual:ep' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaManageApi('http://n');
+    expect(await api.providerArtwork('tmdb:tv:1399', 'still', { season_number: 1, episode_number: 4 })).toEqual([option]);
+    expect(paramsOf(new URL(calls(fetchMock)[0]![0]))).toEqual({ ref: 'tmdb:tv:1399', role: 'still', season_number: '1', episode_number: '4' });
+    const item = await api.chooseArtwork('manual:ep', 'still', 'o1', { ref: 'tmdb:tv:1399', season_number: 1, episode_number: 4, lock: false });
+    expect(JSON.parse(String(calls(fetchMock)[1]![1].body))).toEqual({ item_id: 'manual:ep', role: 'still', option_id: 'o1', ref: 'tmdb:tv:1399', season_number: 1, episode_number: 4, lock: false });
+    expect(item).toEqual({ id: 'manual:ep' });
+  });
+
+  it('sends manual entry joining an existing season by id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ leaf_item_id: 'manual:ep', items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await new MachaManageApi('http://n').manual('hint:one', { kind: 'episode', season_id: 'tmdb:season:1399:1', episode_number: 4, title: 'Pilot' });
+    expect(JSON.parse(String(calls(fetchMock)[0]![1].body))).toEqual({ kind: 'episode', season_id: 'tmdb:season:1399:1', episode_number: 4, title: 'Pilot' });
+  });
+});

@@ -302,6 +302,13 @@ export async function discoverClusterEndpoints(
     // the node already in use, so the alternates a failover would pick from
     // have none. Self-reported load is the only measurement held about a node
     // this client is *not* currently talking to.
+    // Every node's own name, online or not, for the player to show in place
+    // of an address: the operator's `node_name` (server 0.70.0, such as
+    // "Corvus FI-1"), else the host. Tom: show the names the server sends.
+    for (const node of nodes) {
+      const name = typeof node.node_name === 'string' && node.node_name.trim() ? node.node_name : node.host;
+      if (typeof node.id === 'string' && typeof name === 'string') registry.recordNodeName(node.id, name);
+    }
     const observedAt = machaHost().now();
     for (const node of online) {
       registry.recordCapacity(endpointId(node.api_endpoint!), {
@@ -322,6 +329,19 @@ export async function discoverClusterEndpoints(
       registry.recordPlaybackBudgets(endpointId(node.api_endpoint!), {
         ...(node.playback?.startup_timeout_ms !== undefined
           ? { startupTimeoutMs: node.playback.startup_timeout_ms }
+          : {}),
+        ...(node.playback?.startup_no_progress_ms !== undefined
+          ? { startupNoProgressMs: node.playback.startup_no_progress_ms }
+          : {}),
+        ...(node.playback?.start_wait_max_ms !== undefined
+          ? { startWaitMaxMs: node.playback.start_wait_max_ms }
+          : {}),
+        ...(node.playback?.transcode_rates
+          ? { transcodeRates: node.playback.transcode_rates.flatMap((rate) => (
+            rate.kind === 'video' && typeof rate.rate === 'number' && typeof rate.height_class === 'number'
+              ? [{ codec: rate.codec.toLowerCase(), bitDepth: rate.bit_depth ?? 8, heightClass: rate.height_class, rate: rate.rate }]
+              : []
+          )) }
           : {}),
         ...(node.playback?.segment_timeout_ms !== undefined
           ? { segmentTimeoutMs: node.playback.segment_timeout_ms }

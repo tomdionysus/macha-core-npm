@@ -293,3 +293,55 @@ describe('ClusterCatalogueApi', () => {
     }
   });
 });
+
+describe('keyframe indexes (server 0.68.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const wire = {
+    status: 'ok', schema_version: 1, media_id: 'macha:k', container: 'mp4', offsets: 'sample', size_bytes: 1000, duration_ms: 100_000,
+    streams: [
+      { index: 0, type: 'video', codec: 'hevc', entries: [[0, 48], [2002, 400]] },
+      { index: 1, type: 'audio', codec: 'aac', entries: [[0, 40]] },
+      { index: 2, type: 'subtitle', codec: 'subrip', entries: [] },
+    ],
+  };
+  const answer = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+
+  it('maps the index, and asks the next node when one cannot find or read the file', async () => {
+    const fetchMock = vi.fn(async (url: string) => (url.startsWith('http://a')
+      ? answer({ error: 'keyframes_failed', message: 'read failed' }, 422)
+      : answer(wire)));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const index = await api.keyframes('macha:k');
+    expect(index).toEqual({
+      mediaId: 'macha:k', container: 'mp4', offsets: 'sample', sizeBytes: 1000, durationMs: 100_000,
+      streams: [
+        { index: 0, type: 'video', codec: 'hevc', entries: [[0, 48], [2002, 400]] },
+        { index: 1, type: 'audio', codec: 'aac', entries: [[0, 40]] },
+      ],
+    });
+    // Immutable: the second ask is answered from memory.
+    const calls = fetchMock.mock.calls.length;
+    expect(await api.keyframes('macha:k')).toEqual(index);
+    expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+
+  it('stops at a container with no byte index, and remembers it', async () => {
+    const fetchMock = vi.fn(async () => answer({ error: 'keyframes_not_supported', message: 'no index' }, 422));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    expect(await api.keyframes('macha:avi')).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await api.keyframes('macha:avi')).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one request among concurrent callers', async () => {
+    const fetchMock = vi.fn(async () => answer(wire));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    const [first, second] = await Promise.all([api.keyframes('macha:k'), api.keyframes('macha:k')]);
+    expect(first).toEqual(second);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

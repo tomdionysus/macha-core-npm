@@ -235,3 +235,22 @@ describe('describePlaybackSession', () => {
   });
 
 });
+
+describe("the serving node's own name", () => {
+  const named = (name?: string) => ({
+    ...session(),
+    endpoint: { id: 'http://10.35.1.50:7438', baseUrl: 'http://10.35.1.50:7438', ...(name ? { name } : {}) },
+  });
+
+  it("gives the cluster's name for the node serving, beside its origin", () => {
+    expect(describePlaybackSession(named('corvus-fi-1'))).toMatchObject({ endpointName: 'corvus-fi-1', endpoint: 'http://10.35.1.50:7438' });
+  });
+
+  it('gives none where core has not learnt it', () => {
+    expect(describePlaybackSession(named())?.endpointName).toBeUndefined();
+  });
+
+  it('gives none when the transfer has moved to another node', () => {
+    expect(describePlaybackSession(named('corvus-fi-1'), 'http://10.44.1.50:7438')?.endpointName).toBeUndefined();
+  });
+});

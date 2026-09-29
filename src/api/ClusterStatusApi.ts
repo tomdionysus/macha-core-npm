@@ -88,6 +88,19 @@ export interface NodeRuntimeStatus {
  * immediately with no restart. Read them per cycle rather than caching them
  * against an endpoint for the life of the process.
  */
+/** One kind of source's transcode rate on a node (server 0.70.0). */
+export interface WireTranscodeRate {
+  kind: 'video' | 'audio';
+  codec: string;
+  /** Video only. */
+  bit_depth?: number;
+  /** Video only: 576, 720, 1080, 1440, 2160 or 4320. */
+  height_class?: number;
+  rate: number;
+  observations: number;
+  concurrent: number;
+}
+
 export interface NodePlaybackBudgets {
   /**
    * How long this node may take to bring a transformed stream up before it
@@ -99,6 +112,23 @@ export interface NodePlaybackBudgets {
    * `ENDPOINT_TRANSPORT_ALLOWANCE_MS` covers.
    */
   startup_timeout_ms?: number;
+  /**
+   * Server 0.69.0, `start=async`: a start fails only when its progress has
+   * not moved for this long. Its absence means the node cannot start
+   * without blocking.
+   */
+  startup_no_progress_ms?: number;
+  /** The longest a start's long-poll is held (0.69.0). */
+  start_wait_max_ms?: number;
+  /** How long a failed start stays readable before 404 (0.69.0). */
+  start_failed_retention_ms?: number;
+  /**
+   * How fast this node has transcoded each kind of source (server 0.70.0):
+   * the median of its last finished transcodes of a minute or more, media
+   * time over producing time. Below 1 it has not kept up with that kind.
+   * Measured, never estimated; a kind never transcoded is absent.
+   */
+  transcode_rates?: WireTranscodeRate[];
   /**
    * How long this node holds a request for a fragment it has not produced yet
    * before answering `500 segment_not_ready` — its `segment_timeout_ms`.
@@ -134,6 +164,8 @@ export interface ClusterNodeStatus {
   observed_at_unix_ms: number;
   live_age_ms: number | null;
   version: string;
+  /** The operator's name for the node (server 0.70.0), or null where it has none. Display only. */
+  node_name?: string | null;
   host: string;
   port: number;
   /**

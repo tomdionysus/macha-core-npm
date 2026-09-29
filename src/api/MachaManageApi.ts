@@ -7,9 +7,15 @@ import type {
   IdentityAssociationResetResult,
   MachaDfsDirectory,
   ManageApi,
+  ManageCatalogueMatch,
   ManualMetadata,
   ManualMetadataResult,
   MatchSearchResult,
+  ProviderArtworkOption,
+  ProviderArtworkRole,
+  ProviderMatchRef,
+  ProviderSearchKind,
+  ProviderSearchResult,
   UnmatchedDetail,
   UnmatchedFile,
 } from './ManageApi.js';
@@ -68,6 +74,44 @@ export class MachaManageApi implements ManageApi {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(metadata),
     });
+  }
+
+  matchProvider(id: string, target: ProviderMatchRef): Promise<ManualMetadataResult> {
+    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}/match`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target),
+    });
+  }
+
+  async providerSearch(query: string, kind: ProviderSearchKind, options: { year?: number; artist?: string; limit?: number } = {}): Promise<ProviderSearchResult[]> {
+    const params = queryString([
+      ['q', query], ['kind', kind],
+      ['year', options.year !== undefined ? String(options.year) : undefined],
+      ['artist', options.artist],
+      ['limit', options.limit !== undefined ? String(options.limit) : undefined],
+    ]);
+    const response = await this.request<{ results?: ProviderSearchResult[] }>(`/api/v1/manage/providers/search?${params}`, { method: 'GET' });
+    return Array.isArray(response?.results) ? response.results : [];
+  }
+
+  async providerArtwork(ref: string, role: ProviderArtworkRole, numbers: { season_number?: number; episode_number?: number } = {}): Promise<ProviderArtworkOption[]> {
+    const params = queryString([
+      ['ref', ref], ['role', role],
+      ['season_number', numbers.season_number !== undefined ? String(numbers.season_number) : undefined],
+      ['episode_number', numbers.episode_number !== undefined ? String(numbers.episode_number) : undefined],
+    ]);
+    const response = await this.request<{ options?: ProviderArtworkOption[] }>(`/api/v1/manage/providers/artwork?${params}`, { method: 'GET' });
+    return Array.isArray(response?.options) ? response.options : [];
+  }
+
+  async chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean } = {}): Promise<ManageCatalogueMatch> {
+    const response = await this.request<{ item: ManageCatalogueMatch }>('/api/v1/manage/providers/artwork/choose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, role, option_id: optionId, ...options }),
+    });
+    return response.item;
   }
 
   async deleteUnmatched(id: string): Promise<void> {

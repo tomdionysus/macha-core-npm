@@ -1,6 +1,6 @@
 # @machafoundation/core
 
-*v0.20.0*
+*v0.21.0*
 
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
@@ -19,6 +19,16 @@ Macha is a self-hosted media server that runs as a cluster of nodes. This packag
 - **No runtime dependencies.**
 - **No browser assumed.** `npm run lint:platform` compiles the package against no DOM library at all, over the surface declared in [`types/platform-neutral.d.ts`](types/platform-neutral.d.ts). A host that lacks anything on that list must supply it.
 - **ESM with type declarations**, built to `dist/`.
+
+## The Macha projects
+
+| Repository | What it is |
+| --- | --- |
+| [macha](https://github.com/tomdionysus/macha) | The server: a C++20 distributed filesystem (MachaDFS) and media server for large, mostly immutable video and music libraries, run as a cluster of nodes. Every client talks to it. |
+| [macha-core-npm](https://github.com/tomdionysus/macha-core-npm) | This package, `@machafoundation/core`: the client logic the three client repos share. |
+| [macha-client](https://github.com/tomdionysus/macha-client) | The React/TypeScript web and television client: web browsers, its Samsung Tizen build, and a WebView build for Android TV. |
+| [macha-client-rn](https://github.com/tomdionysus/macha-client-rn) | The React Native phone client, playing on the platform's own pipeline (AVPlayer on iOS, ExoPlayer on Android). |
+| [macha-client-rn-android-tv](https://github.com/tomdionysus/macha-client-rn-android-tv) | The React Native Android TV client: leanback, D-pad only. |
 
 ## Installing
 

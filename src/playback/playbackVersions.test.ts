@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaTechnicalStream, PlaybackCapabilities } from '../types.js';
-import { deviceQualityClass, offeredModes, playbackVersions, qualityCeiling, qualityClass } from './playbackVersions.js';
+import { deviceQualityClass, offeredModes, playbackVersions, qualityCeiling, qualityClass, rateHeightClass } from './playbackVersions.js';
 
 const web: PlaybackCapabilities = {
   platform: 'web', videoCodecs: ['h264'], audioCodecs: ['aac'], containers: ['mp4'], hlsFmp4: true, dash: false, hdr: [],
@@ -103,6 +103,27 @@ describe('playbackVersions', () => {
     expect(versions.automatic?.mediaId).toBe('fhd');
     // The ranking, not the ceiling, passed the larger file over.
     expect(versions.limitedBy).toBeUndefined();
+    expect(versions.passedOver).toMatchObject({ quality: 2160, mediaId: 'hevc', converts: { video: true, audio: false } });
+  });
+
+  it("says which larger file was passed over and what it would convert, as for The Martian's TrueHD", () => {
+    // The Android TV client, 2026-09-28: a 4K screen, and automatic play took
+    // the 1080p file because the 4K file's audio needs converting.
+    const truehd = file('uhd', 3840, 2160);
+    truehd.profile.streams[1] = { ...truehd.profile.streams[1]!, codec: 'truehd', channels: 8 };
+    const versions = playbackVersions([truehd, file('fhd', 1920, 1080)], web, { ceiling: { quality: 2160, reason: 'ceiling-display' } });
+    expect(versions.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+    expect(versions.limitedBy).toBeUndefined();
+    expect(versions.passedOver).toEqual({
+      quality: 2160, mediaId: 'uhd', converts: { video: false, audio: true },
+      reasons: expect.arrayContaining(['audio-codec-not-playable']),
+    });
+  });
+
+  it('passes nothing over when automatic play took the largest file within the ceiling', () => {
+    const versions = playbackVersions([file('uhd', 3840, 2160), file('fhd', 1920, 1080)], web, { ceiling: { quality: 1080, reason: 'ceiling-display' } });
+    expect(versions.automatic?.mediaId).toBe('fhd');
+    expect(versions.passedOver).toBeUndefined();
   });
 });
 
@@ -161,5 +182,41 @@ describe('a codec whose own decoder is smaller than the device', () => {
     expect(offeredModes(av1.profile, a85)[0]).toMatchObject({ mode: 'direct', offered: false, reasons: ['video-size-exceeds-client'] });
     expect(offeredModes(avc.profile, a85)[0]).toMatchObject({ mode: 'direct', offered: true });
     expect(offeredModes(file('av1-720', 1280, 720, 'av1').profile, a85)[0]).toMatchObject({ offered: true });
+  });
+});
+
+describe('automatic play and what the nodes can transcode (server 0.70.0)', () => {
+  // Both files transcode here (the web plays no HEVC); the 4K one is 10-bit.
+  const uhd10 = () => {
+    const f = file('uhd', 3840, 2160, 'hevc');
+    f.profile.streams[0] = { ...f.profile.streams[0]!, bitDepth: 10 };
+    return f;
+  };
+  const facts = () => [uhd10(), file('fhd', 1920, 1080, 'hevc')];
+  const rates = (uhdRate?: number) => (source: { codec: string; bitDepth: number; heightClass: number }) =>
+    (source.heightClass === 2160 && source.bitDepth === 10 ? uhdRate : undefined);
+
+  it('passes over a picture no node has transcoded at real speed, and says why', () => {
+    const versions = playbackVersions(facts(), web, { transcodeRate: rates(0.33) });
+    expect(versions.automatic).toMatchObject({ quality: 1080, mediaId: 'fhd' });
+    expect(versions.passedOver).toMatchObject({ quality: 2160, mediaId: 'uhd', converts: { video: true } });
+    expect(versions.passedOver?.reasons).toContain('transcode-below-real-time');
+    // Still offered for the viewer to pick.
+    expect(versions.steps.map((step) => step.quality)).toContain(2160);
+  });
+
+  it('takes it where a node keeps up, or where no node has measured it', () => {
+    expect(playbackVersions(facts(), web, { transcodeRate: rates(1.4) }).automatic?.mediaId).toBe('uhd');
+    expect(playbackVersions(facts(), web, { transcodeRate: rates(undefined) }).automatic?.mediaId).toBe('uhd');
+  });
+
+  it('keeps it when nothing else is left to play', () => {
+    expect(playbackVersions([uhd10()], web, { transcodeRate: rates(0.33) }).automatic?.mediaId).toBe('uhd');
+  });
+});
+
+describe("the server's height class for transcode rates", () => {
+  it('buckets by height alone, at or above, as the server does', () => {
+    expect([480, 576, 600, 720, 800, 1080, 1100, 1600, 2160, 2400].map(rateHeightClass)).toEqual([576, 576, 720, 720, 1080, 1080, 1440, 2160, 2160, 4320]);
   });
 });

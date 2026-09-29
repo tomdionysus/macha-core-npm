@@ -159,13 +159,42 @@ export interface ArtworkSource {
   ready?: boolean;
 }
 
+/** A partial item edit; see `CatalogueApi.patch`. */
+export type CatalogueItemPatch = {
+  [K in keyof CatalogueItem as K extends 'id' | 'kind' | 'revision' | 'updated_ns' ? never : K]?: CatalogueItem[K] | null;
+} & { lock?: boolean };
+
+/** Where a search looks; see `CatalogueApi.search`. */
+export interface CatalogueSearchFilter {
+  kinds?: readonly CatalogueKind[];
+  parent?: string;
+}
+
 export interface CatalogueApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
   list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]>;
   get(id: string, signal?: AbortSignal): Promise<CatalogueItem>;
+  /**
+   * Replace an item's descriptive fields (PUT). From server 0.67.0 its files
+   * and artwork change only where the body names them, and an edit locks the
+   * item against the scanner unless the body says `lock: false`.
+   */
   update(item: CatalogueItem, expectedRevision?: number): Promise<CatalogueItem>;
+  /**
+   * Change only the fields given (server 0.67.0, proposal G); `null` clears
+   * an optional one. The metadata editor's edit: nothing it leaves out,
+   * files included, can be lost by omission. A `parent_id` must name an
+   * existing item of the right kind (`400 parent_not_found`,
+   * `400 bad_parent_kind`). Locks the item unless `lock` is false.
+   */
+  patch(id: string, fields: CatalogueItemPatch, expectedRevision?: number): Promise<CatalogueItem>;
   clearMetadata(id: string, expectedRevision?: number): Promise<void>;
-  search(query: string, limit?: number, signal?: AbortSignal): Promise<CatalogueItem[]>;
+  /**
+   * `filter` narrows the search on the server, before `limit` (server
+   * 0.67.0, proposal F): `kinds` to those kinds, `parent` to one item's
+   * children. An older node ignores it.
+   */
+  search(query: string, limit?: number, signal?: AbortSignal, filter?: CatalogueSearchFilter): Promise<CatalogueItem[]>;
   putArtwork(itemId: string, role: string, mimeType: string, data: Blob): Promise<CatalogueArtwork>;
   artwork(id: string, signal?: AbortSignal): Promise<Blob>;
   /**
@@ -190,4 +219,42 @@ export interface CatalogueApi {
   artworkUrls(id: string): ArtworkSource[];
   /** Immutable technical facts; absence is temporary while catalogue hydration catches up. */
   mediaProfile(mediaId: string, signal?: AbortSignal): Promise<CatalogueMediaProfile | undefined>;
+  /**
+   * A Direct Play file's keyframe byte index (server 0.68.0), for
+   * `bufferedTimeRanges`. Undefined when no node has one: a container that
+   * keeps no byte index (only MP4 and Matroska do), a file no node could
+   * read, or a node older than the route. Immutable per media id.
+   */
+  keyframes(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | undefined>;
+}
+
+/** One stream's entries in a `KeyframeIndex`. */
+export interface KeyframeStream {
+  /**
+   * The container's stream index: the same number as `PlaybackSession.selected`
+   * and the session's source streams carry (server docs/catalogue.md, d8cd5d5).
+   */
+  index: number;
+  type: 'video' | 'audio';
+  codec: string;
+  /**
+   * `[timeMs, byteOffset]`, sorted by byte offset; times need not rise in
+   * that order. Times are decode times (DTS), so with B-frames a keyframe
+   * reads early by its composition offset: they place bytes, not frames,
+   * which is what a buffered bar needs. Video: its keyframes. Audio: samples, at most one per second
+   * of media. Matroska often cues only its video, so audio may hold one
+   * entry or none.
+   */
+  entries: ReadonlyArray<readonly [number, number]>;
+}
+
+/** `GET /api/v1/catalogue/media/{id}/keyframes`, server 0.68.0. */
+export interface KeyframeIndex {
+  mediaId: string;
+  container: 'mp4' | 'matroska' | 'webm' | (string & {});
+  /** `sample`: the exact position (MP4). `cluster`: the Matroska cluster holding the entry, at or just before it. */
+  offsets: 'sample' | 'cluster' | (string & {});
+  sizeBytes: number;
+  durationMs: number;
+  streams: KeyframeStream[];
 }

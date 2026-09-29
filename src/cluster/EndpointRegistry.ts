@@ -98,9 +98,30 @@ export interface EndpointCapacity {
  * back to the conservative published default, never to zero and never to
  * whatever the last node happened to say.
  */
+/** A node's measured transcode rate for one kind of video source. */
+export interface TranscodeRateReading {
+  codec: string;
+  bitDepth: number;
+  heightClass: number;
+  rate: number;
+}
+
+/** The kind of video source a transcode reads, as the server keys its rates. */
+export interface TranscodeSource {
+  codec: string;
+  bitDepth: number;
+  heightClass: number;
+}
+
 export interface EndpointPlaybackBudgets {
   /** The node's `startup_timeout_ms`: how long it may take to bring a stream up. */
   startupTimeoutMs?: number;
+  /** The node's `startup_no_progress_ms` (0.69.0); present only where it starts without blocking. */
+  startupNoProgressMs?: number;
+  /** The node's `start_wait_max_ms` (0.69.0). */
+  startWaitMaxMs?: number;
+  /** The node's measured transcode rates (0.70.0); see `bestTranscodeRate`. */
+  transcodeRates?: readonly TranscodeRateReading[];
   /** The node's `segment_timeout_ms`: how long it holds a fragment it has not produced. */
   segmentTimeoutMs?: number;
   /**
@@ -444,6 +465,8 @@ export class EndpointRegistry {
   private readonly latencySamples = new Map<string, number[]>();
   private readonly capacities = new Map<string, EndpointCapacity>();
   private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
+  /** Each node's own name (`host` on status), by node id. */
+  private readonly nodeNames = new Map<string, string>();
   private readonly generationStarts = new Map<string, GenerationStartSample[]>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
@@ -901,6 +924,42 @@ export class EndpointRegistry {
    * keeping the last value would let a figure outlive the configuration that
    * produced it.
    */
+  /** Record a node's name as its status gives it (`host`, such as "corvus-fi-1"). */
+  recordNodeName(nodeId: string, name: string): void {
+    if (name.trim()) this.nodeNames.set(nodeId, name.trim());
+  }
+
+  /**
+   * The name of the node behind an endpoint, as the cluster calls it, where
+   * core has learnt both the endpoint's node and that node's name; otherwise
+   * undefined, and a host falls back to the address. Every client names
+   * nodes the same way in the player (Tom, 2026-09-28), and none has to join
+   * status to sessions itself.
+   */
+  nodeName(endpointIdValue: string): string | undefined {
+    const nodeId = this.endpoints.find((endpoint) => endpoint.id === endpointIdValue)?.nodeId;
+    return nodeId ? this.nodeNames.get(nodeId) : undefined;
+  }
+
+  /**
+   * The best rate any node has measured for transcoding this kind of video
+   * source, or undefined where none has measured it. The best, not this
+   * node's: which node serves is decided at create, after the choice, and a
+   * kind one node keeps up with is not one to avoid. So only a kind every
+   * node that has tried is below real time on reads as too slow (server
+   * 0.70.0; fi-1 decodes 4K HEVC 10-bit at about 0.33x).
+   */
+  bestTranscodeRate(source: TranscodeSource): number | undefined {
+    let best: number | undefined;
+    for (const budgets of this.playbackBudgetsById.values()) {
+      for (const reading of budgets.transcodeRates ?? []) {
+        if (reading.codec !== source.codec || reading.bitDepth !== source.bitDepth || reading.heightClass !== source.heightClass) continue;
+        best = best === undefined ? reading.rate : Math.max(best, reading.rate);
+      }
+    }
+    return best;
+  }
+
   recordPlaybackBudgets(endpointIdValue: string, budgets: EndpointPlaybackBudgets): void {
     this.playbackBudgetsById.set(endpointIdValue, budgets);
   }

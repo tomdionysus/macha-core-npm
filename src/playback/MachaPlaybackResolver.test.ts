@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MachaCatalogueApi } from '../api/MachaCatalogueApi.js';
-import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS, signedCloseUrl } from './MachaPlaybackResolver.js';
+import { MachaPlaybackResolver, SESSION_LIVENESS_TIMEOUT_MS, signedCloseUrl, START_NO_PROGRESS_CODE } from './MachaPlaybackResolver.js';
 import { MachaConnectionError } from '../api/serverConnection.js';
 import { fixedBearerToken } from '../api/SessionManager.js';
+import { configureMachaHost, resetMachaHost } from '../runtime/host.js';
 import type { MediaSummary, PlaybackCapabilities } from '../types.js';
 
 const media: MediaSummary = {
@@ -759,5 +760,125 @@ describe('closing by the signed stream URL on a page exit', () => {
     fetchMock.mockClear();
     await resolver.stop('s-1', { streamUrl });
     expect((fetchMock.mock.calls as Array<[string]>).some(([url]) => url.endsWith('/close'))).toBe(false);
+  });
+});
+
+describe('a start that reports progress (server 0.69.0, start=async)', () => {
+  afterEach(() => { vi.unstubAllGlobals(); resetMachaHost(); });
+  const start = (stage: string, seq: number, extra: Record<string, unknown> = {}) => ({ stage, progress_seq: seq, elapsed_ms: seq * 1000, ...extra });
+  const pending = (seq: number, stage = 'preroll') => ({ ...sessionResponse(), start: start(stage, seq, { preroll_decoded_ms: seq * 100, preroll_total_ms: 5005 }), stream: { url: null, close_url: '/api/v1/playback/sessions/session-1/stream/tok/close', mime_type: 'application/vnd.apple.mpegurl' } });
+  const ready = () => ({ ...sessionResponse(), start: start('ready', 9) });
+
+  it('follows the start to ready, reporting each step, without an elapsed budget', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(pending(1, 'planning'), 202))
+      .mockResolvedValueOnce(jsonResponse(pending(2)))
+      .mockResolvedValueOnce(jsonResponse(ready()));
+    vi.stubGlobal('fetch', fetchMock);
+    const seen: string[] = [];
+    const session = await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, 2_008_000, { mode: 'transcode' }, {
+      asyncStart: { noProgressMs: 15_000, waitMaxMs: 25_000 },
+      onStartProgress: (progress) => seen.push(`${progress.kind}:${progress.stage}:${progress.progressSeq}`),
+    });
+    expect(session.source.url).toBe('http://node.test/api/v1/playback/stream/session-1/cap/1/master.m3u8');
+    expect(seen).toEqual(['start:planning:1', 'start:preroll:2', 'start:ready:9']);
+    const urls = (fetchMock.mock.calls as Array<[string]>).map(([url]) => url);
+    expect(urls[0]).toContain('start=async');
+    // Long-polls ask for at most 15 s, under the node's 25 s cap.
+    expect(urls[1]).toContain('after=1');
+    expect(urls[1]).toContain('wait_ms=15000');
+  });
+
+  it('abandons a start whose progress has stopped, freeing its slot', async () => {
+    let clock = 0;
+    configureMachaHost({ now: () => clock });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (init?.method === 'POST') return jsonResponse(pending(3), 202);
+      clock += 10_000; // each long-poll answers unchanged, ten seconds on
+      return jsonResponse(pending(3));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, 0, { mode: 'transcode' }, {
+      asyncStart: { noProgressMs: 15_000 },
+    })).rejects.toMatchObject({ status: 504, code: START_NO_PROGRESS_CODE });
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'DELETE')).toBe(true);
+  });
+
+  it('keeps waiting on a slow start that is still progressing', async () => {
+    let clock = 0;
+    configureMachaHost({ now: () => clock });
+    let seq = 1;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse(pending(1), 202);
+      clock += 10_000;
+      seq += 1;
+      return jsonResponse(seq >= 5 ? ready() : pending(seq)); // 40 s, far past any elapsed budget
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const session = await new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, 0, { mode: 'transcode' }, { asyncStart: { noProgressMs: 15_000 } });
+    expect(session.sessionId).toBe('session-1');
+  });
+
+  it('throws a failed start as the error a blocking start would have', async () => {
+    const failed = { ...pending(4), start: start('failed', 4, { error: { code: 'playback_pipeline_start_failed', message: 'timed out', start_stage: 'encoding' } }) };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse(pending(1), 202))
+      .mockResolvedValueOnce(jsonResponse(failed)));
+    await expect(new MachaPlaybackResolver('http://node.test').resolve(media, capabilities, 0, { mode: 'transcode' }, { asyncStart: { noProgressMs: 15_000 } }))
+      .rejects.toMatchObject({ status: 503, code: 'playback_pipeline_start_failed', detail: 'timed out' });
+  });
+
+  it('follows a change while the current generation plays, and answers the new one when ready', async () => {
+    const changing = { ...sessionResponse(), pending: { start: start('encoding', 1) } };
+    const changed = { ...sessionResponse(), stream: { ...sessionResponse().stream, url: '/api/v1/playback/stream/session-1/cap/2/master.m3u8' } };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(changing, 202))
+      .mockResolvedValueOnce(jsonResponse(changed));
+    vi.stubGlobal('fetch', fetchMock);
+    const seen: string[] = [];
+    const session = await new MachaPlaybackResolver('http://node.test').update('session-1', { preferences: { mode: 'transcode' } }, undefined, {
+      asyncStart: { noProgressMs: 15_000 }, onStartProgress: (progress) => seen.push(`${progress.kind}:${progress.stage}`),
+    });
+    expect((fetchMock.mock.calls[0] as [string])[0]).toContain('start=async');
+    expect(session.source.url).toContain('/cap/2/');
+    expect(seen).toEqual(['change:encoding', 'change:ready']);
+  });
+
+  it('abandons a pending change when the caller gives it up, leaving the old one playing', async () => {
+    const changing = { ...sessionResponse(), pending: { start: start('encoding', 1) } };
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return jsonResponse(changing, 202);
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      controller.abort();
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(new MachaPlaybackResolver('http://node.test').update('session-1', { preferences: { mode: 'transcode' } }, controller.signal, { asyncStart: { noProgressMs: 15_000 } }))
+      .rejects.toBeTruthy();
+    const deleted = (fetchMock.mock.calls as Array<[string, RequestInit?]>).find(([, init]) => init?.method === 'DELETE');
+    expect(deleted?.[0]).toMatch(/\/sessions\/session-1\/pending$/);
+  });
+
+  it('closes a pending start by its signed URL on a page exit', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST' && !url.endsWith('/close')) return jsonResponse(pending(1), 202);
+      if (url.endsWith('/close') || init?.method === 'DELETE') return new Response(null, { status: 204 });
+      await held;
+      return jsonResponse(ready());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const resolver = new MachaPlaybackResolver('http://node.test');
+    const starting = resolver.resolve(media, capabilities, 0, { mode: 'transcode' }, { asyncStart: { noProgressMs: 15_000 } });
+    await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    resolver.closePendingForPageExit();
+    const close = (fetchMock.mock.calls as Array<[string, RequestInit?]>).find(([url]) => url.endsWith('/close'));
+    expect(close?.[0]).toBe('http://node.test/api/v1/playback/sessions/session-1/stream/tok/close');
+    expect(close?.[1]).toMatchObject({ method: 'POST', keepalive: true });
+    release();
+    await starting;
   });
 });

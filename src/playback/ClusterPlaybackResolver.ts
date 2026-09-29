@@ -1,4 +1,4 @@
-import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
+import type { EndpointPlaybackBudgets, EndpointRegistry, MachaEndpoint, TranscodeSource } from '../cluster/EndpointRegistry.js';
 import { PRODUCED_POLL_INTERVAL_MS } from './streamProtocol.js';
 import { generationStartKind } from './generationStart.js';
 import {
@@ -24,6 +24,7 @@ import type {
   PlaybackResolver,
   PlaybackSession,
   PlaybackStopOptions,
+  PlaybackRequestOptions,
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 
@@ -218,6 +219,16 @@ function interchangeableGeneration(alternate: PlaybackSession, replaced: Playbac
   return alternateContainer === replacedContainer;
 }
 
+/**
+ * The async-start options for a node that states it can start without
+ * blocking (server 0.69.0), or undefined for one that cannot, which is then
+ * asked as before.
+ */
+function asyncStartFor(stated: EndpointPlaybackBudgets | undefined): PlaybackRequestOptions['asyncStart'] {
+  if (stated?.startupNoProgressMs === undefined) return undefined;
+  return { noProgressMs: stated.startupNoProgressMs, ...(stated.startWaitMaxMs !== undefined ? { waitMaxMs: stated.startWaitMaxMs } : {}) };
+}
+
 export class ClusterPlaybackResolver implements PlaybackResolver {
   readonly available = true;
   private readonly log = createClientLogger('playback.cluster');
@@ -248,9 +259,10 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     capabilities: PlaybackCapabilities,
     seekMs?: number,
     preferences?: PlaybackPreferencesUpdate,
+    options: PlaybackRequestOptions = {},
   ): Promise<PlaybackSession> {
     this.failedGenerationEndpoints = new Set();
-    return this.create(media, capabilities, seekMs, preferences, new Set(), true, this.generationAttemptTimeoutMs);
+    return this.create(media, capabilities, seekMs, preferences, new Set(), true, this.generationAttemptTimeoutMs, options.onStartProgress);
   }
 
   async failover(
@@ -260,6 +272,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     seekMs: number,
     preferences: PlaybackPreferencesUpdate,
     preparedAlternate?: PlaybackSession,
+    options: Pick<PlaybackRequestOptions, 'onStartProgress'> = {},
   ): Promise<PlaybackSession> {
     // Shares the exact bookkeeping PlaybackCoordinator calls explicitly for a
     // silent (no-reload) transition — see recordEndpointFailure below — so
@@ -285,6 +298,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       this.failoverExclusion(failedSession),
       true,
       this.generationAttemptTimeoutMs,
+      options.onStartProgress,
     );
   }
 
@@ -844,6 +858,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     excluded: ReadonlySet<string>,
     preferOnSuccess: boolean,
     attemptTimeoutMs?: number,
+    onStartProgress?: PlaybackRequestOptions['onStartProgress'],
   ): Promise<PlaybackSession> {
     let lastError: unknown;
     const idempotencyKey = newPlaybackIdempotencyKey();
@@ -865,6 +880,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
           preferOnSuccess,
           attemptTimeoutMs,
           idempotencyKey,
+          onStartProgress,
         );
       } catch (error) {
         if (!retryableEndpointFailure(error)) throw error;
@@ -902,6 +918,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     preferOnSuccess: boolean,
     attemptTimeoutMs: number | undefined,
     idempotencyKey: string,
+    onStartProgress?: PlaybackRequestOptions['onStartProgress'],
   ): Promise<PlaybackSession> {
     const resolver = this.resolver(endpoint);
     // What this node says about itself, where it has said anything. The health
@@ -913,10 +930,19 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     // node that has said nothing is what lets a test set a short budget without
     // that short budget silently overriding a real node's stated entitlement in
     // production.
-    const deadlineMs = attemptTimeoutMs === undefined
+    // A node that starts without blocking (0.69.0) reports progress, and the
+    // node resolver fails the start only when progress stops. An elapsed
+    // budget over it would abandon a slow node still decoding: fi-1 takes 9
+    // to 12 s for a 4K transcode seek, progressing every second.
+    const asyncStart = asyncStartFor(stated);
+    const deadlineMs = attemptTimeoutMs === undefined || asyncStart
       ? undefined
       : (stated ? generationAttemptBudgetMs(stated) : attemptTimeoutMs);
-    const request = resolver.resolve(media, capabilities, seekMs, preferences, undefined, idempotencyKey);
+    const request = resolver.resolve(media, capabilities, seekMs, preferences, {
+      idempotencyKey,
+      ...(asyncStart ? { asyncStart } : {}),
+      ...(onStartProgress ? { onStartProgress } : {}),
+    });
     const session = deadlineMs
       ? await awaitWithEndpointDeadline(
         request,
@@ -936,7 +962,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
         ...(stated?.pipelineIdleMs !== undefined ? { pipelineIdleMs: stated.pipelineIdleMs } : {}),
       },
     };
-    session.endpoint = { id: endpoint.id, baseUrl: endpoint.baseUrl };
+    session.endpoint = this.sessionEndpoint(endpoint);
     const nodeSessionId = session.sessionId;
     session.sessionId = `${endpoint.id}::${encodeURIComponent(nodeSessionId)}`;
     this.sessions.set(session.sessionId, { endpoint, resolver, nodeSessionId });
@@ -949,14 +975,18 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     return session;
   }
 
-  async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
+  async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal, options: PlaybackRequestOptions = {}): Promise<PlaybackSession> {
     const owned = this.sessions.get(sessionId);
     if (!owned) throw unknownGeneration(sessionId);
     try {
-      const session = await owned.resolver.update(owned.nodeSessionId, update, signal);
+      const asyncStart = asyncStartFor(this.registry.playbackBudgets(owned.endpoint.id));
+      const session = await owned.resolver.update(owned.nodeSessionId, update, signal, {
+        ...options,
+        ...(asyncStart ? { asyncStart } : {}),
+      });
       const nodeSessionId = session.sessionId;
       session.sessionId = sessionId;
-      session.endpoint = { id: owned.endpoint.id, baseUrl: owned.endpoint.baseUrl };
+      session.endpoint = this.sessionEndpoint(owned.endpoint);
       owned.nodeSessionId = nodeSessionId;
       this.registry.recordSuccess(owned.endpoint.id);
       return session;
@@ -982,6 +1012,20 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * question cost the node something, which is how a diagnostic turns into the
    * fault it was meant to diagnose.
    */
+  /** A session's endpoint, with the node's own name where the registry knows it. */
+  private sessionEndpoint(endpoint: MachaEndpoint): NonNullable<PlaybackSession['endpoint']> {
+    const name = this.registry.nodeName(endpoint.id);
+    return { id: endpoint.id, baseUrl: endpoint.baseUrl, ...(name ? { name } : {}) };
+  }
+
+  transcodeRate(source: TranscodeSource): number | undefined {
+    return this.registry.bestTranscodeRate(source);
+  }
+
+  closePendingForPageExit(): void {
+    for (const resolver of this.resolvers.values()) resolver.closePendingForPageExit();
+  }
+
   async sessionAlive(sessionId: string): Promise<boolean> {
     // Recovered from the id when the map has no entry, for the same reason
     // `stop` does: this is pinned to the owning node, and the id names it. A

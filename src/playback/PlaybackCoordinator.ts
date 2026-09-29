@@ -4,11 +4,13 @@ import { isEndpointRetryablePlaybackFailure, PlaybackSourceError, type PlaybackT
 import type { MediaSummary, MediaTechnicalProfile, PlaybackCapabilities, PlaybackEvent, PlaybackSource, PlaybackMode } from '../types.js';
 import { generationAttemptBudgetMs } from './PlaybackResolver.js';
 import { CHOICE_NOT_AVAILABLE_CODE, CHOICE_REQUIRED_CODE } from './MachaPlaybackResolver.js';
+import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import { offeredModes, playbackVersions, type OfferedMode, type PlaybackVersions, type QualityCeiling, type QualityClass, type VersionStep } from './playbackVersions.js';
 import type {
   PlaybackPreferencesUpdate,
   PlaybackResolver,
   PlaybackSession,
+  PlaybackStartProgress,
   PlaybackStopOptions,
   PlaybackUpdate,
 } from './PlaybackResolver.js';
@@ -43,7 +45,33 @@ export type PlaybackNoticeCode =
   | 'not-ready'
   | 'instruction-failed'
   | 'subtitles-loading'
-  | 'update-failed';
+  | 'update-failed'
+  // Automatic play stepped down a quality because the node could not produce
+  // the one it chose at real speed; `error.code` is TOO_SLOW_TO_PLAY_CODE.
+  | 'quality-stepped-down';
+
+/**
+ * The code on a stream core stopped because the node could not produce the
+ * quality at real speed: on a quality the viewer chose (Tom: a clear,
+ * visible "Macha can't play this quality because…", with a way to try
+ * again), or on core's own choice when no lower version was left; and on a
+ * `quality-stepped-down` notice. See `PlaybackCoordinator.tooSlowToPlay`.
+ */
+export const TOO_SLOW_TO_PLAY_CODE = 'too_slow_to_play';
+
+/**
+ * Notices that describe how playback now runs, rather than a moment: they
+ * stay once the change that caused them lands, and go when the viewer
+ * changes something or playback starts again.
+ */
+const LASTING_NOTICES: ReadonlySet<PlaybackNoticeCode> = new Set(['quality-stepped-down', 'decode-fallback', 'copy-refused']);
+
+function isLastingNotice(notice: PlaybackNotice | undefined): boolean {
+  return notice !== undefined && LASTING_NOTICES.has(notice.code);
+}
+
+/** Media a generation must play before a stall stops counting as the node being too slow; see `tooSlowToPlay`. */
+export const EARLY_STALL_MEDIA_MS = 15_000;
 
 export interface PlaybackNotice {
   code: PlaybackNoticeCode;
@@ -126,6 +154,13 @@ export interface PlaybackCoordinatorSnapshot {
    * the per-quality buttons from `steps` and plays one with `playVersion`.
    */
   versions?: PlaybackVersions;
+  /**
+   * A start, or a change to what is playing, that the node is preparing and
+   * reporting progress on (server 0.69.0); a change keeps the current picture
+   * playing meanwhile. Counters, never estimates: a host shows the stage and
+   * works out any fraction itself. Absent when nothing is being prepared.
+   */
+  startProgress?: PlaybackStartProgress;
   /**
    * The facts of the file playing, the node's `operations` included, once
    * they have answered: the one place a host reads them mid-play, since the
@@ -1262,7 +1297,7 @@ export class PlaybackCoordinator {
       const { mediaId, profile, facts } = await this.fileForViewerMode(preferences.mode, preferences.mediaId, capabilities);
       // The buttons stay drawable after a version was picked: the qualities
       // are the item's, whichever one is playing.
-      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false }) : undefined;
+      const versions = facts ? playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate }) : undefined;
       if (versions) this.patchSnapshot({ versions });
       const quality = versions ? qualityPlaying(versions, mediaId, preferences.maxHeight) : undefined;
       const container = preferences.container
@@ -1326,10 +1361,10 @@ export class PlaybackCoordinator {
     // Watching) keeps its file: automatic play chooses how, not which.
     const named = preferences.mediaId !== undefined ? facts.filter((file) => file.mediaId === preferences.mediaId) : [];
     const candidates = named.length > 0 ? named : facts;
-    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+    const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate, ...(ceiling ? { ceiling } : {}) });
     // The buttons still offer every file's versions.
     const offered = candidates === facts ? versions
-      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, ...(ceiling ? { ceiling } : {}) });
+      : playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate, ...(ceiling ? { ceiling } : {}) });
     const step = versions.automatic!;
     const instruction = step.instruction;
     const chosenMediaId = step.mediaId ?? this.noFactsMediaId();
@@ -1371,6 +1406,20 @@ export class PlaybackCoordinator {
    */
   async playVersion(step: VersionStep): Promise<void> {
     if (this.disposed) return;
+    const update = await this.versionUpdate(step);
+    if (!update || this.disposed) return;
+    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching: update.mediaId !== undefined });
+    this.update(update);
+    if (this.snapshot.instruction) {
+      this.patchSnapshot({ instruction: {
+        ...this.snapshot.instruction, quality: step.quality,
+        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
+      } });
+    }
+  }
+
+  /** The update that plays a version: its mode, cap, and on another file that file and its streams. */
+  private async versionUpdate(step: VersionStep): Promise<PlaybackUpdate | undefined> {
     const session = this.snapshot.session;
     const switching = step.mediaId !== undefined && step.mediaId !== session?.mediaId;
     const preferences: PlaybackPreferencesUpdate = {
@@ -1392,14 +1441,74 @@ export class PlaybackCoordinator {
       // Martian, 2026-09-27); it also dropped subtitles that were on.
       if (profile) Object.assign(preferences, streamsToName(profile, step.instruction.mode, this.languagesPlaying()));
     }
-    this.log.info('version-chosen', { mediaId: this.options.media.id, quality: step.quality, source: step.source, file: step.mediaId, switching });
-    this.update({ preferences, ...(switching ? { mediaId: step.mediaId } : {}) });
-    if (this.snapshot.instruction) {
-      this.patchSnapshot({ instruction: {
-        ...this.snapshot.instruction, quality: step.quality,
-        ...(step.mediaId !== undefined ? { mediaId: step.mediaId } : {}),
-      } });
+    return { preferences, ...(switching ? { mediaId: step.mediaId } : {}) };
+  }
+
+  /** Where the generation on screen began on the title's timeline; see `tooSlowToPlay`. */
+  private presentedFromMs?: number;
+  private earlyStallKey?: string;
+  private earlyStalls = 0;
+
+  /**
+   * Whether a stalled stream is a quality the node cannot produce at real
+   * speed, not a node that has failed, and if so what to do instead of
+   * failing over.
+   *
+   * The web client, 2026-09-28: The Martian's 4K HEVC 10-bit source
+   * transcodes at about 0.33x on both nodes, so each delivered its first
+   * fragment and stalled, and core failed over back and forth for ever with
+   * the viewer at 0:02 and no word why. A stall that comes before the
+   * generation has played `EARLY_STALL_MEDIA_MS`, on a stream the node is
+   * producing (not Direct Play, where a stall is the network), is failed over
+   * once as before; if the replacement stalls the same way, the second node
+   * shares the limit and another would too.
+   *
+   * Then, Tom, 2026-09-28: a quality the viewer chose stops, with a stated
+   * reason (`TOO_SLOW_TO_PLAY_CODE`) for the host to show clearly, with a way
+   * to try again. A quality core chose steps down to the next lower version,
+   * and says so (`quality-stepped-down`); with none lower, it stops the same
+   * way.
+   */
+  private tooSlowToPlay(session: PlaybackSession, error: Error): boolean {
+    if (session.mode === 'direct' || this.presentedFromMs === undefined) return false;
+    const played = (this.lastObservedPositionMs ?? this.presentedFromMs) - this.presentedFromMs;
+    if (played >= EARLY_STALL_MEDIA_MS) {
+      this.earlyStalls = 0;
+      return false;
     }
+    const key = `${session.mediaId}|${session.mode}|${session.preferences.maxHeight ?? ''}`;
+    if (key !== this.earlyStallKey) {
+      this.earlyStallKey = key;
+      this.earlyStalls = 0;
+    }
+    this.earlyStalls += 1;
+    if (this.earlyStalls < 2) return false;
+    this.earlyStalls = 0;
+    const tooSlow = Object.assign(
+      new Error(`Macha could not produce ${session.mediaId} as ${session.mode} at real speed on two nodes.`, { cause: error }),
+      { code: TOO_SLOW_TO_PLAY_CODE },
+    );
+    const quality = this.snapshot.instruction?.quality;
+    const lower = !this.viewerChoseMode && quality !== undefined
+      ? this.snapshot.versions?.steps.find((step) => step.quality < quality)
+      : undefined;
+    this.log.warn('too-slow-to-play', { sessionId: session.sessionId, mediaId: session.mediaId, mode: session.mode, quality, steppingDownTo: lower?.quality, viewerChose: this.viewerChoseMode });
+    if (!lower) {
+      this.failTerminal(tooSlow);
+      return true;
+    }
+    void this.versionUpdate(lower).then((update) => {
+      if (!update || this.disposed) return;
+      this.applyUpdate(update);
+      this.patchSnapshot({
+        notice: { code: 'quality-stepped-down', error: tooSlow },
+        ...(this.snapshot.instruction ? { instruction: {
+          ...this.snapshot.instruction, quality: lower.quality, chosenByViewer: false,
+          ...(lower.mediaId !== undefined ? { mediaId: lower.mediaId } : {}),
+        } } : {}),
+      });
+    });
+    return true;
   }
 
   /**
@@ -1423,8 +1532,9 @@ export class PlaybackCoordinator {
     positionMs: number,
     preferences: PlaybackPreferencesUpdate,
   ): Promise<PlaybackSession> {
+    const progress = { onStartProgress: this.reportStartProgress };
     try {
-      return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences);
+      return await this.options.resolver.resolve(this.options.media, capabilities, positionMs, preferences, progress);
     } catch (error) {
       const degraded = this.degradedInstructionFor(error);
       if (!degraded) throw error;
@@ -1434,9 +1544,21 @@ export class PlaybackCoordinator {
         capabilities,
         positionMs,
         { ...preferences, ...instructionPreferences(degraded) },
+        progress,
       );
+    } finally {
+      if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
     }
   }
+
+  /**
+   * A start or change reporting progress (server 0.69.0), onto the snapshot
+   * for a host to show while it waits; gone once it is ready or has failed.
+   */
+  private readonly reportStartProgress = (progress: PlaybackStartProgress): void => {
+    if (this.disposed) return;
+    this.patchSnapshot({ startProgress: progress.stage === 'ready' || progress.stage === 'failed' ? undefined : progress });
+  };
 
   /**
    * The file to play under a mode the viewer chose, and its profile where
@@ -1493,6 +1615,9 @@ export class PlaybackCoordinator {
       ...(subtitleForced !== undefined ? { subtitleForced } : {}),
     };
   }
+
+  /** The resolver's transcode rates (server 0.70.0), for `playbackVersions`. */
+  private readonly transcodeRate = (source: TranscodeSource): number | undefined => this.options.resolver.transcodeRate?.(source);
 
   /** The capabilities the last instruction was formed for; see `drainMutations`. */
   private capabilitiesSeen?: PlaybackCapabilities;
@@ -1775,7 +1900,7 @@ export class PlaybackCoordinator {
   private versionsAfterStart(facts: readonly FileFacts[] | undefined, session: PlaybackSession): Partial<PlaybackCoordinatorSnapshot> {
     const capabilities = this.capabilitiesSeen;
     if (!facts || !capabilities || this.snapshot.versions) return {};
-    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false });
+    const versions = playbackVersions(facts, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate });
     const quality = qualityPlaying(versions, session.mediaId, session.preferences.maxHeight);
     const instruction = this.snapshot.instruction;
     return {
@@ -1817,6 +1942,8 @@ export class PlaybackCoordinator {
    * page either way, as it always did.
    */
   private stopEverythingNowForPageExit(): void {
+    // A start still pending has no session here yet; the resolver knows it.
+    this.options.resolver.closePendingForPageExit?.();
     // Each with its signed stream URL where core has it, for the close that
     // survives an unload (see `MachaPlaybackResolver.closeBySignedUrl`).
     const ids = new Map<string, string | undefined>();
@@ -2380,7 +2507,7 @@ export class PlaybackCoordinator {
         // makes cancellation non-blocking on older TV engines whose fetch may
         // accept a signal but fail to terminate the underlying request.
         const next = await awaitUnlessAborted(
-          this.options.resolver.update(current.sessionId, update, controller.signal),
+          this.options.resolver.update(current.sessionId, update, controller.signal, { onStartProgress: this.reportStartProgress }),
           controller.signal,
         );
         if (this.disposed) return;
@@ -2425,7 +2552,9 @@ export class PlaybackCoordinator {
 
         this.activateSession(next, currentDesired, pending.reason === 'seek' ? 'relocate' : 'continue');
         if (!this.pendingMutation) this.instructionBeforeModeChange = undefined;
-        if (!this.disposed) this.patchSnapshot({ notice: undefined });
+        // A notice that says how playback now runs outlives the change that
+        // made it: the viewer must be able to read why the quality dropped.
+        if (!this.disposed && !isLastingNotice(this.snapshot.notice)) this.patchSnapshot({ notice: undefined });
       } catch (error) {
         if (this.disposed) return;
         if (controller.signal.aborted) {
@@ -2456,6 +2585,7 @@ export class PlaybackCoordinator {
         this.rollbackUnfulfilledSeek();
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;
+        if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
         resolveSettled();
       }
     }
@@ -2553,6 +2683,7 @@ export class PlaybackCoordinator {
       this.seekIntentActive = true;
       this.seekIntentPositionMs = undefined;
       this.seekIntentPinnedByPresentation = true;
+      this.presentedFromMs = absoluteStartMs;
       this.patchSnapshot({
         intent: { ...this.snapshot.intent, positionMs: absoluteStartMs },
         event: {
@@ -3345,6 +3476,7 @@ export class PlaybackCoordinator {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       return;
     }
+    if (failedSession && isEndpointRetryablePlaybackFailure(fatalError) && this.tooSlowToPlay(failedSession, fatalError)) return;
     if (failedSession && this.options.resolver.failover && isEndpointRetryablePlaybackFailure(fatalError)) {
       this.noteUnclassifiedFailure(fatalError, 'fatal');
       this.beginSourceFailover(failedSession, fatalError);
@@ -3741,6 +3873,9 @@ export class PlaybackCoordinator {
         requestedPositionMs,
         preferences,
         preparedAlternate,
+        // The replacement's start, where the node reports progress on it: a
+        // failover is a new stream the viewer waits for too.
+        { onStartProgress: this.reportStartProgress },
       ));
       if (this.disposed) {
         await this.stopOnDisposal(next.sessionId);
@@ -3782,6 +3917,8 @@ export class PlaybackCoordinator {
         error: failoverError,
       });
       this.failTerminal(terminalRecoveryError(error, failoverError));
+    } finally {
+      if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
     }
   }
 

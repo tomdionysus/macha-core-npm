@@ -6,11 +6,14 @@ import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { parseErrorEnvelope } from '../api/errorEnvelope.js';
 import type { MediaSummary, PlaybackCapabilities, PlaybackMode, PlaybackSource } from '../types.js';
+import { ENDPOINT_TRANSPORT_ALLOWANCE_MS } from './PlaybackResolver.js';
 import type {
   PlaybackOptions,
   PlaybackPreferencesUpdate,
+  PlaybackRequestOptions,
   PlaybackResolver,
   PlaybackSession,
+  PlaybackStartProgress,
   PlaybackStopOptions,
   PlaybackStreamInfo,
   PlaybackUpdate,
@@ -138,8 +141,15 @@ interface WireSession {
     video?: WireOutputVideo;
     audio?: WireOutputAudio;
   };
+  /** A start that reports progress (server 0.69.0, `start=async`); see `followStart`. */
+  start?: WireStart;
+  /** A change still being prepared while the current generation plays (0.69.0). */
+  pending?: { start: WireStart };
   stream: {
-    url: string;
+    /** Null while a `start=async` create is pending. */
+    url: string | null;
+    /** The signed close, which the node accepts while a create is pending (0.69.0). */
+    close_url?: string;
     mime_type: string;
     /**
      * How far past the last fragment requested the node will have produced —
@@ -202,6 +212,58 @@ interface WireSession {
  * recovery should be able to name it rather than find it.
  */
 export const SESSION_LIVENESS_TIMEOUT_MS = DEFAULT_REQUEST_TIMEOUT_MS;
+
+interface WireStart {
+  stage: PlaybackStartProgress['stage'];
+  progress_seq: number;
+  progress_age_ms?: number;
+  elapsed_ms: number;
+  source_bytes_read?: number;
+  preroll_decoded_ms?: number;
+  preroll_total_ms?: number;
+  output_media_ms?: number;
+  first_fragment_ms?: number;
+  error?: { code?: string; message?: string; reason?: string; start_stage?: string };
+}
+
+/**
+ * The code on a start core gave up on because its progress stopped (server
+ * 0.69.0, `start=async`): status 504, a failure of the node to progress, not
+ * of the server to answer. A host words it from this code.
+ */
+export const START_NO_PROGRESS_CODE = 'start_no_progress';
+
+/** The longest a start's long-poll asks the node to hold, whatever the node allows; see `followStart`. */
+export const START_LONG_POLL_MS = 15_000;
+
+function startProgress(kind: PlaybackStartProgress['kind'], start: WireStart): PlaybackStartProgress {
+  return {
+    kind,
+    stage: start.stage,
+    progressSeq: start.progress_seq,
+    elapsedMs: start.elapsed_ms,
+    ...(start.source_bytes_read !== undefined ? { sourceBytesRead: start.source_bytes_read } : {}),
+    ...(start.preroll_decoded_ms !== undefined ? { prerollDecodedMs: start.preroll_decoded_ms } : {}),
+    ...(start.preroll_total_ms !== undefined ? { prerollTotalMs: start.preroll_total_ms } : {}),
+    ...(start.output_media_ms !== undefined ? { outputMediaMs: start.output_media_ms } : {}),
+    ...(start.first_fragment_ms !== undefined ? { firstFragmentMs: start.first_fragment_ms } : {}),
+  };
+}
+
+/** A failed start as the error a blocking request would have thrown. */
+function startFailure(start: WireStart): MachaPlaybackError {
+  const error = start.error ?? {};
+  const code = error.code ?? 'playback_pipeline_start_failed';
+  const message = error.message ?? 'The start failed.';
+  return new MachaPlaybackError(
+    `Macha playback start failed at ${error.start_stage ?? start.stage}: ${message}`,
+    code === 'source_unsupported' ? 422 : 503,
+    code,
+    undefined,
+    error.reason,
+    message,
+  );
+}
 
 export class MachaPlaybackError extends Error {
   constructor(
@@ -543,9 +605,10 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     capabilities: PlaybackCapabilities,
     seekMs?: number,
     preferences?: PlaybackPreferencesUpdate,
-    signal?: AbortSignal,
-    idempotencyKey = newPlaybackIdempotencyKey(),
+    options: PlaybackRequestOptions = {},
   ): Promise<PlaybackSession> {
+    const signal = options.signal;
+    const idempotencyKey = options.idempotencyKey ?? newPlaybackIdempotencyKey();
     this.log.info('session-create', {
       mediaId: media.id,
       mediaKind: media.kind,
@@ -596,14 +659,17 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       // path. A non-conforming server response is surfaced immediately so the
       // cluster resolver can recover on another endpoint rather than polling it.
       try {
-        const wire = await this.request<WireSession>(
-          `/api/v1/playback/sessions?${queryString([['idempotency_key', key]])}`,
+        const accepted = await this.request<WireSession>(
+          `/api/v1/playback/sessions?${queryString([['idempotency_key', key], ['start', options.asyncStart ? 'async' : undefined]])}`,
           {
             method: 'POST',
             body: JSON.stringify(body),
             signal,
           },
         );
+        const wire = accepted.start && accepted.start.stage !== 'ready' && options.asyncStart
+          ? await this.followCreate(accepted, options)
+          : accepted;
         const session = this.mapSession(wire);
         this.log.info('session-created', this.sessionSummary(session));
         return session;
@@ -618,7 +684,112 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     }
   }
 
-  async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal): Promise<PlaybackSession> {
+  /** Signed close URLs of the creates still pending here, for `closePendingForPageExit`. */
+  private readonly pendingCreates = new Map<string, string | undefined>();
+
+  closePendingForPageExit(): void {
+    for (const [sessionId, closeUrl] of this.pendingCreates) {
+      const url = closeUrl ? this.streamUrl(closeUrl) : undefined;
+      this.log.info('session-close-pending-page-exit', { sessionId, signed: Boolean(url) });
+      try {
+        if (url) void fetch(url, { method: 'POST', keepalive: true }).catch(() => undefined);
+        void this.stop(sessionId, { keepalive: true }).catch(() => undefined);
+      } catch {
+        // Nothing more can be done from a page being unloaded.
+      }
+    }
+  }
+
+  private async followCreate(accepted: WireSession, options: PlaybackRequestOptions): Promise<WireSession> {
+    const sessionId = accepted.session_id;
+    this.pendingCreates.set(sessionId, accepted.stream?.close_url);
+    try {
+      return await this.followStart(sessionId, 'start', accepted.start!, options);
+    } finally {
+      this.pendingCreates.delete(sessionId);
+    }
+  }
+
+  /**
+   * Follow a start the node accepted without blocking (server 0.69.0) until
+   * it is ready, and answer the session as a blocking request would have.
+   *
+   * The node reports progress, not a promise of time: a 4K HEVC transcode
+   * seek on fi-1 took 8.6 to 11.9 s at 0.33x real time, progressing every
+   * second, and an elapsed-time budget abandoned it. So the start fails only
+   * when its `progress_seq` has not moved for the node's
+   * `startup_no_progress_ms` and the transport allowance. Each long-poll asks
+   * the node to hold at most `START_LONG_POLL_MS`: macnessa's https front is
+   * configured far longer, but hops nobody can see (a carrier's NAT) may not
+   * be, and a long-poll they cut must not read as a failed start; one that
+   * times out here is only asked again. Given up, or aborted, the pending
+   * start is abandoned so its slot is freed: a create by deleting the session,
+   * a change by `DELETE .../pending`, which leaves the old generation playing.
+   */
+  private async followStart(
+    sessionId: string,
+    kind: PlaybackStartProgress['kind'],
+    first: WireStart,
+    options: PlaybackRequestOptions,
+  ): Promise<WireSession> {
+    const noProgressMs = (options.asyncStart?.noProgressMs ?? 15_000) + ENDPOINT_TRANSPORT_ALLOWANCE_MS;
+    const waitMs = Math.min(START_LONG_POLL_MS, options.asyncStart?.waitMaxMs ?? START_LONG_POLL_MS);
+    const path = `/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`;
+    const abandon = () => this.request<void>(kind === 'start' ? path : `${path}/pending`, { method: 'DELETE' }).catch(() => undefined);
+    let current = first;
+    let lastChangeAt = machaHost().now();
+    for (;;) {
+      options.onStartProgress?.(startProgress(kind, current));
+      if (current.stage === 'failed') throw startFailure(current);
+      if (machaHost().now() - lastChangeAt > noProgressMs) {
+        await abandon();
+        throw new MachaPlaybackError(
+          `Macha playback start made no progress for ${noProgressMs} ms.`,
+          504,
+          START_NO_PROGRESS_CODE,
+        );
+      }
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      options.signal?.addEventListener('abort', onAbort);
+      const timer = setTimeout(() => controller.abort(), waitMs + DEFAULT_REQUEST_TIMEOUT_MS);
+      let answer: WireSession | undefined;
+      try {
+        answer = await this.request<WireSession>(
+          `${path}?${queryString([['after', String(current.progress_seq)], ['wait_ms', String(waitMs)]])}`,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        if (options.signal?.aborted) {
+          await abandon();
+          throw error;
+        }
+        // Our own limit on the long-poll: no answer, asked again. Anything
+        // else is the node's answer and the caller's to classify.
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onAbort);
+      }
+      if (!answer) continue;
+      const next = kind === 'start' ? answer.start : answer.pending?.start;
+      // A change with nothing pending has become the session; a create is
+      // ready once its stream URL is.
+      if (kind === 'change' && !answer.pending) {
+        options.onStartProgress?.({ ...startProgress(kind, current), stage: 'ready' });
+        return answer;
+      }
+      if (kind === 'start' && next?.stage === 'ready' && answer.stream?.url) {
+        options.onStartProgress?.(startProgress(kind, next));
+        return answer;
+      }
+      if (!next) throw new MachaPlaybackError('Macha playback start vanished from the session.', 502, 'invalid_response');
+      if (next.progress_seq !== current.progress_seq || next.stage !== current.stage) lastChangeAt = machaHost().now();
+      current = next;
+    }
+  }
+
+  async update(sessionId: string, update: PlaybackUpdate, signal?: AbortSignal, options: PlaybackRequestOptions = {}): Promise<PlaybackSession> {
     this.log.info('session-update', { sessionId, update });
     // The same safety net as `resolve`: a PATCH is held to the same choices.
     const answered = new Set<string>();
@@ -630,11 +801,16 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       if (update.seekMs !== undefined) body.seek_ms = Math.max(0, Math.round(update.seekMs));
       if (update.mediaId !== undefined) body.media_id = update.mediaId;
       try {
-        const session = this.mapSession(await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, {
-          method: 'PATCH',
-          body: JSON.stringify(body),
-          signal,
-        }));
+        const accepted = await this.request<WireSession>(
+          `/api/v1/playback/sessions/${encodeURIComponent(sessionId)}${options.asyncStart ? '?start=async' : ''}`,
+          { method: 'PATCH', body: JSON.stringify(body), signal },
+        );
+        // A change the node prepares while the current generation plays on
+        // (0.69.0); subtitle-only and direct changes answer as before.
+        const wire = accepted.pending?.start && options.asyncStart
+          ? await this.followStart(sessionId, 'change', accepted.pending.start, { ...options, signal })
+          : accepted;
+        const session = this.mapSession(wire);
         this.log.info('session-updated', this.sessionSummary(session));
         return session;
       } catch (error) {
@@ -779,7 +955,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     };
     const source: PlaybackSource = {
       mediaId: wire.media_id,
-      url: this.streamUrl(wire.stream.url),
+      url: this.streamUrl(wire.stream.url ?? ''),
       subtitleUrl: wire.stream.subtitle_url ? this.streamUrl(wire.stream.subtitle_url) : undefined,
       mimeType: wire.stream.mime_type,
       isManifest: isManifestMimeType(wire.stream.mime_type),

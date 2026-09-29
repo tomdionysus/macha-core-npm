@@ -46,7 +46,41 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-### Candidate: `0.20.0`, prepared 2026-09-27; not cut until Tom says so
+### Candidate: `0.21.0`, prepared 2026-09-29; not cut until Tom says so
+From develop at `553e9e4`: 32 commits since 0.20.0. 1313 tests in 75 files, typecheck, lint and build all pass, and the `dist` hash is `f1e168298660`. Server features used: 0.67.0 to 0.71.0, all live on both nodes. Waiting on the clients' go/no-go.
+
+**Breaking** (for anything implementing or calling these directly; the three clients build against develop):
+- `CatalogueApi` gains the required `keyframes` and `patch`;
+- `ManageApi` gains the required `matchProvider`, `providerSearch`, `providerArtwork` and `chooseArtwork`;
+- `MachaPlaybackResolver.resolve`'s fifth argument is a `PlaybackRequestOptions` object (`signal`, `idempotencyKey`, `onStartProgress`, `asyncStart`), where it was a signal and a key.
+
+**Added:**
+- start progress (`start=async`, `snapshot.startProgress`, `onStartProgress`), failover builds included;
+- node names (`session.endpoint.name`, `endpointName`), from `node_name` or the host;
+- the keyframe index and `bufferedTimeRanges`;
+- the metadata editor's routes (provider search, match, artwork, manual parents, `patch`, filtered search);
+- `versions.passedOver`, and automatic play avoiding a transcode no node keeps up with (`transcode_rates`);
+- `TOO_SLOW_TO_PLAY_CODE`, the `quality-stepped-down` notice, and `START_NO_PROGRESS_CODE`;
+- torrents: `paused` on add (with a pause-after-add fallback), `publication`, `waiting_reason`;
+- `snapshot.playingFile` and `snapshot.modes`.
+
+**Fixed:**
+- a play queue of a whole library could no longer be saved or read (a window of 200 is now saved);
+- a transcode no node produces at real speed no longer fails over for ever;
+- a file an unreachable node cannot read is asked of the next node;
+- lasting notices no longer vanish when their change lands.
+
+**Procedure:** as for 0.20.0. Core: bump, commit `0.21.0`, annotated tag, merge `--no-ff` into main, push all, and leave main checked out for Tom to publish. Clients, once it is on npm: merge develop into main, set `^0.21.0` against the registry, run checks, commit, push, and return to develop on the link.
+
+### Published: `0.20.0`, 2026-09-27
+npm `latest` is `0.20.0`, `gitHead` `d7b4057`, which is `main`'s merge. The annotated tag `0.20.0` is on `55b6a66`. `dist` hash `f7fd989fe6e8`; 1257 tests in 74 files; 69 commits since 0.19.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `55b6a66`'s message. All three clients said go: web 623 tests, Android TV 344 with its export, phone 337. All three are on it, each pushed on Tom's word and checked on each client's remote:
+- web `main` `23c4d91`, `^0.20.0`, 623 tests; `develop` `ce76c0f` back on the link;
+- Android TV 0.8.0: `main` `2ceb827`, tag `0.8.0`, 344 tests and export; `develop` `e0eddd9`;
+- phone 0.10.0: `main` `2a314ca`, tag `0.10.0`, 337 tests, verified from a fresh clone; `develop` `19c0a7c`.
+
+Each lockfile resolves 0.20.0 from the registry, `sha512-ZyYbjniK…`. The candidate notes below stand as the detail.
+
+#### Candidate notes
 The candidate is now develop at `ae82922` (the version marked by file and cap; media lines at `29fa878`), dist `f7fd989fe6e8`, 1257 tests. The TV's runs on the set found three bugs, all fixed: a transcode resume looped for ever (`7bdc219`); a version switch across files named no audio stream (`7bdc219`); and a switch took a forced subtitle track for a full one (`7a79d49`). The TV's re-run passed the transcode resume twice. Checks at `e964514` were 1250 tests in 74 files, typecheck, lint and build all pass, and the `dist` hash is `b33baa4a1f60`. It needs server 0.57.0 or later, which plays by `media_id`; the live nodes are on 0.64.1. Waiting on the TV (.133) and phone (A85) device reports, asked for 2026-09-27.
 
 **Breaking:**
@@ -115,7 +149,7 @@ Core on `develop` speaks it; core `0.19.0` does not, and gets `item_id_not_accep
   - The likely cause is the CORS preflight a cross-origin DELETE with Authorization needs.
   - Proposed to the server: a capability-authorised close with no Authorization header, a CORS simple request, e.g. `POST /api/v1/playback/stream/{session}/cap/{cap}/close`. Core would use it on page exit only. Tom approved it, 2026-09-25: "As long as it's authorised by the signed URL, yes." The server's journal couldn't settle whether the DELETE arrived, since it doesn't log session DELETEs. Core sends it from the commit following this note: the coordinator passes each session's `source.url` as `PlaybackStopOptions.streamUrl`, and `MachaPlaybackResolver` POSTs to `signedCloseUrl(streamUrl)` beside the DELETE, on page exit only. Server 0.60.0 (7c1d210) is live on fi-1 from 12:42Z and gbni-1 from 12:43Z, and the server's smoke test got 204 for the close and 405 for a GET. Settled by the web client, 2026-09-25, and the leak was the web client's own. Its `usePlaybackRuntime` skipped `terminateForPageExit` on a `pagehide` with `persisted: true`, and Chrome caches a playing page on an ordinary navigation. With it closing on every pagehide (web 9a05438, core 42cebd6, server 0.60.0), navigating away from a 720p transcode freed fi-1's slot within 3 s. The signed close answers 204, and the DELETE after it gets 404.
   **So the CORS-preflight explanation was never proven.** The page never called the close at all. Whether a signed-in keepalive DELETE survives an unload on its own remains untested. The signed close stays as the one that needs no preflight either way. The same release frees the transcode slot on a PATCH out of transcode.
-- Unreadable files: tmdb:episode:110090 (`macha:4e1230739de9...`) and tmdb:movie:122 (`macha:af0b9adfbfd3...`) answer `503 playback_unavailable`, "read media: extent unavailable", and their direct byte reads die partway, yet the facts say `operations.direct: true`. tmdb:movie:122 has a readable matroska, `macha:b3bcbf961043...`. Core will skip a file the facts mark unreadable, once the server names the field. More titles with lost extents, 2026-09-27:
+- Unreadable files: tmdb:episode:110090 (`macha:4e1230739de9...`) and tmdb:movie:122 (`macha:af0b9adfbfd3...`) answer `503 playback_unavailable`, "read media: extent unavailable", and their direct byte reads die partway, yet the facts say `operations.direct: true`. tmdb:movie:122 has a readable matroska, `macha:b3bcbf961043...`. Core will skip a file the facts mark unreadable, once the server names the field. **Deferred by Tom, 2026-09-27: he is taking it up with the server.** More titles with lost extents, 2026-09-27:
   - The Martian's `7b5743ad` (phone);
   - The Cannonball Run `macha:11c474bb…`, 1920x1072 AV1, which answers 503 "read media: extent unavailable" on fi-1 and macnessa (phone, 15:28:53Z).
 
@@ -138,7 +172,7 @@ Built in `src/playback/playbackVersions.ts` and the coordinator; the commit foll
   - a capped transcode is fitted to the source's shape.
 - The per-device setting is kept by `QualityPreferenceStore` at `macha.qualityPreference.v1`, core's key, one for every client. The TV had begun its own key, `macha.quality-preference.v1`, and was asked to move.
 - `instruction.quality` is the step playing. `limitedBy` is on `versions` only, by design.
-- The mobile-data default of 720 is put to Tom as an open question (via the phone).
+- The mobile-data default of 720p is confirmed by Tom, 2026-09-27: "720p is right for mobile data, but must be configurable". It is configurable already: the viewer's `cellular` setting in `QualityPreferenceStore` overrides it per device, and a host may pass `cellularDefault`.
 - Tom, 2026-09-25, in core's session: "limit to the device capabilities for direct on all clients - but, all clients should also have a setting to disable this." Built as follows:
   - the chooser objects to a picture larger than the stated `maxWidth` / `maxHeight` (`video-size-exceeds-client`); it ignored them before;
   - `playbackVersions` offers no step above `deviceQualityClass(capabilities)`, and automatic play stays within the device (`ceiling-device`) even with the setting on;
@@ -149,13 +183,90 @@ Built in `src/playback/playbackVersions.ts` and the coordinator; the commit foll
 ### Matching and metadata editing: core owns the server interaction — Tom, 2026-09-24
 Tom wants the unmatched-file match page and the metadata editor merged into one interface with three paths: a candidate, a provider search, or manual entry, each with parent links and an artwork choice. He ruled that **core manages all the server interaction**, and clients build the screen.
 - **Built, `b6cde7f`, after `0.19.0`:** `Identification` (`candidate` | `catalogue` | `manual`), `identifyUnmatched`, and `manualFromCandidate`, which refuses with `candidate_incomplete` what the server's manual route cannot take.
-- **Waiting on the server,** whose proposal A-G is with Tom via the web client:
+- **Built against server 0.67.0 (live in 0.69.0), 2026-09-28:**
+  - A: `ManageApi.providerSearch`;
+  - C: `matchProvider` and `Identification { from: 'provider' }`;
+  - D: `ManualMetadata` parents by id, and `lock`;
+  - E: `providerArtwork` and `chooseArtwork`;
+  - F: `CatalogueApi.search(…, filter)` with `kinds` and `parent`;
+  - G: `CatalogueApi.patch`.
+
+  The server's docs are `docs/management.md` and `docs/catalogue.md`. The list as it stood before:
+- **(Superseded) Waiting on the server,** whose proposal A-G is with Tom via the web client:
   - A: provider search and match by `ref`;
   - D: parent ids on `/manual`;
   - E: artwork options and choice;
   - F: a parent filter;
   - G: parent validation and a partial update, which `CatalogueApi.update` should move to so an edit cannot unbind files by omission.
   Core wraps each when the server names its version, behind the same `identifyUnmatched`.
+
+### Torrent publication progress: modelled for server 0.71.0 (`b454c53`, not deployed), 2026-09-28
+`TorrentJob.publication?: { published_extents, extents, published_bytes, bytes } | null`, for Tom's progress indicator on the stage after a download finishes, while the owner publishes extents before the ingest. Avengers Endgame sat at state "downloaded", progress 1, with 378 of 624 extents left.
+
+As the server settled it:
+- **Absent:** a node older than the field.
+- **null:** the owner reports none, meaning no live view, or no publication record for the job.
+- **Present:** from the first verified piece until staging is released, rising during the download and keeping its final counts through importing.
+- **"Publishing now":** state `downloaded` with `published_extents < extents`, not the object's presence.
+- **The ingest starts** when they meet, or after 10 minutes with no progress.
+- **Freshness:** a live field, covered by `live_as_of_unix_ms`.
+
+**As built:** `publication` also carries `progress_age_ms`, and it is null during importing (a correction to the proposal: it is present only until the ingest is submitted). `waiting_reason` is `extent_publication` while the job is `downloaded` with publication incomplete. Both are in core's `TorrentJob`.
+
+### A quality no node can produce at real speed stops cycling: Tom, 2026-09-28
+The web client found The Martian's 4K HEVC 10-bit source, transcoding at about 0.33x on both nodes, failing over back and forth for ever with the viewer at 0:02.
+
+Tom ruled for a quality the viewer chose: "stop with a stated reason - but it has to be clear, consise, and visible 'Macha can't play this quality because...' with a try again option."
+
+Built in `PlaybackCoordinator.tooSlowToPlay`:
+- a stall before a transformed generation has played `EARLY_STALL_MEDIA_MS` (15 s) fails over once;
+- if the replacement stalls the same way, core stops cycling;
+- a viewer's choice ends with `fatalError` coded `TOO_SLOW_TO_PLAY_CODE`, which the clients word and pair with retry;
+- core's own choice steps down to the next lower version, with a `quality-stepped-down` notice (coded the same). With none lower, it stops as for the viewer.
+
+`quality-stepped-down`, `decode-fallback` and `copy-refused` are now lasting notices: they stay once their change lands, where the decode fallback's used to vanish on activation.
+
+**Prevention built against server 0.70.0 (`a922660`):**
+- status gives `transcode_rates`, and core records the video rates per node;
+- `PlaybackResolver.transcodeRate` answers the best rate any node has measured for a kind;
+- automatic play passes over a file whose picture would transcode below real time on every node that has measured it, where anything else is left, with `passedOver.reasons` including `transcode-below-real-time`;
+- a viewer can still pick it, and a kind no node has measured is not avoided.
+
+0.70.0 also gives `node_name`, which core now shows before the host.
+
+### Playback start reports progress: built in core against server 0.69.0 (`e2d25a4`, not deployed), 2026-09-28
+The operator's decision: stop guessing a start time. With `?start=async`, create and PATCH answer 202 once admitted, and GET, long-polled with `after`/`wait_ms`, reports stage and progress counters. A start fails only when progress stops (`startup_no_progress_ms`). Core's review raised six points:
+- the signed close for a pending start;
+- idempotency while pending;
+- a failed start's slot and how long it can still be read;
+- direct play answered synchronously;
+- the id and fields in the body;
+- the long-poll cap.
+
+All six were accepted by the server (plan section 7, `51620fc` and the commit after it):
+- the 202 carries the signed close URL, and a pending PATCH carries its own;
+- a replayed key answers the same pending session;
+- a failed start frees its slot at once and stays readable for 60 s (`start_failed_retention_ms`);
+- direct play answers a synchronous 201;
+- the body carries everything;
+- `start_wait_max_ms` (about 25 s) clamps.
+
+Also: a DELETE drops a pending replacement, and the ready long-poll carries the replacement's URLs.
+
+**Built.** `resolve` and `update` take a `PlaybackRequestOptions` (`signal`, `idempotencyKey`, `onStartProgress`, `asyncStart`); `resolve`'s fifth argument became that object, a hard cut, and only core's own cluster resolver passed more than four. The Macha resolver's `followStart` long-polls and reports progress. The cluster sets `asyncStart` from the node's stated `startupNoProgressMs`, and drops the elapsed deadline there. `closePendingForPageExit` closes pending creates by their signed URL. The coordinator shows `snapshot.startProgress`. The plan it follows:
+- async only on nodes whose status carries `startup_no_progress_ms`;
+- the deadline counted from the last progress change, replacing `generationAttemptBudgetMs` for async starts, as the TV said: a 0.33x node still decoding must not be abandoned;
+- the long-poll lives in the resolver, not the coordinator. The phone drives `ClusterPlaybackResolver` directly (the phone client, via the server), so a progress state only on the coordinator's snapshot would never reach it. `resolve()` and `update()` wait out an async start themselves, still answer the ready session, and report each progress step through an optional callback (for example `onStartProgress`). The coordinator passes one to put progress on its snapshot. The phone's downloads use direct sessions, which never go pending;
+- each long-poll at most 15 s, under the cap. macnessa's front is haproxy on gbni-1 with client and server timeouts of 1 h (configured, not measured, read 2026-09-28), so it doesn't bind. 15 s stays for the hops no one can see, such as carrier NAT and the client's own stack, where a cut long-poll must not read as a failed start.
+
+### Direct Play's buffered ranges are Chrome's estimate: waiting on the server's keyframe index (web client, 2026-09-28)
+Chrome converts each buffered byte range to time as `byte / size × duration`. So a Direct Play scrubber draws an estimate: on gbni-1, a phantom range sat 95 s behind the playhead. HLS ranges are real and unaffected.
+
+The server is building `GET /api/v1/catalogue/media/{id}/keyframes` (time to byte offset) and will announce it before shipping. When it lands, core adds:
+- a fetch on the media API, cached per media id, since the index is immutable;
+- a pure function from the index, the file size and byte ranges to time ranges, linear between entries, returning the minimum playable across streams when the index is per-stream.
+
+This is a utility the web client calls, not something the coordinator applies to every event, because the native players report real time. **Built** after the server announced 0.68.0 (committed as `8135c66`, not deployed): `CatalogueApi.keyframes(mediaId)` (the cluster fetch is cached, asks the next node on `not_found` or `keyframes_failed`, and stops on `keyframes_not_supported`) and `bufferedTimeRanges(index, heldBytes, playing)`.
 
 ### Continue Watching resumes as if the viewer never left — Tom, 2026-09-27 (relayed by the TV client)
 "Continue watching likely needs to store both the item id AND the media ID. It should also store the mode (direct, remux, transcode), resolution, subtitle settings, and all other data needed to resume as if you'd never left." Built in the commit following this note:
