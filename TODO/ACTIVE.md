@@ -46,8 +46,8 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
-### Candidate: `0.21.0`, prepared 2026-09-29; not cut until Tom says so
-From develop at `553e9e4`: 32 commits since 0.20.0. 1313 tests in 75 files, typecheck, lint and build all pass, and the `dist` hash is `f1e168298660`. Server features used: 0.67.0 to 0.71.0, all live on both nodes. Waiting on the clients' go/no-go.
+### Published: `0.21.0`, 2026-09-29
+npm `latest` is `0.21.0`, `gitHead` `5569ddd`, which is `main`'s merge. The annotated tag `0.21.0` is on `5773c48`. `dist` hash `f1e168298660`; 1313 tests in 75 files; 32 commits since 0.20.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `5773c48`'s message. All three clients said go: web 668 tests, Android TV 376 with its export, phone 359. The clients are told to switch `main` to `^0.21.0`; their pushes and version numbers wait on Tom.
 
 **Breaking** (for anything implementing or calling these directly; the three clients build against develop):
 - `CatalogueApi` gains the required `keyframes` and `patch`;
@@ -69,8 +69,6 @@ From develop at `553e9e4`: 32 commits since 0.20.0. 1313 tests in 75 files, type
 - a transcode no node produces at real speed no longer fails over for ever;
 - a file an unreachable node cannot read is asked of the next node;
 - lasting notices no longer vanish when their change lands.
-
-**Procedure:** as for 0.20.0. Core: bump, commit `0.21.0`, annotated tag, merge `--no-ff` into main, push all, and leave main checked out for Tom to publish. Clients, once it is on npm: merge develop into main, set `^0.21.0` against the registry, run checks, commit, push, and return to develop on the link.
 
 ### Published: `0.20.0`, 2026-09-27
 npm `latest` is `0.20.0`, `gitHead` `d7b4057`, which is `main`'s merge. The annotated tag `0.20.0` is on `55b6a66`. `dist` hash `f7fd989fe6e8`; 1257 tests in 74 files; 69 commits since 0.19.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `55b6a66`'s message. All three clients said go: web 623 tests, Android TV 344 with its export, phone 337. All three are on it, each pushed on Tom's word and checked on each client's remote:
