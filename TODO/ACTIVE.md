@@ -47,7 +47,10 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
 ### Published: `0.21.0`, 2026-09-29
-npm `latest` is `0.21.0`, `gitHead` `5569ddd`, which is `main`'s merge. The annotated tag `0.21.0` is on `5773c48`. `dist` hash `f1e168298660`; 1313 tests in 75 files; 32 commits since 0.20.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `5773c48`'s message. All three clients said go: web 668 tests, Android TV 376 with its export, phone 359. The clients are told to switch `main` to `^0.21.0`; their pushes and version numbers wait on Tom.
+npm `latest` is `0.21.0`, `gitHead` `5569ddd`, which is `main`'s merge. The annotated tag `0.21.0` is on `5773c48`. `dist` hash `f1e168298660`; 1313 tests in 75 files; 32 commits since 0.20.0. Tom published it; core cut, tagged, merged and pushed. It is breaking, and the release notes are in the tag and in `5773c48`'s message. All three clients said go: web 668 tests, Android TV 376 with its export, phone 359. All three are on it, each pushed on Tom's word and checked on each client's remote:
+- web 0.20.0: `main` `1fa0bc4`, tag `0.20.0`, `^0.21.0`, 668 tests; `develop` `2b9d01e` back on the link;
+- Android TV 0.9.0: `main` `263e308`, tag `0.9.0`, 376 tests and export; `develop` `834d6a3`. Not yet installed on .133, which was off the network;
+- phone 0.12.0: `main` `6c293ad`, tag `0.12.0`, 359 tests and export, verified from a fresh clone; `develop` `b3acce9`. Not yet installed on the A85, which was off ADB.
 
 **Breaking** (for anything implementing or calling these directly; the three clients build against develop):
 - `CatalogueApi` gains the required `keyframes` and `patch`;
