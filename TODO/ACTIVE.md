@@ -46,6 +46,9 @@ An item says who it is waiting on. "Tom" means a decision rather than an impleme
 - **Nothing was ever closed.** Shipped in `0.18.0`. The moves today closed every session and each answered 404 after stop.
 - **A deleted direct-play session keeps streaming** — 8 minutes on the TV set, 2 min 28 s on macnessa. With the server. It also blocks verifying `2bcce57` on the set.
 
+### Provider artwork by catalogue item: deferred until the server's experiment ends (Tom, 2026-10-01)
+The web's artwork picker needs a provider ref for `providerArtwork(ref, role, numbers)`, while `chooseArtwork` works from the item because the server resolves "the item's own" reference (`scanner_.choose_artwork`). Deriving the ref in a client means parsing the server's id forms: an episode's show id is only in its parent season's id (`tmdb:season:63174:1`), and an album's ref is its `musicbrainz_release`, not its own id. Core's proposal, sent to the server: `GET /api/v1/manage/providers/artwork?item_id=&role=`, resolving as choose does; an explicit `ref` still overrides; a named code (e.g. `no_provider_ref`) for an item with none. Tom: not now, the server is mid-experiment. Raise it again when the object-ledger experiment ends. Meanwhile the web leaves the picker unbuilt; for a manual item, `providerArtwork` with a viewer-supplied ref already works.
+
 ### Server 0.73.0: per-node inter-node traffic, typed for the Status pages, 2026-09-29
 Live on fi-1 and gbni-1 from 15:34Z. `ClusterNodeStatus.traffic` is `NodeTrafficStatus | null`: `as_of_unix_ms`, `window_ms` (null on a node's first sample), and per class (`NodeTrafficClass`, open-ended) the byte totals and the rates (null with `window_ms`). Types only: the body already reached the clients untouched, and core routes on none of it. Requested by the web for its Status cards and node pages; the web words the class codes. Shape checked against the server's CHANGELOG 0.73.0. Unreleased; next core release.
 
