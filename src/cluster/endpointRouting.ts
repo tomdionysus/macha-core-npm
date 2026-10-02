@@ -1,6 +1,6 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
 import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
-import { reportClusterReachable } from '../api/serverConnection.js';
+import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
 
@@ -63,8 +63,18 @@ export class ClusterEndpointRouter {
    * because artwork is a real request a viewer is waiting on and a node that
    * cannot serve it has failed real work. Nothing routed here is waited on by
    * anyone, so both directions use the probe variants.
+   *
+   * `holdOnTimeout` is for a read that makes the node do real work, such as
+   * listing unmatched files. When a node in good standing (not `lapsed`)
+   * runs out of time on it, the node is working, not gone: every node would
+   * do the same work over the same catalogue, so the walk stops with a
+   * `MachaClusterRouteError` whose `slow` is true, and records nothing
+   * against the node. The web measured this: unmatched took 18 s on fi-1 and
+   * then 2.3 s, and walking four nodes at 8 s each cost the viewer 35 s and
+   * every node the same work (2026-10-01). A lapsed node's timeout still
+   * walks on, as a refused connection does from any node.
    */
-  request<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean }): Promise<T> {
+  request<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean; holdOnTimeout?: boolean }): Promise<T> {
     return this.route(operation, signal, options);
   }
 
@@ -185,12 +195,12 @@ export class ClusterEndpointRouter {
     return undefined;
   }
 
-  private async route<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean }): Promise<T> {
+  private async route<T>(operation: EndpointOperation<T>, signal?: AbortSignal, options?: { advisory?: boolean; holdOnTimeout?: boolean }): Promise<T> {
     let lastError: unknown;
     const attempted: string[] = [];
     let allUnreachable = true;
     const advisory = Boolean(options?.advisory);
-    for (const { endpoint } of this.registry.candidates()) {
+    for (const { endpoint, lapsed } of this.registry.candidates()) {
       attempted.push(endpoint.id);
       log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length, advisory });
       if (signal?.aborted) throw signal.reason ?? abortError();
@@ -203,6 +213,10 @@ export class ClusterEndpointRouter {
         return result;
       } catch (error) {
         if (signal?.aborted) throw signal.reason ?? abortError();
+        if (options?.holdOnTimeout && !lapsed && error instanceof MachaRequestTimeoutError) {
+          log.warn('route-slow', { endpointId: endpoint.id, attempted, timeoutMs: error.timeoutMs });
+          throw new MachaClusterRouteError(attempted, false, endpointFailure(endpoint.id, endpoint.baseUrl, error), true);
+        }
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
         if (advisory) this.registry.recordProbeFailure(endpoint.id);

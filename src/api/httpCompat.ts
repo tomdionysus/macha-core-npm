@@ -1,4 +1,4 @@
-import { MachaConnectionError, serverUnreachable } from './serverConnection.js';
+import { MachaRequestTimeoutError, serverUnreachable } from './serverConnection.js';
 import { currentTransferRecorder } from './transferRecorder.js';
 
 export type HeaderValues = Record<string, string | undefined>;
@@ -47,7 +47,7 @@ export async function fetchWithTimeout(
   try {
     return await fetcher(url, { ...init, signal: controller.signal });
   } catch (error) {
-    if (timedOut) throw new MachaConnectionError(`Request to ${url} exceeded ${timeoutMs} ms.`);
+    if (timedOut) throw new MachaRequestTimeoutError(`Request to ${url} exceeded ${timeoutMs} ms.`, timeoutMs);
     if (isAbortError(error)) throw error;
     throw serverUnreachable();
   } finally {

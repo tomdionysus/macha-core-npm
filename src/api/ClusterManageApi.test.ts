@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { ClusterManageApi } from './ClusterManageApi.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
+import { MANAGE_WORK_TIMEOUT_MS } from './MachaManageApi.js';
 
 describe('ClusterManageApi', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -97,3 +99,43 @@ describe('which management calls may move between nodes', () => {
     expect(urls(fetchMock).every((url) => url.startsWith('http://a'))).toBe(true);
   });
 });
+
+describe('reads that make the node work', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  /** A fetch that answers only when its signal aborts, as a node working on a slow read. */
+  const hanging = () => vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  }));
+
+  it('waits past the default budget for unmatched, then stops at the slow node rather than walking the cluster', async () => {
+    vi.useFakeTimers();
+    const fetchMock = hanging();
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterManageApi(new ClusterEndpointRouter(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']))));
+
+    let settled = false;
+    const result = api.unmatched().catch((caught: unknown) => caught).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS + 1);
+    expect(settled).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(MANAGE_WORK_TIMEOUT_MS);
+
+    expect(await result).toMatchObject({ name: 'MachaClusterRouteError', slow: true, unreachable: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the default budget and the walk for other reads', async () => {
+    vi.useFakeTimers();
+    const fetchMock = hanging();
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterManageApi(new ClusterEndpointRouter(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']))));
+
+    const result = api.browse('/').catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(2 * DEFAULT_REQUEST_TIMEOUT_MS + 1);
+
+    expect(await result).toMatchObject({ name: 'MachaClusterRouteError', slow: false, unreachable: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+

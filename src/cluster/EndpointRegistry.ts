@@ -1,6 +1,7 @@
 import { normalizeBaseUrl } from '../api/httpCompat.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { EndpointBandwidth, TransferKind } from './EndpointBandwidth.js';
+import { ENDPOINT_LAPSED_AFTER_MS } from './healthCycle.js';
 
 export type EndpointSource = 'bootstrap' | 'environment' | 'discovered';
 
@@ -51,7 +52,12 @@ export interface EndpointHealth {
   lastSuccessAt?: number;
   lastFailureAt?: number;
   retryAt?: number;
+  /** When the current run of failures began; cleared by any success. */
+  failingSince?: number;
 }
+
+/** A node's membership state as the cluster's status states it. */
+export type ClusterNodeState = 'online' | 'offline' | 'retired' | (string & {});
 
 /**
  * What a node says about its own load, taken from the cluster status payload
@@ -193,6 +199,14 @@ export interface EndpointCandidate {
    * question and answers wrong the moment a third node exists.
    */
   ready: boolean;
+  /**
+   * Whether this endpoint has stopped answering: it has kept failing for
+   * `ENDPOINT_LAPSED_AFTER_MS` with no success between, or the cluster reports
+   * its node not online and this client has not reached it recently. A lapsed endpoint
+   * ranks behind every endpoint in good standing, whatever their cooldowns;
+   * it stays a candidate, and its next success restores it.
+   */
+  lapsed: boolean;
   /** Rolling average probe round-trip, where any probe has succeeded. */
   latencyMs?: number;
   /** Measured transfer rate, where enough transfers back it. */
@@ -296,7 +310,8 @@ type MeasuredAxis = typeof MEASURED_AXES[number];
 
 /**
  * The axes settled before any measurement is consulted, in order, as the slots
- * of one sort key: reachable before cooling, the sticky preference, then —
+ * of one sort key: good standing before lapsed, reachable before cooling, the
+ * sticky preference, then —
  * among endpoints that are all cooling — whichever is ready soonest, then the
  * consecutive failure count.
  *
@@ -306,7 +321,7 @@ type MeasuredAxis = typeof MEASURED_AXES[number];
  * a flag, a deadline, a count — so unlike the measured axes they can be a sort
  * key rather than a filter.
  */
-const ABSOLUTE_AXES: readonly EndpointSelectionAxis[] = ['availability', 'sticky', 'availability', 'failures'];
+const ABSOLUTE_AXES: readonly EndpointSelectionAxis[] = ['availability', 'availability', 'sticky', 'availability', 'failures'];
 
 /** One endpoint on its way through the cascade, before it is described to a caller. */
 interface RankEntry {
@@ -467,6 +482,8 @@ export class EndpointRegistry {
   private readonly playbackBudgetsById = new Map<string, EndpointPlaybackBudgets>();
   /** Each node's own name (`host` on status), by node id. */
   private readonly nodeNames = new Map<string, string>();
+  /** Each node's membership state, by node id, as the latest status gave it. */
+  private readonly nodeStates = new Map<string, ClusterNodeState>();
   private readonly generationStarts = new Map<string, GenerationStartSample[]>();
   private lastSelectionAxis?: EndpointSelectionAxis;
   private readonly log = createClientLogger('endpoint-registry');
@@ -728,6 +745,7 @@ export class EndpointRegistry {
   private absoluteKey(entry: RankEntry, now: number): number[] {
     const ready = (entry.health.retryAt ?? 0) <= now;
     return [
+      this.isLapsed(entry.endpoint, entry.health, now) ? 1 : 0,
       ready ? 0 : 1,
       entry.endpoint.id === this.preferredId ? 0 : 1,
       ready ? 0 : entry.health.retryAt ?? 0,
@@ -796,6 +814,30 @@ export class EndpointRegistry {
     return this.loadPerCore(endpointIdValue);
   }
 
+  /**
+   * Whether an endpoint has stopped answering; see `EndpointCandidate.lapsed`.
+   *
+   * Ranked ahead of readiness because a cooldown is short and says nothing
+   * about how long a node has been gone. Without this, a node down for a week
+   * that was out of its 30 s cooldown outranked a live node a second into its
+   * own after one slow read, and every routed read waited out the dead one
+   * first (the web client, 2026-10-01: es-1, down since 2026-09-24, tried
+   * second at 8.5 s).
+   *
+   * The cluster's word counts only while this client has no recent success of
+   * its own: a node the cluster calls offline but this client reaches is a
+   * partition between nodes, not a dead node.
+   */
+  private isLapsed(endpoint: MachaEndpoint, health: EndpointHealth, now: number): boolean {
+    // Failures spanning the window, not time since one: a single failure
+    // followed by quiet is no evidence the node is still down.
+    if (health.failingSince !== undefined && health.lastFailureAt !== undefined
+      && health.lastFailureAt - health.failingSince >= ENDPOINT_LAPSED_AFTER_MS) return true;
+    if (health.lastSuccessAt !== undefined && now - health.lastSuccessAt < ENDPOINT_LAPSED_AFTER_MS) return false;
+    const state = endpoint.nodeId !== undefined ? this.nodeStates.get(endpoint.nodeId) : undefined;
+    return state !== undefined && state !== 'online';
+  }
+
   private describe(endpoint: MachaEndpoint, health: EndpointHealth, now: number): EndpointCandidate {
     const latencyMs = this.latencyMs(endpoint.id);
     const bytesPerSecond = this.bytesPerSecond(endpoint.id);
@@ -804,6 +846,7 @@ export class EndpointRegistry {
       endpoint,
       health,
       ready: (health.retryAt ?? 0) <= now,
+      lapsed: this.isLapsed(endpoint, health, now),
       ...(latencyMs !== undefined ? { latencyMs } : {}),
       ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
       ...(capacity ? { capacity: { ...capacity } } : {}),
@@ -924,6 +967,13 @@ export class EndpointRegistry {
    * keeping the last value would let a figure outlive the configuration that
    * produced it.
    */
+  /** Record a node's membership state as the cluster's status gives it. */
+  recordNodeState(nodeId: string, state: ClusterNodeState): void {
+    if (this.nodeStates.get(nodeId) === state) return;
+    this.nodeStates.set(nodeId, state);
+    this.notify();
+  }
+
   /** Record a node's name as its status gives it (`host`, such as "corvus-fi-1"). */
   recordNodeName(nodeId: string, name: string): void {
     if (name.trim()) this.nodeNames.set(nodeId, name.trim());
@@ -1089,6 +1139,7 @@ export class EndpointRegistry {
       consecutiveFailures,
       lastFailureAt: now,
       retryAt: now + FAILURE_COOLDOWN_MS[cooldownIndex],
+      failingSince: previous?.failingSince ?? now,
     });
     if (demote && this.preferredId === endpointIdValue) this.preferredId = undefined;
     this.notify();

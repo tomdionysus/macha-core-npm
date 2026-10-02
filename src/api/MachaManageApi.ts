@@ -20,6 +20,17 @@ import type {
   UnmatchedFile,
 } from './ManageApi.js';
 
+/**
+ * The budget for a management read that makes the node do real work: listing
+ * unmatched files (about 200 KB), one file's detail, and its prospective
+ * matches. Measured by the web client on 2026-10-01: 18 s on fi-1 at worst,
+ * 2.3 s a moment later, 1 to 6 s on gbni-1. Under `DEFAULT_REQUEST_TIMEOUT_MS`
+ * the slowest of those failed on every node in turn. 30 s is the worst
+ * measured with two thirds again as margin; if a node is measured past it,
+ * move the derivation, not the number.
+ */
+export const MANAGE_WORK_TIMEOUT_MS = 30_000;
+
 export class MachaManageApiError extends Error {
   constructor(
     message: string,
@@ -41,19 +52,19 @@ export class MachaManageApi implements ManageApi {
   }
 
   async unmatched(): Promise<UnmatchedFile[]> {
-    const response = await this.request<{ items: UnmatchedFile[] }>('/api/v1/manage/unmatched', { method: 'GET', cache: 'no-store' });
+    const response = await this.request<{ items: UnmatchedFile[] }>('/api/v1/manage/unmatched', { method: 'GET', cache: 'no-store' }, MANAGE_WORK_TIMEOUT_MS);
     return envelopeArray<UnmatchedFile>(response, 'items', (message) => (
       new MachaManageApiError(message, 502, 'invalid_response')
     ));
   }
 
   unmatchedDetail(id: string): Promise<UnmatchedDetail> {
-    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}`, { method: 'GET' });
+    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}`, { method: 'GET' }, MANAGE_WORK_TIMEOUT_MS);
   }
 
   prospectiveMatches(id: string, query?: string): Promise<MatchSearchResult> {
     const qs = queryString([['q', query]]);
-    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}/matches${qs ? `?${qs}` : ''}`, { method: 'GET' });
+    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}/matches${qs ? `?${qs}` : ''}`, { method: 'GET' }, MANAGE_WORK_TIMEOUT_MS);
   }
 
   async retry(id: string): Promise<void> {
@@ -160,12 +171,12 @@ export class MachaManageApi implements ManageApi {
     });
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async request<T>(path: string, init: RequestInit, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
     const response = await fetchWithTimeout(
       (url, requestInit) => this.auth.fetch(url, requestInit),
       `${this.baseUrl}${path}`,
       { ...init, headers: mergeRequestHeaders(init.headers, { Accept: 'application/json' }) },
-      DEFAULT_REQUEST_TIMEOUT_MS,
+      timeoutMs,
     );
     if (!response.ok) {
       const { body, wasJson } = await readResponseBody(response);

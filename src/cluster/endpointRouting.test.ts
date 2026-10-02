@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { ClusterEndpointRouter } from './endpointRouting.js';
-import { reportClusterReachable } from '../api/serverConnection.js';
+import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
+import { MachaClusterRouteError } from './endpointFailure.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
 beforeEach(() => {
@@ -223,4 +224,58 @@ describe('ClusterEndpointRouter', () => {
       expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
     });
   });
+
+  describe('holdOnTimeout, for a read that makes the node work', () => {
+    const timeout = () => new MachaRequestTimeoutError('exceeded', 30_000);
+
+    it('stops at a node in good standing that ran out of time, says slow, and charges nothing', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async () => { throw timeout(); });
+
+      const error = await router.request(operation, undefined, { holdOnTimeout: true }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(MachaClusterRouteError);
+      expect(error).toMatchObject({ slow: true, unreachable: false, endpointIds: ['http://a'] });
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
+    });
+
+    it('walks on past a lapsed node that times out', async () => {
+      let now = 0;
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+      for (; now <= 30_000; now += 10_000) {
+        registry.recordProbeFailure('http://a');
+        registry.recordProbeFailure('http://b');
+      }
+      registry.recordProbeSuccess('http://b');
+      for (; now <= 70_000; now += 10_000) registry.recordProbeFailure('http://b');
+      // Both lapsed: neither is in good standing, so a timeout is no evidence of work.
+      expect(registry.candidates().every(({ lapsed }) => lapsed)).toBe(true);
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw timeout();
+        return endpoint.id;
+      });
+
+      await expect(router.request(operation, undefined, { holdOnTimeout: true })).resolves.toBe('http://b');
+    });
+
+    it('still walks on a refused connection, and on a timeout without the option', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const refused = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw new TypeError('connection refused');
+        return endpoint.id;
+      });
+      await expect(router.request(refused, undefined, { holdOnTimeout: true })).resolves.toBe('http://b');
+
+      const slow = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://b') throw timeout();
+        return endpoint.id;
+      });
+      await expect(router.request(slow)).resolves.toBe('http://a');
+    });
+  });
 });
+

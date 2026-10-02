@@ -373,8 +373,21 @@ export function isAccountSessionLimit(error: unknown): boolean {
  * predicates that classify it, so the two modules do not import each other.
  */
 export class MachaClusterRouteError extends Error {
-  constructor(public readonly endpointIds: readonly string[], public readonly unreachable: boolean, public readonly cause?: unknown) {
-    super(unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
+  constructor(
+    public readonly endpointIds: readonly string[],
+    public readonly unreachable: boolean,
+    public readonly cause?: unknown,
+    /**
+     * The walk stopped because a node in good standing ran out of time on a
+     * read that makes it do real work: the server is slow, not gone, and
+     * asking the next node would repeat the same work. `unreachable` is then
+     * false. Only a read routed with `holdOnTimeout` ends this way.
+     */
+    public readonly slow = false,
+  ) {
+    super(slow
+      ? 'A Macha API endpoint did not finish in time.'
+      : unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
     this.name = 'MachaClusterRouteError';
   }
 }

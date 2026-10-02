@@ -758,3 +758,62 @@ describe('transcode rates (server 0.70.0)', () => {
     expect(registry.bestTranscodeRate({ codec: 'av1', bitDepth: 10, heightClass: 2160 })).toBeUndefined();
   });
 });
+
+describe('a node that has stopped answering', () => {
+  const order = (registry: EndpointRegistry) => registry.candidates().map(({ endpoint }) => endpoint.id);
+
+  it('ranks behind a live node in cooldown once its failures span three health cycles', () => {
+    // The web client, 2026-10-01: es-1, down a week, was out of its 30 s
+    // cooldown while gbni-1 was a second into one after a slow read, so
+    // every routed read waited out es-1 first.
+    let now = 0;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://dead', 'http://live']), () => now);
+    for (; now <= 30_000; now += 10_000) {
+      registry.recordProbeFailure('http://dead');
+      registry.recordProbeSuccess('http://live');
+    }
+    now += 31_000; // out of every cooldown
+    registry.recordFailure('http://live');
+    now += 100; // inside its first, 500 ms, cooldown
+
+    expect(registry.candidates().find(({ endpoint }) => endpoint.id === 'http://dead')).toMatchObject({ ready: true, lapsed: true });
+    expect(registry.candidates().find(({ endpoint }) => endpoint.id === 'http://live')).toMatchObject({ ready: false, lapsed: false });
+    expect(order(registry)).toEqual(['http://live', 'http://dead']);
+  });
+
+  it('does not lapse on one failure followed by quiet, however long', () => {
+    let now = 0;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    registry.recordProbeFailure('http://a');
+    now += 600_000;
+    expect(registry.candidates().every(({ lapsed }) => !lapsed)).toBe(true);
+  });
+
+  it('is restored by its next success', () => {
+    let now = 0;
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    for (; now <= 30_000; now += 10_000) registry.recordProbeFailure('http://a');
+    expect(order(registry)).toEqual(['http://b', 'http://a']);
+    registry.recordProbeSuccess('http://a');
+    expect(registry.candidates().every(({ lapsed }) => !lapsed)).toBe(true);
+    expect(order(registry)).toEqual(['http://a', 'http://b']);
+  });
+
+  it('takes the cluster\'s word that a node is offline only while this client has not reached it', () => {
+    let now = 100_000;
+    const registry = new EndpointRegistry([
+      { id: 'http://es', baseUrl: 'http://es', source: 'discovered', nodeId: 'es-1' },
+      { id: 'http://fi', baseUrl: 'http://fi', source: 'discovered', nodeId: 'fi-1' },
+    ], () => now);
+    registry.recordNodeState('es-1', 'offline');
+    registry.recordNodeState('fi-1', 'online');
+    expect(order(registry)).toEqual(['http://fi', 'http://es']);
+
+    // A node the cluster calls offline but this client reaches is a
+    // partition between nodes, not a dead node.
+    registry.recordProbeSuccess('http://es');
+    expect(order(registry)).toEqual(['http://es', 'http://fi']);
+    now += 31_000;
+    expect(order(registry)).toEqual(['http://fi', 'http://es']);
+  });
+});

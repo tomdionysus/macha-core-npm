@@ -842,6 +842,19 @@ describe("a node's name from status", () => {
   });
 });
 
+describe("a node's state from status", () => {
+  it('ranks a node the cluster reports offline behind one it reports online', async () => {
+    // es-1, configured and down since 2026-09-24: first in the configured
+    // order, and never answering to say which node it is.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://es', 'http://fi']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([
+      { id: 'es-1', state: 'offline', host: 'es-1', api_endpoint: 'http://es', runtime: {} },
+      { id: 'fi-1', state: 'online', host: 'fi-1', api_endpoint: 'http://fi', runtime: {} },
+    ] as unknown as ClusterNodeStatus[]));
+    expect(registry.candidates().map(({ endpoint, lapsed }) => [endpoint.id, lapsed])).toEqual([['http://fi', false], ['http://es', true]]);
+  });
+});
+
 describe('transcode rates from status (server 0.70.0)', () => {
   it("records a node's video rates by source kind", async () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
