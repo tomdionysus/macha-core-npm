@@ -1,4 +1,5 @@
 import type { ArtworkSource, CatalogueApi, CatalogueArtwork, CatalogueItem } from './CatalogueApi.js';
+import { availabilityMembers } from './availability.js';
 import type { MediaApi } from './MediaApi.js';
 import type {
   AlbumDetails,
@@ -492,6 +493,15 @@ export class MachaMediaApi implements MediaApi {
       catalogueUpdatedNs: item.updated_ns,
       // Placeholder until Macha exposes a full date from the metadata provider.
       releaseDate: undefined,
+      ...this.availability(item),
+    };
+  }
+
+  private availability(item: CatalogueItem): Pick<MediaSummary, 'availability' | 'availabilityMembers'> {
+    const members = availabilityMembers(item.availability_members);
+    return {
+      ...(typeof item.availability === 'string' && item.availability ? { availability: item.availability } : {}),
+      ...(members ? { availabilityMembers: members } : {}),
     };
   }
 

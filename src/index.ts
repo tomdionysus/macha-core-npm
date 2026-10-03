@@ -47,6 +47,7 @@ export * from './types.js';
 
 // -------------------------------------------------------------------- api
 export * from './api/AcquisitionApi.js';
+export * from './api/availability.js';
 export * from './api/CatalogueApi.js';
 export * from './api/ClusterAcquisitionApi.js';
 export * from './api/ClusterCatalogueApi.js';

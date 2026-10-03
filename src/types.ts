@@ -1,5 +1,6 @@
 import type { PlatformName } from './platform/Platform.js';
 import type { CatalogueKind } from './api/CatalogueApi.js';
+import type { Availability, AvailabilityMembers } from './api/availability.js';
 
 export type MediaKind = CatalogueKind;
 
@@ -97,6 +98,11 @@ export interface MediaSummary {
 
   /** Catalogue `updated_ns`, currently the server's only chronology signal for Home recency ordering. */
   catalogueUpdatedNs?: number;
+
+  /** The catalogue's `availability` (server 0.83.0); absent from an older server. What to show is the client's. */
+  availability?: Availability;
+  /** A set's members by availability: a show, season, artist or album. */
+  availabilityMembers?: AvailabilityMembers;
 
   /**
    * Reserved UI field for a future catalogue release/air date.
