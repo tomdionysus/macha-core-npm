@@ -1,3 +1,4 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
 import { machaHost } from '../runtime/host.js';
 import { isPlayable } from './playbackQueue.js';
@@ -221,7 +222,9 @@ export class PlaylistStore {
   }
 
   private write(playlists: Playlist[]): void {
-    writeJson<PlaylistFile>(this.storage, this.key, { version: 1, playlists });
+    // Never availability, which is how things stand now: see `withoutAvailability`.
+    const stored = playlists.map((playlist) => ({ ...playlist, items: playlist.items.map(withoutAvailability) }));
+    writeJson<PlaylistFile>(this.storage, this.key, { version: 1, playlists: stored });
     this.changed();
   }
 }

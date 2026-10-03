@@ -1,3 +1,4 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary, PlaybackProgress, PlaybackResumeState } from '../types.js';
 import type { PlaybackCoordinatorSnapshot } from '../playback/PlaybackCoordinator.js';
 import type { PlaybackPreferencesUpdate } from '../playback/PlaybackResolver.js';
@@ -154,7 +155,7 @@ export class ContinueWatchingStore {
     const entries = this.read().filter((entry) => entry.itemId !== progress.itemId);
 
     if (!isFinished(progress) && progress.positionMs >= MINIMUM_PROGRESS_MS) {
-      entries.unshift(progress);
+      entries.unshift(progress.media ? { ...progress, media: withoutAvailability(progress.media) } : progress);
     }
 
     const limited = entries

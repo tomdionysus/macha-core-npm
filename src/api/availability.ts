@@ -1,3 +1,5 @@
+import type { CatalogueApi } from './CatalogueApi.js';
+
 /**
  * How much of a file, or of the files beneath an item, the reachable cluster
  * holds (server 0.82.0 for files, 0.83.0 for catalogue items and the fourth
@@ -82,4 +84,61 @@ export function availabilityMembers(value: unknown): AvailabilityMembers | undef
   const keys = ['total', 'complete', 'partial', 'unavailable', 'unknown'] as const;
   if (!keys.every((key) => typeof record[key] === 'number')) return undefined;
   return Object.fromEntries(keys.map((key) => [key, record[key]])) as unknown as AvailabilityMembers;
+}
+
+/**
+ * Whether a title may be offered for play: anything but `unavailable` (Tom,
+ * 2026-10-03). `partial` and `unknown` play as normal, and so does a title
+ * from a server that reports nothing. Every client follows this rule alike.
+ *
+ * Not `isPlayable`, which is a different question: whether a title's kind can
+ * go in a queue at all.
+ */
+export function availableToPlay(item: { availability?: Availability }): boolean {
+  return item.availability !== 'unavailable';
+}
+
+/** A title's availability fields, as `MediaSummary` carries them. */
+export interface ItemAvailability {
+  availability?: Availability;
+  availabilityMembers?: AvailabilityMembers;
+}
+
+/**
+ * The same title without its availability, for a store that keeps it.
+ *
+ * Availability is how things stand now, not part of what a title is. A stored
+ * `unavailable` would grey out and lock a Continue Watching card, a queued
+ * title or a playlist entry after its node came back (the Android TV client,
+ * 2026-10-03). So no store keeps it; a host that marks stored titles asks
+ * `currentAvailability`.
+ */
+export function withoutAvailability<T extends object>(item: T): T {
+  if (!('availability' in item) && !('availabilityMembers' in item)) return item;
+  const { availability: _availability, availabilityMembers: _members, ...rest } = item as T & ItemAvailability;
+  return rest as T;
+}
+
+/**
+ * The current availability of stored titles, such as a Continue Watching
+ * row, by item id: one catalogue read each, in parallel. A title that could
+ * not be read, or that a server older than 0.83.0 reports nothing for, is
+ * absent and shows no marker, so it stays playable.
+ */
+export async function currentAvailability(
+  itemIds: readonly string[],
+  catalogue: Pick<CatalogueApi, 'get'>,
+  signal?: AbortSignal,
+): Promise<Map<string, ItemAvailability>> {
+  const ids = [...new Set(itemIds)];
+  const read = await Promise.allSettled(ids.map((id) => catalogue.get(id, signal)));
+  const found = new Map<string, ItemAvailability>();
+  read.forEach((result, index) => {
+    if (result.status !== 'fulfilled') return;
+    const item = result.value;
+    const members = availabilityMembers(item.availability_members);
+    if (typeof item.availability !== 'string' || !item.availability) return;
+    found.set(ids[index], { availability: item.availability, ...(members ? { availabilityMembers: members } : {}) });
+  });
+  return found;
 }

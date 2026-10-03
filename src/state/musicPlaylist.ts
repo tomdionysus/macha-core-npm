@@ -1,3 +1,4 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
 import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
 import { machaHost } from '../runtime/host.js';
@@ -77,7 +78,8 @@ export class MusicPlaylistStore {
       this.storage.removeItem(this.key);
       return [];
     }
-    return writeJson(this.storage, this.key, entries);
+    // Never availability, which is how things stand now: see `withoutAvailability`.
+    return writeJson(this.storage, this.key, entries.map((entry) => ({ ...entry, track: withoutAvailability(entry.track) })));
   }
 }
 

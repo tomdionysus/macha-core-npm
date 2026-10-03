@@ -1,3 +1,4 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
 import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
 import { machaHost } from '../runtime/host.js';
@@ -53,11 +54,12 @@ const PERSISTED_QUEUE_BEHIND = 50;
 
 /** The saved form of a queue: the window around the current item, the index rebased into it. */
 export function persistedQueue(state: PlaybackQueueState): PlaybackQueueState {
-  if (state.items.length <= PERSISTED_QUEUE_LIMIT) return state;
+  // Never availability, which is how things stand now: see `withoutAvailability`.
+  if (state.items.length <= PERSISTED_QUEUE_LIMIT) return { ...state, items: state.items.map(withoutAvailability) };
   const start = Math.max(0, Math.min(state.currentIndex - PERSISTED_QUEUE_BEHIND, state.items.length - PERSISTED_QUEUE_LIMIT));
   return {
     ...state,
-    items: state.items.slice(start, start + PERSISTED_QUEUE_LIMIT),
+    items: state.items.slice(start, start + PERSISTED_QUEUE_LIMIT).map(withoutAvailability),
     currentIndex: state.currentIndex - start,
   };
 }
