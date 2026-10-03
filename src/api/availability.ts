@@ -8,9 +8,16 @@ import type { CatalogueApi } from './CatalogueApi.js';
  * - `complete`: every extent is held by a reachable node.
  * - `partial`: some are held by a reachable node and some by none.
  * - `unavailable`: none is held by a reachable node.
- * - `unknown`: not surveyed yet, or some extents could not be decided.
- *   Expect it for a few minutes after a node restarts, and briefly for a
- *   newly imported file.
+ * - `unknown`: rare from server 0.84.0. A file written since the last
+ *   survey, an item with no files, or a file no survey has ever decided.
+ *
+ * From 0.84.0 the first three are the best the answering node knows: it
+ * answers from its last survey, kept across a restart, and a file a survey
+ * could not decide because a peer was unreachable keeps the counts of the
+ * last survey that did. `surveyed_unix_ms` says when that survey ran. Before
+ * 0.84.0 a node answered `unknown` until its first survey after a restart
+ * (about 30 s on fi-1, 6 minutes on gbni-1), and for any file a survey could
+ * not decide.
  *
  * Facts about extents being held, from each node's index of what it stores:
  * not a promise the bytes read back, and "no reachable node" is not "lost",
