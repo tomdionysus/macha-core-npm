@@ -58,17 +58,26 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 
 ## Waiting on Tom
 
-- **Saved playlists have no size bound, and saved titles go stale.** Playlists store a full `MediaSummary` per entry under one key, so a big enough one can outgrow a phone's storage row, the failure the queue hit at 200 (`PERSISTED_QUEUE_LIMIT`). Every saved snapshot (Continue Watching, queue, playlists) also keeps titles and signed artwork links as they were. Core proposed storing slim entries, with a cap only if a measurement needs one; Tom has not chosen between that and settling the refresh question first.
-- **"Plan A" is searched as "Plan"**, a consequence of dropping "the", "an" and "a" anywhere in a query. *(archive)*
-- **Two links on a TV card.** A TV card is one focus target, so it reaches series and season by Back. Separate focusable links would be a different design. *(archive)*
-- **Check the session route on a timer while playing**, to catch a reap without player evidence. This reverses `sessionAlive()`'s "never on a timer" rule, which exists because polling a paused session pins the node's slot. While playing, segment fetches already pin it. *(archive)*
-- **The chooser decides with no facts** when the facts call fails, and the guess reaches the viewer as a format error. It needs a decision, not a patch. *(archive)*
-- **A failover from an `https` page onto a plain-`http` node** dies as mixed content, and the registry cannot see the scheme. It needs a shape. *(archive)*
-- **One storage key convention** (`macha.<name>.v<n>` for everything core owns). It is designed, with a sequencing constraint: hosts widen their filters first. *(archive)*
-- **From the Android TV client's list:** an `unavailable` from 0.84.0 may be the last survey's answer, not the present. Should a card show its age (`surveyed_unix_ms`), or should OK try it anyway? Both change the ruling. The TV suggests waiting until stale greys are seen.
+- **Mixed content: the shape (Tom asked "how?", 2026-10-04).** Proposed: an optional `MachaHost.secureContext?: boolean`, set by a browser host from its own `window.isSecureContext`; core never reads the page. When true, the registry treats a plain-`http` endpoint as unreachable from here, except `localhost` and `127.0.0.1`, which browsers allow. It is neither charged nor failed over to, and it is named in status with a code (`insecure_from_secure_page`), not shown as down. Every candidate excluded this way gives a typed error with that code, so the client can say why. A React Native host leaves it unset and reaches both. The lasting fix is the server advertising an `https` base for each node.
+- **Storage keys: the non-brittle shape (Tom: "There will be a lot of version churn, it can't be brittle.", 2026-10-04).** Proposed:
+  1. Every core key goes under `macha.core.`, so a client's own `macha.` keys cannot collide with core's.
+  2. The schema version goes in the value (`{"v": n, ...}`), never in the key, so a version bump renames nothing and no host filter has to learn it. Readers migrate on read by `v`.
+  3. The client id sits at a fixed position: `macha.core.<clientId>.<store>[.<row>]`. Core exports `isMachaCoreKey(key)` and `machaStorageKeyClientId(key)`, so no host copies prefix lists or parses ids. The phone's `orphanedClientId` broke on core's per-playlist rows today, which is that brittleness.
+  4. A single move from today's keys, on read, after the hosts hydrate `macha.core.` as well as the old prefixes (the phone already hydrates all of `macha.`).
+- **Artwork hedge policy in core.** Tom wants the ~15 s poster hang on a silently dead node fixed (relayed by the web). The web's `LazyArtwork.tsx` races a second source on a different host after 2000 ms near the viewport, at most two requests per card. Core proposes owning the delay and the choice of second source, so the TV and phone clients behave the same. Data only; the racing stays the client's.
+- **New server API during the experiment.** The web relays two rulings from Tom (2026-10-04): the album folder list shows each track's title, with no browser ever talking to MusicBrainz, and the server's per-node repair-paced flag is to be surfaced. The web has asked the server for `GET /api/v1/manage/providers/tracks?ref=musicbrainz:release:<mbid>` and for the flag. Both are new API, which Tom held until the experiment ends. Does today's ruling lift that for these two?
 
-- **New server API during the experiment.** The web relays two rulings from Tom (2026-10-04): the album folder list shows each track's title, with no browser ever talking to MusicBrainz, and the server's per-node repair-paced flag is to be surfaced. The web has asked the server for `GET /api/v1/manage/providers/tracks?ref=musicbrainz:release:<mbid>` and for the flag. Both are new API, which Tom held until the experiment ends. Does today's ruling lift that for these two? Core wraps the tracks route beside `providerSearch` and types the flag once the server names them.
-- **Artwork hedge policy in core.** Tom wants the ~15 s poster hang on a silently dead node fixed (relayed by the web). The web's `LazyArtwork.tsx` now races a second source after 2000 ms near the viewport, at most two requests per card. Core proposes owning the delay and the choice of second source (the next on a different host, since `artworkUrls` can list one host twice), so the TV and phone clients behave the same. Data only; the racing stays the client's.
+## Ruled 2026-10-04 (Tom)
+
+- **Saved playlists: slim entries now**, "it needs to just work". Built (`347afd2`).
+- **Stale `unavailable`: "No. Trust the last info and keep it as it is."** No age on a card, no trying it anyway. The TV client has it.
+- **Push the clients' experiment commits: "Yes, push."** Relayed. The phone and the TV push only on Tom's word in their own sessions.
+- **Folding the experiment back onto `develop`: "We will, not yet."**
+- **Leading articles only.** "the", "an" and "a" are dropped only at the start of a search. Built (`77ca994`).
+- **TV card links are UX, not core's.** The TV client builds them.
+- **The session check on a timer is an exception** to "never on a timer", if it cancels and cleans up. Built (`fec3a7a`).
+- **No facts: retry, bounded, then decide without them.** Built (`0b9b108`).
+- **Seen while gating `fec3a7a`:** `ClusterPlaybackResolver.test.ts` "retries the close when that node next answers" failed in 2 of about 13 full runs, never alone (0 of 12) and not on the previous HEAD (0 of 4). Its file changed only to pass an optional signal through. Not resolved. Watch for it.
 
 ## Deferred until the server's experiment ends
 
