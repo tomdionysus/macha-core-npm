@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MachaPlaybackError } from '../playback/MachaPlaybackResolver.js';
+import { MachaApiError } from '../api/MachaCatalogueApi.js';
 import { endpointFailure, failureBlamesEndpoint, playbackFailureDetail, isAccountSessionLimit, isPerTitleFailure, MachaClusterRouteError, playbackFailureCode, playbackFailureStatus, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 
 describe('per-title failure classification', () => {
@@ -262,5 +263,21 @@ describe('unreachableEndpointFailure on the error a routed call throws', () => {
     // (the phone client, 2026-09-24: both offline fallbacks dead in the app).
     expect(unreachableEndpointFailure(new MachaClusterRouteError(['a', 'b'], true))).toBe(true);
     expect(unreachableEndpointFailure(new MachaClusterRouteError(['a', 'b'], false))).toBe(false);
+  });
+});
+
+describe('a node without a media engine', () => {
+  // Server 0.87.x: a node with streaming disabled answers the media profile
+  // route 503 media_engine_unavailable for a file it holds but has no profile
+  // of. What it can do, not whether it is well.
+  const refusal = () => new MachaApiError('Macha catalogue request failed', 503, 'media_engine_unavailable');
+
+  it('is walked past, since another node may have the profile', () => {
+    expect(retryableEndpointFailure(refusal())).toBe(true);
+  });
+
+  it('charges the node nothing', () => {
+    expect(failureBlamesEndpoint(refusal())).toBe(false);
+    expect(failureBlamesEndpoint(new MachaApiError('Macha catalogue request failed', 503))).toBe(true);
   });
 });

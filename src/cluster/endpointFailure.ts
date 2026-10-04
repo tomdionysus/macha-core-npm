@@ -214,6 +214,17 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  */
 const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable']);
 
+/**
+ * Refusals that state what a node is built or configured to do, not how it is.
+ *
+ * `media_engine_unavailable` (server 0.87.x, the media profile route): a node
+ * with streaming disabled holds the file but no stored profile and has no
+ * engine to make one. Another node may have it, so the walk goes on, but the
+ * node is as healthy as it was, and a charge would cool it down for all
+ * traffic each time a detail page asked for a profile.
+ */
+const CAPABILITY_FAILURE_CODES: ReadonlySet<string> = new Set(['media_engine_unavailable']);
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -246,6 +257,7 @@ export function failureBlamesEndpoint(
   if (isPerTitleFailure(error)) return false;
   if (isAccountScopedFailure(error)) return false;
   if (FAMILY_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
+  if (CAPABILITY_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   // A capacity refusal on a pinned path. The node is **full, not unwell**, and
   // the caller cannot act on the charge: `update` and `stop` are pinned to the
   // node that holds the generation, so there is no walk for the charge to
