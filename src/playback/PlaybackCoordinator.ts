@@ -289,6 +289,15 @@ export interface PlaybackInstructionReport {
  */
 const FACTS_ATTEMPT_BUDGET = 3;
 
+/**
+ * The waits between tries of one facts lookup before core decides without
+ * facts. Tom, 2026-10-04: "Retry bounded, then decide without facts." Two
+ * retries, about 1.3 s in all on top of the requests, ride out a blip or a
+ * session that had not quite arrived without holding a start for long. A
+ * choice, not a measurement.
+ */
+export const FACTS_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
+
 export interface PlaybackCoordinatorOptions {
   media: MediaSummary;
   player: Player;
@@ -1229,6 +1238,33 @@ export class PlaybackCoordinator {
   private substitutionReportedFor?: string;
   private unclassifiedReportedFor?: string;
 
+  /**
+   * One lookup, retried after each of `FACTS_RETRY_DELAYS_MS` while it
+   * throws, so a start decides without facts only once the bound is spent.
+   * A supplier answering `undefined` is an answer and is not retried. Only
+   * the first lookup of a generation waits; a later one (`facts`'s budget)
+   * is one request, because it sits on a viewer's touch of the controls.
+   */
+  private async lookUpFacts(): Promise<readonly FileFacts[] | undefined> {
+    const delays = this.factsAttempts === 0 ? FACTS_RETRY_DELAYS_MS : [];
+    for (let retry = 0; ; retry += 1) {
+      try {
+        const facts = filesFrom(await this.options.facts?.(this.options.media));
+        this.factsError = undefined;
+        return facts;
+      } catch (error: unknown) {
+        // Kept, not swallowed: a thrown lookup and an absent supplier both
+        // yield undefined, and they are not the same thing at all.
+        this.factsError = error;
+        const wait = delays[retry];
+        if (wait === undefined || this.disposed) return undefined;
+        this.log.warn('instruction-facts-retry', { mediaId: this.options.media.id, retry: retry + 1, waitMs: wait, error });
+        await new Promise<void>((resolve) => setTimeout(resolve, wait));
+        if (this.disposed) return undefined;
+      }
+    }
+  }
+
   private facts(): Promise<readonly FileFacts[] | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
     // repeatedly without a round trip each time. The media's own facts are
@@ -1251,14 +1287,7 @@ export class PlaybackCoordinator {
     // facts call that failed 18 ms after load, and a picture that never
     // recovered even once the cluster was answering perfectly.
     if (this.cachedFacts) return this.cachedFacts;
-    const attempt = Promise.resolve(this.options.facts?.(this.options.media))
-      .then(filesFrom)
-      .catch((error: unknown) => {
-        // Kept, not swallowed: a thrown lookup and an absent supplier both
-        // yield undefined, and they are not the same thing at all.
-        this.factsError = error;
-        return undefined;
-      });
+    const attempt = this.lookUpFacts();
     this.cachedFacts = attempt;
     void attempt.then((facts) => {
       if (facts !== undefined) this.factsSeen = facts;

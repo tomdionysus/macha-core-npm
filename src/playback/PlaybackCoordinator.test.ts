@@ -8,7 +8,7 @@ import { playbackVersions, versionPreferences, type QualityCeiling } from './pla
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { TOO_SLOW_TO_PLAY_CODE, equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
-  alternateRecoveryWindowMs,
+  alternateRecoveryWindowMs, FACTS_RETRY_DELAYS_MS,
 } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -1915,17 +1915,40 @@ describe('a facts lookup that failed is retried, within a budget', () => {
    * met exactly that: a facts call failing 18 ms after load, and a picture
    * that never recovered once the cluster was answering perfectly again.
    */
-  it('asks again after a failure rather than condemning the generation', async () => {
+  it('retries a failed lookup within the start, and plays with facts once one answers', async () => {
+    // Tom, 2026-10-04: "Retry bounded, then decide without facts."
     const player = new FakePlayer();
     const facts = vi.fn()
       .mockRejectedValueOnce(new Error('node 500'))
-      .mockRejectedValueOnce(new Error('node 500'));
+      .mockRejectedValueOnce(new Error('node 500'))
+      .mockResolvedValue({ profile: { mediaId: 'm1', format: 'mov,mp4', container: 'mp4', durationMs: 60_000, bitrate: 1_000, streams: [
+        { index: 0, type: 'video' as const, codec: 'h264', profile: '', language: '', default: true, forced: false },
+      ] } });
     const coordinator = new PlaybackCoordinator({
       media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
       capabilities: async () => capabilities(), initialPositionMs: 0,
       facts,
     });
     await coordinator.start();
+
+    expect(facts).toHaveBeenCalledTimes(FACTS_RETRY_DELAYS_MS.length + 1);
+    expect(coordinator.getSnapshot().instruction?.withoutFacts).not.toBe(true);
+    expect(coordinator.getSnapshot().instruction?.reasons).not.toContain('no-technical-facts');
+    expect(coordinator.getSnapshot().instruction?.factsError).toBeUndefined();
+    await coordinator.close();
+  });
+
+  it('decides without facts once the retries are spent, and asks again later rather than condemning the generation', async () => {
+    const player = new FakePlayer();
+    const facts = vi.fn().mockRejectedValue(new Error('node 500'));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: resolver(session({ mode: 'transcode' })),
+      capabilities: async () => capabilities(), initialPositionMs: 0,
+      facts,
+    });
+    await coordinator.start();
+    expect(facts.mock.calls.length).toBeGreaterThanOrEqual(FACTS_RETRY_DELAYS_MS.length + 1);
+    expect(coordinator.getSnapshot().instruction?.withoutFacts).toBe(true);
     const first = facts.mock.calls.length;
 
     coordinator.update({ preferences: { mode: 'choose' } });
@@ -1936,7 +1959,7 @@ describe('a facts lookup that failed is retried, within a budget', () => {
   it('stops asking once the budget is spent', async () => {
     // Each retry is a request on the viewer's critical path. Unbounded, a
     // viewer touching the mode control while a node was down would fire one
-    // every time.
+    // every time. The start's own retries, then one request per later try.
     const player = new FakePlayer();
     const facts = vi.fn().mockRejectedValue(new Error('node down'));
     const coordinator = new PlaybackCoordinator({
@@ -1946,11 +1969,16 @@ describe('a facts lookup that failed is retried, within a budget', () => {
     });
     await coordinator.start();
 
-    for (let attempt = 0; attempt < 12; attempt += 1) { coordinator.update({ preferences: { mode: 'choose' } }); await vi.waitFor(() => undefined); }
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      coordinator.update({ preferences: { mode: 'choose' } });
+      await vi.waitFor(() => expect(coordinator.getSnapshot().pendingPreferences).toBeUndefined());
+    }
 
-    expect(facts.mock.calls.length).toBeLessThanOrEqual(4);
+    // Long enough for any retry a later lookup wrongly waited on to land.
+    await new Promise((resolve) => setTimeout(resolve, FACTS_RETRY_DELAYS_MS.reduce((sum, wait) => sum + wait, 0) + 200));
+    expect(facts.mock.calls.length).toBeLessThanOrEqual(FACTS_RETRY_DELAYS_MS.length + 1 + 3);
     await coordinator.close();
-  });
+  }, 15_000);
 
   /**
    * With only `withoutFacts` a screen could report that something was degraded
