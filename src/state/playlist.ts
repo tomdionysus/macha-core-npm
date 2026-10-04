@@ -1,26 +1,43 @@
-import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
 import { machaHost } from '../runtime/host.js';
 import { isPlayable } from './playbackQueue.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { savedRow, savedTitle, type SavedTitle } from './savedTitle.js';
+import { readValidatedJson, type StorageLike } from './storage.js';
 
 export interface Playlist {
   id: string;
   name: string;
   /**
-   * Full item snapshots rather than catalogue ids.
+   * Item snapshots rather than catalogue ids, slimmed to what a row needs
+   * (`SavedTitle`).
    *
    * A playlist has to render and play with no node reachable — that is the
    * whole point once downloads exist — so it carries what it needs to draw a
    * row and start playback. It costs a little duplication against the
    * catalogue and buys working offline playlists.
    */
-  items: MediaSummary[];
+  items: SavedTitle[];
   createdAt: number;
   updatedAt: number;
 }
 
-interface PlaylistFile {
+/** A playlist without its items: one entry in the index row. */
+type PlaylistHeader = Omit<Playlist, 'items'>;
+
+/** The index row: every playlist's header, in no particular order. */
+interface PlaylistIndex {
+  version: 2;
+  playlists: PlaylistHeader[];
+}
+
+/** One playlist's items, in a row of its own. */
+interface PlaylistItemsRow {
+  version: 2;
+  items: SavedTitle[];
+}
+
+/** The single-row form, before 2026-10-04: every playlist and every item under one key. */
+interface PlaylistFileV1 {
   version: 1;
   playlists: Playlist[];
 }
@@ -32,23 +49,39 @@ interface LegacyEntry {
 }
 
 
-function validPlaylist(value: unknown): value is Playlist {
+function validItems(value: unknown): value is SavedTitle[] {
+  return Array.isArray(value)
+    && value.every((item) => item && typeof item === 'object' && typeof (item as SavedTitle).id === 'string');
+}
+
+function validHeader(value: unknown): value is PlaylistHeader {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<Playlist>;
+  const candidate = value as Partial<PlaylistHeader>;
   return (
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
-    Array.isArray(candidate.items) &&
-    candidate.items.every((item) => item && typeof item === 'object' && typeof (item as MediaSummary).id === 'string') &&
     typeof candidate.createdAt === 'number' &&
     typeof candidate.updatedAt === 'number'
   );
 }
 
-function validFile(value: unknown): value is PlaylistFile {
+function validIndex(value: unknown): value is PlaylistIndex {
   if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<PlaylistFile>;
-  return candidate.version === 1 && Array.isArray(candidate.playlists) && candidate.playlists.every(validPlaylist);
+  const candidate = value as Partial<PlaylistIndex>;
+  return candidate.version === 2 && Array.isArray(candidate.playlists) && candidate.playlists.every(validHeader);
+}
+
+function validItemsRow(value: unknown): value is PlaylistItemsRow {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PlaylistItemsRow>;
+  return candidate.version === 2 && validItems(candidate.items);
+}
+
+function validFileV1(value: unknown): value is PlaylistFileV1 {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<PlaylistFileV1>;
+  return candidate.version === 1 && Array.isArray(candidate.playlists)
+    && candidate.playlists.every((playlist) => validHeader(playlist) && validItems((playlist as Playlist).items));
 }
 
 function validLegacy(value: unknown): value is LegacyEntry[] {
@@ -71,6 +104,14 @@ function validLegacy(value: unknown): value is LegacyEntry[] {
  * with a friendly label. Its only caller was a Play-all button that was setting
  * the queue through the nearest store to hand. `create(name, items)` covers
  * making a playlist out of an album, explicitly and without destroying anything.
+ *
+ * **Stored as a row per playlist**, under `macha.playlists.v1.<clientId>.<id>`,
+ * with an index row of names and times at `macha.playlists.v1.<clientId>`, so
+ * one large playlist cannot make the others unreadable. Entries are
+ * `SavedTitle`s. A change that would take one row past
+ * `SAVED_ROW_LIMIT_BYTES` throws `MachaSavedRowLimitError` and saves nothing:
+ * a row larger than Android's read window cannot be read back at all. Every
+ * row sits under the prefix hosts already keep, `macha.playlists.v1.`.
  */
 export class PlaylistStore {
   private readonly key: string;
@@ -112,9 +153,61 @@ export class PlaylistStore {
   }
 
   list(): Playlist[] {
-    const file = readValidatedJson(this.storage, this.key, validFile);
-    if (file) return [...file.playlists].sort((a, b) => b.updatedAt - a.updatedAt);
-    return this.adoptLegacy();
+    const index = this.readIndex();
+    let playlists: Playlist[];
+    if (validIndex(index)) playlists = index.playlists.map((header) => ({ ...header, items: this.readItems(header.id) }));
+    else if (validFileV1(index)) playlists = this.adoptSingleRow(index);
+    else {
+      // Malformed, as `readValidatedJson` treats it: discarded, then the
+      // unnamed list this store replaced is looked for.
+      if (index !== undefined) this.storage.removeItem(this.key);
+      playlists = this.adoptLegacy();
+    }
+    return [...playlists].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * The index row parsed and not judged, `undefined` when there is none, so
+   * that the single-row form it replaces is still there to adopt.
+   */
+  private readIndex(): unknown {
+    const raw = this.storage.getItem(this.key);
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * One playlist's items. A row that is missing or does not parse costs that
+   * playlist its items and no other playlist anything, which is the point of
+   * a row each.
+   */
+  private readItems(id: string): SavedTitle[] {
+    return readValidatedJson(this.storage, this.itemsKey(id), validItemsRow)?.items ?? [];
+  }
+
+  private itemsKey(id: string): string {
+    return `${this.key}.${id}`;
+  }
+
+  /**
+   * Take over the single-row form this store wrote before 2026-10-04, slimmed
+   * and split into a row each. Its key is the index's own, so the index
+   * written here replaces it.
+   */
+  private adoptSingleRow(file: PlaylistFileV1): Playlist[] {
+    const playlists = file.playlists.map((playlist) => ({ ...playlist, items: playlist.items.map(savedTitle) }));
+    try {
+      this.store(playlists, new Set(playlists.map((playlist) => playlist.id)));
+    } catch {
+      // A row that was readable whole splits into smaller ones, so this
+      // should not refuse. If it does, nothing was written, and the old row
+      // is still there to adopt next time.
+    }
+    return playlists;
   }
 
   /**
@@ -131,11 +224,15 @@ export class PlaylistStore {
     const adopted: Playlist = {
       id: machaHost().uuid(),
       name: '',
-      items: legacy.map((entry) => entry.track).filter(isPlayable),
+      items: legacy.map((entry) => entry.track).filter(isPlayable).map(savedTitle),
       createdAt: now,
       updatedAt: now,
     };
-    writeJson<PlaylistFile>(this.storage, this.key, { version: 1, playlists: [adopted] });
+    try {
+      this.store([adopted], new Set([adopted.id]));
+    } catch {
+      // Too large for one row: still shown, and adopted again next time.
+    }
     return [adopted];
   }
 
@@ -143,6 +240,7 @@ export class PlaylistStore {
     return this.list().find((playlist) => playlist.id === id);
   }
 
+  /** Throws `MachaSavedRowLimitError`, saving nothing, when `items` will not fit one row. */
   create(name: string, items: readonly MediaSummary[] = []): Playlist {
     const now = Date.now();
     const playlist: Playlist = {
@@ -151,11 +249,11 @@ export class PlaylistStore {
       // core writes no viewer text, and a stored default would be English
       // saved into the viewer's data.
       name: name.trim(),
-      items: items.filter(isPlayable),
+      items: items.filter(isPlayable).map(savedTitle),
       createdAt: now,
       updatedAt: now,
     };
-    this.write([playlist, ...this.list()]);
+    this.write([playlist, ...this.list()], [playlist.id]);
     return playlist;
   }
 
@@ -164,14 +262,17 @@ export class PlaylistStore {
   }
 
   delete(id: string): void {
-    this.write(this.list().filter((playlist) => playlist.id !== id));
+    this.write(this.list().filter((playlist) => playlist.id !== id), []);
   }
 
-  /** Appends, skipping anything already present so a double-tap cannot duplicate a track. */
+  /**
+   * Appends, skipping anything already present so a double-tap cannot duplicate a track.
+   * Throws `MachaSavedRowLimitError`, adding nothing, when the playlist would outgrow its row.
+   */
   add(id: string, items: readonly MediaSummary[]): Playlist | undefined {
     return this.mutate(id, (playlist) => {
       const existing = new Set(playlist.items.map((item) => item.id));
-      const additions = items.filter((item) => isPlayable(item) && !existing.has(item.id));
+      const additions = items.filter((item) => isPlayable(item) && !existing.has(item.id)).map(savedTitle);
       return additions.length === 0 ? playlist : { ...playlist, items: [...playlist.items, ...additions] };
     });
   }
@@ -202,12 +303,14 @@ export class PlaylistStore {
 
   /** Drops an item from every playlist — used when a track disappears from the catalogue. */
   purge(itemId: string): void {
-    this.write(
-      this.list().map((playlist) => {
-        const items = playlist.items.filter((item) => item.id !== itemId);
-        return items.length === playlist.items.length ? playlist : { ...playlist, items, updatedAt: Date.now() };
-      }),
-    );
+    const changed: string[] = [];
+    const playlists = this.list().map((playlist) => {
+      const items = playlist.items.filter((item) => item.id !== itemId);
+      if (items.length === playlist.items.length) return playlist;
+      changed.push(playlist.id);
+      return { ...playlist, items, updatedAt: Date.now() };
+    });
+    if (changed.length > 0) this.write(playlists, changed);
   }
 
   private mutate(id: string, change: (playlist: Playlist) => Playlist): Playlist | undefined {
@@ -215,16 +318,44 @@ export class PlaylistStore {
     const index = playlists.findIndex((playlist) => playlist.id === id);
     if (index < 0) return undefined;
     const changed = change(playlists[index]);
-    const next = changed === playlists[index] ? changed : { ...changed, updatedAt: Date.now() };
+    if (changed === playlists[index]) return changed;
+    const next = { ...changed, updatedAt: Date.now() };
     playlists[index] = next;
-    this.write(playlists);
+    this.write(playlists, [id]);
     return next;
   }
 
-  private write(playlists: Playlist[]): void {
-    // Never availability, which is how things stand now: see `withoutAvailability`.
-    const stored = playlists.map((playlist) => ({ ...playlist, items: playlist.items.map(withoutAvailability) }));
-    writeJson<PlaylistFile>(this.storage, this.key, { version: 1, playlists: stored });
+  /**
+   * Save the playlists, rewriting the item rows of `changed` only.
+   *
+   * Throws `MachaSavedRowLimitError`, before writing anything, when a changed
+   * playlist would outgrow its row; the caller's change is then not made and
+   * what was saved stands.
+   */
+  private write(playlists: Playlist[], changed: Iterable<string>): void {
+    this.store(playlists, new Set(changed));
     this.changed();
+  }
+
+  private store(playlists: Playlist[], changed: ReadonlySet<string>): void {
+    const rows = playlists
+      .filter((playlist) => changed.has(playlist.id))
+      .map((playlist) => {
+        const key = this.itemsKey(playlist.id);
+        const row: PlaylistItemsRow = { version: 2, items: playlist.items.map(savedTitle) };
+        return { key, raw: savedRow(key, row) };
+      });
+    const index: PlaylistIndex = { version: 2, playlists: playlists.map(({ items: _items, ...header }) => header) };
+    const indexRaw = savedRow(this.key, index);
+    const read = this.readIndex();
+    const previous = validIndex(read) ? read.playlists : [];
+    // Items first and the index last: an interrupted write leaves an item row
+    // nothing lists, which is ignored, never a listed playlist with no row.
+    for (const { key, raw } of rows) this.storage.setItem(key, raw);
+    this.storage.setItem(this.key, indexRaw);
+    const kept = new Set(playlists.map((playlist) => playlist.id));
+    for (const header of previous) {
+      if (!kept.has(header.id)) this.storage.removeItem(this.itemsKey(header.id));
+    }
   }
 }

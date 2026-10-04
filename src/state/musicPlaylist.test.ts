@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaSummary } from '../types.js';
 import { MusicPlaylistStore } from './musicPlaylist.js';
+import { MachaSavedRowLimitError } from './savedTitle.js';
 
 class MemoryStorage {
   private values = new Map<string, string>();
@@ -56,5 +57,16 @@ describe('MusicPlaylistStore', () => {
     const storage = new MemoryStorage();
     storage.setItem('macha.musicPlaylist.v1.client', '[{"entryId":"bad","track":{"kind":"movie"}}]');
     expect(new MusicPlaylistStore('client', storage).load()).toEqual([]);
+  });
+
+  it('saves slim tracks, and refuses a row too large to read back', () => {
+    const storage = new MemoryStorage();
+    const store = new MusicPlaylistStore('client', storage);
+    store.add([{ ...track('one'), synopsis: 'long' }]);
+    expect(new MusicPlaylistStore('client', storage).load()[0]?.track).not.toHaveProperty('synopsis');
+
+    const many = Array.from({ length: 20_000 }, (_, index) => track(`track-${index}-${'y'.repeat(40)}`));
+    expect(() => store.add(many)).toThrow(MachaSavedRowLimitError);
+    expect(new MusicPlaylistStore('client', storage).load().map((entry) => entry.track.id)).toEqual(['one']);
   });
 });

@@ -1,16 +1,17 @@
-import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { savedRow, savedTitle, type SavedTitle } from './savedTitle.js';
+import { readValidatedJson, type StorageLike } from './storage.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface MusicPlaylistEntry {
   entryId: string;
-  track: MediaSummary;
+  /** Slimmed to what a row needs; see `SavedTitle`. */
+  track: SavedTitle;
 }
 
-function validTrack(value: unknown): value is MediaSummary {
+function validTrack(value: unknown): value is SavedTitle {
   if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<MediaSummary>;
+  const item = value as Partial<SavedTitle>;
   return item.kind === 'track' && typeof item.id === 'string' && typeof item.title === 'string' && Array.isArray(item.mediaIds);
 }
 
@@ -24,6 +25,13 @@ function newEntryId(index: number): string {
   return `${Date.now().toString(36)}-${index.toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/**
+ * A single unnamed list of tracks, in one row. Entries are `SavedTitle`s, and
+ * a change that would take the row past `SAVED_ROW_LIMIT_BYTES` throws
+ * `MachaSavedRowLimitError` and saves nothing, because a row larger than
+ * Android's read window cannot be read back. `PlaylistStore` is the
+ * collection, with a row per playlist.
+ */
 export class MusicPlaylistStore {
   private readonly key: string;
 
@@ -69,7 +77,7 @@ export class MusicPlaylistStore {
   private entriesFor(tracks: MediaSummary[]): MusicPlaylistEntry[] {
     return tracks.filter((track) => track.kind === 'track').map((track, index) => ({
       entryId: newEntryId(index),
-      track,
+      track: savedTitle(track),
     }));
   }
 
@@ -78,8 +86,9 @@ export class MusicPlaylistStore {
       this.storage.removeItem(this.key);
       return [];
     }
-    // Never availability, which is how things stand now: see `withoutAvailability`.
-    return writeJson(this.storage, this.key, entries.map((entry) => ({ ...entry, track: withoutAvailability(entry.track) })));
+    const saved = entries.map((entry) => ({ ...entry, track: savedTitle(entry.track) }));
+    this.storage.setItem(this.key, savedRow(this.key, saved));
+    return saved;
   }
 }
 
