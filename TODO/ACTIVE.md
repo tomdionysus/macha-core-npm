@@ -65,7 +65,6 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
   3. The client id sits at a fixed position: `macha.core.<clientId>.<store>[.<row>]`. Core exports `isMachaCoreKey(key)` and `machaStorageKeyClientId(key)`, so no host copies prefix lists or parses ids. The phone's `orphanedClientId` broke on core's per-playlist rows today, which is that brittleness.
   4. A single move from today's keys, on read, after the hosts hydrate `macha.core.` as well as the old prefixes (the phone already hydrates all of `macha.`).
 - **Artwork hedge policy in core.** Tom wants the ~15 s poster hang on a silently dead node fixed (relayed by the web). The web's `LazyArtwork.tsx` races a second source on a different host after 2000 ms near the viewport, at most two requests per card. Core proposes owning the delay and the choice of second source, so the TV and phone clients behave the same. Data only; the racing stays the client's.
-- **New server API during the experiment.** The web relays two rulings from Tom (2026-10-04): the album folder list shows each track's title, with no browser ever talking to MusicBrainz, and the server's per-node repair-paced flag is to be surfaced. The web has asked the server for `GET /api/v1/manage/providers/tracks?ref=musicbrainz:release:<mbid>` and for the flag. Both are new API, which Tom held until the experiment ends. Does today's ruling lift that for these two?
 
 ## Ruled 2026-10-04 (Tom)
 
@@ -77,6 +76,7 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 - **TV card links are UX, not core's.** The TV client builds them.
 - **The session check on a timer is an exception** to "never on a timer", if it cancels and cleans up. Built (`fec3a7a`).
 - **No facts: retry, bounded, then decide without them.** Built (`0b9b108`).
+- **The release tracks route and repair pace**, decided by Tom with the server (0.86.0, deploying with 0.87.0). Wrapped: `providerReleaseTracks` (`74bb006`); `diagnostics.repair` and `statusOf(nodeId)` (`e864856`). The web has the shapes.
 - **Seen while gating `fec3a7a`:** `ClusterPlaybackResolver.test.ts` "retries the close when that node next answers" failed in 2 of about 13 full runs, never alone (0 of 12) and not on the previous HEAD (0 of 4). Its file changed only to pass an optional signal through. Not resolved. Watch for it.
 
 ## Deferred until the server's experiment ends
