@@ -1,7 +1,9 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
+import { failureBlamesEndpoint, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import {
   MachaClusterStatusApi,
+  MachaClusterStatusApiError,
   type ClusterNodeStatus,
   type ClusterStatusApi,
   type ClusterStatusSnapshot,
@@ -22,6 +24,33 @@ export class ClusterStatusRouter implements ClusterStatusApi {
 
   status(): Promise<ClusterStatusSnapshot> {
     return this.read((api) => api.status());
+  }
+
+  /**
+   * Asks the endpoints the registry attributes to `nodeId`, in its ranking
+   * order, and takes the first answer that names itself as that node. Health
+   * evidence is recorded as probes, as every status read is, so this never
+   * moves the viewer's preferred endpoint. The last failure is rethrown when
+   * every such endpoint failed.
+   */
+  async statusOf(nodeId: string): Promise<ClusterStatusSnapshot> {
+    let lastError: unknown;
+    for (const { endpoint } of this.router.registry.candidates()) {
+      if (endpoint.nodeId !== nodeId) continue;
+      try {
+        const snapshot = await this.api(endpoint).status();
+        this.router.registry.recordProbeSuccess(endpoint.id);
+        if (snapshot.node_id === nodeId) return snapshot;
+      } catch (error) {
+        // Only a failure that is the node's, as a pinned read judges it.
+        if (retryableEndpointFailure(error) && failureBlamesEndpoint(error, { pinned: true })) {
+          this.router.registry.recordProbeFailure(endpoint.id);
+        }
+        lastError = error;
+      }
+    }
+    if (lastError !== undefined) throw lastError;
+    throw new MachaClusterStatusApiError(`No known endpoint answers as node ${nodeId}.`, 404);
   }
 
   node(id: string): Promise<ClusterNodeStatus> {
