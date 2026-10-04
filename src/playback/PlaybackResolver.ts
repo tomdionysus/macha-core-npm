@@ -456,10 +456,16 @@ export interface PlaybackResolver {
    * second when you have the first condemns a node for being briefly
    * unreachable.
    *
-   * Never call it on a timer. See `SERVER_SESSION_IDLE_MS` for why a keepalive
-   * is the wrong shape here.
+   * Not on a timer, with one exception: `PlaybackCoordinator` checks every
+   * `SESSION_LIVENESS_CHECK_MS` while the viewer is playing, when segment
+   * fetches already hold the session and a check pins nothing more (Tom,
+   * 2026-10-04). Never while paused: see `SERVER_SESSION_IDLE_MS` for why a
+   * keepalive is the wrong shape there.
+   *
+   * `signal` abandons the question; it then rejects with the abort, which is
+   * "could not find out", never "it is gone".
    */
-  sessionAlive?(sessionId: string): Promise<boolean>;
+  sessionAlive?(sessionId: string, signal?: AbortSignal): Promise<boolean>;
   /**
    * Replace a generation on the node already serving it, without holding that
    * node responsible for it.

@@ -1,5 +1,6 @@
 import { DEFAULT_REQUEST_TIMEOUT_MS, mergeRequestHeaders, normalizeBaseUrl, queryString } from '../api/httpCompat.js';
 import { MachaConnectionError } from '../api/serverConnection.js';
+import { abortError } from '../errors.js';
 import { segmentContainer } from './choosePlaybackInstruction.js';
 import type { PlaybackProduction } from './streamProtocol.js';
 import { NO_AUTH, type AuthenticatedFetch } from '../api/SessionManager.js';
@@ -911,14 +912,17 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     }
   }
 
-  async sessionAlive(sessionId: string): Promise<boolean> {
+  async sessionAlive(sessionId: string, signal?: AbortSignal): Promise<boolean> {
     // Bounded, because nothing below this was. The request went through the
     // host's plain fetch with no signal, so a node that had dropped off the
     // network -- packets lost rather than refused -- held the question for as
     // long as the platform lets a connection hang. It sits in front of a
     // failover now, so that wait would be the viewer's.
+    if (signal?.aborted) throw signal.reason ?? abortError('Session liveness check cancelled.');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SESSION_LIVENESS_TIMEOUT_MS);
+    const cancel = (): void => controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
       await this.request<WireSession>(`/api/v1/playback/sessions/${encodeURIComponent(sessionId)}`, { signal: controller.signal });
       this.log.debug('session-alive', { sessionId });
@@ -928,6 +932,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
         this.log.info('session-gone', { sessionId });
         return false;
       }
+      if (signal?.aborted) throw signal.reason ?? abortError('Session liveness check cancelled.');
       // A typed timeout rather than the abort: "could not find out", which the
       // caller already treats as no answer, never as the session being gone.
       if (controller.signal.aborted) {
@@ -936,6 +941,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
       throw error;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
     }
   }
 

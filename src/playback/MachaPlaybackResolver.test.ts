@@ -658,6 +658,23 @@ describe('asking a node whether a session is alive', () => {
     expect(await resolver.sessionAlive('s1')).toBe(false);
     expect(await resolver.sessionAlive('s1')).toBe(true);
   });
+
+  it('abandons the question on its signal, as an abort and never as gone', async () => {
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal ?? undefined;
+      init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    })));
+    const resolver = new MachaPlaybackResolver('http://node.test');
+    const controller = new AbortController();
+
+    const asked = resolver.sessionAlive('s1', controller.signal);
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
+    controller.abort();
+
+    await expect(asked).rejects.toMatchObject({ name: 'AbortError' });
+    expect(requestSignal?.aborted).toBe(true);
+  });
 });
 
 describe('MachaPlaybackResolver against a node that chooses nothing (server 0.58.0)', () => {

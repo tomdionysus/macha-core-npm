@@ -1026,7 +1026,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     for (const resolver of this.resolvers.values()) resolver.closePendingForPageExit();
   }
 
-  async sessionAlive(sessionId: string): Promise<boolean> {
+  async sessionAlive(sessionId: string, signal?: AbortSignal): Promise<boolean> {
     // Recovered from the id when the map has no entry, for the same reason
     // `stop` does: this is pinned to the owning node, and the id names it. A
     // host asking whether an orphan from a previous run is still alive — which
@@ -1034,7 +1034,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     // answered, because the map died with the process that created it.
     const owned = this.sessions.get(sessionId) ?? this.provenanceFromId(sessionId);
     if (!owned) throw unknownGeneration(sessionId);
-    return owned.resolver.sessionAlive(owned.nodeSessionId);
+    return owned.resolver.sessionAlive(owned.nodeSessionId, signal);
   }
 
   async stop(sessionId: string, options?: PlaybackStopOptions): Promise<void> {

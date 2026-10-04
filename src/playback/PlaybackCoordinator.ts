@@ -298,6 +298,19 @@ const FACTS_ATTEMPT_BUDGET = 3;
  */
 export const FACTS_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
 
+/**
+ * How often a playing coordinator asks the node whether its session is still
+ * there, so a reap, a DELETE or a node restart is caught within one interval
+ * whether or not the player reports a failure. Measured on the Android TV set
+ * 2026-09-23: 66 s from a DELETE to the player's fatal.
+ *
+ * Tom, 2026-10-04: the exception to "never on a timer". It holds only while
+ * the viewer is playing, when segment fetches already keep the session and a
+ * check pins nothing more; paused, nothing is sent (`SERVER_SESSION_IDLE_MS`).
+ * One small GET per interval per playing viewer. A guess, stated as one.
+ */
+export const SESSION_LIVENESS_CHECK_MS = 15_000;
+
 export interface PlaybackCoordinatorOptions {
   media: MediaSummary;
   player: Player;
@@ -1164,6 +1177,10 @@ export class PlaybackCoordinator {
    */
   private pendingReplacement?: PlaybackSession;
   private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
+  /** The next liveness check; see `SESSION_LIVENESS_CHECK_MS`. */
+  private livenessTimer?: ReturnType<typeof setTimeout>;
+  /** The check in flight, aborted on close. */
+  private livenessProbe?: AbortController;
 
   /**
    * When the last player event landed, on the duration clock.
@@ -1220,8 +1237,62 @@ export class PlaybackCoordinator {
   }
 
   start(): Promise<void> {
-    if (!this.startPromise) this.startPromise = this.startInternal();
+    if (!this.startPromise) {
+      this.startPromise = this.startInternal().then(() => this.scheduleLivenessCheck());
+    }
     return this.startPromise;
+  }
+
+  /**
+   * Arm the next liveness check, replacing any armed one. Only where the
+   * resolver can both ask and regenerate, since an answer of "gone" is acted
+   * on through `beginMissingSessionRecovery`.
+   */
+  private scheduleLivenessCheck(): void {
+    if (this.livenessTimer !== undefined) clearTimeout(this.livenessTimer);
+    this.livenessTimer = undefined;
+    const resolver = this.options.resolver;
+    if (this.disposed || !resolver.sessionAlive || !resolver.regenerate) return;
+    this.livenessTimer = setTimeout(() => {
+      this.livenessTimer = undefined;
+      void this.checkLiveness().finally(() => this.scheduleLivenessCheck());
+    }, SESSION_LIVENESS_CHECK_MS);
+  }
+
+  /**
+   * Ask once whether the session core owns is still there, if the viewer is
+   * playing and nothing is already recovering it.
+   *
+   * Only "gone" is acted on, and through the same path as a player's
+   * `not-found`, which asks again before regenerating. An unanswered check is
+   * not evidence: the player is still the witness for a node that is down.
+   */
+  private async checkLiveness(): Promise<void> {
+    const { intent, event, fatalError } = this.snapshot;
+    if (this.disposed || fatalError || intent.paused || event.paused || event.ended) return;
+    if (this.failoverPromise || this.regenerationPromise || this.pendingReplacement) return;
+    const session = this.serverSession ?? this.snapshot.session;
+    if (!session) return;
+    const controller = new AbortController();
+    this.livenessProbe = controller;
+    let alive: boolean;
+    try {
+      alive = await this.options.resolver.sessionAlive!(session.sessionId, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) this.log.debug('session-liveness-check-unanswered', { sessionId: session.sessionId, error });
+      return;
+    } finally {
+      if (this.livenessProbe === controller) this.livenessProbe = undefined;
+    }
+    if (alive || this.disposed) return;
+    // Replaced while the question was out: the answer is about a session
+    // core no longer owns.
+    if ((this.serverSession ?? this.snapshot.session)?.sessionId !== session.sessionId) return;
+    this.log.warn('session-gone-on-liveness-check', { sessionId: session.sessionId, endpoint: session.endpoint, positionMs: this.snapshot.intent.positionMs });
+    this.beginMissingSessionRecovery(
+      new PlaybackSourceError(`Session ${session.sessionId} was gone at a liveness check while playing.`, 'not-found'),
+      false,
+    );
   }
 
   /**
@@ -1863,6 +1934,10 @@ export class PlaybackCoordinator {
     const ownedAtClose = this.serverSession ?? this.snapshot.session;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
     this.pendingReplacementTimer = undefined;
+    if (this.livenessTimer !== undefined) clearTimeout(this.livenessTimer);
+    this.livenessTimer = undefined;
+    this.livenessProbe?.abort(abortError('Playback coordinator closed'));
+    this.livenessProbe = undefined;
     // Only a decision, never a session — see `discardPendingReplacement`. The
     // shape this replaced had a live generation here holding the node's only
     // transcode slot, which had to be closed explicitly or leaked for thirty

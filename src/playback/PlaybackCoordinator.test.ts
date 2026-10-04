@@ -8,7 +8,7 @@ import { playbackVersions, versionPreferences, type QualityCeiling } from './pla
 import { clearClientDiagnostics, clientDiagnosticsSnapshot } from '../diagnostics/ClientLog.js';
 import { endpointFailure, isAccountSessionLimit, playbackFailureCode, playbackFailureStatus } from '../cluster/endpointFailure.js';
 import { TOO_SLOW_TO_PLAY_CODE, equivalentDirectSources, generationLocalPosition, isPrematurePlaybackEnd, LOOK_AHEAD_MARGIN_MS, PlaybackCoordinator, mergePlaybackUpdate, preparePlaybackPatch, REPLACEMENT_LEAD_TIME_MS, restatePreferencesClearedByMode,
-  alternateRecoveryWindowMs, FACTS_RETRY_DELAYS_MS,
+  alternateRecoveryWindowMs, FACTS_RETRY_DELAYS_MS, SESSION_LIVENESS_CHECK_MS,
 } from './PlaybackCoordinator.js';
 
 function deferred<T>() {
@@ -3056,6 +3056,10 @@ describe('the runway is measured when it is spent, not when it was last reported
     try {
       const player = new FakePlayer();
       const api = reapedResolver(onNodeA(), replacement(), 0);
+      // Alive until the player reports it gone, so the forty seconds below
+      // do not let the liveness check find the reap first.
+      let reaped = false;
+      api.sessionAlive.mockImplementation(async () => !reaped);
       const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
       await coordinator.start();
       // Deliberately above the 26 s lead, so the two behaviours differ: an
@@ -3066,6 +3070,7 @@ describe('the runway is measured when it is spent, not when it was last reported
       await vi.advanceTimersByTimeAsync(40_000);
       player.emit({ positionMs: 50_000, durationMs: 600_000, paused: false, ended: false, forwardBufferMs: 0 });
 
+      reaped = true;
       player.degrade(notFound());
       await vi.advanceTimersByTimeAsync(10);
 
@@ -4752,5 +4757,133 @@ describe("automatic play avoids what no node transcodes at real speed", () => {
     await coordinator.start();
     expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'fhd' });
     expect(coordinator.getSnapshot().versions?.passedOver?.reasons).toContain('transcode-below-real-time');
+  });
+});
+
+/**
+ * Tom, 2026-10-04: checking the session route on a timer is an exception to
+ * "never on a timer", while playing only, and it must cancel properly and
+ * clean up.
+ */
+describe('the session liveness check while playing', () => {
+  function liveResolver(alive: (signal?: AbortSignal) => Promise<boolean>) {
+    const initial = session({ sessionId: 's1', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    const replacement = session({ sessionId: 's2', mode: 'transcode', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
+    return {
+      available: true,
+      resolve: vi.fn(async () => initial),
+      update: vi.fn(async () => initial),
+      stop: vi.fn(async () => undefined),
+      sessionAlive: vi.fn(async (_id: string, signal?: AbortSignal) => alive(signal)),
+      regenerate: vi.fn(async () => replacement),
+      failover: vi.fn(async () => replacement),
+      prepareAlternate: vi.fn(async () => undefined),
+      recordEndpointFailure: vi.fn(),
+    } as any;
+  }
+
+  async function playing(api: any, paused = false) {
+    const player = new FakePlayer();
+    const coordinator = new PlaybackCoordinator({ media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0 });
+    await coordinator.start();
+    if (paused) coordinator.setPaused(true);
+    // Under the replacement lead time, so a reap builds at once rather than deferring.
+    player.emit({ positionMs: 10_000, durationMs: 600_000, paused, ended: false, forwardBufferMs: 5_000 });
+    return { coordinator, player };
+  }
+
+  it('finds a reaped session within one interval and regenerates it', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = liveResolver(async () => false);
+      const { coordinator } = await playing(api);
+      expect(api.sessionAlive).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS + 10);
+
+      await vi.waitFor(() => expect(api.regenerate).toHaveBeenCalledTimes(1));
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends nothing while paused, so a paused session is never held open', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = liveResolver(async () => true);
+      const { coordinator } = await playing(api, true);
+
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS * 4);
+
+      expect(api.sessionAlive).not.toHaveBeenCalled();
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps asking while the session is alive, and acts on nothing it could not find out', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const api = liveResolver(async () => {
+        calls += 1;
+        if (calls === 2) throw new Error('node unreachable');
+        return true;
+      });
+      const { coordinator } = await playing(api);
+
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS * 3 + 10);
+
+      expect(api.sessionAlive).toHaveBeenCalledTimes(3);
+      expect(api.regenerate).not.toHaveBeenCalled();
+      expect(api.failover).not.toHaveBeenCalled();
+      expect(api.prepareAlternate).not.toHaveBeenCalled();
+      await coordinator.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves no timer armed when closed between checks', async () => {
+    vi.useFakeTimers();
+    try {
+      const api = liveResolver(async () => true);
+      const { coordinator } = await playing(api);
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS + 10);
+      expect(api.sessionAlive).toHaveBeenCalledTimes(1);
+
+      await coordinator.close();
+
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS * 4);
+      expect(api.sessionAlive).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts a check in flight on close, and checks no more', async () => {
+    vi.useFakeTimers();
+    try {
+      let seen: AbortSignal | undefined;
+      const api = liveResolver((signal) => {
+        seen = signal;
+        return new Promise<boolean>(() => undefined);
+      });
+      const { coordinator } = await playing(api);
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS + 10);
+      expect(api.sessionAlive).toHaveBeenCalledTimes(1);
+
+      await coordinator.close();
+      expect(seen?.aborted).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(SESSION_LIVENESS_CHECK_MS * 4);
+      expect(api.sessionAlive).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
