@@ -67,6 +67,9 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 - **One storage key convention** (`macha.<name>.v<n>` for everything core owns). It is designed, with a sequencing constraint: hosts widen their filters first. *(archive)*
 - **From the Android TV client's list:** an `unavailable` from 0.84.0 may be the last survey's answer, not the present. Should a card show its age (`surveyed_unix_ms`), or should OK try it anyway? Both change the ruling. The TV suggests waiting until stale greys are seen.
 
+- **New server API during the experiment.** The web relays two rulings from Tom (2026-10-04): the album folder list shows each track's title, with no browser ever talking to MusicBrainz, and the server's per-node repair-paced flag is to be surfaced. The web has asked the server for `GET /api/v1/manage/providers/tracks?ref=musicbrainz:release:<mbid>` and for the flag. Both are new API, which Tom held until the experiment ends. Does today's ruling lift that for these two? Core wraps the tracks route beside `providerSearch` and types the flag once the server names them.
+- **Artwork hedge policy in core.** Tom wants the ~15 s poster hang on a silently dead node fixed (relayed by the web). The web's `LazyArtwork.tsx` now races a second source after 2000 ms near the viewport, at most two requests per card. Core proposes owning the delay and the choice of second source (the next on a different host, since `artworkUrls` can list one host twice), so the TV and phone clients behave the same. Data only; the racing stays the client's.
+
 ## Deferred until the server's experiment ends
 
 Tom held server API changes during the experiment. Raise these when it ends.
