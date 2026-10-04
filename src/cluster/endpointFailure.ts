@@ -81,10 +81,6 @@ function failureReason(error: unknown): string | undefined {
 }
 
 export function retryableEndpointFailure(error: unknown): boolean {
-  // Cluster-wide, and said so (server 0.64.0: error.scope "cluster",
-  // alternative_may_succeed false): metadata is unwritable, so every node
-  // would refuse the same, and walking to the next only multiplies it.
-  if (CLUSTER_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   const reason = failureReason(error);
   // A stated reason outranks the status. A node reporting a 5xx for a file it
   // cannot decode is telling the truth about the file, and asking its
@@ -114,8 +110,6 @@ export function retryableEndpointFailure(error: unknown): boolean {
   return status === 429 || (status !== undefined && status >= 500 && status <= 599);
 }
 
-/** Refusals every node gives alike; see `retryableEndpointFailure`. */
-const CLUSTER_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['metadata_unavailable']);
 
 /**
  * Server error codes that describe one title's outcome on a node, not the
@@ -211,8 +205,15 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  * have its catalogue, but the node is not charged. A charge cools it down for
  * every family, and on 2026-09-24 the Android TV client's Home reported every
  * endpoint failed while only the catalogue was down and playback answered.
+ *
+ * `metadata_unavailable` was the opposite until server 0.88.0: every node's
+ * metadata unwritable, so not walked at all. From 0.88.0 it means only a node
+ * with no namespace yet, still joining, while its neighbours may have one. So
+ * it is walked like `catalogue_unavailable` and charged to no one. Against an
+ * older node, which still means the cluster by it, the walk costs one
+ * identical refusal per node. A mutation is not walked either way.
  */
-const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable']);
+const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable', 'metadata_unavailable']);
 
 /**
  * Refusals that state what a node is built or configured to do, not how it is.
