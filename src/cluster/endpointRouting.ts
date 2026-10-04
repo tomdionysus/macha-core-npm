@@ -89,7 +89,7 @@ export class ClusterEndpointRouter {
       return result;
     }, (error) => {
       const retryable = retryableEndpointFailure(error);
-      if (retryable) this.registry.recordFailure(endpoint.id);
+      if (retryable && failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
       // Mutations never retry another endpoint, so this is always terminal.
       log.warn('mutation-failed', { endpointId: endpoint.id, retryable });
       throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
@@ -170,7 +170,8 @@ export class ClusterEndpointRouter {
         if (signal?.aborted) throw signal.reason ?? abortError();
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
-        this.registry.recordFailure(endpoint.id);
+        // Walked past either way; charged only when the failure is the node's.
+        if (failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
         failed.push(endpoint.id);
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
         log.debug('find-endpoint-failed', { endpointId: endpoint.id, unreachable: unreachableEndpointFailure(error) });
@@ -219,8 +220,11 @@ export class ClusterEndpointRouter {
         }
         if (!retryableEndpointFailure(error)) throw error;
         allUnreachable = allUnreachable && unreachableEndpointFailure(error);
-        if (advisory) this.registry.recordProbeFailure(endpoint.id);
-        else this.registry.recordFailure(endpoint.id);
+        // Walked past either way; charged only when the failure is the node's.
+        if (failureBlamesEndpoint(error)) {
+          if (advisory) this.registry.recordProbeFailure(endpoint.id);
+          else this.registry.recordFailure(endpoint.id);
+        }
         lastError = endpointFailure(endpoint.id, endpoint.baseUrl, error);
         log.debug('route-endpoint-failed', { endpointId: endpoint.id, unreachable: unreachableEndpointFailure(error) });
       }

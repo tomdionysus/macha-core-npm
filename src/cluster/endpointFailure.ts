@@ -201,6 +201,19 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  * that was never built.
  */
 
+/**
+ * Refusals that say one API family failed on a node that is otherwise
+ * serving, and do not say for whom.
+ *
+ * `catalogue_unavailable` is the server's answer to any exception inside the
+ * catalogue, with no scope: some causes are this node's ("shard unavailable
+ * locally") and some are not. So the walk goes on, since another node may
+ * have its catalogue, but the node is not charged. A charge cools it down for
+ * every family, and on 2026-09-24 the Android TV client's Home reported every
+ * endpoint failed while only the catalogue was down and playback answered.
+ */
+const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable']);
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -232,6 +245,7 @@ export function failureBlamesEndpoint(
 ): boolean {
   if (isPerTitleFailure(error)) return false;
   if (isAccountScopedFailure(error)) return false;
+  if (FAMILY_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   // A capacity refusal on a pinned path. The node is **full, not unwell**, and
   // the caller cannot act on the charge: `update` and `stop` are pinned to the
   // node that holds the generation, so there is no walk for the charge to

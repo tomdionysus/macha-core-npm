@@ -3,6 +3,7 @@ import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { ClusterEndpointRouter } from './endpointRouting.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { MachaClusterRouteError } from './endpointFailure.js';
+import { MachaApiError } from '../api/MachaCatalogueApi.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
 beforeEach(() => {
@@ -275,6 +276,50 @@ describe('ClusterEndpointRouter', () => {
         return endpoint.id;
       });
       await expect(router.request(slow)).resolves.toBe('http://a');
+    });
+  });
+
+  describe('a failure that is not the node\'s', () => {
+    // The Android TV client, 2026-09-24: every node answered 503
+    // catalogue_unavailable while playback answered, and Home reported every
+    // endpoint failed. The server gives that code no scope.
+    const catalogueDown = () => new MachaApiError('catalogue metadata durability unavailable', 503, 'catalogue_unavailable');
+    const failures = (registry: EndpointRegistry) => registry.snapshot().map(({ health }) => health.consecutiveFailures);
+
+    it('walks on past catalogue_unavailable without charging any node', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw catalogueDown();
+        return endpoint.id;
+      });
+      await expect(router.request(operation)).resolves.toBe('http://b');
+      await expect(router.find(async (endpoint) => { if (endpoint.id === 'http://a') throw catalogueDown(); return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('charges neither a mutation\'s node nor an advisory read\'s for it', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      await expect(router.mutation(async () => { throw catalogueDown(); })).rejects.toThrow();
+      await expect(router.request(async () => { throw catalogueDown(); }, undefined, { advisory: true })).rejects.toThrow();
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('does not charge an account-scoped refusal on a walk, as its comment always said', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const limit = new MachaApiError('limit', 429, 'account_session_limit');
+      await expect(router.request(async (endpoint) => { if (endpoint.id === 'http://a') throw limit; return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('still charges a node\'s own 5xx', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const broken = new MachaApiError('boom', 500, 'internal_error');
+      await expect(router.request(async (endpoint) => { if (endpoint.id === 'http://a') throw broken; return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([1, 0]);
     });
   });
 });
