@@ -13,6 +13,7 @@ import type {
   MatchSearchResult,
   ProviderArtworkOption,
   ProviderArtworkRole,
+  ProviderReleaseTrack,
   ProviderMatchRef,
   ProviderSearchKind,
   ProviderSearchResult,
@@ -30,6 +31,8 @@ import type {
  * move the derivation, not the number.
  */
 export const MANAGE_WORK_TIMEOUT_MS = 30_000;
+
+const MUSICBRAINZ_RELEASE_REF = 'musicbrainz:release:';
 
 export class MachaManageApiError extends Error {
   constructor(
@@ -114,6 +117,18 @@ export class MachaManageApi implements ManageApi {
     ]);
     const response = await this.request<{ options?: ProviderArtworkOption[] }>(`/api/v1/manage/providers/artwork?${params}`, { method: 'GET' });
     return Array.isArray(response?.options) ? response.options : [];
+  }
+
+  async providerReleaseTracks(ref: string): Promise<ProviderReleaseTrack[]> {
+    const mbid = ref.startsWith(MUSICBRAINZ_RELEASE_REF) ? ref.slice(MUSICBRAINZ_RELEASE_REF.length) : '';
+    if (!mbid) throw new MachaManageApiError(`Not a MusicBrainz release reference: ${ref}.`, 400, 'bad_ref');
+    // Manage work: the node may wait its turn at the MusicBrainz gate.
+    const response = await this.request<{ tracks?: ProviderReleaseTrack[] }>(
+      `/api/v1/manage/providers/musicbrainz/releases/${encodeURIComponent(mbid)}/tracks`,
+      { method: 'GET' },
+      MANAGE_WORK_TIMEOUT_MS,
+    );
+    return Array.isArray(response?.tracks) ? response.tracks : [];
   }
 
   async chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean } = {}): Promise<ManageCatalogueMatch> {

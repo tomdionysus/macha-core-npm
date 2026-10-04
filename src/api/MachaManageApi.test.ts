@@ -325,6 +325,31 @@ describe('the metadata editor (server 0.67.0)', () => {
     expect(results).toEqual([result]);
   });
 
+  it("lists a release's tracks from its reference, by the release's own path", async () => {
+    const track = { disc_number: 1, track_number: 4, title: 'Kid A', length_ms: 284000, recording_id: 'rec' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', tracks: [track, { ...track, track_number: null, length_ms: null, recording_id: null }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaManageApi('http://n');
+
+    const tracks = await api.providerReleaseTracks('musicbrainz:release:b1392450-e666-3926-a536-22c65f834433');
+
+    const url = new URL(calls(fetchMock)[0]![0]);
+    expect(url.pathname).toBe('/api/v1/manage/providers/musicbrainz/releases/b1392450-e666-3926-a536-22c65f834433/tracks');
+    expect(url.search).toBe('');
+    expect(tracks).toHaveLength(2);
+    expect(tracks[1]?.track_number).toBeNull();
+  });
+
+  it('refuses a reference that is not a MusicBrainz release, before any request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaManageApi('http://n');
+
+    await expect(api.providerReleaseTracks('tmdb:movie:603')).rejects.toMatchObject({ status: 400, code: 'bad_ref' });
+    await expect(api.providerReleaseTracks('musicbrainz:release:')).rejects.toMatchObject({ code: 'bad_ref' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("lists a role's artwork options and chooses one", async () => {
     const option = { option_id: 'o1', role: 'still', width: 1920, height: 1080, language: null, preview_url: 'https://image/w300.jpg' };
     const fetchMock = vi.fn()

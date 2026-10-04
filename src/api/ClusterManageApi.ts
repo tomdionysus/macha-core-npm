@@ -2,7 +2,7 @@ import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type {
   IdentityAssociationResetRequest, IdentityAssociationResetResult, MachaDfsDirectory,
-  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole,
+  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole, ProviderReleaseTrack,
   ProviderMatchRef, ProviderSearchKind, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
 } from './ManageApi.js';
 import { MachaManageApi } from './MachaManageApi.js';
@@ -24,6 +24,10 @@ export class ClusterManageApi implements ManageApi {
   }
   providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]> {
     return this.read((api) => api.providerArtwork(ref, role, numbers));
+  }
+
+  providerReleaseTracks(ref: string): Promise<ProviderReleaseTrack[]> {
+    return this.read((api) => api.providerReleaseTracks(ref));
   }
   chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options?: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean }): Promise<ManageCatalogueMatch> {
     return this.write((api) => api.chooseArtwork(itemId, role, optionId, options));

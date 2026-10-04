@@ -137,6 +137,22 @@ export interface ProviderArtworkOption {
   preview_url: string;
 }
 
+/**
+ * One track of a MusicBrainz release (server 0.86.0), in the release's own
+ * order. `disc_number` is the medium's position and `track_number` the
+ * track's integer position on it, the numbers a match by provider reference
+ * takes. `title` is the track's title on this release, which may differ from
+ * its recording's. `length_ms` falls back to the recording's length. Each
+ * nullable field is null when MusicBrainz gives none.
+ */
+export interface ProviderReleaseTrack {
+  disc_number: number | null;
+  track_number: number | null;
+  title: string;
+  length_ms: number | null;
+  recording_id: string | null;
+}
+
 export interface ManualMetadataResult {
   leaf_item_id: string;
   items: ManageCatalogueMatch[];
@@ -203,6 +219,15 @@ export interface ManageApi {
   providerSearch(query: string, kind: ProviderSearchKind, options?: { year?: number; artist?: string; limit?: number }): Promise<ProviderSearchResult[]>;
   /** The images a provider has for one role of a reference (server 0.67.0). */
   providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]>;
+  /**
+   * The tracks of a MusicBrainz release (server 0.86.0), from its
+   * `musicbrainz:release:<mbid>` reference as `providerSearch` gives it, so
+   * no client talks to MusicBrainz itself. Needs the manager role. A
+   * reference that is not a MusicBrainz release rejects with `bad_ref`
+   * before any request. The node paces MusicBrainz at one request a second
+   * and waits its turn rather than refusing.
+   */
+  providerReleaseTracks(ref: string): Promise<ProviderReleaseTrack[]>;
   /**
    * Make a provider's image the item's only artwork for the role (server
    * 0.67.0). An item with no provider reference of its own (a manual item)
