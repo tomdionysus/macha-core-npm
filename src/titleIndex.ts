@@ -14,9 +14,9 @@ export const ALPHABET_INDEX = [
 export type AlphabetIndexKey = (typeof ALPHABET_INDEX)[number];
 
 /**
- * The words a title is ordered without, when leading. Search drops them
- * wherever they appear in a query, by Tom's ruling of 2026-09-24, so ordering
- * and search cannot disagree about which words are ignored.
+ * The words a title is ordered without, when leading. Search drops one at
+ * the start of a query, and only there, by Tom's ruling of 2026-10-04, so
+ * ordering and search cannot disagree about which words are ignored.
  */
 export const IGNORED_TITLE_WORDS: readonly string[] = ['the', 'an', 'a'];
 
