@@ -76,6 +76,8 @@ export interface PlaybackRuntimeRequest {
   media: MediaSummary;
   startPositionMs: number;
   returnTo: string;
+  /** Load the first source paused; see `PlaybackCoordinatorOptions.initialPaused`. */
+  paused?: boolean;
 }
 
 export interface PlaybackRuntimeSnapshot {
@@ -265,6 +267,7 @@ export class PlaybackRuntime {
         resolver: this.resolver,
         capabilities: () => this.capabilities(),
         initialPositionMs: Math.max(0, request.startPositionMs),
+        ...(request.paused ? { initialPaused: true } : {}),
         initialPreferences: initialPreferences ? { ...initialPreferences } : undefined,
         facts: this.options.facts,
         policyOverrides: this.options.policyOverrides,

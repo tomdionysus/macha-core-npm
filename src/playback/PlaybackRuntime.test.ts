@@ -797,3 +797,35 @@ describe('what a host sees through the runtime', () => {
     await runtime.stop();
   });
 });
+
+/**
+ * Tom, 2026-10-05: a television woken from standby into the player comes
+ * back where it stopped, paused, with the chrome on Play.
+ */
+describe('a paused start', () => {
+  it('loads the first source paused, at the position asked for', async () => {
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+    runtime.attach(host());
+
+    await runtime.play({ media: movie('A'), startPositionMs: 42_000, returnTo: '/movies/A', paused: true });
+
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+    expect(player.playCalls[0]).toMatchObject({ startPaused: true });
+    expect(runtime.getPlaybackSnapshot()?.intent.paused).toBe(true);
+    await runtime.stop();
+  });
+
+  it('plays as before when not asked to pause', async () => {
+    const player = new FakePlayer();
+    const runtime = new PlaybackRuntime(new FakePlatform(player), resolver());
+    runtime.attach(host());
+
+    await runtime.play({ media: movie('A'), startPositionMs: 0, returnTo: '/movies/A' });
+
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(1));
+    expect(player.playCalls[0]).toMatchObject({ startPaused: false });
+    await runtime.stop();
+  });
+});
+

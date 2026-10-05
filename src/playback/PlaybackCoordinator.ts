@@ -309,6 +309,12 @@ export interface PlaybackCoordinatorOptions {
   resolver: PlaybackResolver;
   capabilities: () => Promise<PlaybackCapabilities>;
   initialPositionMs: number;
+  /**
+   * Start paused: the first source loads paused, and nothing plays until the
+   * viewer does. Tom, 2026-10-05: a television woken from standby into the
+   * player comes back where it stopped, paused, with the chrome on Play.
+   */
+  initialPaused?: boolean;
   initialPreferences?: PlaybackPreferencesUpdate;
   /**
    * What the media is, and what the node can do with it, for choosing an
@@ -1196,7 +1202,7 @@ export class PlaybackCoordinator {
     this.log = createClientLogger('playback.coordinator', { mediaId: options.media.id });
     const initialPositionMs = Math.max(0, options.initialPositionMs);
     this.snapshot = {
-      intent: { positionMs: initialPositionMs, paused: false },
+      intent: { positionMs: initialPositionMs, paused: options.initialPaused ?? false },
       event: {
         positionMs: initialPositionMs,
         durationMs: options.media.durationMs ?? 0,
