@@ -109,6 +109,7 @@ export * from './state/continueWatchingMigration.js';
 export * from './state/musicPlaylist.js';
 export * from './state/playlist.js';
 export * from './state/savedTitle.js';
+export * from './state/artworkHedge.js';
 export * from './state/qualityPreference.js';
 export * from './state/playbackQueue.js';
 export * from './state/progressWrite.js';
