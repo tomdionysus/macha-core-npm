@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
-import { ClusterEndpointRouter } from './endpointRouting.js';
+import { ClusterEndpointRouter, READ_YOUR_WRITES_MS } from './endpointRouting.js';
+import { configureMachaHost, resetMachaHost } from '../runtime/host.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { MachaClusterRouteError, mutationOutcomeUnknown } from './endpointFailure.js';
 import { MachaApiError } from '../api/MachaCatalogueApi.js';
@@ -351,5 +352,61 @@ describe('a write that ran out of time', () => {
 
     expect(mutationOutcomeUnknown(outcome)).toBe(false);
     expect(registry.snapshot().find((candidate) => candidate.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+  });
+});
+
+describe('reading back what was just written (server 0.90.0)', () => {
+  // A write is visible on the node that took it at once, and on the others a
+  // round trip later. Tom, 2026-10-05: keep the reads that follow on it.
+  let now = 0;
+  beforeEach(() => { now = 1_000; configureMachaHost({ now: () => now }); });
+  afterEach(() => resetMachaHost());
+
+  function writtenThroughA() {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    const router = new ClusterEndpointRouter(registry);
+    return { registry, router, write: () => router.mutation(async (endpoint) => endpoint.id) };
+  }
+
+  it('reads from the node that took the write, though the ranking has moved', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await expect(write()).resolves.toBe('http://a');
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
+    await expect(router.mutation(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
+  });
+
+  it('returns to the ranking once the window has passed', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.prefer('http://b');
+    now += READ_YOUR_WRITES_MS;
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://b');
+  });
+
+  it('does not hold to a writer that has failed since', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.recordFailure('http://a');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://b');
+  });
+
+  it('leaves an advisory read on the ranking', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id, undefined, { advisory: true })).resolves.toBe('http://b');
+  });
+
+  it('holds reads to a node whose write timed out, since it may have been done there', async () => {
+    const { registry, router } = writtenThroughA();
+    await router.mutation(async () => { throw new MachaRequestTimeoutError('slow', 30_000); }).catch(() => undefined);
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
   });
 });

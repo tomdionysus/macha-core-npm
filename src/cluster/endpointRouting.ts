@@ -1,4 +1,5 @@
-import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
+import type { EndpointCandidate, EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
+import { machaHost } from '../runtime/host.js';
 import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, mutationOutcomeUnknown, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
@@ -7,6 +8,19 @@ import { abortError } from '../errors.js';
 export type EndpointOperation<T> = (endpoint: MachaEndpoint) => Promise<T>;
 
 const log = createClientLogger('cluster.routing');
+
+/**
+ * How long after a write the reads and writes that follow go to the node that
+ * took it, while it stays in good standing.
+ *
+ * From server 0.90.0 a namespace change, a catalogue edit or a torrent job
+ * request is answered by the node that took it and reaches the others a round
+ * trip later. Reading back through that node is always consistent; through
+ * another it may not be, and a ranking that moved in between sent a reload
+ * there (Tom, 2026-10-05: build it). A few round trips with margin, a choice
+ * rather than a measurement.
+ */
+export const READ_YOUR_WRITES_MS = 5_000;
 
 /**
  * How a `find` walk that produced nothing ended.
@@ -40,7 +54,31 @@ export interface FindAbsence {
  * recordProbeSuccess(), so they can update health without stealing authority.
  */
 export class ClusterEndpointRouter {
+  /** The node that took the last write, and when; see `READ_YOUR_WRITES_MS`. */
+  private lastWrite?: { endpointId: string; at: number };
+
   constructor(readonly registry: EndpointRegistry) {}
+
+  /**
+   * The registry's candidates, with the node that took a write in the last
+   * `READ_YOUR_WRITES_MS` first, if it is ready, not lapsed and has not
+   * failed since. Otherwise the registry's own order, untouched.
+   */
+  private candidatesAfterWrites(): EndpointCandidate[] {
+    const candidates = this.registry.candidates();
+    const write = this.lastWrite;
+    if (!write || machaHost().now() - write.at >= READ_YOUR_WRITES_MS) return candidates;
+    const index = candidates.findIndex(({ endpoint }) => endpoint.id === write.endpointId);
+    if (index <= 0) return candidates;
+    const writer = candidates[index]!;
+    if (!writer.ready || writer.lapsed || writer.health.consecutiveFailures > 0) return candidates;
+    log.debug('read-your-writes', { endpointId: writer.endpoint.id });
+    return [writer, ...candidates.slice(0, index), ...candidates.slice(index + 1)];
+  }
+
+  private wrote(endpointId: string): void {
+    this.lastWrite = { endpointId, at: machaHost().now() };
+  }
 
   /**
    * A safe read, walking candidates until one answers.
@@ -79,11 +117,14 @@ export class ClusterEndpointRouter {
   }
 
   mutation<T>(operation: EndpointOperation<T>): Promise<T> {
-    const endpoint = this.registry.candidates()[0]?.endpoint;
+    // A run of writes stays on one node too, so the second does not reach a
+    // node that has not yet seen the first.
+    const endpoint = this.candidatesAfterWrites()[0]?.endpoint;
     if (!endpoint) return Promise.reject(new Error('No Macha API endpoint is configured.'));
     log.debug('mutation-attempt', { endpointId: endpoint.id });
     return operation(endpoint).then((result) => {
       this.registry.recordSuccess(endpoint.id);
+      this.wrote(endpoint.id);
       reportClusterReachable();
       log.debug('mutation-success', { endpointId: endpoint.id });
       return result;
@@ -93,6 +134,8 @@ export class ClusterEndpointRouter {
       // is charged nothing, and the caller learns the outcome is unknown
       // (`mutationOutcomeUnknown`) rather than that the write failed.
       if (mutationOutcomeUnknown(error)) {
+        // It may have been done there, so a reload must ask there.
+        this.wrote(endpoint.id);
         log.warn('mutation-outcome-unknown', { endpointId: endpoint.id });
         throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
       }
@@ -208,7 +251,9 @@ export class ClusterEndpointRouter {
     const attempted: string[] = [];
     let allUnreachable = true;
     const advisory = Boolean(options?.advisory);
-    for (const { endpoint, lapsed } of this.registry.candidates()) {
+    // An advisory read is bookkeeping, not a reload of what was written.
+    const candidates = advisory ? this.registry.candidates() : this.candidatesAfterWrites();
+    for (const { endpoint, lapsed } of candidates) {
       attempted.push(endpoint.id);
       log.debug('route-attempt', { endpointId: endpoint.id, order: attempted.length, advisory });
       if (signal?.aborted) throw signal.reason ?? abortError();
