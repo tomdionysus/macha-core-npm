@@ -36,10 +36,15 @@ export {
   type MachaClientConfigurationOptions,
 } from './runtime/configuration.js';
 export {
+  MACHA_CORE_KEY_PREFIX,
+  MACHA_LEGACY_STORAGE_KEYS,
   MACHA_STORAGE_KEYS,
   MACHA_STORAGE_KEY_PREFIXES,
   MACHA_STORAGE_PROBE_KEY,
   isMachaStorageKey,
+  machaClientKey,
+  machaCoreKey,
+  machaStorageKeyClientId,
 } from './runtime/storageKeys.js';
 
 // ------------------------------------------------------------------ model
