@@ -103,6 +103,19 @@ export interface MachaHost {
    * has nothing equivalent and must supply the endpoint base it is talking to.
    */
   origin?: string;
+  /**
+   * Whether this host runs in a secure context: a browser page served over
+   * `https`, where the browser refuses any plain-`http` request as mixed
+   * content before it is sent. A browser host sets it from its own
+   * `window.isSecureContext`; core never reads the page.
+   *
+   * When true, an endpoint on plain `http` is unreachable from here, except
+   * `localhost`, `127.0.0.1` and `[::1]`, which browsers allow. The registry
+   * leaves it out of every candidate list, charges it nothing and marks it
+   * `blockedByHost` in its snapshot (Tom, 2026-10-05). A React Native host
+   * leaves it unset and reaches both.
+   */
+  secureContext?: boolean;
 }
 
 /** A `StorageLike` backed by a plain map. The default when the host has none. */

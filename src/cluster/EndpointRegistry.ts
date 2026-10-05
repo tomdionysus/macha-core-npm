@@ -1,4 +1,5 @@
 import { normalizeBaseUrl } from '../api/httpCompat.js';
+import { machaHost } from '../runtime/host.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import type { EndpointBandwidth, TransferKind } from './EndpointBandwidth.js';
 import { ENDPOINT_LAPSED_AFTER_MS } from './healthCycle.js';
@@ -184,6 +185,23 @@ export type EndpointSelectionAxis =
   | 'capacity'
   | 'configured-order';
 
+export type EndpointBlockedByHost = 'insecure_from_secure_page';
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Why this host cannot reach `baseUrl`, or `undefined` when it can. A secure
+ * context cannot fetch plain `http`, loopback aside, and a URL that does not
+ * parse is left to fail on its own terms.
+ */
+export function endpointBlockedByHost(baseUrl: string, secureContext = machaHost().secureContext): EndpointBlockedByHost | undefined {
+  if (!secureContext) return undefined;
+  // A string match rather than `URL`, which the no-DOM build does not type.
+  const plain = /^http:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)/i.exec(baseUrl);
+  if (!plain) return undefined;
+  return LOOPBACK_HOSTS.has(plain[1]!.toLowerCase()) ? undefined : 'insecure_from_secure_page';
+}
+
 export interface EndpointCandidate {
   endpoint: MachaEndpoint;
   health: EndpointHealth;
@@ -207,6 +225,13 @@ export interface EndpointCandidate {
    * it stays a candidate, and its next success restores it.
    */
   lapsed: boolean;
+  /**
+   * Why this host cannot reach the endpoint at all, where it cannot:
+   * `insecure_from_secure_page` for a plain-`http` node seen from a secure
+   * context (`MachaHost.secureContext`). Only `snapshot()` lists such an
+   * endpoint; `candidates()` never does. The code is for the client to word.
+   */
+  blockedByHost?: EndpointBlockedByHost;
   /** Rolling average probe round-trip, where any probe has succeeded. */
   latencyMs?: number;
   /** Measured transfer rate, where enough transfers back it. */
@@ -665,7 +690,7 @@ export class EndpointRegistry {
   candidates(excludedIds: ReadonlySet<string> = new Set()): EndpointCandidate[] {
     const now = this.now();
     const entries = this.endpoints
-      .filter((endpoint) => !excludedIds.has(endpoint.id))
+      .filter((endpoint) => !excludedIds.has(endpoint.id) && endpointBlockedByHost(endpoint.baseUrl) === undefined)
       .map((endpoint, order) => ({
         endpoint,
         health: { ...(this.health.get(endpoint.id) ?? { consecutiveFailures: 0 }) },
@@ -842,11 +867,13 @@ export class EndpointRegistry {
     const latencyMs = this.latencyMs(endpoint.id);
     const bytesPerSecond = this.bytesPerSecond(endpoint.id);
     const capacity = this.capacities.get(endpoint.id);
+    const blockedByHost = endpointBlockedByHost(endpoint.baseUrl);
     return {
       endpoint,
       health,
       ready: (health.retryAt ?? 0) <= now,
       lapsed: this.isLapsed(endpoint, health, now),
+      ...(blockedByHost ? { blockedByHost } : {}),
       ...(latencyMs !== undefined ? { latencyMs } : {}),
       ...(bytesPerSecond !== undefined ? { bytesPerSecond } : {}),
       ...(capacity ? { capacity: { ...capacity } } : {}),

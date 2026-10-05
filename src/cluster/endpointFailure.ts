@@ -468,3 +468,23 @@ export function endpointFailure(
   const detail = error instanceof Error ? error.message : String(error);
   return new MachaEndpointError(`Macha endpoint ${endpointId} failed: ${detail}`, endpointId, baseUrl, kind, error);
 }
+
+/**
+ * Every endpoint is one this host cannot reach at all, so nothing was sent:
+ * a secure page and only plain-`http` nodes (`MachaHost.secureContext`).
+ * `code` is for the client to word; `blocked` lists the endpoint ids.
+ */
+export class MachaNoReachableEndpointError extends Error {
+  readonly code = 'insecure_from_secure_page';
+
+  constructor(public readonly blocked: readonly string[]) {
+    super(`Every Macha endpoint is plain http, which this secure page cannot reach: ${blocked.join(', ')}.`);
+    this.name = 'MachaNoReachableEndpointError';
+  }
+}
+
+/** The error for an empty candidate list: blocked by the host, or nothing configured. */
+export function noEndpointError(registry: { snapshot(): readonly { endpoint: { id: string }; blockedByHost?: string }[] }): Error {
+  const blocked = registry.snapshot().filter((candidate) => candidate.blockedByHost).map((candidate) => candidate.endpoint.id);
+  return blocked.length > 0 ? new MachaNoReachableEndpointError(blocked) : new Error('No Macha API endpoint is configured.');
+}

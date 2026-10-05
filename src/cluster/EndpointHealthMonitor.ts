@@ -373,7 +373,9 @@ export async function probeKnownEndpoints(
   auth: AuthenticatedFetch,
   signal: AbortSignal,
 ): Promise<number> {
-  const endpoints = registry.snapshot().map(({ endpoint }) => endpoint);
+  // An endpoint this host cannot reach at all is not probed: the request
+  // would never leave, and its failure is not evidence about the node.
+  const endpoints = registry.snapshot().filter(({ blockedByHost }) => !blockedByHost).map(({ endpoint }) => endpoint);
   let reachable = 0;
   await Promise.all(endpoints.map(async (endpoint) => {
     // The lifecycle signal governs whether this result is still publishable;

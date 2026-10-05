@@ -1,6 +1,6 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
-import { failureBlamesEndpoint, retryableEndpointFailure } from '../cluster/endpointFailure.js';
+import { failureBlamesEndpoint, noEndpointError, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { MachaPlaybackFactsApi } from './MachaPlaybackFactsApi.js';
 import type { PlaybackFactsApi, PlaybackFactsReport, PlaybackMediaFacts } from './PlaybackFactsApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
@@ -86,7 +86,7 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
         lastError = error;
       }
     }
-    if (attempted === 0) throw new Error('No Macha API endpoint is configured.');
+    if (attempted === 0) throw noEndpointError(this.router.registry);
     throw lastError;
   }
 

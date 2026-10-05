@@ -1,6 +1,6 @@
 import type { EndpointCandidate, EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
 import { machaHost } from '../runtime/host.js';
-import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, mutationOutcomeUnknown, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, mutationOutcomeUnknown, noEndpointError, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
@@ -120,7 +120,7 @@ export class ClusterEndpointRouter {
     // A run of writes stays on one node too, so the second does not reach a
     // node that has not yet seen the first.
     const endpoint = this.candidatesAfterWrites()[0]?.endpoint;
-    if (!endpoint) return Promise.reject(new Error('No Macha API endpoint is configured.'));
+    if (!endpoint) return Promise.reject(noEndpointError(this.registry));
     log.debug('mutation-attempt', { endpointId: endpoint.id });
     return operation(endpoint).then((result) => {
       this.registry.recordSuccess(endpoint.id);
@@ -285,6 +285,6 @@ export class ClusterEndpointRouter {
       log.warn('route-exhausted', { attempted, allUnreachable });
       throw new MachaClusterRouteError(attempted, allUnreachable, lastError);
     }
-    throw new Error('No Macha API endpoint is configured.');
+    throw noEndpointError(this.registry);
   }
 }
