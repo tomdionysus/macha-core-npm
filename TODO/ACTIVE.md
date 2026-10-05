@@ -58,7 +58,16 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 
 ## Waiting on Tom
 
-- **Deploying the web build** made against core `a237296`, and pushing core's experiment commits. Tom, 2026-10-05: "Build everything and ask to deploy."
+- **Merge the experiment down to `develop`?** Relayed by the server, 2026-10-06: Tom closed the object-ledger experiment there and said "Tell all clients to merge down the experiment branches to develop." Core's rule is that `main` and `develop` stay closed until Tom says so here, and what happens to `main` and the branch after is his call.
+
+## Built 2026-10-06 on Tom's word ("Yes do all")
+
+- **Title files** (`30c2ec8`): `unmatchFile`, `deleteFilePath`, `deleteFileContent` on `ManageApi` (server 0.90.15).
+- **Facts retry in the lookup** (`cf4343a`): `ClusterPlaybackFactsApi` retries at 250 ms and 1 s for every caller; the coordinator asks once.
+- **Paused start** (`852514e`): `PlaybackRuntimeRequest.paused`, `initialPaused`.
+- **The flaky close test** (`5a354e7`): an earlier test's real-timer ladder landed in its fetch; now run out on fake timers.
+- **`secureContext`** (`2f247c0`): set from `location.protocol === 'https:'`, not `isSecureContext`.
+- Pushed `experiment/object-ledger` to `852514e`.
 
 ## Built 2026-10-05 on Tom's word ("Build everything")
 
