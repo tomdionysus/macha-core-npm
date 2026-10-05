@@ -104,10 +104,16 @@ export interface MachaHost {
    */
   origin?: string;
   /**
-   * Whether this host runs in a secure context: a browser page served over
-   * `https`, where the browser refuses any plain-`http` request as mixed
-   * content before it is sent. A browser host sets it from its own
-   * `window.isSecureContext`; core never reads the page.
+   * Whether this host is a browser page served over `https`, where the
+   * browser refuses any plain-`http` request as mixed content before it is
+   * sent. A browser host sets it from `window.location.protocol === 'https:'`;
+   * core never reads the page.
+   *
+   * **Not from `window.isSecureContext`.** That is also true for
+   * `http://localhost` and for `file://` pages, which fetch plain `http`
+   * freely: the Android TV and Samsung shells load the web client from
+   * `file://` and would have lost every `http` node (found by the web client,
+   * 2026-10-05).
    *
    * When true, an endpoint on plain `http` is unreachable from here, except
    * `localhost`, `127.0.0.1` and `[::1]`, which browsers allow. The registry
