@@ -58,13 +58,15 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 
 ## Waiting on Tom
 
-- **Mixed content: the shape (Tom asked "how?", 2026-10-04).** Proposed: an optional `MachaHost.secureContext?: boolean`, set by a browser host from its own `window.isSecureContext`; core never reads the page. When true, the registry treats a plain-`http` endpoint as unreachable from here, except `localhost` and `127.0.0.1`, which browsers allow. It is neither charged nor failed over to, and it is named in status with a code (`insecure_from_secure_page`), not shown as down. Every candidate excluded this way gives a typed error with that code, so the client can say why. A React Native host leaves it unset and reaches both. The lasting fix is the server advertising an `https` base for each node.
-- **Storage keys: the non-brittle shape (Tom: "There will be a lot of version churn, it can't be brittle.", 2026-10-04).** Proposed:
-  1. Every core key goes under `macha.core.`, so a client's own `macha.` keys cannot collide with core's.
-  2. The schema version goes in the value (`{"v": n, ...}`), never in the key, so a version bump renames nothing and no host filter has to learn it. Readers migrate on read by `v`.
-  3. The client id sits at a fixed position: `macha.core.<clientId>.<store>[.<row>]`. Core exports `isMachaCoreKey(key)` and `machaStorageKeyClientId(key)`, so no host copies prefix lists or parses ids. The phone's `orphanedClientId` broke on core's per-playlist rows today, which is that brittleness.
-  4. A single move from today's keys, on read, after the hosts hydrate `macha.core.` as well as the old prefixes (the phone already hydrates all of `macha.`).
-- **Artwork hedge policy in core.** Tom wants the ~15 s poster hang on a silently dead node fixed (relayed by the web). The web's `LazyArtwork.tsx` races a second source on a different host after 2000 ms near the viewport, at most two requests per card. Core proposes owning the delay and the choice of second source, so the TV and phone clients behave the same. Data only; the racing stays the client's.
+- **Deploying the web build** made against core `a237296`, and pushing core's experiment commits. Tom, 2026-10-05: "Build everything and ask to deploy."
+
+## Built 2026-10-05 on Tom's word ("Build everything")
+
+- **Read back through the writer** (`19492f2`): `READ_YOUR_WRITES_MS`, 5 s after a write, in the shared router.
+- **Artwork hedge in core** (`3a8a5fe`): `ARTWORK_HEDGE_DELAY_MS`, `ARTWORK_HEDGE_MAX_IN_FLIGHT`, `nextArtworkSource`.
+- **Mixed content** (`573435a`): `MachaHost.secureContext`, `blockedByHost`, `MachaNoReachableEndpointError`.
+- **Storage keys** (`a237296`): everything under `macha.core.`, per-client `macha.core.client.<id>.<store>`, no version in a key, adoption on read. The phone's `orphanedClientId` must move to `machaStorageKeyClientId` (told).
+- Also today: management writes on 30 s and a timed-out write uncharged (`340b8ae`), `metadata_unavailable` walked uncharged (`a984240`), `media_engine_unavailable` uncharged (`728230a`).
 
 ## Ruled 2026-10-04 (Tom)
 
