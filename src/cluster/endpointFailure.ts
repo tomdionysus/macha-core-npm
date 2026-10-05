@@ -1,4 +1,4 @@
-import { MachaConnectionError } from '../api/serverConnection.js';
+import { MachaConnectionError, MachaRequestTimeoutError } from '../api/serverConnection.js';
 
 export type EndpointFailureKind = 'transport' | 'unavailable' | 'capacity' | 'session-missing';
 
@@ -335,6 +335,27 @@ export function playbackFailureCode(error: unknown): string | undefined {
     current = (current as { cause?: unknown }).cause;
   }
   return undefined;
+}
+
+/**
+ * Whether a write may have been done although it failed here: the request ran
+ * out of time before the node answered, so the node may have finished it.
+ *
+ * **Not a failure, and a host must not report one.** On 2026-10-05 every one
+ * of 13 unmatched deletes succeeded on the node while 11 were reported as not
+ * deleted, because they answered after the client stopped waiting. Reload
+ * what the write changes and judge from that. Core does not charge the node
+ * for it either: it was working.
+ */
+export function mutationOutcomeUnknown(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    if (current instanceof MachaRequestTimeoutError) return true;
+    seen.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 /**

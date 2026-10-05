@@ -29,6 +29,13 @@ import type {
  * the slowest of those failed on every node in turn. 30 s is the worst
  * measured with two thirds again as margin; if a node is measured past it,
  * move the derivation, not the number.
+ *
+ * **Every management write runs under it too.** A node runs management
+ * writes one at a time, each its own metadata commit of 2 to 3 s, so the Nth
+ * of a burst answers after about N times that. On 2026-10-05 a burst of 13
+ * unmatched deletes all succeeded, answering at 3.7 s up to 24.1 s, and under
+ * the 8 s default 11 were reported as not deleted. A burst longer than this
+ * budget still times out: send writes one after another.
  */
 export const MANAGE_WORK_TIMEOUT_MS = 30_000;
 
@@ -186,7 +193,11 @@ export class MachaManageApi implements ManageApi {
     });
   }
 
-  private async request<T>(path: string, init: RequestInit, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs = (init.method ?? 'GET') === 'GET' ? DEFAULT_REQUEST_TIMEOUT_MS : MANAGE_WORK_TIMEOUT_MS,
+  ): Promise<T> {
     const response = await fetchWithTimeout(
       (url, requestInit) => this.auth.fetch(url, requestInit),
       `${this.baseUrl}${path}`,

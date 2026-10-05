@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { ClusterEndpointRouter } from './endpointRouting.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
-import { MachaClusterRouteError } from './endpointFailure.js';
+import { MachaClusterRouteError, mutationOutcomeUnknown } from './endpointFailure.js';
 import { MachaApiError } from '../api/MachaCatalogueApi.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
@@ -324,3 +324,32 @@ describe('ClusterEndpointRouter', () => {
   });
 });
 
+describe('a write that ran out of time', () => {
+  // 2026-10-05: 13 unmatched deletes all succeeded on fi-1, answering from
+  // 3.7 s to 24.1 s, while the client reported 11 as not deleted and charged
+  // the node for each.
+  it('charges the node nothing, and says the outcome is unknown rather than failed', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+
+    const outcome = await router.mutation(async () => {
+      throw new MachaRequestTimeoutError('Request exceeded 8000 ms.', 8000);
+    }).catch((error: unknown) => error);
+
+    expect(mutationOutcomeUnknown(outcome)).toBe(true);
+    expect(registry.candidates().map((candidate) => candidate.health.consecutiveFailures ?? 0)).toEqual([0, 0]);
+    expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
+  });
+
+  it('still charges a write the node refused for its own reasons', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+
+    const outcome = await router.mutation(async () => {
+      throw new MachaApiError('unavailable', 503);
+    }).catch((error: unknown) => error);
+
+    expect(mutationOutcomeUnknown(outcome)).toBe(false);
+    expect(registry.snapshot().find((candidate) => candidate.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+  });
+});

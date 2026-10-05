@@ -371,3 +371,22 @@ describe('the metadata editor (server 0.67.0)', () => {
     expect(JSON.parse(String(calls(fetchMock)[0]![1].body))).toEqual({ kind: 'episode', season_id: 'tmdb:season:1399:1', episode_number: 4, title: 'Pilot' });
   });
 });
+
+describe('a management write on a node that runs them one at a time', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('waits past the 8 s default for a delete the node is still doing', async () => {
+    // A node commits management writes one after another at 2 to 3 s each,
+    // so a delete late in a burst answers after the default budget.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(new Response(null, { status: 204 })), 20_000);
+      init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    })));
+    const deleted = new MachaManageApi('http://n').deleteUnmatched('u1');
+    const settled = expect(deleted).resolves.toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await settled;
+  });
+});

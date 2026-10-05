@@ -1,5 +1,5 @@
 import type { EndpointRegistry, MachaEndpoint } from './EndpointRegistry.js';
-import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
+import { endpointFailure, failureBlamesEndpoint, isPerTitleFailure, MachaClusterRouteError, mutationOutcomeUnknown, retryableEndpointFailure, unreachableEndpointFailure } from './endpointFailure.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 import { abortError } from '../errors.js';
@@ -89,6 +89,13 @@ export class ClusterEndpointRouter {
       return result;
     }, (error) => {
       const retryable = retryableEndpointFailure(error);
+      // A write that ran out of time was being done, not refused: the node
+      // is charged nothing, and the caller learns the outcome is unknown
+      // (`mutationOutcomeUnknown`) rather than that the write failed.
+      if (mutationOutcomeUnknown(error)) {
+        log.warn('mutation-outcome-unknown', { endpointId: endpoint.id });
+        throw endpointFailure(endpoint.id, endpoint.baseUrl, error);
+      }
       if (retryable && failureBlamesEndpoint(error)) this.registry.recordFailure(endpoint.id);
       // Mutations never retry another endpoint, so this is always terminal.
       log.warn('mutation-failed', { endpointId: endpoint.id, retryable });
