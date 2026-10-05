@@ -1,12 +1,14 @@
 import { machaHost } from '../runtime/host.js';
 import { QUALITY_CLASSES, type QualityClass, type QualityPreference } from '../playback/playbackVersions.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { readAdoptedJson, writeJson, type StorageLike } from './storage.js';
+import { machaCoreKey } from '../runtime/storageKeys.js';
 
 /**
  * The viewer's quality ceilings on this device (Tom, 2026-09-25: per device).
  * One key, so every client keeps the setting in one shape.
  */
-export const QUALITY_PREFERENCE_KEY = 'macha.qualityPreference.v1';
+export const QUALITY_PREFERENCE_KEY = machaCoreKey('qualityPreference');
+const LEGACY_QUALITY_PREFERENCE_KEYS = ['macha.qualityPreference.v1'];
 
 function isQualityClass(value: unknown): value is QualityClass {
   return typeof value === 'number' && (QUALITY_CLASSES as readonly number[]).includes(value);
@@ -44,7 +46,7 @@ export class QualityPreferenceStore {
   };
 
   get(): QualityPreference {
-    return readValidatedJson(this.storage, QUALITY_PREFERENCE_KEY, validPreference) ?? {};
+    return readAdoptedJson(this.storage, QUALITY_PREFERENCE_KEY, LEGACY_QUALITY_PREFERENCE_KEYS, validPreference) ?? {};
   }
 
   /** Set or clear one ceiling; `undefined` clears it back to no setting. */

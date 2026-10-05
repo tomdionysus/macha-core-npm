@@ -1,6 +1,7 @@
 import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { readAdoptedJson, removeAdopted, writeJson, type StorageLike } from './storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface PlaybackQueueState {
@@ -66,6 +67,7 @@ export function persistedQueue(state: PlaybackQueueState): PlaybackQueueState {
 
 export class PlaybackQueueStore {
   private readonly key: string;
+  private readonly legacyKeys: readonly string[];
   private readonly listeners = new Set<() => void>();
   /**
    * The snapshot handed to reactive callers, held so its identity is stable
@@ -85,7 +87,8 @@ export class PlaybackQueueStore {
   private cacheLoaded = false;
 
   constructor(clientId: string, private readonly storage: StorageLike = machaHost().storage) {
-    this.key = `macha.playbackQueue.v1.${clientId}`;
+    this.key = machaClientKey(clientId, 'playbackQueue');
+    this.legacyKeys = [`macha.playbackQueue.v1.${clientId}`];
   }
 
   /** Stable between mutations, as `useSyncExternalStore` requires. */
@@ -111,7 +114,7 @@ export class PlaybackQueueStore {
   }
 
   load(): PlaybackQueueState | undefined {
-    return readValidatedJson(this.storage, this.key, validState);
+    return readAdoptedJson(this.storage, this.key, this.legacyKeys, validState);
   }
 
   /**
@@ -233,7 +236,7 @@ export class PlaybackQueueStore {
   }
 
   clear(): void {
-    this.storage.removeItem(this.key);
+    removeAdopted(this.storage, this.key, this.legacyKeys);
     this.changed();
   }
 }

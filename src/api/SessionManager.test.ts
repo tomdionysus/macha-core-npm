@@ -430,7 +430,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     const validate = vi.spyOn(SessionAuth, 'validateSessionAnyNode')
       .mockResolvedValue({ roles: ['media_viewer'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.core.session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     const manager = new SessionManager(storage);
@@ -452,7 +452,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode');
     vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockRejectedValue(new MachaConnectionError('nobody answered'));
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS, roles: ['media_viewer'], username: 'alice' }));
+    storage.setItem('macha.core.session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS, roles: ['media_viewer'], username: 'alice' }));
     const manager = new SessionManager(storage);
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -474,7 +474,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     vi.spyOn(SessionAuth, 'validateSessionAnyNode')
       .mockResolvedValue({ roles: ['media_viewer', 'view_status'], expires_unix_ms: Date.now() + DAY_MS });
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.core.session', JSON.stringify({ token: 'cached-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);
     expect(manager.roles).toBeUndefined();
 
@@ -504,20 +504,38 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     expect(mint).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps a session cached under its name before 2026-10-05, moving it to the new key', async () => {
+    // A sign-out on every cold start is the incident the key registry exists
+    // for; a rename must not cause it.
+    const kept = { token: 'kept-token', expiresAtMs: Date.now() + DAY_MS };
+    const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({ token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS });
+    vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue({ roles: ['media_viewer'], expires_unix_ms: Date.now() + DAY_MS });
+    const storage = new MemoryStorage();
+    storage.setItem('macha.session.v1', JSON.stringify(kept));
+    const manager = new SessionManager(storage);
+
+    manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await vi.waitFor(() => expect(manager.isReady).toBe(true));
+
+    expect(mint).not.toHaveBeenCalled();
+    expect(JSON.parse(storage.getItem('macha.core.session') ?? 'null')).toMatchObject({ token: 'kept-token' });
+    expect(storage.getItem('macha.session.v1')).toBeNull();
+  });
+
   it('mints fresh when the cached session fails validation, and re-caches the result', async () => {
     const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode').mockResolvedValue({
       token: 'fresh-token', expiresAtMs: Date.now() + DAY_MS,
     });
     vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue(undefined);
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
+    storage.setItem('macha.core.session', JSON.stringify({ token: 'stale-token', expiresAtMs: Date.now() + DAY_MS }));
     const manager = new SessionManager(storage);
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
 
     expect(mint).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(storage.getItem('macha.session.v1') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.core.session') ?? '')).toEqual({
       token: 'fresh-token', expiresAtMs: expect.any(Number),
     });
   });
@@ -528,7 +546,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     });
     const validate = vi.spyOn(SessionAuth, 'validateSessionAnyNode');
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({ token: 'old-token', expiresAtMs: Date.now() - 1_000 }));
+    storage.setItem('macha.core.session', JSON.stringify({ token: 'old-token', expiresAtMs: Date.now() - 1_000 }));
     const manager = new SessionManager(storage);
 
     manager.start(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
@@ -549,7 +567,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
 
     expect(mint).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(storage.getItem('macha.session.v1') ?? '').token).toBe('fresh-token');
+    expect(JSON.parse(storage.getItem('macha.core.session') ?? '').token).toBe('fresh-token');
   });
 });
 
@@ -576,7 +594,7 @@ describe('session cache storage resolution', () => {
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(JSON.parse(configured.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-a' });
+    expect(JSON.parse(configured.getItem('macha.core.session') ?? 'null')).toMatchObject({ token: 'token-a' });
   });
 
   it('still honours an explicitly supplied storage over the host', async () => {
@@ -592,8 +610,8 @@ describe('session cache storage resolution', () => {
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(explicit.getItem('macha.session.v1')).not.toBeNull();
-    expect(hostStorage.getItem('macha.session.v1')).toBeNull();
+    expect(explicit.getItem('macha.core.session')).not.toBeNull();
+    expect(hostStorage.getItem('macha.core.session')).toBeNull();
   });
 
   describe('authorization for requests this client does not make', () => {
@@ -714,7 +732,7 @@ describe('a session that survives a restart', () => {
     // anonymous one — so after a reload core could not tell it had ever been
     // signed in, and had nothing to compare an identity change against.
     const storage = new MemoryStorage();
-    storage.setItem('macha.session.v1', JSON.stringify({
+    storage.setItem('macha.core.session', JSON.stringify({
       token: 'cached', expiresAtMs: Date.now() + DAY_MS, username: 'tom', roles: ['manager'],
     }));
     vi.spyOn(SessionAuth, 'validateSessionAnyNode').mockResolvedValue({
@@ -750,8 +768,8 @@ describe('a session that survives a restart', () => {
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(JSON.parse(secure.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-s' });
-    expect(persistent.getItem('macha.session.v1')).toBeNull();
+    expect(JSON.parse(secure.getItem('macha.core.session') ?? 'null')).toMatchObject({ token: 'token-s' });
+    expect(persistent.getItem('macha.core.session')).toBeNull();
   });
 
   it('falls back to persistent storage when the host offers no secure store', async () => {
@@ -768,7 +786,7 @@ describe('a session that survives a restart', () => {
     await vi.waitFor(() => expect(manager.isReady).toBe(true));
     manager.stop();
 
-    expect(JSON.parse(persistent.getItem('macha.session.v1') ?? 'null')).toMatchObject({ token: 'token-p' });
+    expect(JSON.parse(persistent.getItem('macha.core.session') ?? 'null')).toMatchObject({ token: 'token-p' });
   });
 });
 
@@ -810,7 +828,7 @@ describe('signing out', () => {
 
     await expect(manager.signOut()).rejects.toThrow('no node answered');
     expect(await manager.authorization()).toBeUndefined();
-    expect(storage.getItem('macha.session.v1')).toBeNull();
+    expect(storage.getItem('macha.core.session')).toBeNull();
     expect(manager.roles).toBeUndefined();
   });
 });

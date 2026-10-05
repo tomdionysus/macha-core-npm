@@ -2,7 +2,9 @@ import type { MediaSummary } from '../types.js';
 import { machaHost } from '../runtime/host.js';
 import { isPlayable } from './playbackQueue.js';
 import { savedRow, savedTitle, type SavedTitle } from './savedTitle.js';
-import { readValidatedJson, type StorageLike } from './storage.js';
+import { readAdoptedJson, readValidatedJson, type StorageLike } from './storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
+import { legacyMusicPlaylistKeys, musicPlaylistKey } from './musicPlaylist.js';
 
 export interface Playlist {
   id: string;
@@ -105,17 +107,19 @@ function validLegacy(value: unknown): value is LegacyEntry[] {
  * the queue through the nearest store to hand. `create(name, items)` covers
  * making a playlist out of an album, explicitly and without destroying anything.
  *
- * **Stored as a row per playlist**, under `macha.playlists.v1.<clientId>.<id>`,
- * with an index row of names and times at `macha.playlists.v1.<clientId>`, so
+ * **Stored as a row per playlist**, under `macha.core.client.<clientId>.playlists.<id>`,
+ * with an index row of names and times at `macha.core.client.<clientId>.playlists`, so
  * one large playlist cannot make the others unreadable. Entries are
  * `SavedTitle`s. A change that would take one row past
  * `SAVED_ROW_LIMIT_BYTES` throws `MachaSavedRowLimitError` and saves nothing:
  * a row larger than Android's read window cannot be read back at all. Every
- * row sits under the prefix hosts already keep, `macha.playlists.v1.`.
+ * row sits under `macha.core.`, which every host already keeps.
  */
 export class PlaylistStore {
   private readonly key: string;
-  private readonly legacyKey: string;
+  /** The index's name before 2026-10-05; each row was this plus `.<id>`. */
+  private readonly legacyIndexKey: string;
+  private readonly clientId: string;
   private readonly listeners = new Set<() => void>();
   /**
    * The last read, held until something changes it.
@@ -130,8 +134,9 @@ export class PlaylistStore {
   private cached: Playlist[] | undefined;
 
   constructor(clientId: string, private readonly storage: StorageLike = machaHost().storage) {
-    this.key = `macha.playlists.v1.${clientId}`;
-    this.legacyKey = `macha.musicPlaylist.v1.${clientId}`;
+    this.key = machaClientKey(clientId, 'playlists');
+    this.legacyIndexKey = `macha.playlists.v1.${clientId}`;
+    this.clientId = clientId;
   }
 
   /** Stable between mutations, as `useSyncExternalStore` requires. */
@@ -153,6 +158,7 @@ export class PlaylistStore {
   }
 
   list(): Playlist[] {
+    this.adoptLegacyKeys();
     const index = this.readIndex();
     let playlists: Playlist[];
     if (validIndex(index)) playlists = index.playlists.map((header) => ({ ...header, items: this.readItems(header.id) }));
@@ -164,6 +170,32 @@ export class PlaylistStore {
       playlists = this.adoptLegacy();
     }
     return [...playlists].sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
+   * Move the index and every row it lists from their names before
+   * 2026-10-05, when nothing is under the current ones yet. The rows go
+   * first and the index last, as `store` writes them, so an interrupted move
+   * leaves the old index in place to move again.
+   */
+  private adoptLegacyKeys(): void {
+    if (this.storage.getItem(this.key) !== null) return;
+    const raw = this.storage.getItem(this.legacyIndexKey);
+    if (raw === null) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    const ids = validIndex(parsed) ? parsed.playlists.map((header) => header.id) : [];
+    for (const id of ids) {
+      const row = this.storage.getItem(`${this.legacyIndexKey}.${id}`);
+      if (row !== null) this.storage.setItem(this.itemsKey(id), row);
+    }
+    this.storage.setItem(this.key, raw);
+    this.storage.removeItem(this.legacyIndexKey);
+    for (const id of ids) this.storage.removeItem(`${this.legacyIndexKey}.${id}`);
   }
 
   /**
@@ -218,7 +250,7 @@ export class PlaylistStore {
    * name: a host shows its own placeholder, and the viewer can rename it.
    */
   private adoptLegacy(): Playlist[] {
-    const legacy = readValidatedJson(this.storage, this.legacyKey, validLegacy);
+    const legacy = readAdoptedJson(this.storage, musicPlaylistKey(this.clientId), legacyMusicPlaylistKeys(this.clientId), validLegacy);
     if (!legacy || legacy.length === 0) return [];
     const now = Date.now();
     const adopted: Playlist = {

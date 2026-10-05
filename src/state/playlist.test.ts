@@ -35,7 +35,7 @@ describe('PlaylistStore', () => {
     const created = new PlaylistStore('client', storage).create('Keep', [track('one')]);
     expect(new PlaylistStore('client', storage).get(created.id)?.name).toBe('Keep');
 
-    storage.setItem('macha.playlists.v1.client', JSON.stringify({ version: 1, playlists: [{ id: 'x' }] }));
+    storage.setItem('macha.core.client.client.playlists', JSON.stringify({ version: 1, playlists: [{ id: 'x' }] }));
     expect(new PlaylistStore('client', storage).list()).toEqual([]);
   });
 
@@ -125,7 +125,7 @@ describe('PlaylistStore', () => {
       artwork: { poster: { id: 'art', mimeType: 'image/jpeg', url: 'https://node/a' } },
       musicContext: { album: { id: 'album', title: 'Album' } },
     });
-    expect(storage.getItem(`macha.playlists.v1.client.${playlist.id}`)).not.toContain('xxxx');
+    expect(storage.getItem(`macha.core.client.client.playlists.${playlist.id}`)).not.toContain('xxxx');
   });
 
   it('keeps each playlist in a row of its own, so one bad row costs only its own items', () => {
@@ -134,7 +134,7 @@ describe('PlaylistStore', () => {
     const a = store.create('A', [track('one')]);
     const b = store.create('B', [track('two')]);
 
-    storage.setItem(`macha.playlists.v1.client.${a.id}`, '{not json');
+    storage.setItem(`macha.core.client.client.playlists.${a.id}`, '{not json');
 
     const reread = new PlaylistStore('client', storage);
     expect(reread.get(a.id)?.items).toEqual([]);
@@ -149,7 +149,7 @@ describe('PlaylistStore', () => {
 
     store.delete(a.id);
 
-    expect(storage.getItem(`macha.playlists.v1.client.${a.id}`)).toBeNull();
+    expect(storage.getItem(`macha.core.client.client.playlists.${a.id}`)).toBeNull();
     expect(store.list()).toEqual([]);
   });
 
@@ -162,7 +162,7 @@ describe('PlaylistStore', () => {
     expect(() => store.add(playlist.id, many)).toThrow(MachaSavedRowLimitError);
 
     expect(new PlaylistStore('client', storage).get(playlist.id)?.items.map((item) => item.id)).toEqual(['one']);
-    for (const key of ['macha.playlists.v1.client', `macha.playlists.v1.client.${playlist.id}`]) {
+    for (const key of ['macha.core.client.client.playlists', `macha.core.client.client.playlists.${playlist.id}`]) {
       expect(utf8Bytes(storage.getItem(key)!)).toBeLessThanOrEqual(SAVED_ROW_LIMIT_BYTES);
     }
   });
@@ -170,7 +170,7 @@ describe('PlaylistStore', () => {
   it('adopts the single-row form, slimmed and split, losing nothing', () => {
     const storage = new MemoryStorage();
     const old = (id: string, items: MediaSummary[]) => ({ id, name: id, items, createdAt: 1, updatedAt: id === 'a' ? 2 : 1 });
-    storage.setItem('macha.playlists.v1.client', JSON.stringify({
+    storage.setItem('macha.core.client.client.playlists', JSON.stringify({
       version: 1,
       playlists: [old('a', [{ ...track('one'), synopsis: 'long' }]), old('b', [track('two'), track('three')])],
     }));
@@ -181,7 +181,7 @@ describe('PlaylistStore', () => {
       ['b', ['two', 'three']],
     ]);
     expect(adopted[0]!.items[0]).not.toHaveProperty('synopsis');
-    expect(JSON.parse(storage.getItem('macha.playlists.v1.client')!).version).toBe(2);
+    expect(JSON.parse(storage.getItem('macha.core.client.client.playlists')!).version).toBe(2);
     expect(new PlaylistStore('client', storage).get('b')?.items).toHaveLength(2);
   });
 });
