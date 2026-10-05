@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ClusterPlaybackFactsApi } from './ClusterPlaybackFactsApi.js';
+import { ClusterPlaybackFactsApi, FACTS_RETRY_DELAYS_MS } from './ClusterPlaybackFactsApi.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
 
 function json(body: unknown, status = 200): Response {
@@ -129,3 +129,65 @@ describe('an item with a file one node could not read', () => {
     expect((await api.facts({ itemId: 'movie:1' })).map((file) => file.mediaId)).toEqual(['macha:abc']);
   });
 });
+
+/**
+ * Tom, 2026-10-06: the bounded retry is in core's facts lookup itself, so a
+ * playback start or a download on any client gets it, not only a start
+ * through `PlaybackCoordinator`.
+ */
+describe('a facts lookup that fails for a moment', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('retries after each wait, and answers once a node does', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(json({ error: 'internal', message: 'boom' }, 500))
+      .mockResolvedValueOnce(json({ error: 'internal', message: 'boom' }, 500))
+      .mockResolvedValueOnce(json(facts));
+    vi.stubGlobal('fetch', fetchMock);
+    const lookup = new ClusterPlaybackFactsApi(new EndpointRegistry(bootstrapEndpoints(['http://a']))).facts({ itemId: 'movie:1' });
+
+    await vi.advanceTimersByTimeAsync(FACTS_RETRY_DELAYS_MS.reduce((sum, wait) => sum + wait, 0));
+
+    await expect(lookup).resolves.toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(FACTS_RETRY_DELAYS_MS.length + 1);
+  });
+
+  it('gives up after the last wait with the failure', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => json({ error: 'internal', message: 'boom' }, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    const lookup = new ClusterPlaybackFactsApi(new EndpointRegistry(bootstrapEndpoints(['http://a']))).facts({ itemId: 'movie:1' });
+    const settled = expect(lookup).rejects.toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await settled;
+    expect(fetchMock).toHaveBeenCalledTimes(FACTS_RETRY_DELAYS_MS.length + 1);
+  });
+
+  it('does not retry a media no node has', async () => {
+    const fetchMock = vi.fn(async () => json({ error: 'not_found', message: 'no such media' }, 404));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new ClusterPlaybackFactsApi(new EndpointRegistry(bootstrapEndpoints(['http://a']))).facts({ itemId: 'movie:1' }))
+      .rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting when its caller goes away', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => json({ error: 'internal', message: 'boom' }, 500));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    const lookup = new ClusterPlaybackFactsApi(new EndpointRegistry(bootstrapEndpoints(['http://a']))).facts({ itemId: 'movie:1' }, controller.signal);
+    const settled = expect(lookup).rejects.toBeDefined();
+
+    await vi.advanceTimersByTimeAsync(10);
+    controller.abort();
+    await settled;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+

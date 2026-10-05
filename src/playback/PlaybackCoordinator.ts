@@ -289,14 +289,6 @@ export interface PlaybackInstructionReport {
  */
 const FACTS_ATTEMPT_BUDGET = 3;
 
-/**
- * The waits between tries of one facts lookup before core decides without
- * facts. Tom, 2026-10-04: "Retry bounded, then decide without facts." Two
- * retries, about 1.3 s in all on top of the requests, ride out a blip or a
- * session that had not quite arrived without holding a start for long. A
- * choice, not a measurement.
- */
-export const FACTS_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
 
 /**
  * How often a playing coordinator asks the node whether its session is still
@@ -1310,29 +1302,21 @@ export class PlaybackCoordinator {
   private unclassifiedReportedFor?: string;
 
   /**
-   * One lookup, retried after each of `FACTS_RETRY_DELAYS_MS` while it
-   * throws, so a start decides without facts only once the bound is spent.
-   * A supplier answering `undefined` is an answer and is not retried. Only
-   * the first lookup of a generation waits; a later one (`facts`'s budget)
-   * is one request, because it sits on a viewer's touch of the controls.
+   * One lookup. Its retries are the supplier's: core's own facts lookup
+   * retries a failure itself (`FACTS_RETRY_DELAYS_MS` in
+   * `ClusterPlaybackFactsApi`), for every caller, so retrying here as well
+   * would multiply them.
    */
   private async lookUpFacts(): Promise<readonly FileFacts[] | undefined> {
-    const delays = this.factsAttempts === 0 ? FACTS_RETRY_DELAYS_MS : [];
-    for (let retry = 0; ; retry += 1) {
-      try {
-        const facts = filesFrom(await this.options.facts?.(this.options.media));
-        this.factsError = undefined;
-        return facts;
-      } catch (error: unknown) {
-        // Kept, not swallowed: a thrown lookup and an absent supplier both
-        // yield undefined, and they are not the same thing at all.
-        this.factsError = error;
-        const wait = delays[retry];
-        if (wait === undefined || this.disposed) return undefined;
-        this.log.warn('instruction-facts-retry', { mediaId: this.options.media.id, retry: retry + 1, waitMs: wait, error });
-        await new Promise<void>((resolve) => setTimeout(resolve, wait));
-        if (this.disposed) return undefined;
-      }
+    try {
+      const facts = filesFrom(await this.options.facts?.(this.options.media));
+      this.factsError = undefined;
+      return facts;
+    } catch (error: unknown) {
+      // Kept, not swallowed: a thrown lookup and an absent supplier both
+      // yield undefined, and they are not the same thing at all.
+      this.factsError = error;
+      return undefined;
     }
   }
 
