@@ -2,7 +2,7 @@ import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type {
   IdentityAssociationResetRequest, IdentityAssociationResetResult, MachaDfsDirectory,
-  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole, ProviderReleaseTrack,
+  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole, ProviderReleaseTrack, FileContentDeletion, TitleFileRemoval, TitleFileUnmatch,
   ProviderMatchRef, ProviderSearchKind, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
 } from './ManageApi.js';
 import { MachaManageApi } from './MachaManageApi.js';
@@ -33,6 +33,9 @@ export class ClusterManageApi implements ManageApi {
     return this.write((api) => api.chooseArtwork(itemId, role, optionId, options));
   }
   deleteUnmatched(id: string): Promise<void> { return this.write((api) => api.deleteUnmatched(id)); }
+  unmatchFile(itemId: string, mediaId: string, expectedRevision?: number): Promise<TitleFileUnmatch> { return this.write((api) => api.unmatchFile(itemId, mediaId, expectedRevision)); }
+  deleteFilePath(path: string, itemId?: string): Promise<TitleFileRemoval> { return this.write((api) => api.deleteFilePath(path, itemId)); }
+  deleteFileContent(mediaId: string, itemId?: string): Promise<FileContentDeletion> { return this.write((api) => api.deleteFileContent(mediaId, itemId)); }
   browse(path: string): Promise<MachaDfsDirectory> { return this.read((api) => api.browse(path)); }
   mkdir(path: string): Promise<void> { return this.write((api) => api.mkdir(path)); }
   rename(path: string, destination: string): Promise<void> { return this.write((api) => api.rename(path, destination)); }

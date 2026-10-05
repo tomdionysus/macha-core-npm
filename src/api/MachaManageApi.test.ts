@@ -390,3 +390,56 @@ describe('a management write on a node that runs them one at a time', () => {
     await settled;
   });
 });
+
+describe('removing a file from a title (server 0.90.15)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const calls = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls as Array<[string, RequestInit]>;
+
+  it('unmatches a file, sending the revision, and answers the title as it now stands', async () => {
+    const item = { id: 'movie:1', revision: 8, media_ids: ['macha:b'] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'unmatched', item, removed_item_ids: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').unmatchFile('movie:1', 'macha:a', 7);
+
+    const [url, init] = calls(fetchMock)[0]!;
+    expect(new URL(url).pathname).toBe('/api/v1/catalogue/items/movie%3A1/media/macha%3Aa');
+    expect(init.method).toBe('DELETE');
+    expect(new Headers(init.headers).get('If-Match')).toBe('"rev-7"');
+    expect(result).toEqual({ titleRemoved: false, removedItemIds: [], item });
+  });
+
+  it('says the title went when its last file was unmatched', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'unmatched', removed_item_ids: ['track:1', 'album:1'] })));
+    const result = await new MachaManageApi('http://n').unmatchFile('track:1', 'macha:a');
+    expect(result).toEqual({ titleRemoved: true, removedItemIds: ['track:1', 'album:1'] });
+  });
+
+  it('deletes one path, each segment encoded and the slashes kept', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'deleted', path: '/Movies/A b.mkv', removed_item_ids: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').deleteFilePath('/Movies/A b.mkv', 'movie:1');
+
+    expect(new URL(calls(fetchMock)[0]![0]).pathname).toBe('/api/v1/files/Movies/A%20b.mkv');
+    expect(result).toEqual({ titleRemoved: false, removedItemIds: [] });
+  });
+
+  it('deletes every copy of a content, naming the paths and the titles that went', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'deleted', paths: ['/a.mkv', '/b.mkv'], removed_item_ids: ['movie:1'] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').deleteFileContent('macha:a', 'movie:1');
+
+    const url = new URL(calls(fetchMock)[0]![0]);
+    expect(url.pathname).toBe('/api/v1/files');
+    expect(url.searchParams.get('hash')).toBe('macha:a');
+    expect(result).toEqual({ titleRemoved: true, removedItemIds: ['movie:1'], paths: ['/a.mkv', '/b.mkv'] });
+  });
+
+  it('carries the server code on a refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'catalogue_conflict', message: 'revision moved' }, { status: 409 })));
+    await expect(new MachaManageApi('http://n').unmatchFile('movie:1', 'macha:a', 7)).rejects.toMatchObject({ status: 409, code: 'catalogue_conflict' });
+  });
+});
+

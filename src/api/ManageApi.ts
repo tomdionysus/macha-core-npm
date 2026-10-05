@@ -153,6 +153,29 @@ export interface ProviderReleaseTrack {
   recording_id: string | null;
 }
 
+/**
+ * What removing a file from a title did (server 0.90.15). `removedItemIds`
+ * lists every catalogue item that went because it was left with no media or
+ * no children: the title itself, then any season, show, album or artist
+ * above it. `titleRemoved` says whether the title the editor names was among
+ * them, so it knows to leave its page. A delete given no title id reads it
+ * as "any title went".
+ */
+export interface TitleFileRemoval {
+  titleRemoved: boolean;
+  removedItemIds: string[];
+}
+
+/** An unmatch also answers the title as it now stands, with its new `revision`, while it remains. */
+export interface TitleFileUnmatch extends TitleFileRemoval {
+  item?: ManageCatalogueMatch;
+}
+
+/** A deletion by content names every path it removed. */
+export interface FileContentDeletion extends TitleFileRemoval {
+  paths: string[];
+}
+
 export interface ManualMetadataResult {
   leaf_item_id: string;
   items: ManageCatalogueMatch[];
@@ -235,6 +258,30 @@ export interface ManageApi {
    */
   chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options?: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean }): Promise<ManageCatalogueMatch>;
   deleteUnmatched(id: string): Promise<void>;
+  /**
+   * Take one file off a title (server 0.90.15): every file with that content
+   * goes straight to the unmatched list, as `unmatched_by_operator`, with no
+   * provider lookup. A title left with no media is removed, with any parent
+   * left with no children. `expectedRevision` is sent as `If-Match`, refused
+   * `409 catalogue_conflict` when the title has moved on. Other codes:
+   * `404 not_found`, `404 media_not_bound`. Needs the manager role.
+   */
+  unmatchFile(itemId: string, mediaId: string, expectedRevision?: number): Promise<TitleFileUnmatch>;
+  /**
+   * Delete one path (server 0.90.15). Its content stays bound to its titles
+   * while any other path holds it; when none does, it is unbound and titles
+   * left empty are removed. Codes: `404 not_found`, `409 not_a_file` (a
+   * directory). Needs the manager role. `itemId` is the title on screen, for
+   * `titleRemoved`.
+   */
+  deleteFilePath(path: string, itemId?: string): Promise<TitleFileRemoval>;
+  /**
+   * Delete every path holding one content, `macha:<id>` (server 0.90.15),
+   * then unbind it and remove titles left empty. Code: `404 not_found`.
+   * Needs the manager role. `itemId` is the title on screen, for
+   * `titleRemoved`.
+   */
+  deleteFileContent(mediaId: string, itemId?: string): Promise<FileContentDeletion>;
   browse(path: string): Promise<MachaDfsDirectory>;
   mkdir(path: string): Promise<void>;
   rename(path: string, destination: string): Promise<void>;

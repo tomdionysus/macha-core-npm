@@ -14,6 +14,9 @@ import type {
   ProviderArtworkOption,
   ProviderArtworkRole,
   ProviderReleaseTrack,
+  FileContentDeletion,
+  TitleFileRemoval,
+  TitleFileUnmatch,
   ProviderMatchRef,
   ProviderSearchKind,
   ProviderSearchResult,
@@ -40,6 +43,21 @@ import type {
 export const MANAGE_WORK_TIMEOUT_MS = 30_000;
 
 const MUSICBRAINZ_RELEASE_REF = 'musicbrainz:release:';
+
+function removedIds(response: { removed_item_ids?: unknown } | undefined): string[] {
+  const ids = response?.removed_item_ids;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
+function titleWent(removedItemIds: readonly string[], itemId: string | undefined): boolean {
+  return itemId === undefined ? removedItemIds.length > 0 : removedItemIds.includes(itemId);
+}
+
+/** `/a b/c.mkv` as the files route takes it: each segment percent-encoded, the slashes kept. */
+function encodedFilePath(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  return `/${segments.map(encodeURIComponent).join('/')}`;
+}
 
 export class MachaManageApiError extends Error {
   constructor(
@@ -145,6 +163,38 @@ export class MachaManageApi implements ManageApi {
       body: JSON.stringify({ item_id: itemId, role, option_id: optionId, ...options }),
     });
     return response.item;
+  }
+
+  async unmatchFile(itemId: string, mediaId: string, expectedRevision?: number): Promise<TitleFileUnmatch> {
+    const response = await this.request<{ item?: ManageCatalogueMatch; removed_item_ids?: string[] }>(
+      `/api/v1/catalogue/items/${encodeURIComponent(itemId)}/media/${encodeURIComponent(mediaId)}`,
+      { method: 'DELETE', ...(expectedRevision !== undefined ? { headers: { 'If-Match': `"rev-${expectedRevision}"` } } : {}) },
+    );
+    const removedItemIds = removedIds(response);
+    return {
+      titleRemoved: response?.item === undefined || removedItemIds.includes(itemId),
+      removedItemIds,
+      ...(response?.item ? { item: response.item } : {}),
+    };
+  }
+
+  async deleteFilePath(path: string, itemId?: string): Promise<TitleFileRemoval> {
+    const response = await this.request<{ removed_item_ids?: string[] }>(`/api/v1/files${encodedFilePath(path)}`, { method: 'DELETE' });
+    const removedItemIds = removedIds(response);
+    return { titleRemoved: titleWent(removedItemIds, itemId), removedItemIds };
+  }
+
+  async deleteFileContent(mediaId: string, itemId?: string): Promise<FileContentDeletion> {
+    const response = await this.request<{ paths?: string[]; removed_item_ids?: string[] }>(
+      `/api/v1/files?${queryString([['hash', mediaId]])}`,
+      { method: 'DELETE' },
+    );
+    const removedItemIds = removedIds(response);
+    return {
+      titleRemoved: titleWent(removedItemIds, itemId),
+      removedItemIds,
+      paths: Array.isArray(response?.paths) ? response.paths.filter((path): path is string => typeof path === 'string') : [],
+    };
   }
 
   async deleteUnmatched(id: string): Promise<void> {
