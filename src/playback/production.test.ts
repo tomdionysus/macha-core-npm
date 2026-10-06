@@ -15,8 +15,8 @@ describe('how fast a generation is producing', () => {
     // **The measurement that makes this a test rather than a preference.**
     // Left running with nobody pulling fragments, the same es-1 session
     // reported producedMs and producingMs frozen while producedAgeMs climbed
-    // 15.9s -> 27.9s -> 39.9s. Against ~45s of wall clock that is 0.76x —
-    // below realtime, so a handover would be refused — on a node actually
+    // 15.9s -> 27.9s -> 39.9s. Against ~45s of wall clock that is 0.76x
+    // (below realtime, so a handover would be refused) on a node actually
     // producing at 3.14x. Any implementation that lets the age reach the
     // arithmetic reproduces that, and it needs no new field to do it.
     const readings = [15_868, 27_883, 39_901].map((producedAgeMs) =>
@@ -33,7 +33,7 @@ describe('how fast a generation is producing', () => {
 
   it('carries the start-up bias rather than correcting for it', () => {
     // First fragment on that same node: 2000/771. Low by ~17% against the
-    // settled 3.14x, and deliberately so — excluding the first fragment would
+    // settled 3.14x, and deliberately so: excluding the first fragment would
     // time n-1 fragments while counting the media of n, a 2x overstatement
     // arriving exactly when a handover call gets made.
     const first = productionRate(production({ producedMs: 2_000, producingMs: 771 }));
@@ -50,7 +50,7 @@ describe('how fast a generation is producing', () => {
   it('distinguishes cannot say from cannot keep up', () => {
     // Direct play and any node older than 0.47.0 arrive here. Collapsing this
     // into `false` refuses every handover on a direct source and across a
-    // mixed-version cluster — the failure mode absent-means-cannot-say exists
+    // mixed-version cluster, the failure mode absent-means-cannot-say exists
     // to prevent, and the one core spent 0.14.0 removing elsewhere.
     expect(outpacesPlayback(undefined)).toBeUndefined();
     expect(productionRate(undefined)).toBeUndefined();

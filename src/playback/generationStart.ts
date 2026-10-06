@@ -19,7 +19,7 @@ export function generationStartKind(session: PlaybackSession): GenerationStartKi
  *
  * Covers what the start measurement does not: the first fragment travelling
  * to the player once it exists, and the host settling its join. **A guess,
- * documented as one** — the same standing as `ENDPOINT_TRANSPORT_ALLOWANCE_MS`,
+ * documented as one**: the same standing as `ENDPOINT_TRANSPORT_ALLOWANCE_MS`,
  * the other term in this package that no node can state about itself. A host
  * that knows better passes its own lead to `moveTo` and this is not used.
  */

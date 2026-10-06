@@ -58,7 +58,7 @@ describe('ClusterEndpointRouter', () => {
 
   it('does not let a host listener that throws turn a successful route into a failure', async () => {
     // The registry notifies on every recorded outcome, and the recording is
-    // on the success path — so an unguarded listener turned a request that had
+    // on the success path, so an unguarded listener turned a request that had
     // *worked* into a rejection, and could take the health loop with it.
     // Presentation must not be able to break routing.
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
@@ -140,7 +140,7 @@ describe('ClusterEndpointRouter', () => {
 
     it('runs on the given endpoint even when it is not the best candidate', async () => {
       // A playback session lives on the node that created it. A PATCH sent
-      // anywhere else addresses a session that does not exist there — not a
+      // anywhere else addresses a session that does not exist there: not a
       // fallback, a different and wrong request.
       const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
       registry.recordSuccess('http://a');
@@ -156,7 +156,7 @@ describe('ClusterEndpointRouter', () => {
     });
 
     it('feeds endpoint health from pinned work rather than losing it', async () => {
-      // The alternative — calling a node's API directly — silently costs the
+      // The alternative, calling a node's API directly, silently costs the
       // registry every success and failure on the node doing the most work.
       const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
       const router = new ClusterEndpointRouter(registry);
@@ -197,8 +197,8 @@ describe('ClusterEndpointRouter', () => {
 
   describe('cancelling a read', () => {
     it('stops the walk rather than only the attempt in flight', async () => {
-      // Without this a caller that has gone away — a screen unmounted
-      // mid-load — still pays for every remaining candidate before its result
+      // Without this a caller that has gone away (a screen unmounted
+      // mid-load) still pays for every remaining candidate before its result
       // is discarded.
       const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b', 'http://c']));
       const router = new ClusterEndpointRouter(registry);

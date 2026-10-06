@@ -21,8 +21,8 @@ describe('MachaPlaybackFactsApi', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('reports copy support separately for each carriage', async () => {
-    // The lists genuinely differ — MPEG-TS takes MPEG-2 video and MP3 that
-    // fragmented MP4 refuses, fMP4 takes AV1 and Opus that TS refuses — so
+    // The lists genuinely differ (MPEG-TS takes MPEG-2 video and MP3 that
+    // fragmented MP4 refuses, fMP4 takes AV1 and Opus that TS refuses), so
     // one answer cannot stand for both.
     respond({
       item_id: 'movie:1',

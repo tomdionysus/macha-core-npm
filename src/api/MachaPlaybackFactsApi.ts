@@ -69,7 +69,7 @@ function mapOperations(value: unknown, streams: readonly MediaTechnicalStream[])
   const audio = defaultStream(streams, 'audio');
   const fromStreams = (key: 'fmp4' | 'mpegts') => ({ video: video?.copyInto?.[key] === true, audio: audio?.copyInto?.[key] === true });
   // Absent reads as "cannot", not "can". This gates instructions, so an
-  // unknown answer must never be optimistic — the whole point is to stop
+  // unknown answer must never be optimistic; the whole point is to stop
   // asking for something the node will refuse.
   return {
     direct: record.direct === true,
@@ -128,7 +128,7 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
       const profile: MediaTechnicalProfile = {
         mediaId,
         format: typeof item.format === 'string' ? item.format : '',
-        // `""` is the server's answer for a container it cannot name — an
+        // `""` is the server's answer for a container it cannot name: an
         // absent value, not a value. Normalised here so one shape reaches
         // every consumer.
         container: (typeof item.container === 'string' ? item.container.trim() : '') || undefined,

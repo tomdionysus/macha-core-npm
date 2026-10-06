@@ -95,12 +95,12 @@ export interface CatalogueMediaProfile {
   /**
    * The raw demuxer list, which names every format the demuxer covers rather
    * than the one the file is: Matroska appears here as `matroska,webm`.
-   * Prefer `container` — see its note.
+   * Prefer `container`; see its note.
    */
   format: string;
   /**
-   * The resolved container family — `mp4`, `matroska`, `webm`, `mp3`, `flac`
-   * or `ogg` — added in schema 3. This is the field to match capabilities
+   * The resolved container family (`mp4`, `matroska`, `webm`, `mp3`, `flac`
+   * or `ogg`), added in schema 3. This is the field to match capabilities
    * against; matching `format` accepts a Matroska file for any host that
    * merely supports WebM, which is a corrupt picture rather than an error.
    */
@@ -116,14 +116,14 @@ export interface CatalogueMediaProfile {
  * `requiresAuthorization` is not decoration. A signed capability URL carries
  * its own authority and works from anywhere; a per-node catalogue URL needs the
  * client's `Authorization` header. A flat list of strings mixes the two, and a
- * caller that cannot set headers — an `<img src>`, a native image loader, a
- * platform downloader — silently 401s on every fallback while appearing to have
+ * caller that cannot set headers (an `<img src>`, a native image loader, a
+ * platform downloader) silently 401s on every fallback while appearing to have
  * options. Such a caller should filter on this rather than hope.
  *
  * **"Cannot set headers" is literal for two of Macha's clients**, and it is a
  * constraint on the wire rather than a client preference. React Native's
  * `expo-file-system` downloader is invoked with no headers option at all, and a
- * native player is handed a URL rather than a request — neither can attach one
+ * native player is handed a URL rather than a request; neither can attach one
  * without a native module. The web client attaches nothing of its own either,
  * though its legacy Blob path reaches artwork through this package's
  * authenticated fetch, so a bearer token does travel when no signed URL was
@@ -143,14 +143,14 @@ export interface ArtworkSource {
    * Whether a bearer token must accompany this URL.
    *
    * **A caller that cannot set headers is not thereby short of sources.** An
-   * image loader — `<img src>`, a native `Image` — can use every entry marked
+   * image loader (`<img src>`, a native `Image`) can use every entry marked
    * `false`, and `MachaMediaApi.artworkUrls` emits the signed capability
    * first, then that same capability re-hosted onto every known node, all
    * header-free, before any authenticated URL. So dropping every `true` entry
    * still leaves a capability plus one usable entry per node to fail over
    * between. A client that finds itself with nothing to render after that drop
    * has a ref that arrived with no `url` at all, which is a different problem
-   * and a much smaller one — do not reach for a blob-to-file path before
+   * and a much smaller one; do not reach for a blob-to-file path before
    * checking which it is.
    */
   requiresAuthorization: boolean;
@@ -215,15 +215,15 @@ export interface CatalogueApi {
    * image. A caller walks the list on a decode or transport failure.
    *
    * **Every URL here is transport for one set of bytes, and none of them
-   * identifies those bytes.** The identity is the artwork id — the SHA-256 of
-   * the content — which is what this is keyed by and what a caller should key
+   * identifies those bytes.** The identity is the artwork id (the SHA-256 of
+   * the content), which is what this is keyed by and what a caller should key
    * its own caching on. Walking to the next entry changes where the bytes come
    * from and never what they are, and a re-signed capability is the same image
    * at a different string.
    *
    * Synchronous, and the primitive `artwork()` is built on: a URL can always
    * be fetched into a `Blob`, while a `Blob` cannot be handed to an image
-   * loader that wants a URL — which is what `<img src>` and a native `Image`
+   * loader that wants a URL, which is what `<img src>` and a native `Image`
    * both want.
    */
   artworkUrls(id: string): ArtworkSource[];

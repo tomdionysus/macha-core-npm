@@ -85,7 +85,7 @@ function normalise(value: unknown, depth = 0): unknown {
  * since this page or process booted, which is the right axis for "how long did
  * this take" and meaningless outside the tab that produced it. Reading a
  * client trace against a node's journal meant someone taking wall-clock times
- * off a separate console probe and the server mapping them by hand — an hour
+ * off a separate console probe and the server mapping them by hand, an hour
  * out, because the two machines were in different zones and one of them had
  * assumed they matched.
  *
@@ -95,7 +95,7 @@ function normalise(value: unknown, depth = 0): unknown {
  * because they answer different questions.
  *
  * **Zulu, and the `Z` is load-bearing.** Macha spans sites in different
- * timezones — three nodes in three zones on this cluster — so an unlabelled
+ * timezones (three nodes in three zones on this cluster), so an unlabelled
  * `15:51:52` is precisely the ambiguity being removed. Time of day rather
  * than the full instant because the date is in the record and rarely changes
  * inside one session; anything comparing across days should read the entry,

@@ -77,7 +77,7 @@ const MEDIA = ['#EXTM3U', '#EXT-X-MAP:URI="init.mp4"', '#EXTINF:6.0,', 'seg1.m4s
 describe('resolving a relative URI against a manifest', () => {
   it('resolves a sibling segment, which React Native\'s own URL cannot', () => {
     // RN's URL strips one trailing slash from the base and concatenates, so
-    // this becomes `.../abc/index.m3u8seg1.m4s` — a URL that 404s and is then
+    // this becomes `.../abc/index.m3u8seg1.m4s`, a URL that 404s and is then
     // reported as the source being unservable.
     expect(resolveUrl('https://node-a.example/stream/abc/index.m3u8', 'seg1.m4s'))
       .toBe('https://node-a.example/stream/abc/seg1.m4s');
@@ -85,7 +85,7 @@ describe('resolving a relative URI against a manifest', () => {
 
   it('walks out of a directory with ..', () => {
     // `..` applies to the manifest's own directory, so this leaves `v0/` and
-    // lands beside it — matching a spec-conformant URL resolver exactly.
+    // lands beside it, matching a spec-conformant URL resolver exactly.
     expect(resolveUrl('https://node-a.example/stream/abc/v0/index.m3u8', '../shared/init.mp4'))
       .toBe('https://node-a.example/stream/abc/shared/init.mp4');
   });
@@ -257,7 +257,7 @@ describe('the headers a walk sends', () => {
 
   it('does not let a source header override Range', async () => {
     // A source header that replaced Range would silently turn a bounded probe
-    // into a full segment fetch — on a television, a real transfer that nobody
+    // into a full segment fetch: on a television, a real transfer that nobody
     // would attribute to a health check.
     const { fetch, calls } = stubFetch({
       'https://node-a.example/stream/abc/index.m3u8': { body: MEDIA },
@@ -317,7 +317,7 @@ describe('readiness: has the first fragment arrived', () => {
   it('reports the status when the master playlist itself answers, rather than calling it empty', async () => {
     // **The reaped-session case, and the whole reason this branch exists.**
     // When a node reaps a session the *master* playlist 404s, and the walk
-    // used to read `.ok`, return `[]` and report `empty-manifest` — throwing
+    // used to read `.ok`, return `[]` and report `empty-manifest`, throwing
     // away the one number that says what happened. Measured on the Android TV
     // client on 2026-09-20: its host had no choice but to classify the
     // failure `unknown`, core reads `unknown` as evidence against the
@@ -385,7 +385,7 @@ describe('reading bytes on a host whose accessors this package cannot use', () =
     // The module's own rule, turned on itself. The node answered and the
     // status says it is serving; all that failed was reading the body on this
     // host. Returning false would destroy every standby on that platform
-    // silently, with no status and no log line — indistinguishable from
+    // silently, with no status and no log line: indistinguishable from
     // "seamless failover doesn't work on this device".
     const { fetch } = stubFetch({
       ...MEDIA_ONLY,
@@ -408,8 +408,8 @@ describe('what a playlist leg asks for', () => {
   it('fetches playlists whole, with no Range', async () => {
     // A readiness probe is documented as reading no payload, and was pulling
     // up to 64 KB per playlist per attempt. Worse, a long media playlist
-    // exceeds 64 KB — a two-hour film at six-second segments is ~1,200
-    // entries — so a node honouring the range answers 206 with a silently
+    // exceeds 64 KB (a two-hour film at six-second segments is ~1,200
+    // entries), so a node honouring the range answers 206 with a silently
     // truncated playlist.
     const { fetch, calls } = stubFetch({
       'https://node-a.example/stream/abc/index.m3u8': { body: MASTER },

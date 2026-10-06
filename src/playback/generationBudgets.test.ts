@@ -34,7 +34,7 @@ describe('a node states its own deadlines and core adds only the distance', () =
     // node entitled to 15,000 abandoned a working node three seconds early,
     // every time. The invariant that stops it coming back is that the budget
     // always exceeds the startup entitlement it is bounding, stated or
-    // defaulted — never that it beats some previous number.
+    // defaulted, never that it beats some previous number.
     expect(generationAttemptBudgetMs(undefined)).toBeGreaterThan(SERVER_STARTUP_TIMEOUT_MS);
     expect(generationAttemptBudgetMs({ startupTimeoutMs: 30_000 })).toBeGreaterThan(30_000);
   });
@@ -103,7 +103,7 @@ describe('a replacement is never started with less runway than one attempt', () 
 
   it('floors at the attempt budget where the frontier would clamp under it', () => {
     // The latent case: a node configured with four four-second segments has a
-    // 16,000 look-ahead, which clamps to 12,000 — less than one attempt. The
+    // 16,000 look-ahead, which clamps to 12,000: less than one attempt. The
     // old clamp returned 12,000 and the replacement could not finish in time.
     expect(replacementLeadTimeMs(16_000, attemptMs)).toBe(attemptMs);
   });

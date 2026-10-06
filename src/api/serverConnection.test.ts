@@ -57,7 +57,7 @@ describe('telling a dead node from a node saying no', () => {
     expect(isGatewayConnectionFailure(response(502), true)).toBe(true);
   });
 
-  it('treats a bodyless 503 as unreachable — HAProxy with no healthy backend', () => {
+  it('treats a bodyless 503 as unreachable: HAProxy with no healthy backend', () => {
     // The API is going behind HAProxy for TLS offload, and 503 is its
     // canonical answer for a backend that is gone. Reading that as an
     // application error shows a viewer an API failure for a node that is dead.

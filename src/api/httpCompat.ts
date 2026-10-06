@@ -5,7 +5,7 @@ export type HeaderValues = Record<string, string | undefined>;
 
 /**
  * Applies to every request in the cluster status/catalogue/routing layer, and
- * to session minting and validation — which are not part of that layer, but
+ * to session minting and validation, which are not part of that layer, but
  * are the one path the whole application waits on, so an unbounded one there
  * stalls every request behind it. Playback/streaming transfers are exempt and
  * manage their own deadlines.
@@ -18,7 +18,7 @@ function isAbortError(error: unknown): boolean {
 
 /**
  * Bounds a request with a timeout, composed with whatever cancellation the
- * caller already threads through `init.signal` — without `AbortSignal.any`,
+ * caller already threads through `init.signal`, without `AbortSignal.any`,
  * which is absent on browsers old enough to have a real `AbortController` but
  * predate that static (this is a TV app; see `AbortControllerPolyfill.ts`).
  *
@@ -120,7 +120,7 @@ export async function readResponseBody(response: Response): Promise<ParsedRespon
  * A success body was taken for the envelope everywhere: `response.items.map`
  * on a 200 that has no `items` throws `TypeError` at the call site, and
  * `retryableEndpointFailure` reads a bare `TypeError` as a *transport*
- * failure — so a schema mismatch cooled the node down as if it had been
+ * failure, so a schema mismatch cooled the node down as if it had been
  * unreachable, and the message a caller saw was about `.map` rather than
  * about the server. Checked here so every family says the same thing.
  *

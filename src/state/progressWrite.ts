@@ -7,14 +7,14 @@
  * Measured on the Android TV set at 10.35.1.133, 2026-09-22 20:42:15: the set
  * replaced Android System WebView and force-stopped the client at `adj 0`, in
  * the foreground, mid-use, recorded as `reason=10 (USER REQUESTED)` and not a
- * crash. A kill of that shape runs no teardown — no stop, no unmount, no final
- * write — and a client that wrote only on deliberate exit resumed a viewer
+ * crash. A kill of that shape runs no teardown (no stop, no unmount, no final
+ * write), and a client that wrote only on deliberate exit resumed a viewer
  * killed an hour into a film from wherever they last pressed Back.
  *
  * Taken from that client's `progressPersistence.ts` as it stood after two
  * corrections found on the set, so that there is one implementation of the
  * decision rather than one per client. **The host keeps the timer, the playback
- * subscription and where the writer lives** — the television's sits at app
+ * subscription and where the writer lives**: the television's sits at app
  * scope because a player screen that unmounts on Back stops writing exactly
  * when there is still something to record. That is platform.
  *
@@ -22,7 +22,7 @@
  * progress a viewer may lose to an unannounced kill: the stored position is
  * stale by at most one interval, whatever the node does. It has no
  * counterpart in the protocol, and in particular it is not to be derived from
- * a node's `session_idle_ms` — session reaping is the node reclaiming a slot,
+ * a node's `session_idle_ms`: session reaping is the node reclaiming a slot,
  * this is the device surviving a process kill, and the two share a trigger
  * rather than a mechanism.
  */
@@ -40,7 +40,7 @@ export interface ProgressWatermark {
    *
    * Separate from `wroteAtMs` because a declined write deliberately does not
    * advance that one, and without this the retry would fire on every playback
-   * snapshot — 4 Hz on the television — for the whole of the first 30 s of
+   * snapshot (4 Hz on the television) for the whole of the first 30 s of
    * every film.
    */
   attemptedAtMs: number;
@@ -93,13 +93,13 @@ export function progressWriteDue(
  * **A write the store declined is not a write.** `ContinueWatchingStore.update`
  * stores nothing below its minimum position, and says so by returning a list
  * the entry is absent from rather than by throwing. Read `landed` off that
- * list — `stored.some((entry) => entry.mediaId === progress.mediaId)` — rather
+ * list, `stored.some((entry) => entry.mediaId === progress.mediaId)`, rather
  * than re-deriving the floor, so the floor can move without the host moving.
  *
  * Advancing the clock on a declined write pushed the next attempt a full
  * interval away: the first write of a film lands at a second or two, is
  * declined, and nothing was then written until the interval had passed.
- * Measured on the Android TV set 2026-09-22 — a film killed at about seventy
+ * Measured on the Android TV set 2026-09-22: a film killed at about seventy
  * seconds recorded nothing at all, which is the case this exists for.
  *
  * The attempt is recorded either way, or `minAttemptGapMs` does nothing and

@@ -22,12 +22,12 @@ describe('what a status on a fragment request means', () => {
   });
 
   it('calls a 404 a miss by this node, and not evidence about the node', () => {
-    // It used to answer `stream`, which is endpoint evidence — so a node that
+    // It used to answer `stream`, which is endpoint evidence, so a node that
     // had merely reaped a paused viewer's session was scored as unhealthy and
     // dropped from the candidate list for answering honestly.
     //
     // `not-found` claims only what happened. Which of the two things it means
-    // — a reaped session, or a fragment past the end of the plan — is not
+    // (a reaped session, or a fragment past the end of the plan) is not
     // decidable from the status, and core asks the session route instead.
     expect(playbackFailureKindForStatus(404)).toBe('not-found');
   });
@@ -55,7 +55,7 @@ describe('what a status on a fragment request means', () => {
 
   it('does not guess at a status it has no rule for', () => {
     // `unknown` is treated as possible endpoint evidence, which is the safe
-    // default — better than asserting a meaning this package does not know.
+    // default, better than asserting a meaning this package does not know.
     expect(playbackFailureKindForStatus(418)).toBe('unknown');
     expect(playbackFailureKindForStatus(200)).toBe('unknown');
   });
@@ -64,7 +64,7 @@ describe('what a status on a fragment request means', () => {
 describe('the session idle budget', () => {
   it('leaves the hold well inside it, so waiting out a hold can never reap the session', () => {
     // Both are server defaults a client cannot read at runtime, so this asserts
-    // the relation rather than either number — the same discipline the stall
+    // the relation rather than either number, the same discipline the stall
     // budget follows below. A client sitting through a hold is still talking to
     // the node and is not what the reaper is for.
     expect(SERVER_SESSION_IDLE_MS).toBeGreaterThan(SERVER_SEGMENT_HOLD_MS * 100);

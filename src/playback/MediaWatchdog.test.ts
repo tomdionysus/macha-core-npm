@@ -89,7 +89,7 @@ describe('media start watchdog', () => {
     // Chromium throttles media loading in a backgrounded or occluded tab, so
     // this span is the browser working correctly rather than a node failing.
     // Counting it would condemn a healthy node for a tab nobody was looking
-    // at — the exact confound that invalidated an evening of investigation.
+    // at: the exact confound that invalidated an evening of investigation.
     host.advance(3_600_000);
     expect(starved).not.toHaveBeenCalled();
 
@@ -259,7 +259,7 @@ describe('media stall watchdog', () => {
 
   it('outlasts the server-side fragment hold, and stays a viewer budget', () => {
     // The rule, not the number: a node holds a request for a fragment it has
-    // not produced for `streaming.segment_timeout` — 6000 ms — before
+    // not produced for `streaming.segment_timeout` (6000 ms) before
     // answering `500 segment_not_ready`. Expiring inside that window judges a
     // node that was about to deliver; expiring at exactly that window decides
     // nothing. Above it, firing means the node failed to answer its own hold.
@@ -280,7 +280,7 @@ describe('media stall watchdog', () => {
     // the node builds the generation. Arming on that first sight killed every
     // replacement after 15 s on a real Samsung set: recover onto a healthy
     // node, kill it before it delivered a frame, recover again, and exhaust
-    // the cluster — "No untried Macha playback endpoint remains", with three
+    // the cluster: "No untried Macha playback endpoint remains", with three
     // working nodes. A source that never started has not stalled.
     for (let tick = 0; tick < 40; tick += 1) {
       watchdog.note(0, 0);
@@ -294,7 +294,7 @@ describe('media stall watchdog', () => {
 describe('a platform that cannot measure buffering', () => {
   it('still moves off a node the viewer is waiting on', () => {
     // expo-video publishes a position and nothing trustworthy about buffered
-    // ranges. Without a buffer figure this cannot tell slow from dead — but a
+    // ranges. Without a buffer figure this cannot tell slow from dead, but a
     // frozen picture is a viewer waiting either way, and waiting is what the
     // budget answers.
     const host = controllable();
@@ -313,7 +313,7 @@ describe('a platform that cannot measure buffering', () => {
   it('reports no buffer figure it was never given', () => {
     // Absent must stay absent all the way to the caller: a stall carrying a
     // fabricated zero would read as evidence about the node, and there is
-    // none — only evidence that a viewer was waiting.
+    // none, only evidence that a viewer was waiting.
     const host = controllable();
     const watchdog = new MediaStallWatchdog(host.environment, MEDIA_STALL_TIMEOUT_MS);
     const stalled = vi.fn();
@@ -363,7 +363,7 @@ describe('a timeline that moves under the watchdog', () => {
     playingWellInto(watchdog, harness);
 
     // Rewind to the start. The buffer is rebuilt around the new position, so
-    // its end is far below where it had reached — which a running high-water
+    // its end is far below where it had reached, which a running high-water
     // mark reads as "nothing arriving" for the rest of the film. The picture
     // is frozen while the node refills, which is a node working, not a node
     // dead.
@@ -422,7 +422,7 @@ describe('resuming after a pause', () => {
   it('judges a node that died while the viewer was paused', () => {
     // Only advancement re-arms the deadline, and a node that died during the
     // pause produces none. Without a re-arm the picture stays frozen forever
-    // with nothing counting — the exact failure this class exists to prevent,
+    // with nothing counting: the exact failure this class exists to prevent,
     // reached through the one door left open.
     const harness = controllable();
     const stalled = vi.fn();

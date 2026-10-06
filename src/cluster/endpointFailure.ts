@@ -24,14 +24,14 @@ export class MachaEndpointError extends Error {
  * own**, so a caller reading `error.status` off the object it caught finds
  * nothing and classifies every wrapped refusal as fatal. The phone client hit
  * exactly that on 2026-09-21, in a classifier it had written an hour earlier
- * to fix the neighbouring bug — it had corrected *"the error I catch is the
+ * to fix the neighbouring bug: it had corrected *"the error I catch is the
  * error I raise"* and immediately assumed *"the fields are on the error I
  * catch"*. Its degrade path had then been dead twice in one day.
  *
  * **Core walks this chain in three places; a client that has to re-walk it is
  * a mirror that only one side will update.** Exported for the same reason the
  * code accessor is, and stated as the rule rather than the exception: **what
- * survives a layer boundary is fields, never identity and never position** —
+ * survives a layer boundary is fields, never identity and never position**:
  * duck-type on `status` and `code`, and read them through these accessors.
  */
 export function playbackFailureStatus(error: unknown): number | undefined {
@@ -59,7 +59,7 @@ function errorStatus(error: unknown): number | undefined {
  * bytes and every node will refuse it the same way, so walking the cluster
  * only spends the viewer's time before giving them the same answer.
  * `source_unreadable` and `source_read_timed_out` are facts about one node's
- * view of it — a bad extent, a storage mount gone slow — and the next node is
+ * view of it (a bad extent, a storage mount gone slow), and the next node is
  * exactly the right thing to try.
  */
 const TERMINAL_SOURCE_REASONS: ReadonlySet<string> = new Set(['source_unsupported']);
@@ -100,7 +100,7 @@ export function retryableEndpointFailure(error: unknown): boolean {
   // every node would repeat it. **It does not, and the belief was wrong at the
   // source.** See `ACCOUNT_SCOPED_FAILURE_CODES`: the cap is counted per node,
   // so a refusal from one node says nothing about the next. It walks like any
-  // other `429`, and what it must not do — charge the node — is handled by
+  // other `429`, and what it must not do (charge the node) is handled by
   // `failureBlamesEndpoint` rather than by refusing to walk.
   const status = errorStatus(error);
   // A server-side failure can be node-local (for example this node cannot read
@@ -117,7 +117,7 @@ export function retryableEndpointFailure(error: unknown): boolean {
  *
  * A transcode pipeline that fails to start, or a source stream that dies, is
  * a fact about that title on that node. Cooling the endpoint down for it
- * takes a healthy node out of rotation for every *other* title — and with a
+ * takes a healthy node out of rotation for every *other* title, and with a
  * small cluster and an escalating cooldown, a single unplayable file can
  * empty the candidate list. Trying the next node for the same title is still
  * right; recording the node as unhealthy is not.
@@ -128,7 +128,7 @@ export function retryableEndpointFailure(error: unknown): boolean {
  *
  * A third scope, and core had only two. Server `0.48.0` adds a per-account
  * session cap, because once one bearer token can hold several playback
- * sessions nothing else bounds one account — the cap is the admission control
+ * sessions nothing else bounds one account: the cap is the admission control
  * that replaces one-session-per-bearer. It answers `429 account_session_limit`
  * with the limit and the current count in the body.
  *
@@ -140,8 +140,8 @@ export function retryableEndpointFailure(error: unknown): boolean {
  * limit, and the next node counts from its own zero.
  *
  * **What this set is for, and what it is not for.** It is not a routing
- * decision. A refusal listed here is still worth trying elsewhere — the walk
- * is how a viewer gets served by a node that has room — and it is listed here
+ * decision. A refusal listed here is still worth trying elsewhere (the walk
+ * is how a viewer gets served by a node that has room), and it is listed here
  * so that the walk happens *without charging anyone*: an account at its limit
  * on one node is not evidence that the node is unwell. Routing asks
  * `retryableEndpointFailure`; blame asks `failureBlamesEndpoint`; a host
@@ -157,7 +157,7 @@ export function retryableEndpointFailure(error: unknown): boolean {
  * outright on a cluster where two nodes had capacity. **Read the loop, not the
  * comment beside it.**
  *
- * `resource_limit` is deliberately *not* listed — it is shared by the
+ * `resource_limit` is deliberately *not* listed: it is shared by the
  * node-wide session limit and both transcode limits, where the node really is
  * full and the charge is earned.
  */
@@ -170,7 +170,7 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  *
  * What is above is a *code the server owns and stated*. The cap's value is a
  * node's configuration, it is the operator's to set, and core has no standing
- * to hold a copy of it — not as a constant, not as a default, not as a
+ * to hold a copy of it: not as a constant, not as a default, not as a
  * fallback for a node that has not said. Core attempts, and handles the
  * refusal it gets.
  *
@@ -178,14 +178,14 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  * measured cost each time.** A client sized itself against `look_ahead_ms`'s
  * default of 8 segments when the node was configured for 4, believed it had
  * 32 s of authorised production against a real 16, and sat refused at the
- * frontier for the difference — a 12.7 s viewer freeze on 2026-09-17. Two
+ * frontier for the difference: a 12.7 s viewer freeze on 2026-09-17. Two
  * standby windows in `PlaybackCoordinator` are still literals sized against a
  * configurable `pipeline_idle_ms`, and they are open items for the same
  * reason. **A default is not a contract**, and the whole of `0.14.0` was spent
  * deleting core's private copies of server numbers.
  *
  * The server has agreed to publish the limit and the current count somewhere
- * core can read *before* it plans, rather than only on the refusal — so core
+ * core can read *before* it plans, rather than only on the refusal, so core
  * can decline to prepare a standby it knows will be refused instead of
  * discovering the cap at the moment failover needs it. **When that lands, read
  * it per response and treat absence as "the node cannot say"**, the same
@@ -251,7 +251,7 @@ const PER_TITLE_FAILURE_CODES: ReadonlySet<string> = new Set([
  * differently, or not at all: a per-title failure is
  * about the file, an account-scoped one is about the account, and neither is
  * about the node. `isPerTitleFailure` alone was the gate, which left the
- * account case relying on `retryableEndpointFailure` returning `false` — so
+ * account case relying on `retryableEndpointFailure` returning `false`, so
  * the moment the walk was corrected, the charge would have followed it onto
  * every healthy node in the cluster. Naming the question separately is what
  * keeps routing and blame from being one decision again.
@@ -277,7 +277,7 @@ export function failureBlamesEndpoint(
   //
   // The server states this distinction directly from 0.48.0's successor:
   // `resource_limit` on create carries scope=node with
-  // alternative_may_succeed, while on update it carries scope=request —
+  // alternative_may_succeed, while on update it carries scope=request:
   // the session lives here and is still serving, so the remedy is a different
   // instruction against this node, a remux instead of a transcode or a lower
   // height, not a different node. Core keys on the status rather than those
@@ -305,7 +305,7 @@ export function isPerTitleFailure(error: unknown): boolean {
  * **A host should never parse a message and should never walk `cause` itself,
  * and until this existed it had no third option.** By the time a create
  * failure reaches `PlaybackCoordinatorSnapshot.fatalError` it is a bare
- * `Error` whose code sits two or three links down — `MachaPlaybackError`
+ * `Error` whose code sits two or three links down: `MachaPlaybackError`
  * wrapped by `endpointFailure`, then chained by `terminalRecoveryError`. The
  * Android TV client asked what it could render for a per-account cap refusal
  * and the honest answer was "the message, or a chain walk you write yourself".
@@ -402,14 +402,14 @@ export function mutationOutcomeUnknown(error: unknown): boolean {
  * that job: what a host actually renders. Without it a host shows `.message`,
  * which by the time a playback failure has crossed `endpointFailure` reads
  * *"Macha endpoint http://10.35.1.50:7438 failed: Macha playback request
- * failed: timed out waiting for first fragmented-MP4 segment"* — two of core's
+ * failed: timed out waiting for first fragmented-MP4 segment"*: two of core's
  * own envelopes and a node address, in front of a viewer. Three clients
  * displayed exactly that today and one had written a loop to strip prefixes
  * until none remained.
  *
  * **Carried rather than reconstructed.** Stripping core's prefixes means a
  * client matching on core's wording, which goes silent the first time one is
- * reworded — the same fault `playbackFailureCode` retired for codes. The
+ * reworded: the same fault `playbackFailureCode` retired for codes. The
  * server's sentence is kept on the error at the moment it is parsed.
  *
  * Returns the **innermost** stated detail, which is the opposite of

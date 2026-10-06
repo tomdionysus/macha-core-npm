@@ -755,8 +755,8 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     pending.resolve(alternate);
     await vi.waitFor(() => expect(player.directAlternatives).toHaveLength(1));
     // The alternate is registered as a same-cache-key fallback so an in-flight
-    // range request can fail over silently — no video reload, no visible
-    // stall — rather than only building a session for a later hard swap.
+    // range request can fail over silently (no video reload, no visible
+    // stall) rather than only building a session for a later hard swap.
     expect(player.directAlternatives[0]).toEqual({ active: primary.source, alternate: alternate.source });
     expect(player.playCalls).toHaveLength(1);
 
@@ -765,8 +765,8 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     // than waiting on reactive failure evidence: the superseded primary
     // session is closed right away, well before the coordinator itself closes.
     await vi.waitFor(() => expect(api.stop).toHaveBeenCalledWith('primary', { endpointAlreadyCharged: true }));
-    // No session negotiation ever failed for the primary endpoint — nothing
-    // else would ever tell endpoint health tracking it is down — so a silent
+    // No session negotiation ever failed for the primary endpoint (nothing
+    // else would ever tell endpoint health tracking it is down), so a silent
     // promotion must report that failure itself, or a later failover (for an
     // unrelated cause) could still pick this same dead endpoint back up.
     expect(api.recordEndpointFailure).toHaveBeenCalledWith('node-a');
@@ -781,7 +781,7 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
     // the other way, through `activateSession` and `player.play()`.
     //
     // Nothing else here asserts the silent path is taken *instead of* that
-    // one — only that it happens — so a change routing a Direct Play alternate
+    // one (only that it happens), so a change routing a Direct Play alternate
     // through promotion-and-reload would pass every other test in this file
     // and lose the seamless swap with nothing to show for it.
     //
@@ -815,8 +815,8 @@ describe('Evidence-triggered Direct Play recovery preparation', () => {
   it('keeps registering fallbacks against the source truly loaded in the player across chained silent promotions', async () => {
     // The player never reloads across a silent promotion, so a *second*
     // degradation must still register its new fallback against the original
-    // source the read-ahead worker actually configured a key for — not
-    // whichever session promotion has most recently made current — or the
+    // source the read-ahead worker actually configured a key for, not
+    // whichever session promotion has most recently made current, or the
     // worker cannot find the key it needs to attach the new fallback to.
     const player = new FakePlayer();
     const primary = session({ sessionId: 'primary', mediaId: 'macha:one' });
@@ -1049,7 +1049,7 @@ describe('PlaybackCoordinator player failures', () => {
 
   it('does not fail over to another node when a fragment is merely being held', async () => {
     // The next node holds a different generation, so failing over cannot
-    // produce the fragment sooner — it discards a working session to ask a
+    // produce the fragment sooner; it discards a working session to ask a
     // stranger for something only this node is making.
     const player = new FakePlayer();
     const initial = session({ endpoint: { id: 'node-a', baseUrl: 'http://a' } });
@@ -1086,8 +1086,8 @@ describe('PlaybackCoordinator player failures', () => {
 
     it('releases a transcode standby quickly, because it holds the node\'s only slot', async () => {
       // A node counts a session against `max_video_transcodes` from admission
-      // until destruction — reclaiming its pipeline does not release the
-      // entitlement — and these nodes have one slot. So an unused transcode
+      // until destruction (reclaiming its pipeline does not release the
+      // entitlement) and these nodes have one slot. So an unused transcode
       // standby is thirty seconds in which nobody else on that node can start
       // one. Verified against the server: 8 s, not 30 s.
       vi.useFakeTimers();
@@ -1174,7 +1174,7 @@ describe('PlaybackCoordinator player failures', () => {
 
     it('tells the registry the abandoned node is unwell', async () => {
       // It never refused a session, it stopped serving bytes, so nothing else
-      // would ever record it — and a later failover would pick it straight
+      // would ever record it, and a later failover would pick it straight
       // back up as an apparently untried candidate.
       const player = new FakePlayer();
       const primary = remuxSession({ sessionId: 'primary', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
@@ -1286,7 +1286,7 @@ describe('PlaybackCoordinator player failures', () => {
   it('waits for an in-flight failover to release the session it built before close() resolves, and releases it with the close options', async () => {
     // `close()` used to await the start, the mutation loop and every alternate
     // preparation, and not the failover. So it resolved while a replacement
-    // session was still being negotiated on another node — the recovery does
+    // session was still being negotiated on another node; the recovery does
     // stop what it built once it sees `disposed`, but a host that tears down
     // auth on the strength of `close()` resolving races that `DELETE`. On the
     // unload path the flag is the difference between the DELETE surviving and
@@ -1322,7 +1322,7 @@ describe('PlaybackCoordinator player failures', () => {
 
   it('does not act on a stream error during an in-flight seek-driven generation replacement until the seek settles, then drops it as stale once the seek replaces the source', async () => {
     // Mirrors the degrade() race (see the transport-invariants test above),
-    // but fail() can never just drop the error the way degrade() does — it
+    // but fail() can never just drop the error the way degrade() does: it
     // must wait for the seek's own generation replacement to settle and
     // judge from what actually happened, since a bare early return would
     // leave a genuinely unrelated fatal error with neither recovery nor
@@ -1356,7 +1356,7 @@ describe('PlaybackCoordinator player failures', () => {
     // The other half of the race above: the fatal error is genuinely
     // unrelated to the seek (here, the seek's own generation request fails),
     // so once the in-flight mutation settles the error must still be
-    // handled — not silently swallowed by a naive copy of degrade()'s guard.
+    // handled, not silently swallowed by a naive copy of degrade()'s guard.
     const player = new FakePlayer();
     const initial = session({ mode: 'transcode', seekMs: 30_000 });
     const update = deferred<PlaybackSession>();
@@ -1414,7 +1414,7 @@ describe('PlaybackCoordinator player failures', () => {
   });
 
   it('does not let a source it is replacing move the resume point backwards', async () => {
-    // The dying source is left playing on purpose — its buffered tail is what
+    // The dying source is left playing on purpose: its buffered tail is what
     // covers the failover, and stopping it to silence it would be the black
     // screen the whole mechanism exists to avoid. But it has stopped being a
     // witness: an element reporting zero as it tears down would otherwise
@@ -1458,7 +1458,7 @@ describe('PlaybackCoordinator player failures', () => {
     // Teardown after a failover belongs to `resolver.failover()`, which
     // released the old session at the moment it gave up on it. Two of the
     // four clients call the resolver directly and never build a coordinator,
-    // so teardown up here is teardown half the consumers never get — and a
+    // so teardown up here is teardown half the consumers never get, and a
     // second owner would DELETE a session already gone and charge the
     // registry for the dead node failing to answer about it.
     const player = new FakePlayer();
@@ -1579,7 +1579,7 @@ describe('PlaybackCoordinator player failures', () => {
     // A device handed fragmented MP4 where it asked for MPEG-TS shows a black
     // picture and reports nothing, so the starvation is charged to a node
     // that did exactly what it was told. `container` is not among a session's
-    // confirmed preferences, so failover has to restate it — the update path
+    // confirmed preferences, so failover has to restate it; the update path
     // already does.
     const player = new FakePlayer();
     const remux = { mode: 'remux' as const, maxHeight: null, maxBitrate: null, audioStream: 1, subtitleStream: null, audioLanguage: '', subtitleLanguage: '' };
@@ -1679,7 +1679,7 @@ describe('choosing an instruction mid-session', () => {
   it('re-decides when the viewer selects Auto, rather than silently changing nothing', async () => {
     // The failure this pins: an absent mode on an update leaves the server on
     // whatever it was already doing, so the control highlights and does
-    // nothing — worse than an error, because there is nothing to notice.
+    // nothing, worse than an error, because there is nothing to notice.
     const updates: PlaybackUpdate[] = [];
     const initial = session({ mode: 'transcode' });
     const api = resolver(initial, async (update) => {
@@ -1747,7 +1747,7 @@ describe('the instruction has a symptom when it is a fallback', () => {
     // the device, and a failed facts lookup says nothing about that: carriage
     // is decided by the host and the device, and `segmentContainer` needs
     // neither the profile nor the node's operations to decide it. Asked for
-    // no container at all, the node defaults to fMP4 — and failover then
+    // no container at all, the node defaults to fMP4, and failover then
     // restates that wrong answer into every replacement, which is the silent
     // starvation 0.6.3 already paid for once.
     const player = new FakePlayer();
@@ -1800,7 +1800,7 @@ describe('the instruction has a symptom when it is a fallback', () => {
   });
 
   it('does not claim the preference was honoured by a node that never said', async () => {
-    // An unanswered question must not read as an answer — a node predating
+    // An unanswered question must not read as an answer: a node predating
     // the field would otherwise silently confirm every preference it ignores.
     const player = new FakePlayer();
     const coordinator = new PlaybackCoordinator({
@@ -1909,8 +1909,8 @@ describe('preferences a mode change clears', () => {
 describe('a facts lookup that failed is retried, within a budget', () => {
   /**
    * Caching the answer is right; caching a thrown lookup was not. One
-   * transient fault — a node 500ing, a request issued microseconds before the
-   * session existed — permanently condemned the generation to the factless
+   * transient fault (a node 500ing, a request issued microseconds before the
+   * session existed) permanently condemned the generation to the factless
    * fallback, with no retry possible for as long as playback lasted. A viewer
    * met exactly that: a facts call failing 18 ms after load, and a picture
    * that never recovered once the cluster was answering perfectly again.
@@ -1973,7 +1973,7 @@ describe('a facts lookup that failed is retried, within a budget', () => {
 
   /**
    * With only `withoutFacts` a screen could report that something was degraded
-   * but not that the lookup itself failed — so the fallback's symptoms reach
+   * but not that the lookup itself failed, so the fallback's symptoms reach
    * the viewer looking like a property of the file. A warning in a ring buffer
    * is not a degraded mode a viewer can act on.
    */
@@ -2227,7 +2227,7 @@ describe('a node that reaped the session it was serving', () => {
     expect(api.regenerate).not.toHaveBeenCalled();
     expect(api.failover).not.toHaveBeenCalled();
     // And no standby either. The node is cleared, so building one is the churn
-    // `not-found` exists to stop — this is the case that must *not* fall back
+    // `not-found` exists to stop; this is the case that must *not* fall back
     // into ordinary degradation handling.
     expect(api.prepareAlternate).not.toHaveBeenCalled();
     await coordinator.close();
@@ -2360,7 +2360,7 @@ describe('a host that keeps the old source playing while it prepares the new one
   //
   // Switching at call time mapped its ranges through the incoming generation's
   // origin: a buffer of [0, 120.7] drawn at 2407.7 s when its own generation
-  // started at 1772.8 s — ten minutes to the right of the media it described,
+  // started at 1772.8 s, ten minutes to the right of the media it described,
   // while the incoming element had buffered nothing at all.
   //
   // Invisible to every fake that resolves play() immediately, which is why it
@@ -2399,9 +2399,9 @@ describe('a host that keeps the old source playing while it prepares the new one
     });
     await flush();
 
-    // Described through the generation actually playing — 100 s origin, not
+    // Described through the generation actually playing: 100 s origin, not
     // 400 s. Mapping through the incoming origin would put both 300 s out.
-    // Described through the generation actually playing — 100 s origin, not the
+    // Described through the generation actually playing: 100 s origin, not the
     // incoming 150 s. Mapping through the incoming origin would put both 50 s out.
     const during = coordinator.getSnapshot();
     expect(during.event.positionMs).toBe(160_000);
@@ -2431,7 +2431,7 @@ describe('a player that settles somewhere other than core asked for', () => {
   //
   // `seekIntentActive` exists to stop the transient zero/paused events a
   // source emits while attaching from overwriting a transport target. It was
-  // released only by the player arriving within 1.5 s of that target — so a
+  // released only by the player arriving within 1.5 s of that target, so a
   // host that cuts at the point the outgoing element actually reached, rather
   // than the point core nominated, never released it at all.
 
@@ -2458,7 +2458,7 @@ describe('a player that settles somewhere other than core asked for', () => {
     // A regression this fix caused once already, caught by the viewer dragging
     // the scrubber. The release had been widened to "the player is moving",
     // but during a seek that needs a new generation the OUTGOING source is
-    // still playing and still reporting progress — so the target was discarded
+    // still playing and still reporting progress, so the target was discarded
     // 65 ms after the request, with the reported position and the target 685
     // seconds apart, and the generation was created at the position the viewer
     // was already at. The scrubber snapped back.
@@ -2515,20 +2515,20 @@ describe('replacing a reaped source without making the viewer wait', () => {
   // 62.1 s of playable video: 5.16 s of frozen picture.
   //
   // Creating it immediately and *holding* it until the runway ran down was
-  // worse — 12.7 s, 9.0 s of it on one fragment. The cause is the production
+  // worse: 12.7 s, 9.0 s of it on one fragment. The cause is the production
   // frontier: a node produces out to `look_ahead_ms` past the last fragment
   // requested and parks, so a generation held 28 s leaves the viewer arriving
   // beyond anything ever asked for, and the encoder runs forward at roughly
   // realtime to reach them.
   //
-  // *Not* because a held session goes cold. It does not — the pipeline starts
+  // *Not* because a held session goes cold. It does not; the pipeline starts
   // inside the session POST and a node reported startup complete in 1.9 s
   // before answering. Both sides believed the cold-session explanation for
   // several hours, which is why this says so explicitly.
   //
   // So: create nothing until it is nearly needed, create it at the position it
   // will actually be used, and lead by less than the node says it produces
-  // ahead. Law 2 — the cost is spent inside the viewer's remaining media,
+  // ahead. Law 2: the cost is spent inside the viewer's remaining media,
   // not in front of them.
 
   function reapedResolver(initial: PlaybackSession, replacement: PlaybackSession) {
@@ -2633,7 +2633,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
 
   it('builds at the seek target rather than stranding the seek on a dead session', async () => {
     // Until it is built, the coordinator still names the session the node
-    // reaped — so the seek's own mutation would PATCH a 404 and read as the
+    // reaped, so the seek's own mutation would PATCH a 404 and read as the
     // replacement failing.
     const { player, api, coordinator } = await pending();
 
@@ -2649,7 +2649,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
   it('never asks about a session it has already given up on', async () => {
     // Run 1, which cost a viewer 82 s of playable video. A late failure names
     // a source that has been replaced, and `regenerate()` released the endpoint
-    // binding the probe resolves through — so it is unprobeable by
+    // binding the probe resolves through, so it is unprobeable by
     // construction and must never reach the probe.
     const { player, api, coordinator } = await pending();
     api.sessionAlive.mockClear();
@@ -2668,7 +2668,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
 
   it('does not spend the viewer\'s media because the player gave up first', async () => {
     // The channel must not decide this. hls concedes about 28 s into a dead
-    // source, against a lead of 10 — so a rule that built on any fatal would
+    // source, against a lead of 10, so a rule that built on any fatal would
     // build every time and the deferral would never once happen.
     //
     // It is only safe because an adapter reporting `not-found` leaves the
@@ -2733,8 +2733,8 @@ describe('replacing a reaped source without making the viewer wait', () => {
   });
 
   it('counts a host read-ahead as cover, not just what the element has taken', async () => {
-    // `forwardBufferMs` is `video.buffered` and nothing else, so on Direct Play
-    // — where a worker reads ahead in front of the element — core was blind to
+    // `forwardBufferMs` is `video.buffered` and nothing else, so on Direct Play,
+    // where a worker reads ahead in front of the element, core was blind to
     // most of the real cover and built earlier than it needed to.
     const player = new FakePlayer();
     const direct = session({ sessionId: 's1', mode: 'direct', endpoint: { id: 'node-a', baseUrl: 'http://a' } });
@@ -2761,7 +2761,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
 
   it('leads by less than the node says it produces ahead', async () => {
     // The 12.7 s freeze, in one number. A node configured with half the
-    // default look-ahead authorises 16 s of production, not 32 — and a client
+    // default look-ahead authorises 16 s of production, not 32, and a client
     // leading by more than that puts the viewer past the frontier, where every
     // fragment is refused until the encoder walks to them.
     const player = new FakePlayer();
@@ -2817,7 +2817,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
   it('accepts a generation the node started ahead, because asking again returns the same one', async () => {
     // A bound here was tried and livelocked. A node's alignment is
     // deterministic: asked for 2926000 it returned 2934933, and returned it
-    // again every time it was asked. Measured — 147 negotiations in 33.3 s,
+    // again every time it was asked. Measured: 147 negotiations in 33.3 s,
     // every `serverSeekMs` identical, nothing ever activated, the viewer's seek
     // never happened, and the node took four requests a second throughout.
     //
@@ -2849,7 +2849,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
     // Attached, once, and never renegotiated.
     expect(player.playCalls.at(-1)?.source.url).toBe('/generation-overshot.m3u8');
     expect(api.update).not.toHaveBeenCalled();
-    // Reported where they landed — the generation's origin — not where they
+    // Reported where they landed (the generation's origin), not where they
     // asked to be. Claiming the latter is what made the skip invisible.
     expect(coordinator.getSnapshot().intent.positionMs).toBe(15_300);
     await coordinator.close();
@@ -2859,8 +2859,8 @@ describe('replacing a reaped source without making the viewer wait', () => {
     // Measured: ~4 s to negotiate a session, because the node blocks on the
     // first fragment inside the 201, plus up to 16 s for a host to get the join
     // point resident before it can cut to it. The preparation figure tracks the
-    // node rather than the mechanism — 1.0 s, 14.5 s and 16.0 s across one
-    // evening — so the lead is built on the worst observed, not the first.
+    // node rather than the mechanism (1.0 s, 14.5 s and 16.0 s across one
+    // evening), so the lead is built on the worst observed, not the first.
     //
     // Bounded above by the node's look-ahead, and that bound is what makes
     // leading long safe at all: inside it the join is already produced, past it
@@ -2874,7 +2874,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
   it('attaches a generation the node started slightly ahead, rather than negotiating another', async () => {
     // The largest single slice of a measured recovery: 6.21 s of frozen picture.
     // A node aligns a requested start to the next keyframe, so a generation
-    // asked for at X can begin a segment later — and a viewer who travelled less
+    // asked for at X can begin a segment later, and a viewer who travelled less
     // than that while it was being negotiated ends up behind its own origin.
     // The old test was exact equality of requested and desired, which holds only
     // if playback did not advance during the request, and a recovery takes
@@ -2914,7 +2914,7 @@ describe('replacing a reaped source without making the viewer wait', () => {
 describe('the runway is measured when it is spent, not when it was last reported', () => {
   // Found 2026-09-19, answering a client's question about how long it may
   // spend classifying a statusless player error. `runwayMs()` reads
-  // `snapshot.event`, which is the *last event the player sent* — and on the
+  // `snapshot.event`, which is the *last event the player sent*, and on the
   // terminal path the player has by definition stopped sending. Then
   // `recoverFromMissingSession` awaits `sessionAlive()`, a whole router walk,
   // and only then compares the cover against the lead time. So the comparison
@@ -2952,7 +2952,7 @@ describe('the runway is measured when it is spent, not when it was last reported
   const notFound = () => new PlaybackSourceError('HTTP Error 404', 'not-found');
 
   it('builds at once when the probe outlasted the cover it was deferring against', async () => {
-    // 40 s of cover against a 26 s lead defers — but the probe takes 20 s, so
+    // 40 s of cover against a 26 s lead defers, but the probe takes 20 s, so
     // by the time the answer arrives there are 20 s left and the lead is no
     // longer covered. Reading the pre-probe figure defers anyway, and the
     // viewer then waits for the 15 s silence guard to notice.
@@ -3098,8 +3098,8 @@ describe('the runway is measured when it is spent, not when it was last reported
 
 describe('a recovery restates the transforms the chooser picked', () => {
   // The Android TV client measured this on hardware, 2026-09-20. A generation
-  // passing HEVC 1920x1040 through untouched — `mode: transcode`, `video:
-  // copy`, DTS 5.1 converted to AAC — was reaped on its node, and the
+  // passing HEVC 1920x1040 through untouched (`mode: transcode`, `video:
+  // copy`, DTS 5.1 converted to AAC) was reaped on its node, and the
   // replacement re-encoded the video to H264, taking the new node's only
   // `max_video_transcodes` slot to convert a picture the television had been
   // decoding natively. The server ruled out its own substitution: its journal
@@ -3156,7 +3156,7 @@ describe('a recovery restates the transforms the chooser picked', () => {
 
   it('gives up the copy once when the replacement node refuses it, rather than leaving the viewer with nothing', async () => {
     // Restating the copy asks a node that never agreed to it to perform it,
-    // and a 400 is not a retryable endpoint failure — the candidate walk
+    // and a 400 is not a retryable endpoint failure: the candidate walk
     // throws rather than trying the next one. Without the single step down,
     // this fix would trade a silent full transcode for a terminal failure.
     const player = new FakePlayer();
@@ -3226,7 +3226,7 @@ describe('a recovery restates the transforms the chooser picked', () => {
 describe('a dead source goes on talking while its replacement is negotiated', () => {
   // The last uncovered scenario in ACTIVE.md's coverage table. A source that
   // has failed is neither stopped nor unsubscribed while recovery runs, so it
-  // plays out its buffer and reports `ended` short of duration — which
+  // plays out its buffer and reports `ended` short of duration, which
   // `onPlayerEvent` correctly reads as a premature end and sends back as a
   // second fatal failure, from the same source, about the same outage, one to
   // three seconds after the first. Taken terminal it closes the coordinator,
@@ -3246,8 +3246,8 @@ describe('a dead source goes on talking while its replacement is negotiated', ()
   // **Guarded twice, and this test pins the behaviour rather than either
   // line.** `failNow` returns early on `failoverPromise`, and
   // `beginSourceFailover` refuses to start a second failover on the same
-  // field. Removing either alone leaves the whole suite green — 935 tests,
-  // checked — and only removing both turns this red. The two are not the same
+  // field. Removing either alone leaves the whole suite green (935 tests,
+  // checked) and only removing both turns this red. The two are not the same
   // intent (one drops a dying source's noise, one keeps recovery single), so
   // both belong; but neither may be described as the thing under test here.
   it('drops a second failure that arrives while a failover is still in flight', async () => {
@@ -3263,7 +3263,7 @@ describe('a dead source goes on talking while its replacement is negotiated', ()
     player.fail(new PlaybackSourceError('node A stream failed', 'stream'));
     await vi.waitFor(() => expect(api.failover).toHaveBeenCalledTimes(1));
 
-    // The tail running out, arriving as a bare Error — which the default
+    // The tail running out, arriving as a bare Error, which the default
     // classification treats as endpoint evidence, so it would otherwise
     // condemn a node for an outage already being recovered from.
     player.fail(new Error('Playback ended at 33000 of 600000'));
@@ -3283,7 +3283,7 @@ describe('a dead source goes on talking while its replacement is negotiated', ()
   it('drops a failure that arrives while the session is being regenerated', async () => {
     // Same shape through the other recovery door. The node forgot the session
     // rather than failing, so the replacement is being built on the node that
-    // is fine — and the element draining in the meantime must not be allowed
+    // is fine, and the element draining in the meantime must not be allowed
     // to condemn it.
     const player = new FakePlayer();
     const initial = onNodeA();
@@ -3321,7 +3321,7 @@ describe('a dead source goes on talking while its replacement is negotiated', ()
 });
 
 describe('a node that performs a different mode from the one it was asked for', () => {
-  // The server does exactly one substitution and it is not silent — it is
+  // The server does exactly one substitution and it is not silent; it is
   // merely unexamined. When a remux's keyframe index is unusable as a segment
   // plan and the node allows the video-transcode fallback, it plans a
   // transcode and says so: the top-level `mode` is what it performed while
@@ -3383,7 +3383,7 @@ describe('a node that performs a different mode from the one it was asked for', 
     // The distinction the field exists to keep, and the case that actually
     // separates the two candidate comparisons. `snapshot.instruction` is
     // patched by the chooser and by a degrade, but **not** by a plain viewer
-    // mode change — so after the viewer switches, the report still names the
+    // mode change, so after the viewer switches, the report still names the
     // mode the chooser picked at start. Comparing the performed mode against
     // *that* calls every viewer mode change a server substitution. Comparing
     // it against the node's own echo of what it was asked for does not.
@@ -3436,7 +3436,7 @@ describe('a node that performs a different mode from the one it was asked for', 
     await coordinator.start();
     expect(substitutionReports()).toHaveLength(1);
 
-    // A subtitle change re-runs `setSession` for the same generation — the
+    // A subtitle change re-runs `setSession` for the same generation: the
     // cheapest path that patches the report twice without replacing it.
     coordinator.update({ preferences: { subtitleStream: 2 } });
     await vi.waitFor(() => expect(player.subtitleCalls.length).toBeGreaterThan(0));
@@ -3449,7 +3449,7 @@ describe('a node that performs a different mode from the one it was asked for', 
 
 describe('a failure the host never classified is still charged to a node', () => {
   // `isEndpointRetryablePlaybackFailure` cannot tell a host that never wired
-  // classification from one whose classifier ran and could not tell — and, as
+  // classification from one whose classifier ran and could not tell, and, as
   // the Android TV client measured on 2026-09-20, it cannot tell either of
   // those from a classifier that was meant to run and silently did not. That
   // last case sent a reaped session through as `kind: 'unknown'` carrying
@@ -3555,12 +3555,12 @@ describe('a failure the host never classified is still charged to a node', () =>
     // **The fatal channel cannot show this and must not be used for it.** A
     // second fatal arriving during a failover is dropped by `failNow`'s
     // `failoverPromise` guard before it ever reaches the note, so a test
-    // driven that way passes with the latch deleted — checked, and that is
+    // driven that way passes with the latch deleted; checked, and that is
     // exactly how this test read on its first writing.
     //
     // The degradation channel does reach it twice, when `prepareAlternate`
     // has nothing to offer: no standby is held, so nothing short-circuits the
-    // next one. That is also the live shape — a dead source goes on emitting
+    // next one. That is also the live shape: a dead source goes on emitting
     // while a cluster with no spare node has nothing to prepare, so the same
     // unclassified outage arrives over and over. One line per generation, for
     // the reason the mode substitution takes one: a client renders this onto

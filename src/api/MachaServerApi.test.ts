@@ -27,8 +27,8 @@ describe('MachaServerApi', () => {
   });
 
   it('takes the version from the body and ignores response headers entirely', async () => {
-    // There was a header fallback here — `x-macha-version`, `x-server-version`,
-    // then parsing `Server` — and a test asserting the last of them. The server
+    // There was a header fallback here (`x-macha-version`, `x-server-version`,
+    // then parsing `Server`) and a test asserting the last of them. The server
     // sends none of the three and never has, verified against its source and a
     // live node. The old test passed against a header nobody emits, which
     // proved the code worked rather than that the behaviour was wanted.

@@ -8,7 +8,7 @@ import type { PlaybackFailureKind } from '../platform/Platform.js';
  * **every client that plays anything is calibrated against it**: a stall budget
  * must exceed it, a fragment read timeout must exceed it, a hold-retry backoff
  * derives from it. Before this existed the same number lived in a comment here,
- * a literal in a test, and a private constant in a client — three declarations
+ * a literal in a test, and a private constant in a client: three declarations
  * of one server fact, none able to see the others.
  *
  * A held request sends no bytes, so any client deadline shorter than this
@@ -20,7 +20,7 @@ import type { PlaybackFailureKind } from '../platform/Platform.js';
  * **It is the server's default, and the node now states its own.**
  * `segment_timeout_ms` is in the per-node playback block of `/api/v1/status`,
  * and `EndpointRegistry.playbackBudgets` carries it for every node the health
- * monitor has heard from — including one this client has never created a
+ * monitor has heard from, including one this client has never created a
  * session on, which is the case that matters before a failover. Read that
  * where there is one.
  *
@@ -52,7 +52,7 @@ export const PRODUCED_POLL_INTERVAL_MS = 500;
  * against, and calibrating against it independently is how it goes wrong.
  *
  * **A pause is the case this exists for.** Both of the server's clocks run from
- * `touched`, so a client still asking for fragments is never evicted — but a
+ * `touched`, so a client still asking for fragments is never evicted, but a
  * paused client is precisely one that has stopped. hls.js fills its bounded
  * forward buffer, hits `maxBufferLength` and stops requesting; a Direct Play
  * read-ahead worker is bounded the same way. The session therefore survives
@@ -61,8 +61,8 @@ export const PRODUCED_POLL_INTERVAL_MS = 500;
  *
  * **Do not answer it with a keepalive.** The transcode entitlement is held by
  * the session rather than the pipeline, so polling to hold a paused session
- * open pins the node's video transcode slot — its only one, where
- * `max_video_transcodes` is 1 — for as long as the tab is open. The reaping is
+ * open pins the node's video transcode slot (its only one, where
+ * `max_video_transcodes` is 1) for as long as the tab is open. The reaping is
  * correct behaviour. What a client owes is to notice on the way back.
  *
  * **It is the server's default, and the node states its own** as
@@ -92,7 +92,7 @@ export const SERVER_SESSION_IDLE_MS = 1_800_000;
  *
  * That had already happened. A standby generation is a freshly created
  * transcode session, so its pipeline is cold, and the web adapter's preflight
- * gated it on a 5 s budget — a third of the node's entitlement. Healthy nodes
+ * gated it on a 5 s budget: a third of the node's entitlement. Healthy nodes
  * were rejected and good rescues discarded, silently, because a failed
  * standby is opportunistic and swallowed by design. A cold first fragment was
  * measured at 9.0 s, comfortably inside the entitlement and nowhere near the
@@ -111,8 +111,8 @@ export const SERVER_STARTUP_TIMEOUT_MS = 15_000;
  *
  * **Exported because an adapter needs them and will otherwise write its own.**
  * A player that fetches its own fragments has to make decisions before it can
- * call `playbackFailureKindForStatus` — whether to spend a retry, whether a
- * park is appropriate — and those decisions are about these exact numbers. Two
+ * call `playbackFailureKindForStatus` (whether to spend a retry, whether a
+ * park is appropriate) and those decisions are about these exact numbers. Two
  * shipped adapters each restated `500` privately with its own comment
  * explaining why it is not `503`, which is how the same server fact came to
  * exist in four places, and it was named here as a client's private copy
@@ -141,7 +141,7 @@ export const SOURCE_SUPERSEDED_STATUS = 410;
  * What an HTTP status on a fragment or manifest request means about the source.
  *
  * The mapping is protocol, not platform, and was previously specified in prose
- * and implemented once per player — against hls.js, against media3's
+ * and implemented once per player: against hls.js, against media3's
  * `InvalidResponseCodeException`, and again for each new host. That put wire
  * knowledge inside platform adapters, which is the wrong place for it: an
  * adapter should report the status it saw and let this decide what it means.
@@ -149,28 +149,28 @@ export const SOURCE_SUPERSEDED_STATUS = 410;
  * The statuses are deliberately split as they are, and the reasoning lives in
  * `docs/writing-a-player.md` because it is the part worth reading:
  *
- * - **`500` — a hold.** The node has not produced this fragment yet and is
+ * - **`500`: a hold.** The node has not produced this fragment yet and is
  *   working correctly. Retry the same node; the next one is producing a
  *   different generation and does not have it either.
  *
  *   **Stated by the server, not inferred from behaviour** (0.45.0): a fragment
- *   beyond the look-ahead is *refused, not missing* — `500 segment_not_ready`
+ *   beyond the look-ahead is *refused, not missing*: `500 segment_not_ready`
  *   with `Retry-After: 1` and `Cache-Control: no-store`, and deliberately
  *   **never a `404`**, because the playlist has already promised the object
  *   exists and a `404` would invite an intermediary to cache the absence.
  *   Retrying is correct and succeeds as production advances. Production is
  *   sequential, so asking for a distant index does not skip the fragments
- *   before it — it authorises them and then waits while each one encodes.
+ *   before it: it authorises them and then waits while each one encodes.
  *   `PlaybackSession.lookAheadMs` is where that boundary is.
- * - **`410` — a generation this node has superseded.** Reported as `not-found`,
+ * - **`410`: a generation this node has superseded.** Reported as `not-found`,
  *   for the same reason and with the same recovery: the object is gone, the
  *   node is fine, and the session route says whether anything is left to
- *   rebuild. Usually core's own doing — a PATCH that changes mode, quality,
- *   seek or media builds a new generation — in which case the late failure
+ *   rebuild. Usually core's own doing (a PATCH that changes mode, quality,
+ *   seek or media builds a new generation), in which case the late failure
  *   naming the old source is already dropped by the superseded-source guards
  *   before it reaches classification at all.
- * - **`503` — a broken generation.** Terminal for this source.
- * - **`404` — this node did not serve it.** Either the session is gone or the
+ * - **`503`: a broken generation.** Terminal for this source.
+ * - **`404`: this node did not serve it.** Either the session is gone or the
  *   fragment is past the end of the plan, and **the status cannot tell you
  *   which**: measured against one node in one run on 2026-09-17, a reaped
  *   session and a segment past the end of a live plan both answered `404` with
@@ -182,7 +182,7 @@ export const SOURCE_SUPERSEDED_STATUS = 410;
  *   what that looked like in the field.
  *
  * Anything else is reported as `unknown`, which the coordinator treats as
- * possible endpoint evidence — the safe default for a status this package has
+ * possible endpoint evidence, the safe default for a status this package has
  * no rule for.
  *
  * **Returning `stream` for `404` is what this function used to do**, and it is
@@ -194,8 +194,8 @@ export function playbackFailureKindForStatus(status: number): PlaybackFailureKin
   if (status === SOURCE_NOT_FOUND_STATUS) return 'not-found';
   // A superseded generation is `not-found` rather than a kind of its own, and
   // that is a decision rather than a shortcut. What a caller must do is
-  // identical — the object is gone, the node is fine, ask the session route
-  // which case it is — and `not-found` already carries the obligation on
+  // identical (the object is gone, the node is fine, ask the session route
+  // which case it is) and `not-found` already carries the obligation on
   // `Player.subscribeFailure` that an adapter must not tear the presentation
   // down. A seventh kind would put that obligation behind a value every
   // existing host would meet as `default`, which is the expensive direction:
@@ -209,7 +209,7 @@ export function playbackFailureKindForStatus(status: number): PlaybackFailureKin
 /**
  * How fast a generation is producing, as the serving node reports it.
  *
- * **Absent on a `PlaybackSession` means the node cannot say** — direct play
+ * **Absent on a `PlaybackSession` means the node cannot say**: direct play
  * has no pipeline, and a node older than server 0.47.0 does not carry the
  * field. Absence is never zero and never a default.
  */
@@ -219,7 +219,7 @@ export interface PlaybackProduction {
    *
    * **Also the production frontier**, so this is the `produced` term in a
    * reachability calculation directly, with no conversion. One field, both
-   * jobs — stated that way by the server rather than inferred here.
+   * jobs, stated that way by the server rather than inferred here.
    */
   producedMs: number;
   /**
@@ -266,8 +266,8 @@ export interface PlaybackProduction {
  * Measured on es-1 on 2026-09-20, on one live 480p transcode left running
  * with nobody pulling fragments: `producedMs` froze at 34,031 and
  * `producingMs` at 10,832 while `producedAgeMs` climbed 15.9 s → 27.9 s →
- * 39.9 s. Against roughly 45 s of wall clock that is **0.76x** — below
- * realtime, so a handover would be refused — **on a node whose actual rate
+ * 39.9 s. Against roughly 45 s of wall clock that is **0.76x**, below
+ * realtime, so a handover would be refused: **on a node whose actual rate
  * was 3.14x.** The wrong implementation needs no new field, looks like
  * "re-derive rather than assert", and silently refuses exactly the handovers
  * that would have worked.
@@ -276,21 +276,21 @@ export interface PlaybackProduction {
  * would be believed:
  * - no `production` at all, so the node cannot say;
  * - `producingMs` of zero, which is **"no fragment yet", not an infinite
- *   rate** — the state every new generation starts in, and the one a PATCH
+ *   rate**, the state every new generation starts in, and the one a PATCH
  *   response almost always shows;
  * - anything non-finite or negative, which no node should send and which
  *   would otherwise propagate into a deadline.
  *
  * **The reading runs low early and settles.** Both fields cover the same
- * fragments including the first, so pipeline start-up is charged to the rate
- * — 2.59x on the first fragment against 3.14x settled, on that same es-1
+ * fragments including the first, so pipeline start-up is charged to the rate:
+ * 2.59x on the first fragment against 3.14x settled, on that same es-1
  * measurement. The server chose that over excluding the first fragment, which
  * would time `n-1` fragments while counting the media of `n`: a 2x
  * overstatement arriving exactly at the second fragment, which is when a
  * handover call gets made. Understating defers a handover and costs a round
  * trip; overstating stalls a viewer on a promise the node cannot keep. So a
  * young generation's low reading must not be allowed to condemn a handover
- * permanently — re-read it rather than remembering it.
+ * permanently; re-read it rather than remembering it.
  */
 export function productionRate(production: PlaybackProduction | undefined): number | undefined {
   if (!production) return undefined;
@@ -305,7 +305,7 @@ export function productionRate(production: PlaybackProduction | undefined): numb
  *
  * `false` only on a reading that exists and is at or below realtime. An
  * absent reading answers `undefined`, because "the node cannot say" is not
- * "the node cannot keep up" — collapsing those two refuses every handover on
+ * "the node cannot keep up"; collapsing those two refuses every handover on
  * a direct-play source and on every node older than 0.47.0.
  */
 export function outpacesPlayback(production: PlaybackProduction | undefined): boolean | undefined {

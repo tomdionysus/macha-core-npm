@@ -130,7 +130,7 @@ describe('choosePlaybackInstruction', () => {
 describe('the invariant: direct is never returned on doubt', () => {
   // The server never refuses on capability grounds. A client that instructs
   // `direct` on a file it cannot demux receives the file and shows a black
-  // picture — there is no error to catch and no retry to make. So `direct`
+  // picture; there is no error to catch and no retry to make. So `direct`
   // must only ever come from a positive match on every axis.
   // Must include codecs the set actually lists, or nothing reaches direct
   // and the invariant passes vacuously.
@@ -333,7 +333,7 @@ describe('reporting what had to be assumed', () => {
 
   it('distinguishes a stated false from an absent field', () => {
     // `hlsTs: false` is an answer; omitting it is not, and the instruction
-    // is identical either way — which is exactly why it needs reporting.
+    // is identical either way, which is exactly why it needs reporting.
     const stated = choosePlaybackInstruction(profile('matroska', [h264, aac]), { ...samsung, hlsTs: false });
     const absent = choosePlaybackInstruction(profile('matroska', [h264, aac]), samsung);
     expect(stated.container).toEqual(absent.container);
@@ -345,7 +345,7 @@ describe('reporting what had to be assumed', () => {
 
 describe('mode legality', () => {
   // `remux` means the container changed and every stream was copied. The
-  // server refuses any other reading by contract, not by capability — so an
+  // server refuses any other reading by contract, not by capability, so an
   // illegal instruction fails on every node, however healthy. Asserted over
   // the space rather than over the two paths that happen to reach it today.
   it('never pairs remux with a re-encoded stream', () => {
@@ -404,7 +404,7 @@ describe('container families', () => {
   it('keeps the segment container fmp4 out of the mp4 source family', () => {
     // Deliberate, and worth pinning: fragmented MP4 *is* an MP4, so grouping
     // them is the natural reading. Keeping them apart is what made an .mp4
-    // remuxed into fMP4 read as a container change — on the 58 .mp4 files in
+    // remuxed into fMP4 read as a container change: on the 58 .mp4 files in
     // the library, the carriage everyone actually uses. `mpegts` is the
     // opposite case, legitimately both a source and a segment container,
     // which is why the badge cannot rest on this distinction alone.
@@ -415,8 +415,8 @@ describe('container families', () => {
   it('maps every container the server can emit to a family of its own', () => {
     // The server's source vocabulary, written down here so the two lists can
     // be compared rather than assumed to agree. Three of tonight's bugs were
-    // found exactly this way — by holding two written copies of the same fact
-    // side by side — and none was reachable from either side alone.
+    // found exactly this way (by holding two written copies of the same fact
+    // side by side), and none was reachable from either side alone.
     const serverVocabulary = [
       'matroska', 'webm', 'mp4', 'avi', 'asf', 'mpeg', 'mpegts',
       'mp3', 'flac', 'ogg', 'adts', 'wav', 'aiff',
@@ -469,7 +469,7 @@ describe('preferSegmentContainer', () => {
 
   it('does not claim a preference when there was no choice to make', () => {
     // TS is the only container this host takes, so asking for it is not a
-    // preference being honoured — saying so would be noise in the panel.
+    // preference being honoured; saying so would be noise in the panel.
     const tsOnly = { ...samsung, hlsFmp4: false, hlsTs: true };
     const decision = choosePlaybackInstruction(profile('matroska', [h264, eac3]), tsOnly, {
       overrides: { preferSegmentContainer: 'mpegts' },

@@ -47,7 +47,7 @@ describe('Cluster node failover integration', () => {
 
   it('creates the initial HLS generation on the surviving node after request-creation failure', async () => {
     // The candidate loop in ClusterPlaybackResolver.create() decides nothing
-    // about mode — this proves that explicitly rather than only implying it
+    // about mode; this proves that explicitly rather than only implying it
     // from the Direct Play case above.
     const cluster = createFakeCluster(['http://node-a', 'http://node-b']);
     cluster.node('http://node-a').queueNetworkFailure('node A unreachable');
@@ -89,7 +89,7 @@ describe('Cluster node failover integration', () => {
     // on the replacement asked for first. That is the whole policy: the
     // resolver is the only layer every client passes through, and a node
     // holds a transcode slot against `max_video_transcodes` from admission
-    // until the record is erased — `session_idle`, thirty minutes.
+    // until the record is erased: `session_idle`, thirty minutes.
     await vi.waitFor(() => expect(cluster.calls).toContainEqual({ url: 'http://node-a/api/v1/playback/sessions/session-a', method: 'DELETE' }));
     await coordinator.close();
   });
@@ -97,7 +97,7 @@ describe('Cluster node failover integration', () => {
   it('does not go terminal when the dying source emits a second failure mid-failover', async () => {
     // A node going down is not one event. The fatal error starts recovery,
     // and the element then plays out whatever it had buffered and reports
-    // `ended` well short of duration — a premature end, correctly read as a
+    // `ended` well short of duration: a premature end, correctly read as a
     // second failure from the same source, arriving while the replacement
     // POST is still in flight. Taken terminal it closes the coordinator, and
     // the replacement that was seconds from ready is discarded by the

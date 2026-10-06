@@ -1,13 +1,13 @@
 /**
- * macha-client — the generic, platform-independent client core for Macha.
+ * macha-client: the generic, platform-independent client core for Macha.
  *
  * Everything a Macha client does that is not presentation: talking to the
  * server API families, choosing and failing over between cluster endpoints,
  * resolving and coordinating playback, and persisting client-side state.
  *
  * It has no runtime dependencies and reaches for no browser global. What it
- * genuinely needs from a host — storage, a clock, an id generator, a base
- * origin — is supplied through `configureMachaHost`; what it needs from the
+ * genuinely needs from a host (storage, a clock, an id generator, a base
+ * origin) is supplied through `configureMachaHost`; what it needs from the
  * network arrives as an `AuthenticatedFetch`. Presentation, navigation and
  * media element/view handling stay with each platform.
  */

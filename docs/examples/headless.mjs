@@ -9,7 +9,7 @@
  *   node docs/examples/headless.mjs http://10.44.1.50:7438
  *
  * Deliberately plain JavaScript against the built `dist/`, so it runs with
- * nothing installed and no compile step — the point is to show that the core
+ * nothing installed and no compile step; the point is to show that the core
  * needs neither a browser nor a bundler, and a proof that needs a toolchain
  * to run proves less.
  */
@@ -39,7 +39,7 @@ if (endpoints.length === 0) {
 }
 
 // 1. The host environment. A headless script has nothing to persist to, so
-//    both stores are in memory — this is exactly what a native host does
+//    both stores are in memory: this is exactly what a native host does
 //    differently, and the only place the platform shows through.
 configureMachaHost({
   storage: memoryStorage(),
@@ -67,7 +67,7 @@ const health = new EndpointHealthMonitor({
   // `auth` so the probe can use the liveness route on a node that gates it;
   // no `configuration`, because this host persists nothing, so confirmed
   // discoveries live as long as the process does. There is no `serverApi`
-  // option — this passed one for a while and it was simply ignored.
+  // option; this passed one for a while and it was simply ignored.
   auth: sessionManager,
 });
 health.start();
@@ -89,14 +89,14 @@ async function main() {
 
   // 5. Playback negotiation, with no player anywhere in sight. `resolve`
   //    carries an instruction to a node and returns what that node did with
-  //    it — mode, stream URL, which streams it copied — which is the whole of
+  //    it (mode, stream URL, which streams it copied), which is the whole of
   //    what a Player is handed. It is not a decision coming back: the
   //    decision is made below, here, and the response is the server stating
   //    how it performed it. Advertise capabilities honestly to the chooser:
   //    over-claiming is how you get a black screen.
   //
   //    These never reach the server. There is no `capabilities` field in the
-  //    playback API and never has been — the server does not ask what a client
+  //    playback API and never has been; the server does not ask what a client
   //    can play. They are for `choosePlaybackInstruction` below, and they are
   //    accepted by `resolve()` only because a decorating resolver (an offline
   //    one, say) legitimately needs to know what this host can decode.
@@ -115,7 +115,7 @@ async function main() {
   };
   // The server does not choose, and there is no `auto` to ask it to. It
   // reports what the media is and performs what it is told, so deciding is
-  // the client's job — from the source facts plus what this host can honestly
+  // the client's job: from the source facts plus what this host can honestly
   // decode. `choosePlaybackInstruction` is that decision, held once in the
   // core so every client reaches the same answer rather than three clients
   // reaching three.

@@ -402,7 +402,7 @@ describe('EndpointRegistry', () => {
     });
 
     it('does not let a small load difference move anything', () => {
-      // Capacity responds to our own routing — send work, load rises, node
+      // Capacity responds to our own routing: send work, load rises, node
       // demoted, work leaves, load falls, node promoted. The minimum relative
       // difference is the damping on that loop.
       const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
@@ -458,7 +458,7 @@ describe('EndpointRegistry', () => {
 
     it('never puts the furthest node at the head because of the order the three were typed in', () => {
       // 20/65/110 ms against a 50 ms floor: wired ties wireless and wireless
-      // ties wan, while wired beats wan. Pairwise, that is a cycle — and the
+      // ties wan, while wired beats wan. Pairwise, that is a cycle, and the
       // measured evidence below is the case that was reproduced: typing the
       // same three nodes in a different order moved the WAN node to the head,
       // where `selectionAxis()` then reported that nothing had decided it.
@@ -469,7 +469,7 @@ describe('EndpointRegistry', () => {
       expect(ids(first)).toEqual(['http://wireless', 'http://wired', 'http://wan']);
       expect(ids(second)).toEqual(['http://wired', 'http://wireless', 'http://wan']);
       // Which of the two near nodes leads does depend on configured order,
-      // because 45 ms apart is below the floor that says they differ at all —
+      // because 45 ms apart is below the floor that says they differ at all,
       // and that is what the axis reports. The WAN node loses in both.
       expect(first.selectionAxis()).toBe('configured-order');
       expect(second.selectionAxis()).toBe('configured-order');

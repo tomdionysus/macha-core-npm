@@ -319,7 +319,7 @@ describe('where artwork can be fetched from', () => {
     const anHourAway = Date.now() + 3_600_000;
     expect(reHosted(anHourAway)).toBe(true);
     // The same instant in seconds. Read as milliseconds it is 1970, so it
-    // must be treated as expired rather than quietly normalised — a format
+    // must be treated as expired rather than quietly normalised; a format
     // that ever does change units should break loudly here.
     expect(reHosted(Math.floor(anHourAway / 1000))).toBe(false);
   });
@@ -355,14 +355,14 @@ describe('where artwork can be fetched from', () => {
 describe('keeping an artwork URL byte-identical across an endpoint swap', () => {
   // The URL is already a content address: the path is the SHA-256 of the bytes
   // and the signature covers the id and expiry and never the host. Every
-  // component is stable except the host, and the host was varying by accident
-  // — candidates are ordered by the *streaming* preferred endpoint, and the
+  // component is stable except the host, and the host was varying by accident:
+  // candidates are ordered by the *streaming* preferred endpoint, and the
   // capability in a catalogue payload is absolutised against whichever node
   // answered that read. So a swap renamed every poster and the platform HTTP
   // cache, which keys on the whole URL and which core neither owns nor can
   // re-key, re-downloaded bytes it already held.
   // A live capability. An expired one is deliberately not re-hosted onto other
-  // nodes — every node would refuse it — so a past expiry would test the
+  // nodes (every node would refuse it), so a past expiry would test the
   // fallback rather than the ordering.
   const SIGNED_QUERY = `?exp=${Date.now() + 86_400_000}&sig=abc`;
   const artworkPath = (host: string) => `${host}/api/v1/catalogue/artwork/sha-1${SIGNED_QUERY}`;

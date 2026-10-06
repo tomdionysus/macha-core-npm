@@ -33,7 +33,7 @@ describe('building a cancellation error', () => {
    * `DOMException` is a browser global, not an ECMAScript one. React Native
    * ships an implementation but never installs it on `globalThis`, so a bare
    * `new DOMException(...)` throws `ReferenceError: Property 'DOMException'
-   * doesn't exist` — and the `signal.reason ?? new DOMException(...)` idiom
+   * doesn't exist`, and the `signal.reason ?? new DOMException(...)` idiom
    * does not save it, because React Native's AbortController predates `reason`
    * and never sets one. So the one platform that cannot evaluate the
    * expression is the one that always reaches it, while a web client and a
@@ -46,7 +46,7 @@ describe('building a cancellation error', () => {
 
     const error = abortError();
 
-    // `name` is what every consumer tests — `error.name === 'AbortError'` — so
+    // `name` is what every consumer tests (`error.name === 'AbortError'`), so
     // a plain Error satisfies them all. The failure this guards against is not
     // a wrong error type: it is a ReferenceError reaching a screen as a
     // genuine failure when someone merely navigated away.

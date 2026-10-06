@@ -39,7 +39,7 @@ describe('API endpoint health probes', () => {
 
   describe('the endpoint discovered peers are reached at', () => {
     // The node states a whole URL. Nothing is assembled here and no scheme is
-    // inferred — with TLS offload in front of the API, neither the scheme nor
+    // inferred: with TLS offload in front of the API, neither the scheme nor
     // the port of the outer address is derivable from anything the client can
     // see, which is why host+port could not express it.
     const discovered = (registry: EndpointRegistry) =>
@@ -102,7 +102,7 @@ describe('API endpoint health probes', () => {
 
     await discoverClusterEndpoints(registry, api);
 
-    // Including the node this client is not talking to — which is the point.
+    // Including the node this client is not talking to, which is the point.
     // Request evidence only ever accrues for the endpoint already in use, so
     // self-reported load is the only measurement held about an alternate.
     expect(registry.capacity('http://gbni-2:7438')).toMatchObject({
@@ -230,7 +230,7 @@ describe('API endpoint health probes', () => {
 
   it('asks the old route when the liveness one does not answer the liveness question', async () => {
     // A node too old to have /api/v1/health answers 401, not 404, because
-    // authentication runs before routing — so it never reaches the part that
+    // authentication runs before routing, so it never reaches the part that
     // would report the route missing. A 404-only fallback fires on every node
     // except the single one that needs it. Without this that node is
     // permanently ungraded: no latency, no pre-emptive swap.
@@ -254,7 +254,7 @@ describe('API endpoint health probes', () => {
     // session-less client asks. Every node is perfectly healthy and every
     // call is refused, and the React Native client measured `probe-cycle`
     // holding at reachable: 3, known: 3 through exactly that state. An answer
-    // is not a fault — but it is not evidence of health either, so nothing is
+    // is not a fault, but it is not evidence of health either, so nothing is
     // recorded in either direction rather than a success being invented.
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
     // Both routes refuse: the liveness one and the fallback alike.
@@ -325,7 +325,7 @@ describe('API endpoint health probes', () => {
     const probe = probeKnownEndpoints(registry, fixedBearerToken(undefined, fetchImpl), lifecycle.signal);
     await new Promise((resolve) => setTimeout(resolve, 5));
     // Cancelling one consumer (or a playback request) is not evidence
-    // about node health — the request's own signal (the bounded-timeout one
+    // about node health: the request's own signal (the bounded-timeout one
     // added alongside it) must never be the same object as that lifecycle
     // signal, so an unrelated unmount can never cancel it.
     expect(capturedSignal).not.toBe(lifecycle.signal);
@@ -450,7 +450,7 @@ describe('a discovery that lands after the monitor stopped', () => {
   it('does not reshape the registry or notify hosts on behalf of a torn-down monitor', async () => {
     // The cycle checks the signal either side of the probe walk; the status
     // call sat above the first of those checks, so an advertisement arriving
-    // after `stop()` was still applied — and applying one fires every host
+    // after `stop()` was still applied, and applying one fires every host
     // listener for a monitor the host has already disposed.
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
     const notified = vi.fn();
@@ -479,7 +479,7 @@ describe('seeding a registry the way the README says to', () => {
   it('keeps a remembered discovery across a restart instead of persisting it away', () => {
     // Seeding everything through the default source labels remembered
     // discoveries `bootstrap`, and `persistConfirmedEndpoints` only ever
-    // persists what is labelled `discovered` — so the next cycle wrote the
+    // persists what is labelled `discovered`, so the next cycle wrote the
     // remembered set back as empty and the history was gone on every second
     // start. The registry was right and the seed was lying to it.
     const storage = memoryStorage();
@@ -614,7 +614,7 @@ describe('EndpointHealthMonitor lifecycle', () => {
 
   describe('asking for a probe off-cycle', () => {
     // A mobile client watching the radio knows the network came back well
-    // before the next cycle is due, and the monitor cannot see a radio — that
+    // before the next cycle is due, and the monitor cannot see a radio; that
     // is a host fact. Clients were reaching for stop()/start(), which works
     // but discards a probe already in flight and restarts the interval from
     // zero.

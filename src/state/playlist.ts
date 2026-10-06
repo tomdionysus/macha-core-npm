@@ -13,8 +13,8 @@ export interface Playlist {
    * Item snapshots rather than catalogue ids, slimmed to what a row needs
    * (`SavedTitle`).
    *
-   * A playlist has to render and play with no node reachable — that is the
-   * whole point once downloads exist — so it carries what it needs to draw a
+   * A playlist has to render and play with no node reachable (that is the
+   * whole point once downloads exist), so it carries what it needs to draw a
    * row and start playback. It costs a little duplication against the
    * catalogue and buys working offline playlists.
    */
@@ -314,7 +314,7 @@ export class PlaylistStore {
     return this.mutate(id, (playlist) => {
       // Without this guard a removal that removes nothing still counts as a
       // change, bumping `updatedAt` and so moving the playlist to the top of a
-      // list ordered by it — a reorder caused by an action that did nothing.
+      // list ordered by it: a reorder caused by an action that did nothing.
       if (index < 0 || index >= playlist.items.length) return playlist;
       return { ...playlist, items: playlist.items.filter((_, position) => position !== index) };
     });
@@ -333,7 +333,7 @@ export class PlaylistStore {
     });
   }
 
-  /** Drops an item from every playlist — used when a track disappears from the catalogue. */
+  /** Drops an item from every playlist, used when a track disappears from the catalogue. */
   purge(itemId: string): void {
     const changed: string[] = [];
     const playlists = this.list().map((playlist) => {

@@ -124,7 +124,7 @@ Tom held server API changes during the experiment. Raise these when it ends.
 - **Artwork**: two residues and a documented gap. *(archive)*
 - **Music library state moves into core**: favourites, play counts and recently played, from the phone. Approved, not started. *(archive)*
 - **An offline and cache policy seam**, shared by the phone's downloads and the web's read-ahead. Approved, not designed. *(archive)*
-- **The low-priority register** and the coverage gaps, grouped by area. *(archive: "Low — the register", "Coverage")*
+- **The low-priority register** and the coverage gaps, grouped by area. *(archive: "Low: the register", "Coverage")*
 
 ## With the server, or watching
 

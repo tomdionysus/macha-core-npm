@@ -22,7 +22,7 @@ export interface PlaybackStreamInfo {
   /** Encoded level (H.264/HEVC), when the server reports one. */
   level?: number;
   /**
-   * Transfer characteristics by their ffmpeg/H.273 name — `smpte2084` (PQ),
+   * Transfer characteristics by their ffmpeg/H.273 name: `smpte2084` (PQ),
    * `arib-std-b67` (HLG), or an SDR name. Reported per stream on both the
    * source and, after negotiation, whatever the server decided to serve, so
    * a client can tell whether it was actually given the HDR it asked for.
@@ -56,7 +56,7 @@ export interface PlaybackOutputVideoInfo {
   /**
    * What is actually served, which is the only way to tell a successful
    * downconvert from a gate that did nothing. A copied stream reports the
-   * source's values; a transcode reports the encoder's — so a PQ source
+   * source's values; a transcode reports the encoder's, so a PQ source
    * transcoded for an SDR client shows `smpte2084` on the source stream and
    * `bt709` here.
    */
@@ -79,7 +79,7 @@ export interface PlaybackOutputAudioInfo {
 export interface PlaybackOutputInfo {
   format?: string;
   /**
-   * The container actually served — `fmp4` or `mpegts` for HLS, the source
+   * The container actually served: `fmp4` or `mpegts` for HLS, the source
    * file's own container for a direct session.
    *
    * The instruction says which segment container to package into; this says
@@ -140,16 +140,16 @@ export interface PlaybackSession {
    *
    * **The line between a fragment request that is held and one refused.** A
    * node produces to `highest_requested + max_ahead_segments` and parks, and
-   * the hold window is deliberately the same distance — so a viewer arriving
+   * the hold window is deliberately the same distance, so a viewer arriving
    * beyond this finds the encoder still working towards them, answering
    * `500 segment_not_ready` until it arrives. That is not a fault and must not
    * be read as one; production is sequential, so asking for a distant index
    * does not skip the fragments before it.
    *
-   * **Three states, and none may be collapsed.** `undefined` — the node
+   * **Three states, and none may be collapsed.** `undefined`: the node
    * predates server 0.45.0 and cannot say, so a client must bound itself
-   * conservatively rather than assume a default. `null` — direct play, which
-   * has no pipeline and therefore no frontier at all. A number — the answer,
+   * conservatively rather than assume a default. `null`: direct play, which
+   * has no pipeline and therefore no frontier at all. A number: the answer,
    * in milliseconds.
    *
    * **Per session, not per node.** It follows the node's `reconfigure()`, so
@@ -159,14 +159,14 @@ export interface PlaybackSession {
    * Nothing on the wire carried this before, so a client had only the defaults
    * to reason from. One that assumed 8 segments of 4 s against a node
    * configured for 4 believed it had 32 s of authorised production when it had
-   * 16, and sat refused at the frontier for the difference — measured as a
+   * 16, and sat refused at the frontier for the difference, measured as a
    * 12.7 s viewer freeze on 2026-09-17.
    */
   lookAheadMs?: number | null;
   /**
    * How fast this generation is producing, from `stream.production`.
    *
-   * **Absent means the node cannot say** — direct play, which has no
+   * **Absent means the node cannot say**: direct play, which has no
    * pipeline, or a node older than server 0.47.0. Never read absence as zero
    * and never substitute a default; the same convention `lookAheadMs` and the
    * per-node budgets already use, which is what makes it safe in a
@@ -176,7 +176,7 @@ export interface PlaybackSession {
    * seek or media builds a new generation with a new segment store, so the
    * block on that response is the first reading of a *different* pipeline,
    * not a fresh reading of the same one. **A rate carried across a generation
-   * change is a rate for a pipeline that no longer exists** — discard it
+   * change is a rate for a pipeline that no longer exists**; discard it
    * rather than decaying it. For a current reading on a running generation,
    * re-read the session.
    */
@@ -198,7 +198,7 @@ export interface PlaybackSession {
    * the generation always contains the position asked for. Zero exactly when
    * the mode can be frame-accurate.
    *
-   * **Undefined means the node predates server 0.46.0 and cannot say** — not
+   * **Undefined means the node predates server 0.46.0 and cannot say**, not
    * that the offset is zero. An older node snapped a remux seek *forward* to
    * the next keyframe instead, by up to 9.3 s measured, so on those nodes the
    * generation may begin after the request rather than before it.
@@ -231,7 +231,7 @@ export interface PlaybackPreferencesUpdate {
    * concrete instruction before anything is sent. It is not the old `auto`
    * under a new name: `auto` asked the server to decide, this asks the core
    * to, from facts the server does not have. It shares the `mode` field
-   * because choosing and naming a mode are mutually exclusive — as two
+   * because choosing and naming a mode are mutually exclusive: as two
    * fields they could contradict each other, and something would have to
    * decide which wins.
    */
@@ -283,8 +283,8 @@ export interface PlaybackStopOptions {
    * This node has already been charged for the outage that made this close
    * necessary, so the close itself must not charge it again.
    *
-   * A promotion records the endpoint's failure — nothing else would, because
-   * the node never refused anything, it stopped serving bytes — and then
+   * A promotion records the endpoint's failure (nothing else would, because
+   * the node never refused anything, it stopped serving bytes) and then
    * closes the session it was serving. That DELETE goes to the same node,
    * which is by now unwell, so it frequently throws; without this the throw
    * records a *second* failure for one observation, and a session closed on
@@ -314,13 +314,13 @@ export interface PlaybackStopOptions {
  * Measured once, on 2026-09-18 against `tmdb:episode:7203311`: a
  * `session-update` round trip of 13,433 ms against a node-side first fragment
  * at 11,672 ms, so about 1,761 ms of transport. **One sample, and it is worth
- * knowing that is all it is** — 4,000 is a guess with roughly 2.3x headroom
+ * knowing that is all it is**: 4,000 is a guess with roughly 2.3x headroom
  * over that reading, chosen to work in most situations rather than derived
  * from a distribution nobody has.
  *
  * **What it is not.** It is not slack for a slow node and not a margin on the
  * server's policy. A node that overruns its own `startup_timeout_ms` has
- * failed by its own rule, and this does not extend that — it only stops core
+ * failed by its own rule, and this does not extend that; it only stops core
  * charging a node for the distance between them.
  *
  * **It is meant to stop being a constant.** Core already holds per-endpoint
@@ -351,8 +351,8 @@ export interface StatedNodeBudgets {
  *
  * **Absence falls back to the published default and never to something
  * shorter.** A node that cannot say is not a node that needs less time, and
- * the failure this exists to stop — abandoning a working node inside its own
- * entitlement — is caused precisely by budgeting under the real figure.
+ * the failure this exists to stop, abandoning a working node inside its own
+ * entitlement, is caused precisely by budgeting under the real figure.
  */
 export function generationAttemptBudgetMs(stated?: StatedNodeBudgets): number {
   const startupMs = stated?.startupTimeoutMs ?? SERVER_STARTUP_TIMEOUT_MS;
@@ -452,7 +452,7 @@ export interface PlaybackResolver {
    *
    * Resolves `false` only on a definitive `404` from the owning node. It
    * throws when the answer could not be obtained, and callers must keep those
-   * apart — "I could not find out" is not "it is gone", and acting on the
+   * apart: "I could not find out" is not "it is gone", and acting on the
    * second when you have the first condemns a node for being briefly
    * unreachable.
    *
@@ -497,7 +497,7 @@ export interface PlaybackResolver {
    * **Never stops the outgoing generation.** The caller still has a viewer
    * watching it, and the account cap is counted per node, so holding both
    * across the swap is free. Releasing the old one is the caller's, after it
-   * has promoted the new one — unlike `failover`, which releases what it
+   * has promoted the new one, unlike `failover`, which releases what it
    * abandons because nothing is watching it by then.
    *
    * Resolves `undefined` when the target is already serving, is not a known
@@ -542,7 +542,7 @@ export interface PlaybackResolver {
    * Record that a specific endpoint has failed without negotiating any new
    * session. Needed when the transport layer has already moved off an
    * endpoint silently (see `PlaybackCoordinator`'s direct-source-alternative
-   * promotion) — endpoint health/cooldown tracking must still learn about
+   * promotion): endpoint health/cooldown tracking must still learn about
    * the failure, or a later failover can blindly retry a node already known
    * to be dead.
    */

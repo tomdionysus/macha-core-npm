@@ -40,13 +40,13 @@ export interface MediaApi {
    * The ref's own signed capability URL leads when it has one: it carries its
    * own authority, so it is both the cheapest path and the only one usable
    * from a context that cannot set headers. The same capability re-hosted on
-   * every other node follows, and needs no header either — its signature
+   * every other node follows, and needs no header either: its signature
    * covers the artwork id and expiry, never the host, and it is checked with
    * the shared cluster key, so every node honours it and any of them serves
    * the same content-addressed bytes. That is what lets a caller which cannot
    * set headers fail over from a node that is down instead of losing the
    * image. Per-node catalogue URLs come last and do need the client's
-   * `Authorization` header — check `requiresAuthorization` rather than
+   * `Authorization` header; check `requiresAuthorization` rather than
    * assuming, or a caller that cannot send one silently 401s on every entry
    * after the first.
    *
@@ -57,7 +57,7 @@ export interface MediaApi {
    * **Candidates on the node that last served artwork successfully lead**, so
    * that a URL stays byte-identical across a pre-emptive endpoint swap and a
    * platform HTTP cache keeps hitting. Feed that back with
-   * {@link MediaApi.noteArtworkLoaded} — without it this ordering never
+   * {@link MediaApi.noteArtworkLoaded}; without it this ordering never
    * learns anything and every swap renames every poster. See
    * `ArtworkHostPreference`.
    */
@@ -70,12 +70,12 @@ export interface MediaApi {
    * `<img src>` or a native `Image` fetches and caches on its own, keyed on the
    * whole URL string. Core cannot observe that success and cannot re-key that
    * cache, so the one thing it can do is stop handing out a different URL for
-   * the same bytes — and it only knows which URL worked if it is told.
+   * the same bytes, and it only knows which URL worked if it is told.
    *
    * Success only. Do not call it for a URL that failed: the preference is
-   * meant to follow bytes that actually arrived, and a single artwork 404 —
-   * artwork placement is deliberately sparse, so a node legitimately may not
-   * hold one object — must not move it.
+   * meant to follow bytes that actually arrived, and a single artwork 404
+   * (artwork placement is deliberately sparse, so a node legitimately may not
+   * hold one object) must not move it.
    *
    * Cheap and idempotent; calling it on every load is the intended use.
    */

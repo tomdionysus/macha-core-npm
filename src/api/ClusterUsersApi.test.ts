@@ -86,8 +86,8 @@ describe('ClusterUsersApi mutations', () => {
    * exists at all: a read retried elsewhere costs nothing, a create retried
    * after an ambiguous failure makes a second account.
    *
-   * A 500 is retryable *as a read* — `retryableEndpointFailure` says so, and
-   * `list()` above proves it — so this is the one assertion that separates the
+   * A 500 is retryable *as a read* (`retryableEndpointFailure` says so, and
+   * `list()` above proves it), so this is the one assertion that separates the
    * two paths. If `create` ever routes through `request()` instead of
    * `mutation()`, everything else in this file still passes.
    */

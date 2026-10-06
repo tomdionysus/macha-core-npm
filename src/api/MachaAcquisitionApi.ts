@@ -229,7 +229,7 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     try {
       return await readJsonBody<T>(response);
     } catch (error) {
-      // A 200 carrying HTML — a captive portal, a proxy — used to surface as a
+      // A 200 carrying HTML (a captive portal, a proxy) used to surface as a
       // raw `SyntaxError`, which has no status, so the router read it as
       // non-retryable and the parse message reached the caller.
       if (error instanceof SyntaxError) {

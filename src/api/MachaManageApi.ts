@@ -274,8 +274,8 @@ export class MachaManageApi implements ManageApi {
     try {
       return await readJsonBody<T>(response);
     } catch (error) {
-      // A 200 that is not JSON — a captive portal or a proxy answering with
-      // HTML — used to surface as a raw `SyntaxError`, which has no status, so
+      // A 200 that is not JSON (a captive portal or a proxy answering with
+      // HTML) used to surface as a raw `SyntaxError`, which has no status, so
       // the router read it as non-retryable and the parse message was what a
       // caller got.
       if (error instanceof SyntaxError) {

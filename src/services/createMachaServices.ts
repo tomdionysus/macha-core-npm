@@ -35,7 +35,7 @@ export interface MachaServices {
   /**
    * Source facts and per-node operations, routed per call. Feed it to
    * `PlaybackRuntime`'s `facts` option rather than building one against a
-   * fixed base URL — see `ClusterPlaybackFactsApi`.
+   * fixed base URL; see `ClusterPlaybackFactsApi`.
    */
   playbackFactsApi: PlaybackFactsApi;
   /** False when a caller substituted its own `MediaApi`; management screens are then meaningless. */
@@ -52,7 +52,7 @@ export interface MachaServicesOptions {
 /**
  * Build the whole service set over one endpoint registry.
  *
- * Every service authenticates through `auth` at request time — the real one is
+ * Every service authenticates through `auth` at request time: the real one is
  * the application-wide session singleton, so a refresh (expiry, 401) is never
  * a reason to rebuild these; rebuilding them would orphan an active playback
  * generation's node ownership. They only need rebuilding when routing itself
@@ -84,7 +84,7 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  *
  * **Core already had every piece and used to ask a host to connect them.** It
  * times every JSON read, it owns `EndpointBandwidth`, and the registry knows
- * which endpoint a URL belongs to — yet the axis only ranked if a host built
+ * which endpoint a URL belongs to, yet the axis only ranked if a host built
  * the store, passed it to the registry, installed a recorder, and matched URLs
  * to endpoints itself. Four steps, three invisible from the call site, for the
  * axis the cascade documents as outranking latency. Two of three clients did
@@ -94,20 +94,20 @@ export function createMachaServices(options: MachaServicesOptions): MachaService
  * unless this registry already has one (services are rebuilt when routing
  * changes, and `attachBandwidth` refuses a second store rather than letting
  * two write the same storage key). The recorder is installed pointed at this
- * registry — the newest services own it, which is right, because a rebuild
+ * registry: the newest services own it, which is right, because a rebuild
  * means the previous registry is being retired.
  *
  * **The store is keyed lazily, and core never mints the id.** It reads
  * `existingClientId()` at the moment it writes, not at construction. The
  * phone client builds its services during its first render, before its
- * storage has hydrated — so an eager `clientId()` here would read an
+ * storage has hydrated, so an eager `clientId()` here would read an
  * unhydrated key, fail to tell it from absent, mint a fresh identity and
  * persist it, on every cold start. The previous bandwidth record would be
  * orphaned each time, two samples would never accumulate, and the axis would
  * silently never rank: indistinguishable from the feature not existing. A
  * read that finds nothing is harmless; a write that invents an identity is
  * not. Until an id exists the estimate lives in memory, which costs almost
- * nothing — a restored record re-enters at one sample against a threshold of
+ * nothing: a restored record re-enters at one sample against a threshold of
  * two, so persisted throughput never ranks on its own regardless.
  *
  * What core cannot do is see media bytes; it never fetches media. A host that

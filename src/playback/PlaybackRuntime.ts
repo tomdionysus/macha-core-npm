@@ -21,7 +21,7 @@ import type {
 
 /**
  * The parts of a failed generation's preferences that are the viewer's own
- * choices about *content* — which audio track, which subtitles, what quality
+ * choices about *content*: which audio track, which subtitles, what quality
  * ceiling. A retry echoes them unchanged: nothing about a node failing makes
  * any of them wrong.
  */
@@ -42,7 +42,7 @@ function viewerStreamChoices(preferences: PlaybackPreferences): PlaybackPreferen
  * Taken from the instruction the coordinator reported, not from the session
  * the server echoed back, because the echo is wrong in two directions at
  * once. It carries no `container`, so a retry asked for no carriage at all
- * and the node fell back to its own default — the silent starvation 0.6.3
+ * and the node fell back to its own default, the silent starvation 0.6.3
  * already paid for. And its `mode` is a concrete mode, which arriving as
  * `initialPreferences.mode` reads as a mode the *viewer* picked:
  * `chosenByViewer: true` is reported to the host though the chooser decided
@@ -387,7 +387,7 @@ export class PlaybackRuntime {
    *
    * Forwarded because a host holds a runtime and never the coordinator, so
    * `PlaybackCoordinator.moveTo` had no caller from any client. `false` when
-   * there is no generation to move — idle, or failed. A failed generation is
+   * there is no generation to move: idle, or failed. A failed generation is
    * already released, so moving it is a retry on another node, and a host
    * spells that as `prefer(endpointId)` on the registry and then `retry()`;
    * there is nothing here for a move to act on.
@@ -423,13 +423,13 @@ export class PlaybackRuntime {
    * not do app volume simply has none.
    *
    * **This applies a volume. It does not persist one, and the two share only a
-   * word.** Persisting a viewer's chosen level is a client's own business —
+   * word.** Persisting a viewer's chosen level is a client's own business;
    * core carried a `VolumeStore` until `0.10.0` and it is gone, because volume
    * is player logic and a level is a property of one surface on one device.
    *
    * The distinction is not academic; it has misled twice. This method was
    * twice described in core's own plan as a passthrough that existed only to
-   * carry that store, and scheduled for deletion with it — it touches no store
+   * carry that store, and scheduled for deletion with it; it touches no store
    * and never did. And a client's volume hook passes *this* method the level
    * the player should be hearing (zero while muted) while passing its own
    * store the level to restore on next launch, **four lines apart in the same
@@ -450,13 +450,13 @@ export class PlaybackRuntime {
    *
    * **Best-effort is not a hedge, and on two platforms it is closer to a
    * hope.** `keepalive` is browser-only: React Native ignores it and Tizen 3
-   * does not have the property at all — precisely the platforms that suspend
+   * does not have the property at all, precisely the platforms that suspend
    * an app rather than navigate away from it. A host that is force-quit,
    * crashes or loses power sends nothing anywhere.
    *
    * What that costs is not local. A node counts a session against
    * `max_video_transcodes` from admission until the session record is erased,
-   * which is `session_idle` — **30 minutes** — and reclaiming the idle pipeline
+   * which is `session_idle` (**30 minutes**), and reclaiming the idle pipeline
    * at 60 s does not release it. So an unsent `DELETE` on a one-slot node
    * means the next viewer gets `429 resource_limit` for up to half an hour,
    * and nothing about it is visible from the client that caused it.

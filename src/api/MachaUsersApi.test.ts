@@ -116,7 +116,7 @@ describe('MachaUsersApi mutations', () => {
   /**
    * The rule the update body is built around. `username: undefined` serialises
    * to an absent key here, but a body assembled less carefully sends an
-   * explicit null — which a server distinguishing absent from null reads as
+   * explicit null, which a server distinguishing absent from null reads as
    * "clear it". A rename nobody asked for is a bad way to find that out.
    */
   it('sends only the fields the caller actually set', async () => {

@@ -42,7 +42,7 @@ describe('connection configuration', () => {
   it('accepts an endpoint that answered without confirming it is Macha', async () => {
     // The measured lockout: this asked `/api/v1/catalogue/status` and counted
     // an endpoint only on `response.ok`, and all three of Tom's nodes answer
-    // 401 there unauthenticated — so nothing could ever be saved, no session
+    // 401 there unauthenticated, so nothing could ever be saved, no session
     // was ever minted, and a fresh install could not be configured at all.
     // A 401 is an answer. So is the 503 a node still starting gives, and so
     // is the 404 from a build too old to have the liveness route.

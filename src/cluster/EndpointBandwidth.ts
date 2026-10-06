@@ -17,8 +17,8 @@ const SMOOTHING = 0.35;
 
 /**
  * A restored estimate is a starting point, not evidence. It is worth carrying
- * across a reload — a cold client otherwise ranks every endpoint identically
- * until the first large transfer lands — but the link may have changed while
+ * across a reload (a cold client otherwise ranks every endpoint identically
+ * until the first large transfer lands), but the link may have changed while
  * we were away, so live samples must overtake it quickly.
  */
 const RESTORE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -74,7 +74,7 @@ export class EndpointBandwidth {
    * `clientId` may be a function, and may answer `undefined`.
    *
    * Throughput has to be recordable before an installation identity
-   * necessarily exists — core attaches this while a host's storage may still
+   * necessarily exists: core attaches this while a host's storage may still
    * be hydrating, and **minting an id to have something to key by would
    * invent an identity and destroy the real one**. So an absent id means the
    * estimate lives in memory for this session and persists nothing, which
@@ -90,7 +90,7 @@ export class EndpointBandwidth {
 
   /**
    * Record one completed transfer. `durationMs` must cover reading the body,
-   * not just receiving the response headers — a `fetch()` that has resolved
+   * not just receiving the response headers; a `fetch()` that has resolved
    * has not yet moved the bytes we are trying to measure.
    */
   record(endpointIdValue: string, bytes: number, durationMs: number, kind: TransferKind = 'api'): void {
@@ -123,7 +123,7 @@ export class EndpointBandwidth {
     return this.records.get(endpointIdValue)?.bytesPerSecond;
   }
 
-  /** How many transfers back this estimate — a one-sample figure is not yet worth acting on. */
+  /** How many transfers back this estimate; a one-sample figure is not yet worth acting on. */
   samples(endpointIdValue: string): number {
     this.restore();
     return this.records.get(endpointIdValue)?.samples ?? 0;
@@ -142,7 +142,7 @@ export class EndpointBandwidth {
     if (changed) this.write();
   }
 
-  /** Write immediately, ignoring the interval — for page-hide, where there is no later. */
+  /** Write immediately, ignoring the interval, for page-hide, where there is no later. */
   flush(): void {
     if (this.restored) this.write();
   }

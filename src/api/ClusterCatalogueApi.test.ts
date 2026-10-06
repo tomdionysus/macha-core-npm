@@ -195,7 +195,7 @@ describe('ClusterCatalogueApi', () => {
 
   it('separates a profile nobody has from a profile nobody could answer for', async () => {
     // Both walks answer `undefined`, and the chooser transcodes everything on
-    // it either way — but one of those is a complete answer and the other is a
+    // it either way, but one of those is a complete answer and the other is a
     // partial one, and the return cannot tell them apart by design.
     clearClientDiagnostics();
     configureClientDiagnostics({ level: 'debug', console: false, maxEntries: 100 });

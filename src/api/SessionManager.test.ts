@@ -71,7 +71,7 @@ describe('SessionManager', () => {
     // An empty token and isReady true are the same two facts whether the
     // cluster refused or nothing answered, and those need opposite handling.
     // Three client sessions built something on the guess in one day and all
-    // three removed it — one a login wall that would have replaced a playing
+    // three removed it, one a login wall that would have replaced a playing
     // film with a sign-in screen on a network blip.
     vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockRejectedValue(new SessionAuthError('Could not start a session: anonymous access is disabled', 403, 'anonymous_disabled'));
@@ -189,7 +189,7 @@ describe('SessionManager', () => {
 
   it('holds a request fired before the first token exists until the mint lands, then sends it authenticated', async () => {
     // A caller that races ahead of the very first mint (e.g. an effect that
-    // fires on mount) must not go out tokenless — that can only 401. It waits
+    // fires on mount) must not go out tokenless; that can only 401. It waits
     // for the bootstrap already in flight and carries the resulting token.
     let resolveMint: (session: SessionAuth.Session) => void;
     const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
@@ -233,7 +233,7 @@ describe('SessionManager', () => {
   it('coalesces overlapping 401s into one re-mint and never clobbers the session it just adopted', async () => {
     // Two requests go out on token-a; both are rejected. The first re-mints
     // to token-b and retries. By the time the second, slower 401 arrives the
-    // session it was sent on has already been replaced — minting again would
+    // session it was sent on has already been replaced; minting again would
     // throw away a perfectly good token-b. It must simply retry with token-b.
     const mint = vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 'token-a', expiresAtMs: Date.now() + DAY_MS })
@@ -273,7 +273,7 @@ describe('SessionManager', () => {
   it('stops handing a rejected token to callers outside this class while the re-mint is in flight', async () => {
     // `authorization()` answers from the current token and only waits when
     // there is none, so a token left in place across a reactive re-mint is
-    // handed to a native player for the whole length of that mint — and it is
+    // handed to a native player for the whole length of that mint, and it is
     // the one token a node has just refused.
     let grantSecond: (session: { token: string; expiresAtMs: number }) => void = () => undefined;
     vi.spyOn(SessionAuth, 'mintSessionAnyNode')
@@ -354,7 +354,7 @@ describe('SessionManager', () => {
 
   it('never lets a long-lived expiry overflow setTimeout into an immediate re-mint loop', async () => {
     // Regression test: setTimeout's delay is a 32-bit signed int (~24.8 day
-    // max) — scheduling a refresh for the full remaining time on a
+    // max): scheduling a refresh for the full remaining time on a
     // multi-week session (this contract's own example is 30 days) silently
     // overflows to ~0ms and re-mints in a tight infinite loop.
     vi.useFakeTimers();
@@ -466,7 +466,7 @@ describe('SessionManager cached-session validation (Law 2: never make the viewer
   it('takes the roles from whichever request already had them', async () => {
     // Roles arrive with the token on every path: the mint response states
     // them, and so does the record returned by validating a cached token. So
-    // there is no separate fetch to fail and nothing to retry — which is what
+    // there is no separate fetch to fail and nothing to retry, which is what
     // made this worth moving here. A client fetching them once per API
     // identity never re-asked, because failover changes the preferred
     // endpoint inside the registry without changing that identity, and one
@@ -580,7 +580,7 @@ describe('session cache storage resolution', () => {
   it('uses the host configured after the manager was constructed, not the one detected before it', async () => {
     // The exported `sessionManager` singleton is built when this module is
     // first evaluated, which under ESM is strictly before the importing entry
-    // module's body runs — so before its `configureMachaHost()` call. A
+    // module's body runs, so before its `configureMachaHost()` call. A
     // manager that captured the host at construction would cache the session
     // into the auto-detected default and silently ignore the real one.
     const manager = new SessionManager();
@@ -641,7 +641,7 @@ describe('a session that stops belonging to the account it belonged to', () => {
     // presenting no credentials gets whatever an empty set of credentials
     // authenticates, and an administrator whose roles changed underneath them
     // silently becomes that account. Sections vanish, writes fail, nothing
-    // says why — an auth event wearing the costume of a UI bug.
+    // says why: an auth event wearing the costume of a UI bug.
     const manager = new SessionManager(new MemoryStorage());
     vi.spyOn(SessionAuth, 'mintSessionAnyNode')
       .mockResolvedValueOnce({ token: 't1', expiresAtMs: Date.now() + DAY_MS, username: 'tom' })
@@ -729,7 +729,7 @@ describe('a session that survives a restart', () => {
   it('restores the whole session, not just the credential', async () => {
     // This used to parse `username` and `roles` and throw them away, which
     // made a restored session indistinguishable from a freshly minted
-    // anonymous one — so after a reload core could not tell it had ever been
+    // anonymous one, so after a reload core could not tell it had ever been
     // signed in, and had nothing to compare an identity change against.
     const storage = new MemoryStorage();
     storage.setItem('macha.core.session', JSON.stringify({
@@ -815,7 +815,7 @@ describe('signing out', () => {
   it('clears local state even when the revoke fails, and still reports the failure', async () => {
     // Ordered so the two cannot conflict: once the viewer has asked to be
     // signed out, ending up still signed in is the outcome that must not
-    // happen — but a caller showing "signed out" needs to be able to learn
+    // happen, but a caller showing "signed out" needs to be able to learn
     // that the session is still live somewhere.
     const storage = new MemoryStorage();
     vi.spyOn(SessionAuth, 'revokeSessionAnyNode').mockRejectedValue(new Error('no node answered'));
@@ -840,7 +840,7 @@ describe('what a subscriber sees at the moment the session becomes ready', () =>
   });
 
   it('never publishes ready with the session not yet applied', async () => {
-    // A three-state gate — unknown / granted / denied — must never read
+    // A three-state gate (unknown / granted / denied) must never read
     // `unknown` as a refusal. `settle()` used to run at the *top* of `adopt`,
     // so the first notification a subscriber saw carried `isReady === true`
     // with no token and no roles: momentarily indistinguishable from a session
@@ -888,7 +888,7 @@ describe('fetch on a manager with nothing to mint against', () => {
    * The contract this class documents is that a caller never has to know
    * whether a session exists yet. Before `start()` there is no registry and no
    * bootstrap in flight, so the old code sent the request tokenless, took the
-   * 401, and returned it — handing the caller exactly the answer it had been
+   * 401, and returned it, handing the caller exactly the answer it had been
    * promised it would never see. The web client met this on a reload into a
    * player URL, 18 ms after load, and a viewer got a broken video.
    */
@@ -905,7 +905,7 @@ describe('fetch on a manager with nothing to mint against', () => {
    * Deliberately a `MachaConnectionError`. The phone client's `MediaApi.serve`
    * falls back to its downloaded library on that classification, and a fresh
    * error type would have escaped the fallback and put a bearer-token message
-   * on a library screen — which is the thing that fallback exists to prevent.
+   * on a library screen, which is the thing that fallback exists to prevent.
    * So this needs no client change to be handled sanely.
    */
   it('is a connection error, so an existing offline fallback still catches it', async () => {
@@ -960,8 +960,8 @@ describe('signIn on a manager with nothing to mint against', () => {
    * Raised by the web client: its login screen sorts 401/403 ("check your
    * username and password") from everything else ("the node could not be
    * reached"). A plain Error landed in the second bucket and told a viewer a
-   * healthy node was down. The typed error lands there too — it is a
-   * connection state — but the screen can now tell the manager was never
+   * healthy node was down. The typed error lands there too (it is a
+   * connection state), but the screen can now tell the manager was never
    * started, which is an app fault, not a network one.
    */
   it('throws the same typed refusal as fetch, so a login screen can tell it apart', async () => {

@@ -4,13 +4,13 @@
  *
  * Core declares its permitted platform surface in `macha-ts/types/
  * platform-neutral.d.ts` and compiles against only that. But that is a
- * *compile-time* boundary on what core may reach for — it says nothing about
+ * *compile-time* boundary on what core may reach for; it says nothing about
  * whether a given host supplies it at runtime. The two come apart in exactly
  * the way that is hardest to notice: `DOMException` compiled and passed the
  * entire test suite while throwing `ReferenceError` on React Native.
  *
  * The Samsung client is the standing proof that this must be checked rather
- * than assumed — Chromium 47 has no `AbortController` at all, and the web
+ * than assumed: Chromium 47 has no `AbortController` at all, and the web
  * client meets core's surface with a consumer-supplied polyfill. Hermes plus
  * React Native's polyfills is a third host again, so it gets the same
  * treatment: probe the members, report what is missing, and let a person see
@@ -36,7 +36,7 @@ export interface SurfaceFinding {
  * therefore the only ones whose absence is not a defect.
  *
  * Stated once, here, rather than as a boolean beside each probe. A per-probe
- * flag is a second copy of the contract and drifts from it silently — the same
+ * flag is a second copy of the contract and drifts from it silently: the same
  * failure as the segment-hold constant that lived in three places. Everything
  * not named here is declared unconditionally and is required.
  *
@@ -97,7 +97,7 @@ export function checkPlatformSurface(): SurfaceFinding[] {
       // only once by itself and so cannot distinguish `once` from its absence.
       // That needs `Event` and `dispatchEvent`, neither of which is in core's
       // declared surface and neither of which Hermes is guaranteed to have.
-      // **Their absence must not be reported as this member failing** — a
+      // **Their absence must not be reported as this member failing**: a
       // required member wrongly marked absent is the worst output this probe
       // can produce, so an unverifiable check says so instead.
       const controller = new AbortController();
@@ -124,18 +124,18 @@ export function checkPlatformSurface(): SurfaceFinding[] {
       controller.abort();
       return 'reason' in controller.signal && controller.signal.reason !== undefined
         ? true
-        : 'absent — core falls back, as designed';
+        : 'absent: core falls back, as designed';
     }),
 
     probe('DOMException', () =>
       typeof global.DOMException === 'function'
         ? true
-        : 'absent — expected on Hermes; core guards with typeof'),
+        : 'absent: expected on Hermes; core guards with typeof'),
 
     probe('crypto.randomUUID', () =>
       typeof (global.crypto as { randomUUID?: unknown })?.randomUUID === 'function'
         ? true
-        : 'absent — machaHost() falls back'),
+        : 'absent: machaHost() falls back'),
 
     probe('fetch', () => typeof global.fetch === 'function'),
 
@@ -155,13 +155,13 @@ export function checkPlatformSurface(): SurfaceFinding[] {
         : 'missing json()/text()';
     }),
 
-    // The three below are not in `platform-neutral.d.ts` — they are ES2022
-    // built-ins core compiles against unconditionally — but Hermes has
+    // The three below are not in `platform-neutral.d.ts` (they are ES2022
+    // built-ins core compiles against unconditionally), but Hermes has
     // historically shipped `Intl` partially, and **a partial `Intl` degrades
     // to a wrong answer rather than an exception.** `titleIndex` builds
     // `sortMediaByIndexedTitle` and `availableAlphabetKeys` on all three, so
     // the visible symptom is a library sorted wrongly and an alphabet-jump
-    // strip with the wrong letters — on a TV, the navigation affordance
+    // strip with the wrong letters: on a TV, the navigation affordance
     // itself. Nothing throws, so nothing else would ever report it.
     //
     // Each asserts a specific answer rather than mere presence, because
@@ -205,7 +205,7 @@ export function checkPlatformSurface(): SurfaceFinding[] {
     // **Deliberately does not test relative resolution.** It asserts only an
     // absolute path against an origin, which is the one thing core does.
     // React Native's `URL` is a concatenating polyfill rather than an RFC
-    // resolver and would fail a `../` case — correctly, since core never asks
+    // resolver and would fail a `../` case, correctly, since core never asks
     // for one. Without this note a passing probe reads as "URL works" when it
     // means "URL works for the one thing core needs".
     probe('URL', () => {

@@ -26,7 +26,7 @@ function wireSession(id: string) {
  * Admission requests only, located by method rather than by position.
  *
  * `failover` also closes the session it abandons, so counting calls
- * positionally breaks the moment any request is added — which is exactly what
+ * positionally breaks the moment any request is added, which is exactly what
  * happened when it did. Filtering on what a call *is* survives that.
  */
 function admissionCalls(fetchMock: ReturnType<typeof vi.fn>): Array<[string, RequestInit]> {
@@ -227,7 +227,7 @@ describe('ClusterPlaybackResolver', () => {
   });
 
   it('retries a node excluded earlier rather than going terminal while it sits healthy', async () => {
-    // The exclusion set only grows — `resolve()` clears it and nothing else —
+    // The exclusion set only grows (`resolve()` clears it and nothing else)
     // so on a long item it eventually names every node. Two nodes and a
     // two-hour film: A blips at minute ten, B at minute ninety, and the
     // viewer got a bare "No untried Macha playback endpoint remains" while A
@@ -247,7 +247,7 @@ describe('ClusterPlaybackResolver', () => {
 
     const third = await resolver.failover(second, media, capabilities, 22_000, { mode: 'direct' });
 
-    // A again — and not B, which is the one endpoint that must never be
+    // A again, and not B, which is the one endpoint that must never be
     // chosen here, because it is the one being failed away from this second.
     expect(third.endpoint?.id).toBe('http://a');
     expect(admissionCalls(fetchMock).map(([url]) => url.split('?')[0])).toEqual([
@@ -262,7 +262,7 @@ describe('ClusterPlaybackResolver', () => {
     // cluster, and two nodes is not the cluster. With three, a node cooling
     // down from failed health probes keeps the list non-empty, so the
     // recovery walks to the one endpoint already known to be unwell, fails,
-    // and gives up — while a node that recovered long ago sits excluded and
+    // and gives up, while a node that recovered long ago sits excluded and
     // idle. The question is whether anything outside the exclusion is
     // *usable*, which only the registry can answer: `retryAt` is a reading of
     // its clock and nothing else shares it.
@@ -389,7 +389,7 @@ describe('ClusterPlaybackResolver', () => {
 
   it('abandons a hung initial session POST and attempts the next known endpoint', async () => {
     // Unlike failover()/prepareAlternate(), the very first resolve() must
-    // also be timeout-bounded — a node that accepts the connection but never
+    // also be timeout-bounded: a node that accepts the connection but never
     // answers must not hang playback forever with nothing else queued behind
     // it, exactly like the standby-POST case above.
     const fetchMock = vi.fn()
@@ -445,7 +445,7 @@ describe('ClusterPlaybackResolver', () => {
     admitLate?.();
 
     // Closed with the node-local session id, which is the only identifier the
-    // slow node has ever heard of — the cluster-prefixed one is minted here,
+    // slow node has ever heard of: the cluster-prefixed one is minted here,
     // after the await this attempt never came back from.
     await vi.waitFor(() => expect(fetchWithCloses.mock.calls).toContainEqual([
       'http://slow/api/v1/playback/sessions/session-late',
@@ -479,7 +479,7 @@ describe('ClusterPlaybackResolver', () => {
     // The fix that put this on `failover` stopped at the fresh-create branch.
     // A host that needs MPEG-TS because fMP4 black-screens on its device gets
     // the right thing when a replacement is built after the fact and the
-    // wrong thing when one was prepared in advance — same defect, through
+    // wrong thing when one was prepared in advance: same defect, through
     // whichever door nobody looked at.
     const served = (id: string, container: string) => ({
       ...wireSession(id),
@@ -530,10 +530,10 @@ describe('ClusterPlaybackResolver', () => {
 
   it('charges the failed endpoint once, however the close goes', async () => {
     // One observation, one record. The DELETE goes to a node that has just
-    // died, so it throws — and going through `stop()` charged the registry
+    // died, so it throws, and going through `stop()` charged the registry
     // again for the same outage. Worse, `stop()` drops the map entry only on
     // success, so the entry survived for every later cleanup path to find and
-    // charge a third time. The cooldown ladder — 500 ms, 2 s, 10 s, 30 s —
+    // charge a third time. The cooldown ladder (500 ms, 2 s, 10 s, 30 s)
     // was being walked by a node that had failed exactly once.
     vi.useFakeTimers();
     try {
@@ -607,8 +607,8 @@ describe('the carriage a replacement generation asks for', () => {
   it('asks for the carriage the failed generation was actually served with', async () => {
     // `container` is not among a session's confirmed preferences, so a
     // replacement built from those asks for whatever the node defaults to. A
-    // set that asked for MPEG-TS then gets fMP4 from every replacement — the
-    // one carriage it cannot play — and a native player fetches nothing and
+    // set that asked for MPEG-TS then gets fMP4 from every replacement (the
+    // one carriage it cannot play) and a native player fetches nothing and
     // reports nothing about it.
     expect(await failoverFrom('mpegts')).toMatchObject({ container: 'mpegts' });
   });
@@ -651,7 +651,7 @@ describe('the session a failover walks away from', () => {
 
   it('is closed, without the caller having to ask', async () => {
     // A node counts a session against `max_video_transcodes` from admission
-    // until the record is erased — `session_idle`, 30 minutes — and reclaiming
+    // until the record is erased (`session_idle`, 30 minutes) and reclaiming
     // the idle pipeline at 60 s does not release it. With one slot per node,
     // failing away from a node that is alive but slow closes it to every other
     // viewer's transcode for half an hour.
@@ -714,7 +714,7 @@ describe('regenerating on the node that reaped the session', () => {
 
   it('asks the same node again, and does not charge it for having forgotten', async () => {
     // The `404` was about one session's existence. The node is fine, holds the
-    // title's pipeline, and is the right place to ask — and until this existed
+    // title's pipeline, and is the right place to ask, and until this existed
     // the only exit was `failover`, whose first act is to condemn it.
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 404 });
@@ -885,7 +885,7 @@ describe('closing a generation that will not close', () => {
   it('does not charge again for a teardown the caller has already charged for', async () => {
     // The seam that stops one outage walking the cooldown ladder. A caller
     // that has already recorded the failure passes `endpointAlreadyCharged`,
-    // and the entry goes before the attempt rather than on success — so a
+    // and the entry goes before the attempt rather than on success, so a
     // throwing DELETE cannot leave a session behind for a later cleanup path
     // to find and charge a third time.
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
@@ -910,7 +910,7 @@ describe('closing a generation that will not close', () => {
     // The ladder exists because the DELETE usually goes to a node that is
     // already gone, so one attempt is not a policy. It is bounded because the
     // node's own `session_idle` reclaims the lease after thirty minutes and
-    // this only has to cover a node that comes back sooner — roughly half a
+    // this only has to cover a node that comes back sooner, roughly half a
     // minute of it. Longer would be a timer nothing in this class can cancel.
     vi.useFakeTimers();
     try {
@@ -1169,7 +1169,7 @@ describe('a standby the node would not build', () => {
 
   it('deletes a session whose provenance it no longer holds, because the id carries it', async () => {
     // **Why every client leaked sessions all day.** `stop()` looked the id up
-    // in an in-memory map and returned silently when it was missing — no
+    // in an in-memory map and returned silently when it was missing: no
     // request, no log, a resolved promise. A caller could close every session
     // it had and produce zero DELETEs on the node while believing it had
     // cleaned up. Measured on fi-1: 57 creates and 0 deletes since 13:00.
@@ -1230,7 +1230,7 @@ describe('a standby the node would not build', () => {
 
   it('leaves the outgoing generation alone, because someone is watching it', async () => {
     // Acquire before release. The cap is counted per node, so holding both is
-    // free — and closing first is exactly the 13.2 s gap this exists to remove.
+    // free, and closing first is exactly the 13.2 s gap this exists to remove.
     const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
       if ((init?.method ?? 'GET').toUpperCase() === 'DELETE') return new Response(null, { status: 204 });
       return new Response(JSON.stringify(wireSession('session-b')), {

@@ -5,7 +5,7 @@ import { machaCoreKey } from '../runtime/storageKeys.js';
 /**
  * Not scoped by client id, unlike every other store here.
  *
- * The others hold a viewer's data — a queue, a volume, watch history — and two
+ * The others hold a viewer's data (a queue, a volume, watch history), and two
  * clients sharing a browser profile must not read each other's. This holds an
  * *ordering hint* about a cluster both of them are talking to, and either
  * answer is correct for either client. Scoping it would cost a plumbed client
@@ -17,7 +17,7 @@ const LEGACY_ARTWORK_HOST_KEYS = ['macha.artworkHost.v1'];
 
 /**
  * The path every node serves artwork under. Splitting on it recovers the node
- * base — including any path prefix in front of it, which a reverse proxy may
+ * base, including any path prefix in front of it, which a reverse proxy may
  * add and which `artworkUrls` is careful to preserve.
  */
 const ARTWORK_PATH = '/api/v1/catalogue/artwork/';
@@ -33,7 +33,7 @@ export function artworkHostOf(url: string): string | undefined {
  *
  * **This is not a cache and not a choice of node. It removes a variable from a
  * URL that is otherwise already a content address.** A signed artwork URL is
- * `{host}/api/v1/catalogue/artwork/{sha256}?exp&sig` — the path is the SHA-256
+ * `{host}/api/v1/catalogue/artwork/{sha256}?exp&sig`: the path is the SHA-256
  * of the bytes, and the signature covers the id and the expiry and *never the
  * host*, so one capability is good on every node. Every component is already
  * stable except the host.
@@ -42,20 +42,20 @@ export function artworkHostOf(url: string): string | undefined {
  * ordered its candidates by the *streaming* preferred endpoint, and the
  * capability URL in a catalogue payload is absolutised against whichever node
  * answered that catalogue read. So a pre-emptive endpoint swap renamed every
- * poster on screen, and a platform HTTP cache — which keys on the whole URL
- * and which this package neither owns nor can re-key — re-downloaded bytes it
+ * poster on screen, and a platform HTTP cache (which keys on the whole URL
+ * and which this package neither owns nor can re-key) re-downloaded bytes it
  * already held.
  *
  * Measured on the web client: one swap, then 29 posters re-fetched at 2.7–3.0 s
- * each. Same artwork id, same `?exp&sig`, three hosts, byte-identical — 3 ms
+ * each. Same artwork id, same `?exp&sig`, three hosts, byte-identical: 3 ms
  * from disk cache on the node already held against 923 ms over the wire on
  * another. **The bytes were in the cache the whole time.** The irony is the
  * argument: the swap is chosen *for throughput*, and "this node is faster" is a
  * claim about streaming video that says nothing about whose artwork this
  * viewer's browser is already holding.
  *
- * **Sticky rather than deterministic, deliberately.** A canonical host — the
- * lowest endpoint id, say — would make the URL a pure function of the content
+ * **Sticky rather than deterministic, deliberately.** A canonical host (the
+ * lowest endpoint id, say) would make the URL a pure function of the content
  * and the node set, which sounds better and is worse: every key would change
  * at once whenever the set changed, and a node that is down would fail every
  * poster until the walk moved past it, losing the warm cache exactly when it

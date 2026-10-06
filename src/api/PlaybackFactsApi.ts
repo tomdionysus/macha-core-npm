@@ -5,7 +5,7 @@ import type { MediaTechnicalProfile } from '../types.js';
  * What this node's build can actually perform for this source.
  *
  * The missing half of the contract. The chooser reasons about the media and
- * the device; without this it is guessing about the executor — and a wholly
+ * the device; without this it is guessing about the executor, and a wholly
  * correct instruction can still be refused because *this* build cannot copy
  * this codec into fragmented MP4. Reported per media, because the answer
  * depends on the source's codecs as well as the encoders present.
@@ -35,7 +35,7 @@ export interface PlaybackOperations {
  * with it.
  *
  * `operations` is optional here so a host with only a catalogue profile can
- * still satisfy the seam — the chooser then assumes the node can perform
+ * still satisfy the seam; the chooser then assumes the node can perform
  * whatever it is asked, which is how it behaved before the facts endpoint
  * existed. The facts endpoint always supplies it, and `PlaybackMediaFacts`
  * below requires it.

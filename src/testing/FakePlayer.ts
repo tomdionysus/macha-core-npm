@@ -26,7 +26,7 @@ export interface FakePlayerPlayCall {
  * **The only fake player in this repository, as of 2026-09-20.** There were
  * three: this one, and a local one in each of `PlaybackCoordinator.test.ts`
  * and `PlaybackRuntime.test.ts`. Editing this file to change a coordinator
- * test's behaviour then changed nothing, silently — which cost a full round of
+ * test's behaviour then changed nothing, silently, which cost a full round of
  * "prove the test fails against the broken code", green every time because the
  * code it was meant to break was never the code under test, and a good test
  * was deleted on the strength of it. A test that has never been seen red is an
@@ -67,7 +67,7 @@ export class FakePlayer implements Player {
    * Destructive, because the interface says it is: *"Final player destruction.
    * This is resource-destructive."* A double whose `detach()` only counts lets
    * a test pass where the real player would have torn the source down, so it
-   * stops as well — which is what the runtime's own local double always did,
+   * stops as well, which is what the runtime's own local double always did,
    * and the divergence the merge resolved in favour of the contract.
    */
   detach(): void { this.detachCalls += 1; this.stop(); }

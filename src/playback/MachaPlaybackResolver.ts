@@ -72,7 +72,7 @@ interface WireSession {
   mode: PlaybackMode;
   duration_ms: number;
   /**
-   * Where the generation's media actually begins on the title's timeline —
+   * Where the generation's media actually begins on the title's timeline:
    * the first sample the client receives.
    *
    * **Not necessarily the position that was asked for.** A remux generation
@@ -100,7 +100,7 @@ interface WireSession {
    *
    * **Present so a client can tell a clamp from a broken invariant.** Without
    * it, a sum that does not match the request is either a server fault or an
-   * out-of-range request, and those want opposite handling — which makes the
+   * out-of-range request, and those want opposite handling, which makes the
    * check useless exactly at the end of a title, where it would otherwise
    * raise a false alarm every time.
    */
@@ -134,7 +134,7 @@ interface WireSession {
     /**
      * The container actually served: `fmp4` or `mpegts` for HLS, the source
      * file's own container for a direct session. Never synthesise it from the
-     * request — the request is what was asked for, and this is the one field
+     * request; the request is what was asked for, and this is the one field
      * that says what arrived.
      */
     container?: string;
@@ -153,19 +153,19 @@ interface WireSession {
     close_url?: string;
     mime_type: string;
     /**
-     * How far past the last fragment requested the node will have produced —
+     * How far past the last fragment requested the node will have produced:
      * `max_ahead_segments` x `segment_duration_ms`. Server 0.45.0 and later.
      *
      * Three states, and collapsing any two of them is a defect. **Absent**:
      * the node predates the field and cannot say. **`null`**: direct play,
-     * which has no transcode pipeline and therefore no production frontier —
+     * which has no transcode pipeline and therefore no production frontier,
      * not the same claim as `0`. **A number**: the frontier, in milliseconds.
      */
     look_ahead_ms?: number | null;
     /**
      * How fast this generation is producing. Server 0.47.0 and later.
      *
-     * **Absent for direct play, and absent on an older node** — no pipeline,
+     * **Absent for direct play, and absent on an older node**: no pipeline,
      * no rate. Absent means the node cannot say and never means zero.
      */
     production?: {
@@ -281,7 +281,7 @@ export class MachaPlaybackError extends Error {
      * a failure has crossed `endpointFailure` it says which node too. That is
      * the right shape for a trail and the wrong shape for a viewer, who gets
      * "Macha endpoint http://10.35.1.50:7438 failed: Macha playback request
-     * failed: timed out waiting for first fragmented-MP4 segment" — two of
+     * failed: timed out waiting for first fragmented-MP4 segment": two of
      * core's envelopes and an address. Three clients showed exactly that to
      * someone today, and one had written its own loop to strip prefixes until
      * none remained.
@@ -377,7 +377,7 @@ export function newPlaybackIdempotencyKey(): string {
 
 /**
  * Decided from the served MIME type, which is the server's own statement
- * about what it is handing over — not from the URL, whose extension is a
+ * about what it is handing over, not from the URL, whose extension is a
  * convention the server is free to change (0.32.12 turned `master.m3u8`
  * from a media playlist into a real master playlist without renaming it).
  */
@@ -395,7 +395,7 @@ export function isManifestMimeType(mimeType: string | undefined): boolean {
 
 /**
  * A container the server could not name arrives as `""`, not as an absent
- * key — six .avi files in the library report exactly that today. One shape
+ * key; six .avi files in the library report exactly that today. One shape
  * for "no answer" means consumers test one thing, and nothing downstream can
  * put an empty chip on screen.
  */
@@ -410,7 +410,7 @@ function reportedContainer(value: string | undefined): string | undefined {
  * `seek_ms + seek_offset_ms === seek_requested_ms`, exact integer milliseconds,
  * no tolerance. **This is the only place it is checked**, deliberately: every
  * client would otherwise write the same comparison, and a violation and an
- * ordinary clamp need opposite handling — a judgement no host should have to
+ * ordinary clamp need opposite handling, a judgement no host should have to
  * duplicate. A client's job is to render what core reports.
  *
  * **A clamp cannot trip this.** Near the end of a title the server clamps the
@@ -424,7 +424,7 @@ function reportedContainer(value: string | undefined): string | undefined {
  * **Reported and never acted on.** Nothing here rejects a generation or
  * triggers a renegotiation. A violated invariant means the node's `seek_ms`
  * cannot be trusted, and asking the same node again is the least likely thing
- * to produce a better answer — that path livelocked once already, 147
+ * to produce a better answer; that path livelocked once already, 147
  * negotiations in 33.3 s against an answer that never changed. Core carries on
  * with what it was given and says loudly that it did.
  */
@@ -434,7 +434,7 @@ function checkSeekInvariant(
 ): void {
   const { seek_ms: seekMs, seek_offset_ms: offsetMs, seek_requested_ms: requestedMs } = wire;
   // Absent means the node predates 0.46.0 and cannot say. Nothing is wrong,
-  // and nothing is *checked* either — which used to be indistinguishable from
+  // and nothing is *checked* either, which used to be indistinguishable from
   // a check that passed, since both produced silence. A client reading a
   // capture then has three readings to separate and only two records: the
   // node's arithmetic is wrong (the report below), the invariant held, or it
@@ -489,7 +489,7 @@ function mapStream(stream: WireStream): PlaybackStreamInfo {
 
 /**
  * Session creation must state a mode. There is no server-side default and no
- * `auto` to fall back on, so a missing one is a caller bug — and a silent
+ * `auto` to fall back on, so a missing one is a caller bug, and a silent
  * fallback here would be the worst of both: `transcode` would quietly cost
  * every viewer quality, `direct` would quietly hand a TV a stream it cannot
  * decode. Failing loudly is the only option that cannot ship undetected.
@@ -524,8 +524,8 @@ function requiredMode(mode: PlaybackMode | 'choose' | undefined): PlaybackMode {
  * re-encode, so the cap wins and the video is transcoded.
  *
  * Resolved here rather than left to each caller because the two halves
- * usually come from different places — the cap from a viewer's quality
- * picker, the copy from `choosePlaybackInstruction` — so neither author sees
+ * usually come from different places (the cap from a viewer's quality
+ * picker, the copy from `choosePlaybackInstruction`), so neither author sees
  * the contradiction they are creating.
  */
 export function reconcileQualityCaps(preferences: PlaybackPreferencesUpdate): PlaybackPreferencesUpdate {
@@ -597,8 +597,8 @@ export class MachaPlaybackResolver implements PlaybackResolver {
    * so asking implied a check that did not exist; how to play the media is
    * the client's problem, and `choosePlaybackInstruction` is where that
    * problem is solved. The parameter stays because it is part of the
-   * `PlaybackResolver` seam — a decorating resolver (an offline or local-file
-   * one) legitimately needs to know what the host can decode — and because
+   * `PlaybackResolver` seam (a decorating resolver, an offline or local-file
+   * one, legitimately needs to know what the host can decode), and because
    * it is worth having in the diagnostics beside the instruction it produced.
    */
   async resolve(
@@ -871,7 +871,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
   }
 
   /**
-   * Whether this node still holds the session — the one question that tells a
+   * Whether this node still holds the session: the one question that tells a
    * `404` on a fragment apart from a `404` on the plan.
    *
    * Both answer `404 not_found` and nothing in either body distinguishes them,
@@ -881,12 +881,12 @@ export class MachaPlaybackResolver implements PlaybackResolver {
    *
    * **Not a keepalive.** It runs when something has already gone wrong, never
    * on a timer. Polling a paused session would hold it open, and the transcode
-   * entitlement belongs to the session rather than the pipeline — a viewer who
+   * entitlement belongs to the session rather than the pipeline; a viewer who
    * paused and walked away would pin the node's only video transcode slot for
    * as long as the tab stayed open. See `SERVER_SESSION_IDLE_MS`.
    *
    * A `404` is the answer, not an error: it resolves `false` and the caller is
-   * expected to act on it. Anything else — unreachable, 5xx, a refused token —
+   * expected to act on it. Anything else (unreachable, 5xx, a refused token)
    * throws, because "I could not find out" must not be mistaken for "it is
    * gone". Acting on the difference is what stops a node being condemned for
    * answering honestly.
@@ -1072,7 +1072,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     // No configured node base: the same-origin deployment, where the client
     // is served by the node that issued this path. A host with no origin at
     // all (React Native) never reaches here, because it always talks to an
-    // explicit endpoint — and if it somehow did, a relative stream URL would
+    // explicit endpoint, and if it somehow did, a relative stream URL would
     // fail later, somewhere with no evidence of why.
     const origin = machaHost().origin;
     if (origin) return new URL(path, origin).toString();

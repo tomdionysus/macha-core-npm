@@ -33,7 +33,7 @@ export interface ConnectionCheckResult {
    *
    * "Answered" rather than "answered successfully". A node still starting
    * says `503`, a node too old for the liveness route says `404`, and both
-   * have demonstrably been reached — which is the only question this check
+   * have demonstrably been reached, which is the only question this check
    * exists to ask.
    */
   available: string[];
@@ -90,8 +90,8 @@ function observeWithin(request: Promise<Response>, timeoutMs: number): Promise<C
  * as this pointed at `/api/v1/catalogue/status` and counted an endpoint only
  * on `response.ok`. Measured against Tom's cluster, all three nodes answer
  * `401` there unauthenticated, so `available` came back empty and a caller
- * that refuses to save an empty list could accept no endpoint a viewer typed
- * — no endpoint saved, so no session minted, so the client could not be
+ * that refuses to save an empty list could accept no endpoint a viewer typed:
+ * no endpoint saved, so no session minted, so the client could not be
  * configured at all. **A 401 is an answer.** It survived because it is
  * invisible to anyone whose endpoints arrive from build configuration.
  *

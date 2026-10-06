@@ -82,7 +82,7 @@ describe('core wires throughput; a host only feeds it bytes core cannot see', ()
   });
 
   /**
-   * Core never fetches media, so it never sees those bytes — and a node that
+   * Core never fetches media, so it never sees those bytes, and a node that
    * serves nothing but media would have no evidence against it. The web client
    * learned that across an afternoon on its slowest node. Its media bytes go
    * into the same store core records into: one store, one axis.
@@ -126,7 +126,7 @@ describe('core wires throughput; a host only feeds it bytes core cannot see', ()
 
   /**
    * Services are rebuilt when routing changes. The rebuilt set must own the
-   * recorder — the old registry is being retired — and the old registry must
+   * recorder (the old registry is being retired) and the old registry must
    * not keep a second store writing the same key.
    */
   it('moves the recorder to the newest registry on rebuild', async () => {

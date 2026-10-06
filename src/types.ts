@@ -6,7 +6,7 @@ export type MediaKind = CatalogueKind;
 
 export interface ArtworkRef {
   /**
-   * The SHA-256 of the artwork bytes — **a content address, not a database
+   * The SHA-256 of the artwork bytes: **a content address, not a database
    * key.** It is identical on every node, identical for every client, and
    * identical across every re-signing of `url`.
    *
@@ -23,11 +23,11 @@ export interface ArtworkRef {
   /**
    * Signed capability URL, when the server supplies one.
    *
-   * Renders directly with no blob fetch and no headers — the server owns
+   * Renders directly with no blob fetch and no headers; the server owns
    * fetching, decode and HTTP caching for it, and the response carries a long
    * `immutable` cache lifetime.
    *
-   * **Not guaranteed stable, and not a cache key — because of the host, not
+   * **Not guaranteed stable, and not a cache key, because of the host, not
    * the signature.** The signed part is stable: since server `0.40.0` the
    * expiry is quantised to a day bucket, so `exp` and `sig` are identical
    * across every object in a response and across nodes, and hold for at least
@@ -43,7 +43,7 @@ export interface ArtworkRef {
    *
    * *An earlier version of this comment blamed per-fetch re-signing. That was
    * true of builds up to `0.39.1` and was measured false on the deployed
-   * cluster — the advice was right for the wrong reason, which is the kind of
+   * cluster; the advice was right for the wrong reason, which is the kind of
    * comment that sends the next reader to build the very workaround the
    * paragraph above warns against.*
    */
@@ -205,8 +205,8 @@ export interface PlaybackCapabilities {
    *
    * Purely client-side since capabilities left the wire: it identifies the
    * executor in diagnostics, and is the honest place for a host to say what
-   * it is rather than approximate. `'ios'` is not `'web'` — AVPlayer and a
-   * browser differ on HLS segment containers and on ALAC — so a client that
+   * it is rather than approximate. `'ios'` is not `'web'` (AVPlayer and a
+   * browser differ on HLS segment containers and on ALAC), so a client that
    * cannot name itself would be stating something the chooser could later act
    * on wrongly.
    */
@@ -227,7 +227,7 @@ export interface PlaybackCapabilities {
   audioCodecs: AudioCodec[];
   containers: string[];
   /**
-   * HLS with **fragmented-MP4** segments specifically — not HLS in general.
+   * HLS with **fragmented-MP4** segments specifically, not HLS in general.
    *
    * The distinction is not pedantry. `canPlayType('application/vnd.apple.
    * mpegurl')` answers "can you play HLS", which is a different and easier
@@ -258,7 +258,7 @@ export interface PlaybackCapabilities {
   /**
    * Transfer characteristics the client can actually display, by their
    * ffmpeg/H.273 names: `smpte2084` (PQ) and `arib-std-b67` (HLG). Empty
-   * means SDR only — the server transcodes an HDR source down rather than
+   * means SDR only: the server transcodes an HDR source down rather than
    * handing over a stream that decodes to a washed-out or black picture.
    */
   hdr: string[];
@@ -268,7 +268,7 @@ export interface PlaybackCapabilities {
    * under-claiming: an 8-bit decoder fed a 10-bit source shows nothing,
    * whereas a 10-bit decoder fed an unnecessary 8-bit transcode still plays.
    *
-   * Sent verbatim — the core does not clamp or round it, so a host that
+   * Sent verbatim: the core does not clamp or round it, so a host that
    * derives the depth from something parsed (a device profile string, a
    * system property) must validate at its own boundary, where it still
    * knows what it read. A wrong value reaching the server is visibly wrong;
@@ -277,7 +277,7 @@ export interface PlaybackCapabilities {
   videoBitDepth?: number;
   /**
    * Dolby Vision profile numbers the client decodes (5, 7, 8, ...). Absent or
-   * empty means none — silence is never read as capable.
+   * empty means none; silence is never read as capable.
    *
    * Distinct from `hdr` because a profile number answers a question the
    * transfer name cannot: a set can present PQ perfectly and still fail on a
@@ -347,7 +347,7 @@ export type PlaybackMode = 'direct' | 'remux' | 'transcode';
  * **The division here is the contract between core and a host: core owns when
  * to stop, the host owns what happens until then.** A host that invents its own
  * stop time and a core that dictates retry behaviour are the two ways this goes
- * wrong, and both have happened — a deadline living in two layers is a deadline
+ * wrong, and both have happened: a deadline living in two layers is a deadline
  * nobody owns.
  */
 export interface PlaybackSourceBudgets {
@@ -372,20 +372,20 @@ export interface PlaybackSourceBudgets {
    * not: a refusal after roughly this long is the expected answer at the
    * production frontier and is worth retrying, while a transfer that never
    * became a response is evidence about the node. Nothing here says how many
-   * holds are worth sitting through — that is the host's, and it is the part
+   * holds are worth sitting through; that is the host's, and it is the part
    * core cannot see from where it sits.
    */
   segmentHoldMs: number;
   /**
    * How long the node serving this source keeps an idle transcode engine
-   * before reclaiming it — its `streaming.pipeline_idle_ms`.
+   * before reclaiming it: its `streaming.pipeline_idle_ms`.
    *
    * **A ceiling on how long a standby prepared here is worth holding**, not a
    * target. A standby held inside it still has a warm engine to promote onto;
    * one held past it promotes onto a live session whose pipeline the node has
    * torn down, which costs a cold start.
    *
-   * Absent means the node did not say — every node older than server 0.48.0 —
+   * Absent means the node did not say (every node older than server 0.48.0)
    * and absence is never zero. Core then keeps the floor the server
    * guarantees rather than a figure it invented.
    */
@@ -414,14 +414,14 @@ export interface PlaybackSource {
    * may wait for.
    *
    * **Carried on the source rather than passed as an argument** because every
-   * seam that acquires media already receives one — `play()`, and
-   * `preflightSource()` — so a host gets the figures without four client
+   * seam that acquires media already receives one (`play()`, and
+   * `preflightSource()`), so a host gets the figures without four client
    * adapters changing a signature. It travels with the thing it describes: a
    * replacement generation on another node brings that node's deadlines with
    * it, and there is no window where a host holds a new source and the old
    * node's numbers.
    *
-   * Absent where core could not learn them — a node too old to report, one with
+   * Absent where core could not learn them: a node too old to report, one with
    * streaming disabled, or a status call that has not landed yet. A host that
    * finds this absent uses its own conservative default, exactly as before.
    */
@@ -433,8 +433,8 @@ export interface PlaybackSource {
    * a native player receives them through its own data source, so anything put
    * here reaches the wire without passing through this package's fetch and
    * without any client seeing it. Macha needs no custom header on the data
-   * plane — media and artwork are reached by signed capability URLs that carry
-   * their own authority — and two of its clients cannot attach one at all.
+   * plane (media and artwork are reached by signed capability URLs that carry
+   * their own authority), and two of its clients cannot attach one at all.
    *
    * The field exists for a host with its own transport requirement, not as a
    * channel for this package to use.
@@ -462,14 +462,14 @@ export interface PlaybackEvent {
    * Contiguous buffered runway ahead of the current media position.
    *
    * **The element's own buffer and nothing else.** A host that reads ahead
-   * into a cache of its own reports that separately, in `readAheadBytes` —
+   * into a cache of its own reports that separately, in `readAheadBytes`;
    * folding it in here would make one number mean two things, and a consumer
    * comparing this against a media-time budget would be comparing it against
    * bytes that are not yet playable.
    *
    * **Report it as a measurement, never as a request.** While core is
    * recovering a source, a `0` from an event that also says the element is
-   * playing — not `buffering`, not `ended`, not `paused` — is treated as a
+   * playing (not `buffering`, not `ended`, not `paused`) is treated as a
    * player on its way down rather than as real exhaustion, and the last
    * figure core had reason to trust stands in its place, aged. `positionMs`
    * has had that guard for longer: a tearing-down element can report zero,
@@ -480,7 +480,7 @@ export interface PlaybackEvent {
    * **So `buffering` must be produced independently of this number.** An
    * adapter that derives `buffering` *from* an empty buffer can be wrong
    * about both at once and core has nothing left to cross-check; one that
-   * takes it from the player's own state — `readyState`, a `status` field —
+   * takes it from the player's own state (`readyState`, a `status` field)
    * cannot. Signalling exhaustion by zeroing this instead of setting
    * `buffering` will not work during a recovery, and is not the contract.
    *
@@ -495,8 +495,8 @@ export interface PlaybackEvent {
    * taken, where the host has such a cache at all.
    *
    * Direct Play on the web is the case this exists for: the read-ahead worker
-   * holds bytes in front of the element, so `forwardBufferMs` — computed from
-   * `video.buffered` — understates the real cover, on the path most likely to
+   * holds bytes in front of the element, so `forwardBufferMs` (computed from
+   * `video.buffered`) understates the real cover, on the path most likely to
    * be serving a large file. Reported as bytes rather than milliseconds
    * because bytes are what the host honestly knows; converting needs a
    * bitrate, and the session carries one.
@@ -510,7 +510,7 @@ export interface PlaybackEvent {
    * firehose on the path already moving the most bytes. Let it ride on events
    * published for some other reason and recompute it each time; it is then
    * never older than the event carrying it. Named here because the omission
-   * reads exactly like a bug to the next person who looks — the web client
+   * reads exactly like a bug to the next person who looks: the web client
    * had to comment it as deliberate in its own adapter for that reason.
    */
   readAheadBytes?: number;

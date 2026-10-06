@@ -22,7 +22,7 @@ controls, platform capabilities and local playback intent.
 **The server serves facts; the client negotiates.** The server states what a
 title is, what its streams are and what operations it can perform. Choosing
 between Direct Play, remux and transcode is the client's, made from its own
-measured capabilities — and it is made in `@machafoundation/core` rather than in any one
+measured capabilities, and it is made in `@machafoundation/core` rather than in any one
 client, so every client decides the same way from the same facts. The server
 obeys the result; it does not pick on the client's behalf. Choosing among an
 item's files is part of the same negotiation: the client matches each file's
@@ -97,7 +97,7 @@ preloaded or embedded.
    mere existence of another open writer.
 
 4. **Thou Shalt Not Shoot Thyself In The Foot.** No operation, code path or
-   subsystem may leave the node — or the client — in a state it cannot recover
+   subsystem may leave the node (or the client) in a state it cannot recover
    from on its own. *Added by the server on 2026-09-20 and adopted here
    unchanged.* It is different in kind from the three above: laws 1-3 decide who
    goes first, this one decides what may not be done **at any priority**. It is

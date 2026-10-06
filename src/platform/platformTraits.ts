@@ -1,7 +1,7 @@
 import type { Platform } from './Platform.js';
 
 /**
- * Named answers to "does this platform want X UI behavior" — the single
+ * Named answers to "does this platform want X UI behavior", the single
  * place that decides, replacing `import.meta.env.MODE === 'samsung'` (or
  * `'android'`, or `platform.name === 'web'`) re-derived independently at
  * each call site. Before this, the same underlying question had drifted
@@ -10,7 +10,7 @@ import type { Platform } from './Platform.js';
  * instead of build mode in a third) with no way to tell whether that was
  * deliberate or drift.
  *
- * Each trait names the UI decision it drives, not the platform itself —
+ * Each trait names the UI decision it drives, not the platform itself:
  * two platforms sharing a value today (Samsung and Android both want D-pad
  * navigation) is a fact about them, not a reason to collapse the traits
  * into one, since they can diverge independently later.
@@ -30,7 +30,7 @@ export interface PlatformTraits {
   receivesBackKeyEvents: boolean;
   /**
    * TV-remote media control scheme: no pointer/hover, D-pad-driven seek,
-   * hardware volume, a dedicated back-to-minimize key. Samsung only today —
+   * hardware volume, a dedicated back-to-minimize key. Samsung only today;
    * Android does not get this treatment yet (tracked separately; it likely
    * should on Android TV, but that's a real behavior change, not part of
    * just naming the existing checks).
@@ -51,7 +51,7 @@ export type PlatformTarget = 'web' | 'samsung' | 'android' | 'tizen' | 'native';
 
 /**
  * Traits knowable from the target alone, before any `Platform` instance
- * exists — e.g. choosing a router at boot, which must happen before the
+ * exists, e.g. choosing a router at boot, which must happen before the
  * platform is detected.
  */
 export function buildPlatformTraits(

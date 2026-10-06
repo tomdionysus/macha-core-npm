@@ -13,7 +13,7 @@ export interface MachaEndpoint {
    * **An address, not a machine.** It is derived from the base URL an operator
    * configured or a node advertised, so one node reached two ways has two of
    * these. Health, cooldown, latency, capacity and session provenance are all
-   * per address, correctly — a LAN path and a WAN path to the same box really
+   * per address, correctly: a LAN path and a WAN path to the same box really
    * do have different round trips and can fail independently.
    *
    * Group by `nodeId` when the question is about the machine.
@@ -28,11 +28,11 @@ export interface MachaEndpoint {
    * reliable one.** `id` cannot answer it: `http://10.44.1.50:7438` and
    * `https://macnessa.macha.network` are one machine and share nothing a
    * client could match on. Before this was populated the registry held that
-   * node twice — counted twice in any per-node total, offered twice in a node
+   * node twice: counted twice in any per-node total, offered twice in a node
    * selector, and a failover could "move" to the box it had just left.
    *
    * Anything a host presents or totals *per node* groups on this and not on
-   * `id`. Anything about a path — health, latency, which door to dial — stays
+   * `id`. Anything about a path (health, latency, which door to dial) stays
    * on `id`.
    *
    * Learned two ways, both from the node: the membership advertisement, which
@@ -41,7 +41,7 @@ export interface MachaEndpoint {
    * inferred from the address, because two addresses that look unrelated may
    * be one node and guessing merges two that are not.
    *
-   * `undefined` means not yet learned — an endpoint configured this instant,
+   * `undefined` means not yet learned: an endpoint configured this instant,
    * or one that has not answered. It is never a claim that the endpoint has no
    * node.
    */
@@ -67,7 +67,7 @@ export type ClusterNodeState = 'online' | 'offline' | 'retired' | (string & {});
  * and on a weak link it consumes the capacity it is trying to observe.
  *
  * Every field is optional because a node that has not answered yet has none of
- * them, and absent must stay distinguishable from zero — a node reporting 0%
+ * them, and absent must stay distinguishable from zero: a node reporting 0%
  * CPU and a node that has never been heard from are opposite situations.
  */
 export interface EndpointCapacity {
@@ -81,7 +81,7 @@ export interface EndpointCapacity {
    * Load-bearing rather than decorative: `load1: 2.67` is a struggling machine
    * on two cores and an idle one on eight, and this cluster is deliberately
    * non-uniform hardware. `process_cpu_percent` has the same problem from the
-   * other side — it exceeds 100 precisely because cores are not normalised out
+   * other side: it exceeds 100 precisely because cores are not normalised out
    * of it. So the capacity comparison divides by this and abstains without it,
    * rather than making a hardware-size guess on every cycle.
    */
@@ -101,7 +101,7 @@ export interface EndpointCapacity {
  * that.
  *
  * Each field is independently optional because the node may be too old to
- * report either. **Absent never shortens a deadline** — a missing figure falls
+ * report either. **Absent never shortens a deadline**: a missing figure falls
  * back to the conservative published default, never to zero and never to
  * whatever the last node happened to say.
  */
@@ -134,7 +134,7 @@ export interface EndpointPlaybackBudgets {
   /**
    * The node's `pipeline_idle_ms`: how long it keeps an idle transcode engine
    * before reclaiming it. Bounds how long a standby prepared here is worth
-   * holding — see `ALTERNATE_RECOVERY_WINDOW_MS`.
+   * holding, see `ALTERNATE_RECOVERY_WINDOW_MS`.
    */
   pipelineIdleMs?: number;
   observedAt: number;
@@ -210,7 +210,7 @@ export interface EndpointCandidate {
    *
    * Answered here because it cannot be answered anywhere else: `health.retryAt`
    * is a reading of the registry's own clock, and a caller has no way to
-   * compare against it — `MachaHost.now()` is a duration clock with an
+   * compare against it: `MachaHost.now()` is a duration clock with an
    * arbitrary origin, so a caller using `Date.now()` would be comparing two
    * unrelated number lines. Without this, "is anything actually usable right
    * now" can only be approximated by "is the list empty", which is a different
@@ -264,8 +264,8 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
  *
  * **Two is not the low bar it reads as, and this is the part to know.** A
  * sample is a body read of at least `MIN_SAMPLE_BYTES` (32 KB) that went
- * through `readJsonBody` — a catalogue listing or a search big enough to
- * qualify — or a media transfer a host fed in through
+ * through `readJsonBody` (a catalogue listing or a search big enough to
+ * qualify) or a media transfer a host fed in through
  * `recordTransferByUrl`. **The health cycle produces none**: its probes and
  * the ten-second status call are small, and a small transfer measures
  * round-trip time and handler cost rather than throughput. So an endpoint can
@@ -273,7 +273,7 @@ const LATENCY_SWAP_MIN_RELATIVE_IMPROVEMENT = 0.4;
  *
  * And a *restored* record re-enters at one sample whatever history it holds
  * (`EndpointBandwidth.restore`), deliberately, so that a stale reading cannot
- * outvote a live link — which means a client that reloads before its second
+ * outvote a live link, which means a client that reloads before its second
  * large read of the session is back to ranking without this axis. A client
  * that browses little and streams through a host that does not call
  * `recordTransferByUrl` may never reach two at all.
@@ -314,8 +314,8 @@ const CAPACITY_RANK_MIN_RELATIVE_DIFFERENCE = 0.4;
  * The measured axes, in the order the ranking cascade consults them. Most
  * direct first:
  *
- * - **Throughput** is the closest thing to the question actually being asked —
- *   can this link carry the bytes — so where it is known it wins.
+ * - **Throughput** is the closest thing to the question actually being asked
+ *   (can this link carry the bytes), so where it is known it wins.
  * - **Latency** is the only signal held about the *path*. It has to outrank
  *   capacity, because the failure this ordering exists to prevent is a
  *   healthy, lightly loaded node behind a bad wireless hop, and no
@@ -336,14 +336,14 @@ type MeasuredAxis = typeof MEASURED_AXES[number];
 /**
  * The axes settled before any measurement is consulted, in order, as the slots
  * of one sort key: good standing before lapsed, reachable before cooling, the
- * sticky preference, then —
- * among endpoints that are all cooling — whichever is ready soonest, then the
+ * sticky preference, then,
+ * among endpoints that are all cooling, whichever is ready soonest, then the
  * consecutive failure count.
  *
  * They come first because they are about whether an endpoint can be used at
  * all rather than how well it performs. They are also a total order for free:
- * each is a number compared against the same number on every other endpoint —
- * a flag, a deadline, a count — so unlike the measured axes they can be a sort
+ * each is a number compared against the same number on every other endpoint
+ * (a flag, a deadline, a count), so unlike the measured axes they can be a sort
  * key rather than a filter.
  */
 const ABSOLUTE_AXES: readonly EndpointSelectionAxis[] = ['availability', 'availability', 'sticky', 'availability', 'failures'];
@@ -352,7 +352,7 @@ const ABSOLUTE_AXES: readonly EndpointSelectionAxis[] = ['availability', 'availa
 interface RankEntry {
   endpoint: MachaEndpoint;
   health: EndpointHealth;
-  /** Where the endpoint sits in the configured list — the last tie-break of all. */
+  /** Where the endpoint sits in the configured list: the last tie-break of all. */
   order: number;
 }
 
@@ -378,7 +378,7 @@ function firstRankKeyDifference(left: readonly number[], right: readonly number[
  * perceive. Capacity is blunter still, because it is the one measurement that
  * responds to our own routing: send work to a node and its load rises, which
  * demotes it, which moves the work away, which lowers the load, which promotes
- * it again. The minimum relative difference is the damping on that loop —
+ * it again. The minimum relative difference is the damping on that loop,
  * together with the sticky preference, which is settled before any measured
  * axis and so holds authority in place while the numbers move underneath it.
  *
@@ -467,7 +467,7 @@ export function bootstrapEndpoints(urls: readonly string[], source: EndpointSour
 
 /**
  * `scheme://host:port` for a base URL, with the scheme's default port filled
- * in and the host lowercased — the thing two spellings of one address agree
+ * in and the host lowercased: the thing two spellings of one address agree
  * about.
  *
  * Used for matching advertisements to configured endpoints, never for
@@ -475,7 +475,7 @@ export function bootstrapEndpoints(urls: readonly string[], source: EndpointSour
  * what an operator typed and what every log, health record and session id
  * already keys on. Two addresses that share an authority are the same door to
  * the same node; two that do not may still be the same node, and nothing in a
- * status payload says so — see the note on `nodeId`.
+ * status payload says so; see the note on `nodeId`.
  *
  * Returns `undefined` for anything unparseable rather than guessing, so a
  * malformed entry simply matches nothing.
@@ -484,7 +484,7 @@ function endpointAuthority(baseUrl: string): string | undefined {
   try {
     // `origin` already is this: it drops a default port, lowercases the host
     // and keeps the scheme. Spelling it out by hand was both more code and
-    // less portable — `protocol` and `hostname` are DOM-only, and this package
+    // less portable: `protocol` and `hostname` are DOM-only, and this package
     // is typechecked a second time against a runtime that has neither.
     const origin = new URL(baseUrl).origin;
     return origin && origin !== 'null' ? origin : undefined;
@@ -535,24 +535,24 @@ export class EndpointRegistry {
      * `lastSuccessAt`, `lastFailureAt` and `observedAt` are read beside a
      * node's own journal and are persisted across restarts, so they have to
      * mean the same thing to two machines. A host that passes
-     * `performance.now` — an arbitrary origin that resets each run — gets
+     * `performance.now` (an arbitrary origin that resets each run) gets
      * health readings that render as 1970 and comparisons that silently
      * compare a duration against an instant. `MachaHost.now()` is that clock
      * and is not this one.
      *
      * **Epoch across every boundary, and formatting only at the edge.** Macha
-     * spans sites in different timezones — three nodes in three zones on this
-     * cluster — and epoch milliseconds are what make a client reading and a
+     * spans sites in different timezones (three nodes in three zones on this
+     * cluster) and epoch milliseconds are what make a client reading and a
      * node reading agree at all, because they carry no zone to get wrong.
      * Nothing in this package turns one into a wall-clock string.
      *
      * A host that does has two cases and they take different formats.
-     * **Presentation** — a person asking when a node was last seen — is their
+     * **Presentation** (a person asking when a node was last seen) is their
      * own zone, **labelled with it**: `21 Sep 2026, 18:51:52 GMT+3`. A viewer
      * should not have to convert their own clock, and the label is what stops
-     * it being read as the node's time. **Interchange** — a log line, anything
+     * it being read as the node's time. **Interchange** (a log line, anything
      * handed to another machine, anything that will be read beside a node's
-     * journal — is Zulu, because that is where an unlabelled local time turns
+     * journal) is Zulu, because that is where an unlabelled local time turns
      * into an hour that silently disappears. Timezones are a presentation
      * problem; the data is never in one.
      */
@@ -583,7 +583,7 @@ export class EndpointRegistry {
    *
    * That includes each probe success and failure, so with a ten-second health
    * cycle a listener sees one notification per endpoint per cycle even when
-   * nothing an observer would call different has happened — only
+   * nothing an observer would call different has happened: only
    * `lastSuccessAt` moved. That is deliberate: a listener rendering health
    * wants exactly those, and the registry cannot know which subset any
    * particular listener cares about.
@@ -608,14 +608,14 @@ export class EndpointRegistry {
     // A second index, by authority rather than by string. `normalizeBaseUrl`
     // only trims trailing slashes, so `https://node` and `https://node:443`
     // are two different keys for one address and an endpoint configured as
-    // either misses an advertisement written as the other — it then keeps no
+    // either misses an advertisement written as the other; it then keeps no
     // `nodeId` at all, and anything grouping by node counts one machine twice.
     //
     // **Matching only, never minting.** This changes which *configured*
     // endpoint an advertisement attaches to; it does not add a URL. An
     // unmatched advertisement still becomes a discovered endpoint by its own
     // advertised string, so nothing here can invent a plaintext address for a
-    // node someone deliberately put behind TLS — which is the reason the
+    // node someone deliberately put behind TLS, which is the reason the
     // monitor advertises one URL per node in the first place.
     const advertisedByAuthority = new Map<string, string | undefined>();
     for (const advertisement of advertisements) {
@@ -662,7 +662,7 @@ export class EndpointRegistry {
    * states the whole of membership: whatever it is not told about is dropped,
    * because a node missing from a fresh cluster view has genuinely gone. Call
    * it with a partial list and every discovered endpoint outside that list
-   * disappears — a three-node cluster collapsing to one, sessions keyed to the
+   * disappears: a three-node cluster collapsing to one, sessions keyed to the
    * endpoints that vanished going with it.
    *
    * Identity is not membership. Learning that one address is `gbni-1` says
@@ -719,7 +719,7 @@ export class EndpointRegistry {
    * consistent order. At 20/65/110 ms with a 50 ms floor, A ties B and B ties
    * C while A beats C: `sort` is handed a cycle, its output becomes
    * implementation-defined, and which node ends up at the head depends on the
-   * order the endpoints happened to be configured in — the WAN node can win
+   * order the endpoints happened to be configured in; the WAN node can win
    * while `selectionAxis()` reports that no measurement decided anything. This
    * is the fault the cascade was built to prevent, arriving through the
    * comparator itself; see *Routing on evidence* in `HISTORY.md`.
@@ -729,8 +729,8 @@ export class EndpointRegistry {
    * does not depend on which other endpoint it is asked about.
    *
    * The best is always taken within the surviving pool and never globally, so
-   * evidence from an endpoint already out of contention — a node in a failure
-   * cooldown that happens to have the fastest link — cannot eliminate a
+   * evidence from an endpoint already out of contention (a node in a failure
+   * cooldown that happens to have the fastest link) cannot eliminate a
    * healthy one.
    */
   private rank(entries: RankEntry[], now: number): { ordered: RankEntry[]; axis: EndpointSelectionAxis } {
@@ -764,7 +764,7 @@ export class EndpointRegistry {
   /**
    * The absolute axes as one sort key, in the order `ABSOLUTE_AXES` names
    * them. The cooldown deadline is flattened to zero for a reachable endpoint,
-   * so it only ever separates endpoints that are all still cooling — the
+   * so it only ever separates endpoints that are all still cooling; the
    * availability slot above it has already dealt with the mixed case.
    */
   private absoluteKey(entry: RankEntry, now: number): number[] {
@@ -779,7 +779,7 @@ export class EndpointRegistry {
   }
 
   /**
-   * Order one tier — endpoints no absolute axis could separate — by the
+   * Order one tier (endpoints no absolute axis could separate) by the
    * measured cascade, reporting the axis that separated its own head from its
    * own runner-up.
    *
@@ -887,8 +887,8 @@ export class EndpointRegistry {
    * **`configured-order` used to be indistinguishable from two different
    * situations**: every axis was consulted and none separated the endpoints,
    * or the axis the cascade documents as primary had no data to consult.
-   * Throughput is the one that goes missing silently — it needs a store the
-   * host may never have supplied, and transfers recorded into it — so the
+   * Throughput is the one that goes missing silently (it needs a store the
+   * host may never have supplied, and transfers recorded into it), so the
    * ranking falls through and nothing says why. Two of three clients ran that
    * way without noticing. `capacity` already abstains visibly without a core
    * count; this is the same courtesy for the axis above it.
@@ -914,7 +914,7 @@ export class EndpointRegistry {
    * Which axis decided the current head of `candidates()`, as of the last call.
    *
    * Undefined before any call, and when only one endpoint is known there is
-   * nothing to have decided — `configured-order` is reported for that case,
+   * nothing to have decided; `configured-order` is reported for that case,
    * since the list is what put it there.
    */
   selectionAxis(): EndpointSelectionAxis | undefined {
@@ -937,7 +937,7 @@ export class EndpointRegistry {
     return true;
   }
 
-  /** Whether throughput is even recordable — false when no store was ever supplied. */
+  /** Whether throughput is even recordable: false when no store was ever supplied. */
   get throughputRecordable(): boolean {
     return this.bandwidth !== undefined;
   }
@@ -949,7 +949,7 @@ export class EndpointRegistry {
    * **This is the seam for bytes core cannot see.** Core records its own JSON
    * reads automatically; it never fetches media. The web client's Direct Play
    * read-ahead worker does, and until it fed those bytes in, its throughput
-   * record described only JSON — a node serving nothing but media had no
+   * record described only JSON; a node serving nothing but media had no
    * evidence against it and the client spent an afternoon streaming from its
    * slowest node. A host with media-byte evidence calls this. It is the only
    * throughput wiring a host does, and it is additive: nothing else to build,
@@ -1102,7 +1102,7 @@ export class EndpointRegistry {
    * **The third case, and core had two.** `recordSuccess` sets the sticky
    * endpoint *and* writes a successful round trip; `recordProbeSuccess` writes
    * the round trip and leaves the sticky endpoint alone. There was no way to
-   * express the remaining combination — move the preference, assert nothing —
+   * express the remaining combination (move the preference, assert nothing),
    * so a caller wanting it reached for `recordSuccess`, which zeroes
    * `consecutiveFailures` and dates a `lastSuccessAt` that never occurred.
    * That reaches a Status screen as evidence, and it is fabricated.
@@ -1110,7 +1110,7 @@ export class EndpointRegistry {
    * **A viewer choosing a node is not evidence about the node.** This is the
    * case that found it: a node selector in the web client had no other public
    * door, and subclassed the registry rather than lie through this one. The
-   * asymmetry was already half-noticed — the comment on `recordProbeSuccess`
+   * asymmetry was already half-noticed: the comment on `recordProbeSuccess`
    * has been saying "health probes must not reshuffle the sticky endpoint"
    * since it was written, which is this same distinction seen from the other
    * side.
@@ -1248,7 +1248,7 @@ export class EndpointRegistry {
    *
    * "Better" is two facts, not one. Round-trip time decides how quickly the
    * next request starts; throughput decides whether media can actually be read
-   * across the link, and the two disagree often enough to matter — a node one
+   * across the link, and the two disagree often enough to matter: a node one
    * wireless hop away can answer probes promptly and still be the worst place
    * to stream from. So a swap requires an advantage on one axis and no
    * material regression on the other, and either axis can motivate it.
@@ -1360,7 +1360,7 @@ export class EndpointRegistry {
    * Publish to listeners without letting one of them break the caller.
    *
    * A host listener that throws used to turn a `route()` that had *succeeded*
-   * into a rejection — the recording happens on the success path — and could
+   * into a rejection (the recording happens on the success path) and could
    * take the health loop down with it. Presentation cannot be allowed to
    * break routing: the same posture `publishConnectionState` has always
    * taken, and for the same reason. Copied before iterating, since a listener

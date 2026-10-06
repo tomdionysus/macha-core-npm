@@ -5,7 +5,7 @@ import type { StorageLike } from '../state/storage.js';
  *
  * The web client, the React Native app and a test all supply the same three
  * things by different means, so the core asks for them by shape rather than
- * reaching for `localStorage`, `crypto` or `performance` — none of which are
+ * reaching for `localStorage`, `crypto` or `performance`, none of which are
  * present, or mean the same thing, on every target.
  */
 export interface MachaHost {
@@ -14,7 +14,7 @@ export interface MachaHost {
    * position.
    *
    * **It must be able to answer for every key in `MACHA_STORAGE_KEYS` and
-   * `MACHA_STORAGE_KEY_PREFIXES`, including the retired ones** — not only the
+   * `MACHA_STORAGE_KEY_PREFIXES`, including the retired ones**, not only the
    * keys core currently writes. A host backing this with a prefix-hydrated
    * cache rather than reading straight through will otherwise answer `null`
    * for a key it never loaded, and core cannot tell that apart from the key
@@ -24,7 +24,7 @@ export interface MachaHost {
    * `ContinueWatchingStore` adopts `macha-client-progress:<clientId>` on first
    * read when the current key is empty. A host that did not hydrate that
    * prefix reports nothing, so adoption silently does not happen and the data
-   * the migration exists to carry is dropped — no error, no log, nothing to
+   * the migration exists to carry is dropped: no error, no log, nothing to
    * attribute it to. It works there only because `macha-` happened to be in
    * that client's filter.
    *
@@ -41,7 +41,7 @@ export interface MachaHost {
    *
    * **The load list is what core may *read*, not what core *writes*, and the
    * difference is the whole danger.** They diverge exactly at core's read-time
-   * migrations — `macha-client-progress:` and `macha-server-url` are read and
+   * migrations: `macha-client-progress:` and `macha-server-url` are read and
    * then never written again. A host deriving its filter by observing what
    * core writes therefore misses precisely the keys whose absence loses data,
    * and "load everything in the registry" and "load everything I have seen
@@ -54,7 +54,7 @@ export interface MachaHost {
    * better than `storage`.
    *
    * The session token is the only thing core puts here, and **every** session
-   * goes here — there is no disposable kind. A session is a session: the
+   * goes here: there is no disposable kind. A session is a session: the
    * account it belongs to may have no password and may be the one an empty
    * set of credentials authenticates, and none of that makes the bearer less
    * worth protecting or less worth keeping.
@@ -64,14 +64,14 @@ export interface MachaHost {
    * `expo-secure-store`; a Tizen widget has app-private storage and no
    * hardware backing, which is its ceiling; a browser has nothing JavaScript
    * can read that an injected script cannot. **Core cannot make a platform
-   * safer than it is — it can only use what the host offers.** A host that
+   * safer than it is; it can only use what the host offers.** A host that
    * supplies nothing falls back to `storage`, which is exactly today's
    * behaviour and is stated rather than implied.
    *
    * The browser's real answer is not a storage slot at all: it is an
    * `httpOnly` cookie the server sets and JavaScript never touches. That is a
    * property of transport rather than of storage, so it belongs on the fetch
-   * path and not here — a `StorageLike` contorted to express "no storage"
+   * path and not here: a `StorageLike` contorted to express "no storage"
    * could not say what it meant.
    */
   secureStorage?: StorageLike;
@@ -81,7 +81,7 @@ export interface MachaHost {
    * **The consequence, because "durations only" has not been enough.** This is
    * `performance.now()` wherever the host has it: monotonic, and restarting
    * near zero on every run. It cannot express an absolute instant, so route a
-   * duration through it and keep anything absolute on `Date.now()` — never
+   * duration through it and keep anything absolute on `Date.now()`; never
    * convert between them. Three cases in this package, all of which have been
    * got wrong or nearly swept the wrong way:
    *

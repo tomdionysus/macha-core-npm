@@ -19,7 +19,7 @@ export type PlaybackDegradationListener = (error: Error) => void;
  * has been produced answers `500 segment_not_ready` with a `Retry-After`,
  * which is the node working correctly near the production frontier and saying
  * so. It is separated from `stream` because the two are indistinguishable
- * without reading the status — both arrive as a failed fragment — and treating
+ * without reading the status (both arrive as a failed fragment) and treating
  * a hold as evidence would take a healthy node out of rotation for doing
  * exactly what it was asked.
  *
@@ -33,7 +33,7 @@ export type PlaybackDegradationListener = (error: Error) => void;
  * `not-found` is a `404` on a playback route: the node did not serve this
  * media. **It is a statement about one session's existence, not about the
  * node**, which is why it is not endpoint evidence. What it means is genuinely
- * ambiguous and an adapter cannot resolve it — measured against one node in
+ * ambiguous and an adapter cannot resolve it: measured against one node in
  * one run on 2026-09-17, a session the reaper had erased and a fragment past
  * the end of a live plan both answered `404` with the identical machine code
  * `not_found`, differing only in one word of English in a message the adapter
@@ -53,11 +53,11 @@ export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-read
  * **The one bit a host cannot work out for itself, and the only thing that
  * decides whether replacing a source should be invisible or obvious.**
  *
- * - `continue` — the viewer did not ask for this and should not see it. A
+ * - `continue`: the viewer did not ask for this and should not see it. A
  *   session the node reaped, a failover to another node, a quality change. A
  *   host able to prepare the replacement alongside the current one and cut
  *   between them should do exactly that.
- * - `relocate` — the viewer asked to be somewhere else. Attach at the new
+ * - `relocate`: the viewer asked to be somewhere else. Attach at the new
  *   position and let them see it happen. Holding them where they were while a
  *   replacement is prepared is the one outcome they did not want.
  *
@@ -66,11 +66,11 @@ export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-read
  * as position `0` with the same offsets, so a host that cut seamlessly on both
  * held a viewer at 17:40 for fourteen seconds after they asked to go to 47:00,
  * while the clock read 46:58 the whole time. No inference from position deltas
- * separates them either — a short seek and a reap recovery look alike, and
+ * separates them either: a short seek and a reap recovery look alike, and
  * guessing wrong reintroduces a visible cut on the recovery path or keeps the
  * lie on the seek path.
  *
- * **Optional, and absent means `relocate`** — the behaviour every player had
+ * **Optional, and absent means `relocate`**: the behaviour every player had
  * before seamless replacement existed, which is to attach and let it show. A
  * host that ignores this argument is therefore still correct; only a host that
  * can hide the change needs to know when it should.
@@ -82,8 +82,8 @@ export type PlaybackFailureKind = 'stream' | 'media' | 'unsupported' | 'not-read
  * between them; a host leaving **Direct Play** cannot, because there is no
  * second managed presentation to hand over to, so the transition falls through
  * to an ordinary attach however it is labelled. That fall-through is correct
- * and expected. Core should still say `continue` where it means it — the host
- * honours it when it can — but nothing in core may treat the label as evidence
+ * and expected. Core should still say `continue` where it means it (the host
+ * honours it when it can), but nothing in core may treat the label as evidence
  * that the viewer saw nothing.
  */
 export type PlaybackTransition = 'continue' | 'relocate';
@@ -108,25 +108,25 @@ export function isEndpointRetryablePlaybackFailure(error: unknown): boolean {
   // Note what the default costs a player that does not classify: a bare Error
   // is treated as endpoint evidence, so a segment hold reported without a kind
   // prepares a standby on another node and can escalate to failover. Only the
-  // adapter can tell a hold from a loss — it is the thing holding the response
-  // — so a player fetching fragments itself must classify them.
+  // adapter can tell a hold from a loss (it is the thing holding the response),
+  // so a player fetching fragments itself must classify them.
   //
   // `not-found` is excluded for the same reason as `not-ready`, one layer up:
   // the node answered, correctly, about a session rather than about itself.
-  // Recovering from it is a separate decision and is not made here — see
+  // Recovering from it is a separate decision and is not made here; see
   // `PlaybackCoordinator`'s handling of the kind.
   return !(error instanceof PlaybackSourceError) || error.kind === 'stream' || error.kind === 'unknown';
 }
 
 /**
  * Whatever a platform presents into: a DOM element on the web, a native view
- * handle or component ref on React Native. The core never inspects it — it
+ * handle or component ref on React Native. The core never inspects it; it
  * only carries it from the presentation layer to that platform's own player.
  *
  * **Use this rather than a DOM type, and nothing will stop you doing otherwise.**
  * `tsconfig` enables the `DOM` lib because core legitimately uses the web
  * standard `fetch`, `Response`, `Headers` and `AbortSignal`, whose types live
- * there — so `HTMLElement` also compiles perfectly well, and `PlaybackRuntime`
+ * there, so `HTMLElement` also compiles perfectly well, and `PlaybackRuntime`
  * accepted one for a while. It typechecks, it passes every test, and it is
  * wrong: it hands React Native a type it cannot satisfy, in a package whose
  * whole claim is that it assumes no browser.
@@ -138,7 +138,7 @@ export interface Player {
   attach(host: PlaybackHost): void;
   /**
    * Whether this player can keep the outgoing source presenting while the
-   * viewer plays up to a generation that starts ahead of them — see the
+   * viewer plays up to a generation that starts ahead of them; see the
    * negative `positionMs` on `play`.
    *
    * **Opt-in, and absent means no.** A player that tears its element down on
@@ -176,7 +176,7 @@ export interface Player {
    * goes on describing the source that is still playing. Never resolve on
    * buffering completing.
    *
-   * `transition` says whether the viewer asked for this — see
+   * `transition` says whether the viewer asked for this; see
    * `PlaybackTransition`. A host that can replace a source invisibly must only
    * do so for `continue`.
    *
@@ -210,7 +210,7 @@ export interface Player {
   /**
    * Set the output level, where the host has an app-level volume at all.
    *
-   * **Optional because whether a host has one is platform-specific — not
+   * **Optional because whether a host has one is platform-specific, not
    * because none do.** A Tizen widget has no meaningful per-app level and
    * leaves it to the set; an Android TV player built on Media3 exposes a real
    * per-player volume that is genuinely independent of the television's own
@@ -222,7 +222,7 @@ export interface Player {
    * core's three `Player` fakes all implementing it with an empty body as
    * evidence the member was unnecessary. A fake implementing something
    * emptily says nothing about whether real hosts need it, and at least one
-   * shipped adapter implements this for real — setting the active player's
+   * shipped adapter implements this for real: setting the active player's
    * level and remembering it, because a warm standby is primed at `0` so it
    * cannot be heard behind the active source and must come up at the real
    * level when promoted.
@@ -247,8 +247,8 @@ export interface Player {
    * teardown.
    *
    * **An adapter that reports `not-found` must not tear the presentation down
-   * on it.** That kind means one thing only — the node did not serve this
-   * media — and the buffer the element already holds is unaffected and still
+   * on it.** That kind means one thing only: the node did not serve this
+   * media, and the buffer the element already holds is unaffected and still
    * playable. Core may have a replacement generation built and waiting, in
    * which case the right outcome is for the viewer to watch out their buffer
    * and be swapped onto the replacement with no visible interruption. An
@@ -258,7 +258,7 @@ export interface Player {
    *
    * **This obligation is opt-in and arrives with the kind.** An adapter that
    * never reports `not-found` never reaches the path, and every other kind
-   * keeps the old contract — so a player that tears down on a terminal is
+   * keeps the old contract, so a player that tears down on a terminal is
    * still correct until the day it starts classifying `404`s.
    *
    * **What happens when there is no replacement is core's, not the

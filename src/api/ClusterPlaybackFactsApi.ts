@@ -24,7 +24,7 @@ export const FACTS_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
  * `operations` describes what *one node's build* can perform, so a client
  * that binds an endpoint once and reuses it will eventually reason about a
  * node that is not the one executing the instruction. During a partial
- * cluster upgrade — some nodes fixed, some not — that produces a chooser
+ * cluster upgrade (some nodes fixed, some not) that produces a chooser
  * confidently reading the wrong node's abilities and instructing a copy the
  * executing node will refuse, which is exactly the failure the operations
  * gate exists to prevent, reappearing one level up.
@@ -53,7 +53,7 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
    * missing resource and wrong here: a node whose build predates the facts
    * endpoint answers 404 for *every* media. During a partial cluster upgrade
    * that would make the facts unavailable whenever the preferred node happens
-   * to be an older one — and unavailable facts mean the chooser falls back to
+   * to be an older one, and unavailable facts mean the chooser falls back to
    * transcoding everything, silently.
    *
    * Continuing costs at most one request per node, because media that
@@ -105,8 +105,8 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
       } catch (error) {
         const status = (error as { status?: unknown }).status;
         if (status !== 404 && !retryableEndpointFailure(error)) throw error;
-        // One unreadable extent is a fact about the title, not about the node
-        // — the same guard `ClusterPlaybackResolver.create` has. Without it a
+        // One unreadable extent is a fact about the title, not about the node,
+        // the same guard `ClusterPlaybackResolver.create` has. Without it a
         // single bad file demoted the node for every other title on it.
         if (status !== 404 && failureBlamesEndpoint(error)) this.router.registry.recordFailure(endpoint.id);
         lastError = error;

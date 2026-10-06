@@ -59,12 +59,12 @@ export interface PlaybackPolicyOverrides {
    * Which HLS segment container to ask for when the host supports both.
    *
    * Without this, fragmented MP4 wins whenever it is available, which is a
-   * preference hardcoded as an ordering — the rule living in the chooser
+   * preference hardcoded as an ordering: the rule living in the chooser
    * rather than with the party that knows it. A host may have good reason to
    * want MPEG-TS: a 2017 Samsung carries neither HEVC video nor any audio
    * correctly in fMP4 on any delivery path, while copying both untouched in
    * TS. Stating that here rather than by denying `hlsFmp4` matters, because
-   * the set genuinely can do fMP4 — denying it would falsify a capability to
+   * the set genuinely can do fMP4; denying it would falsify a capability to
    * achieve a policy.
    *
    * Ignored when the host has not said it supports the container it prefers;
@@ -78,8 +78,8 @@ export interface PlaybackPolicyOverrides {
  *
  * Every one of these has a reasonable fallback, which is exactly the problem:
  * a reasonable fallback produces a plausible instruction, so nothing ever
- * looks wrong. Three fields in one evening — `operations`, `hlsAudioCodecs`
- * and `hlsTs` — were declared here, consumed here, defaulted here, and
+ * looks wrong. Three fields in one evening (`operations`, `hlsAudioCodecs`
+ * and `hlsTs`) were declared here, consumed here, defaulted here, and
  * populated by no host anywhere, and each was invisible for the same reason.
  *
  * Reporting what was assumed is the only thing that distinguishes "the host
@@ -134,7 +134,7 @@ function has(list: readonly string[] | undefined, value: string | undefined): bo
  * This matters more than it looks. A probed format names every format its
  * demuxer covers, not the file's own: Matroska arrives as `matroska,webm`
  * and MP4 as `mov,mp4,m4a,3gp,3g2,mj2`. Matching any listed name means a
- * host that supports WebM — as every browser and the Samsung do — accepts a
+ * host that supports WebM (as every browser and the Samsung do) accepts a
  * Matroska file as directly playable, which is the corrupt picture we spent
  * an evening chasing. Matroska and WebM share a demuxer and are not the same
  * container to a decoder.
@@ -150,7 +150,7 @@ const CONTAINER_FAMILIES: ReadonlyArray<readonly string[]> = [
   ['mpegts', 'ts', 'mts', 'm2ts'],
   ['ogg', 'oga', 'ogv'],
   ['mp3', 'mp2'],
-  // MPEG program stream — a *video* container, and deliberately not grouped
+  // MPEG program stream: a *video* container, and deliberately not grouped
   // with mp3. libav's names look adjacent and are not: the server reports
   // `mpeg` for a .mpg, so sharing a family with mp3 would let a host that
   // claims only mp3 be told a program stream plays as-is. The same shape of
@@ -199,8 +199,8 @@ function deliveryAudioCodecs(capabilities: PlaybackCapabilities): readonly strin
  * Why this video stream cannot be played as it stands, or undefined if it can.
  *
  * An unreported fact is never a reason to transcode. Servers omit what they
- * could not probe — bit depth is missing from Matroska HEVC, and colour
- * transfer needs an SPS the bounded probe may not reach — so treating
+ * could not probe (bit depth is missing from Matroska HEVC, and colour
+ * transfer needs an SPS the bounded probe may not reach), so treating
  * silence as incapacity would transcode most of a library. The server's
  * advisory warnings catch a wrong guess; a needless transcode costs the
  * viewer quality and the node its CPU, and nothing catches that.
@@ -247,21 +247,21 @@ export function audioStreamObjection(
 /**
  * Note this reads `hlsTs`, which the default ordering never reached: `fmp4`
  * was returned one line before it was consulted. A preference and its
- * detection have to arrive together or neither does anything — which is how
+ * detection have to arrive together or neither does anything, which is how
  * `hlsTs` managed to be both unreachable and unpopulated without anyone
  * noticing.
  *
  * The node's `copyIntoMpegts` deliberately does *not* veto the preference
  * here. A host states a carriage preference because the other carriage is
- * broken on the device — the 2017 Samsung black-screens copied HEVC in
- * fragmented MP4 — so falling back to fMP4 on learning that the node cannot
+ * broken on the device (the 2017 Samsung black-screens copied HEVC in
+ * fragmented MP4), so falling back to fMP4 on learning that the node cannot
  * copy into MPEG-TS would trade a transcode the viewer can watch for a copy
  * they cannot. The node's answer decides copy versus transcode *within* the
  * chosen container; it does not decide the container.
  *
  * Exported because carriage is decided by the host and the device alone, so
- * every path that asks a node to transform — including the no-facts fallback,
- * which has no instruction to take it from — has to answer the same way. A
+ * every path that asks a node to transform (including the no-facts fallback,
+ * which has no instruction to take it from) has to answer the same way. A
  * second implementation of this is how a host policy goes quietly missing.
  */
 export function segmentContainer(
@@ -293,7 +293,7 @@ export function segmentContainer(
  * which is not the one played when another is named. An older node's pair
  * answers where a stream carries nothing.
  *
- * With no facts at all, assume the node can copy — the chooser's behaviour
+ * With no facts at all, assume the node can copy: the chooser's behaviour
  * before the facts endpoint existed, and the 400 is the loud, recoverable leg.
  */
 function copyInto(
@@ -400,7 +400,7 @@ export function choosePlaybackInstruction(
     return { mode: 'direct', video: 'copy', audio: 'copy', reasons: ['source-plays-as-is'], assumed };
   }
 
-  // The streams themselves are fine — only the wrapper, or one track, is not.
+  // The streams themselves are fine; only the wrapper, or one track, is not.
   // Copying the video is the whole point of the per-stream instruction.
   const executorCanCopy = copyInto(container, operations, video, audio);
 
@@ -447,8 +447,8 @@ export function choosePlaybackInstruction(
  * instruction can still be refused, and the viewer gets nothing.
  *
  * Degrading turns that into a slightly worse picture instead. It is
- * deliberately one step and one direction — a copy becomes a transcode,
- * never the reverse — so it converges, cannot loop, and cannot invent an
+ * deliberately one step and one direction (a copy becomes a transcode,
+ * never the reverse), so it converges, cannot loop, and cannot invent an
  * instruction more ambitious than the one that was already refused.
  *
  * Returns undefined when there is nothing left to give up, which is the point
@@ -490,7 +490,7 @@ export function degradeInstruction(instruction: PlaybackInstruction): PlaybackIn
   //
   // Giving up the audio copy leaves the mode's own contract violated if it
   // was `remux`, which requires every stream copied. The instruction becomes
-  // a transcode that copies the video — the same operation, legally stated.
+  // a transcode that copies the video: the same operation, legally stated.
   if (instruction.audio === 'copy') {
     return {
       ...instruction,

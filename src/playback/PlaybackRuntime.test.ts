@@ -237,7 +237,7 @@ describe('PlaybackRuntime ownership state machine', () => {
   it('retries a decision the chooser made as a fresh choice, not as a viewer instruction', async () => {
     // The retry used to be seeded from the session the server echoed back.
     // That echo has no `container`, so the retry asked for no carriage and
-    // the node fell back to its own default — the starvation 0.6.3 paid for.
+    // the node fell back to its own default: the starvation 0.6.3 paid for.
     // And its concrete `mode`, arriving as initialPreferences.mode, reads as
     // a mode the viewer picked: the host is told `chosenByViewer` about a
     // decision no viewer made, the chooser is skipped, and the one-shot 400
@@ -421,8 +421,8 @@ describe('PlaybackRuntime lifecycle edges', () => {
   /**
    * A capability probe that failed must not be remembered as the answer.
    *
-   * The probe is cached because it is expensive and its result does not change
-   * — but a rejection is not a result. Caching it would mean one transient
+   * The probe is cached because it is expensive and its result does not change,
+   * but a rejection is not a result. Caching it would mean one transient
    * failure at startup leaves playback permanently broken for the life of the
    * process, with nothing to point at.
    */
@@ -472,7 +472,7 @@ describe('PlaybackRuntime lifecycle edges', () => {
 
   it('keeps the transition queue usable after one transition throws', async () => {
     // The tail is chained, so a rejection that is not absorbed poisons every
-    // transition queued behind it — the runtime would go quiet rather than
+    // transition queued behind it: the runtime would go quiet rather than
     // fail, which is the harder thing to diagnose.
     const player = new FakePlayer();
     const api = resolver();
@@ -500,7 +500,7 @@ describe('PlaybackRuntime lifecycle edges', () => {
 
   it('closes the open session when disposed mid-playback', async () => {
     // A dispose that drops the session without closing it leaves the node
-    // holding a transcode slot until session_idle — thirty minutes, and on a
+    // holding a transcode slot until session_idle: thirty minutes, and on a
     // one-slot node the next viewer gets 429 with nothing to point at.
     const player = new FakePlayer();
     const api = resolver();
@@ -565,7 +565,7 @@ describe('PlaybackRuntime lifecycle edges', () => {
 describe('the surface a viewer still has after a generation has failed', () => {
   // Everything here runs with no coordinator: the failed one was closed and
   // dropped by `cleanupFailedGeneration`. These are the controls left on the
-  // failure screen, and until now not one of them was covered — so the
+  // failure screen, and until now not one of them was covered, so the
   // scrubbing-then-retry path a viewer actually takes out of a failure was
   // held together by reading.
 
@@ -586,7 +586,7 @@ describe('the surface a viewer still has after a generation has failed', () => {
     expect(runtime.seek(120_000)).toBe(true);
 
     // The scrubber has to track, or the control moves and the picture of it
-    // does not — the failure looks like a second failure.
+    // does not; the failure looks like a second failure.
     expect(runtime.getPlaybackSnapshot()?.intent.positionMs).toBe(120_000);
     expect(runtime.getPlaybackSnapshot()?.event.positionMs).toBe(120_000);
     // A generation that ended is not still ended at a position it never reached.
@@ -644,7 +644,7 @@ describe('the surface a viewer still has after a generation has failed', () => {
 describe('what a host sees through the runtime', () => {
   it('gives a new subscriber the current state at once, and stops when it unsubscribes', async () => {
     // A subscription that only delivers on the next change leaves a host
-    // blank until something happens — and on an idle runtime nothing does.
+    // blank until something happens, and on an idle runtime nothing does.
     const player = new FakePlayer();
     const api = resolver();
     const runtime = new PlaybackRuntime(new FakePlatform(player), api);
@@ -752,7 +752,7 @@ describe('what a host sees through the runtime', () => {
     // it forwards the number it is given and holds nothing.
     // Assigned through a cast because the shared `FakePlayer` declares
     // `setVolume()` with no parameters and discards the level, so nothing can
-    // observe it as it stands — noted in ACTIVE's low register rather than
+    // observe it as it stands, noted in ACTIVE's low register rather than
     // widened here, since the double ships on the `./testing` export.
     const applied: number[] = [];
     const player = new FakePlayer();

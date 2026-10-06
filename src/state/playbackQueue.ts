@@ -74,13 +74,13 @@ export class PlaybackQueueStore {
    * between mutations.
    *
    * Without this, `load()` returns a freshly parsed object every call. A hook
-   * that subscribes and then reads memoises on the store — whose identity never
-   * changes — so the queue freezes at whatever it first computed while the
+   * that subscribes and then reads memoises on the store (whose identity never
+   * changes), so the queue freezes at whatever it first computed while the
    * store underneath goes on changing. Code that looks correct, producing a
    * list that silently stops updating, and the kind of bug that surfaces as a
    * user saying the app "sometimes doesn't refresh".
    *
-   * `undefined` is a legitimate snapshot here — an absent queue — so emptiness
+   * `undefined` is a legitimate snapshot here (an absent queue), so emptiness
    * is tracked separately rather than inferred from the cache being unset.
    */
   private cached?: PlaybackQueueState;
@@ -156,7 +156,7 @@ export class PlaybackQueueStore {
   }
 
   /**
-   * Apply an edit — a reorder, or a removal — to the queue that is already
+   * Apply an edit (a reorder, or a removal) to the queue that is already
    * playing, without sending the current item back to the start.
    *
    * Distinct from `replace`, which begins a new queue and resets the position

@@ -1,7 +1,7 @@
 /**
  * The platform surface `@machafoundation/core` is allowed to assume.
  *
- * Not a convenience — a boundary. `tsconfig.nodom.json` compiles core against
+ * Not a convenience, a boundary. `tsconfig.nodom.json` compiles core against
  * *only* this and `ES2022`, so anything the package reaches for that is not
  * declared here becomes a compile error with a file and a line. That is the
  * check `npm run lint:platform` runs.
@@ -43,13 +43,13 @@ interface AbortSignal {
    */
   readonly reason?: unknown;
   /**
-   * `once` is honoured everywhere core uses it, but **not by every host** —
+   * `once` is honoured everywhere core uses it, but **not by every host**:
    * only ever on an `AbortSignal`, which is the part that saves it.
    *
    * React Native's `AbortController` comes from `abort-controller` over
    * `event-target-shim`, which stores the flag and removes the listener after
    * dispatch. Tizen 3's *native* `addEventListener` ignores the options object
-   * entirely — a `{once:true}` listener on `window` fires twice — but core
+   * entirely (a `{once:true}` listener on `window` fires twice), but core
    * never attaches to a DOM node, and on that platform the signal is the
    * client's own shim, which honours it. Correct by the shim, not by the host.
    */
@@ -62,7 +62,7 @@ interface AbortController {
 }
 /**
  * **Not universally present.** Tizen 3 / Chromium 47 has no `AbortController`
- * at all, and core-js does not supply one — macha-client installs its own shim
+ * at all, and core-js does not supply one; macha-client installs its own shim
  * before anything else runs. So this line is satisfied on that platform by a
  * consumer, not by the host.
  *
@@ -108,13 +108,13 @@ interface RequestInit {
    * **Not a header everywhere, and not ignored where it is unsupported.**
    *
    * React Native's `fetch` is `whatwg-fetch` over XHR, and for a GET or HEAD
-   * it implements `no-store` by *rewriting the URL* — appending `_=<epoch
+   * it implements `no-store` by *rewriting the URL*: appending `_=<epoch
    * millis>` to the query, or replacing an existing one. So core's health
    * probe goes out as a different URL on every cycle rather than as a request
    * with a cache directive.
    *
    * Tizen 3 is a third behaviour again, and the worst one: the property does
-   * not exist — `'cache' in new Request(url, {cache:'no-store'})` is `false` —
+   * not exist (`'cache' in new Request(url, {cache:'no-store'})` is `false`),
    * so the directive vanishes with no header and no URL change, and the
    * response is cacheable by the WebView.
    *
@@ -128,8 +128,8 @@ interface RequestInit {
   /**
    * Browser-only, and knowingly so. It lets a teardown `DELETE` outlive the
    * page navigating away, which is the only way a web client can close a
-   * playback session on exit. React Native ignores it — there is no
-   * equivalent, and no navigation to survive — so a host without it loses
+   * playback session on exit. React Native ignores it (there is no
+   * equivalent, and no navigation to survive), so a host without it loses
    * best-effort teardown and nothing else. Declared rather than removed
    * because the web behaviour is worth having; named rather than assumed
    * because it is not universal.

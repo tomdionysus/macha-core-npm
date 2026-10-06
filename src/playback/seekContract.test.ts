@@ -93,7 +93,7 @@ describe('the seek contract is read rather than re-derived', () => {
     // Two different silences used to look identical in a capture: an invariant
     // that held, and one that could never be tested. A client reading absence
     // as the first when it was the second draws the wrong conclusion about the
-    // node's arithmetic, so the untestable case leaves its own record — at
+    // node's arithmetic, so the untestable case leaves its own record, at
     // `debug`, because an old node in a mixed-version set is ordinary and must
     // not reach a failure screen.
     clearClientDiagnostics();
@@ -127,8 +127,8 @@ describe('the seek contract is read rather than re-derived', () => {
 describe('a generation that begins after the viewer', () => {
   it('renegotiates against a node that states the offset', () => {
     // 0.46.0 snaps backwards, so the generation always contains the request.
-    // Landing here means the viewer moved back while it was negotiated — a
-    // seek they made — and the next answer will contain it.
+    // Landing here means the viewer moved back while it was negotiated (a
+    // seek they made), and the next answer will contain it.
     const ahead = session({ seekMs: 900_000, seekOffsetMs: 0, seekRequestedMs: 900_000 });
     expect(generationLocalPosition(ahead, 500_000)).toBeUndefined();
   });
@@ -165,7 +165,7 @@ describe('core supplies the whole failure chain and presents none of it', () => 
   });
 
   it('leads with what started the recovery, not what ended it', () => {
-    // Leading with the ending names a node the session was never on — the
+    // Leading with the ending names a node the session was never on: the
     // 2026-09-17 failure that sent a day of diagnosis to fi-1.
     const originating = new Error('es-1 lost the source');
     const reported = terminalRecoveryError(originating, new Error('fi-1 refused'));

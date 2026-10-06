@@ -113,7 +113,7 @@ export interface PlaybackCoordinatorSnapshot {
   preparingSource: boolean;
   pendingPreferences?: PlaybackPreferencesUpdate;
   /**
-   * Why playback stopped and could not be recovered — **a chain, not a
+   * Why playback stopped and could not be recovered: **a chain, not a
    * message.**
    *
    * Core does not decide what a viewer is shown. This carries everything core
@@ -125,7 +125,7 @@ export interface PlaybackCoordinatorSnapshot {
    * saying that nothing else could serve it either.
    *
    * **A host is expected to walk it**, and to choose how much of it a given
-   * surface deserves — a television and a diagnostics panel want different
+   * surface deserves: a television and a diagnostics panel want different
    * amounts of the same chain, and only the host knows which it is. A
    * `PlaybackSourceError` anywhere in the chain keeps its `kind`, so a host can
    * classify without parsing prose.
@@ -140,8 +140,8 @@ export interface PlaybackCoordinatorSnapshot {
    * How this generation's instruction was arrived at, so a host can show it.
    *
    * Without this the worst failure in the chooser has no symptom. When the
-   * facts lookup fails, the coordinator falls back to `transcode` — correct,
-   * because it is the only always-performable instruction — and the viewer
+   * facts lookup fails, the coordinator falls back to `transcode` (correct,
+   * because it is the only always-performable instruction) and the viewer
    * sees a picture that works. Nothing prompts anyone to look, so a client
    * can quietly transcode a whole library that would have direct-played, on
    * a cluster that looks healthy, indefinitely. A log line on a television is
@@ -201,7 +201,7 @@ export interface PlaybackInstructionReport {
    * Requested and served are kept side by side deliberately. A host policy
    * preferring MPEG-TS against a node that ignores the preference produces
    * `mpegts` in the policy and `fmp4` on the wire, and until both were
-   * reported in one place nothing pointed at the discrepancy — the panel
+   * reported in one place nothing pointed at the discrepancy: the panel
    * showed a container, it was a real one, and it was not the one asked for.
    */
   servedContainer?: string;
@@ -218,15 +218,15 @@ export interface PlaybackInstructionReport {
    * The mode the node actually performed, once a session exists.
    *
    * The server's own account, from the session's top-level `mode`, as against
-   * the `preferences.mode` it echoes back — which is what it was *asked* for.
+   * the `preferences.mode` it echoes back, which is what it was *asked* for.
    * Those agree until the node substitutes.
    */
   performedMode?: PlaybackMode;
   /**
    * False when the node performed a mode other than the one it was asked for.
    *
-   * **There is exactly one substitution the server does, and it is not silent
-   * — it is merely unexamined.** When a remux's keyframe index is unusable as
+   * **There is exactly one substitution the server does, and it is not silent;
+   * it is merely unexamined.** When a remux's keyframe index is unusable as
    * a segment plan and the node allows the video-transcode fallback, it plans
    * a transcode instead and says so: the top-level `mode` is what was
    * performed while `preferences` still echoes what was asked for. Nothing in
@@ -237,7 +237,7 @@ export interface PlaybackInstructionReport {
    * **This is deliberately not the same question as "did core get what it
    * chose", and the difference is observable.** `snapshot.instruction` is
    * patched by the chooser and by a step down, but **not** by a plain viewer
-   * mode change — so after a viewer switches from transcode to remux the
+   * mode change, so after a viewer switches from transcode to remux the
    * report still names transcode. Comparing the performed mode against *that*
    * calls every viewer mode change a server substitution. Comparing it against
    * the node's own echo of what it was asked for does not, and does not depend
@@ -256,7 +256,7 @@ export interface PlaybackInstructionReport {
    */
   mediaId?: string;
   /**
-   * True when the instruction is a fallback rather than a decision — the
+   * True when the instruction is a fallback rather than a decision: the
    * facts were unavailable, so nothing could be reasoned from.
    */
   withoutFacts: boolean;
@@ -267,7 +267,7 @@ export interface PlaybackInstructionReport {
    * **Present so a client can say what actually went wrong.** With only
    * `withoutFacts` a screen could report that something was degraded but not
    * that the lookup itself failed, and the fallback's own symptoms reach the
-   * viewer looking like a property of the file — the web client's viewer met
+   * viewer looking like a property of the file: the web client's viewer met
    * `MEDIA_ELEMENT_ERROR: Format error` and had no way to know the client had
    * simply been unable to ask what the file was. A warning in a ring buffer is
    * not a degraded mode a viewer can act on.
@@ -329,7 +329,7 @@ export interface PlaybackCoordinatorOptions {
    *
    * It takes the media rather than closing over it. A runtime plays many
    * items over its lifetime, and a zero-argument thunk captured once returns
-   * the first item's facts for every later title — a wrong instruction that
+   * the first item's facts for every later title: a wrong instruction that
    * looks entirely reasonable.
    *
    * **Return every file.** An item can hold several files, and choosing among
@@ -361,8 +361,8 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
 /**
  * How long a prepared standby is held before being closed unused.
  *
- * This window was originally chosen against `streaming.pipeline_idle_ms` — the
- * 60 s after which a node reclaims an idle transcode pipeline — on the belief
+ * This window was originally chosen against `streaming.pipeline_idle_ms` (the
+ * 60 s after which a node reclaims an idle transcode pipeline) on the belief
  * that a standby older than that would promote onto a dead session. **That
  * reasoning was wrong and is recorded here so it does not come back.** The two
  * server clocks are independent: `pipeline_idle` reclaims the *engine*, while
@@ -376,17 +376,17 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * standby that costs the node a session record and nothing anyone else is
  * competing for, so the window can afford to be generous.
  *
- * A transcode standby is not in that position — see
+ * A transcode standby is not in that position: see
  * `ALTERNATE_TRANSCODE_RECOVERY_WINDOW_MS` below, which is the constraint that
  * turned out to be real.
  */
 /**
- * **The server's validated floor, not its default — and that is the whole
+ * **The server's validated floor, not its default, and that is the whole
  * point.** `streaming.pipeline_idle_ms` is configurable, and until server
  * 0.48.0 it was **not on the wire**: `status_api.cpp` stated only
  * `startup_timeout_ms` and `segment_timeout_ms`, and the idle figures were
  * read from configuration and never serialised. So core could not ask, and
- * this was `30_000` — the default — which is the exact fault `look_ahead_ms`
+ * this was `30_000`, the default, which is the exact fault `look_ahead_ms`
  * produced when a client believed one.
  *
  * **Core cannot read it, so core takes the number the server guarantees.**
@@ -398,13 +398,13 @@ type Listener = (snapshot: PlaybackCoordinatorSnapshot) => void;
  * **Wasteful in the cheap direction, deliberately.** On a node configured
  * generously this discards a standby that would still have been good, costing
  * a preparation that has to happen again. Holding one *past* teardown costs a
- * promotion of something that cannot serve — on the viewer's critical path, at
+ * promotion of something that cannot serve, on the viewer's critical path, at
  * the moment recovery is already running, on the mechanism whose entire job is
  * to be invisible. **A lost standby is cheaper than a dead one.**
  *
  * **This is now the floor rather than the answer.** Server 0.48.0 states
  * `pipeline_idle_ms` per node on `/api/v1/status`, and all three deployed
- * nodes serve 60,000 — six times this. `alternateRecoveryWindowMs` below
+ * nodes serve 60,000, six times this. `alternateRecoveryWindowMs` below
  * reads it where a node states one and falls back here where none does, which
  * is every node older than 0.48.0 and any node that has not been heard from.
  * **Absence stays the ordinary case**, and absence is never zero.
@@ -418,15 +418,15 @@ const ALTERNATE_RECOVERY_WINDOW_MS = 10_000;
  * Two different numbers meet here and neither alone is the answer. The node's
  * `pipeline_idle_ms` is a **ceiling**: hold a standby past it and the
  * promotion lands on a live session whose engine has been reclaimed, which
- * costs a cold start. What the window is actually *for* is narrower — the case
+ * costs a cold start. What the window is actually *for* is narrower: the case
  * where a node produces one degradation and then recovers, so the rescue is
  * there if a second failure follows and released if none does. That was
  * measured as worth about thirty seconds, and a standby held longer than that
  * is holding a session record nobody is going to use.
  *
  * So: the lesser of what is useful and what the node guarantees. On the
- * deployed cluster that restores the full thirty seconds — the figure this
- * had before it was cut to the guaranteed floor — rather than stretching to
+ * deployed cluster that restores the full thirty seconds, the figure this
+ * had before it was cut to the guaranteed floor, rather than stretching to
  * the node's sixty, which would buy nothing and hold a session for a minute
  * to do it.
  *
@@ -447,7 +447,7 @@ export function alternateRecoveryWindowMs(session: PlaybackSession): number {
 /**
  * How long a standby against a **transcode** session is held.
  *
- * Much shorter, because that standby is not merely idle — it holds a scarce,
+ * Much shorter, because that standby is not merely idle; it holds a scarce,
  * node-wide resource for every other viewer. A node admits a session as video
  * transcode entitled and counts it against `max_video_transcodes` **from
  * admission until the session record is destroyed**, not while its pipeline is
@@ -459,7 +459,7 @@ export function alternateRecoveryWindowMs(session: PlaybackSession): number {
  * what made this look smaller than it is. `pipeline_idle` (60 s) reclaims the
  * *engine*; `session_idle` (**30 minutes**) erases the *session*. Only the
  * second releases the slot. So this window bounds how long core *intends* to
- * hold a slot, and an explicit close is what actually returns it — a standby
+ * hold a slot, and an explicit close is what actually returns it: a standby
  * dropped by letting the reference go strands the node's only video slot for
  * up to half an hour. Every path here that abandons one calls
  * `resolver.stop()`, and that is not incidental.
@@ -471,7 +471,7 @@ export function alternateRecoveryWindowMs(session: PlaybackSession): number {
  * seconds when it comes at all; short enough that a false alarm costs a
  * stranger a few seconds rather than half a minute.
  *
- * Remux and direct standbys keep the full window — they are entitled to no
+ * Remux and direct standbys keep the full window: they are entitled to no
  * transcode slot and cost the node nothing but a session record.
  */
 /**
@@ -509,7 +509,7 @@ const REGENERATION_PROGRESS_MS = 1_000;
  *   *resident* before it can cut to it, and at full quality over a WAN link
  *   that is megabytes. Aligning and cutting were 0.5 s of the 9.5.
  *
- * 13.3 s when first measured — but the host preparation figure is dominated by
+ * 13.3 s when first measured, but the host preparation figure is dominated by
  * the join fetch and that tracks the *node*, not the mechanism. Three handovers
  * on one evening: 1.0 s, 14.5 s and 16.0 s, the fast one on a different node
  * from the two slow ones. So the lead is built on the worst observed rather
@@ -517,7 +517,7 @@ const REGENERATION_PROGRESS_MS = 1_000;
  *
  * **Bounded above by `look_ahead_ms`, and the bound is what makes leading long
  * safe.** A generation is created at the position the viewer will reach, so a
- * longer lead puts the join deeper into it — and past the node's look-ahead
+ * longer lead puts the join deeper into it, and past the node's look-ahead
  * the encoder has to run forward sequentially to get there, which is the 9 s
  * fault an earlier shape of this shipped. Inside the look-ahead the join is
  * already produced and costs nothing.
@@ -527,7 +527,7 @@ const REGENERATION_PROGRESS_MS = 1_000;
  * under-leading cost a short wait, so short was safe. With the frontier read
  * per session, over-leading is capped by a number the node reports and
  * under-leading is a gap in front of a viewer. **Long, capped, is now the safe
- * direction** — and 10 s was wrong because it was chosen under the old bias.
+ * direction**, and 10 s was wrong because it was chosen under the old bias.
  */
 export const REPLACEMENT_LEAD_TIME_MS = 26_000;
 
@@ -557,7 +557,7 @@ export const LOOK_AHEAD_MARGIN_MS = 4_000;
  *   prevent.**
  *
  * The clamp and the floor can genuinely conflict, because the look-ahead is
- * derived from an unrelated quantity — the node's `max_ahead_segments` times
+ * derived from an unrelated quantity: the node's `max_ahead_segments` times
  * its segment duration. A node configured with four four-second segments
  * clamps to 12,000, under a single attempt against a node entitled to 15,000
  * plus transport. When they disagree the floor wins: arriving slightly past
@@ -581,7 +581,7 @@ const UNCACHED_SEEK_DEBOUNCE_MS = 300;
  * How long a player may report nothing, while a replacement is pending and the
  * viewer is playing, before core stops waiting for an event that may not come.
  *
- * Not a prediction of anything — see `armPendingReplacementGuard`. A playing
+ * Not a prediction of anything; see `armPendingReplacementGuard`. A playing
  * element reports several times a second, so this is silence of a kind that
  * means something has gone wrong rather than a buffer running low.
  */
@@ -600,8 +600,8 @@ const PLAYER_SILENCE_GUARD_MS = 15_000;
  * read off three frames by eye rather than by a broken detector. **No named
  * mechanism survives all of that, and the viewer was still frozen.**
  *
- * So this does not bound a suspect. It bounds *the work item* — "build a
- * replacement" — which is what the retried-work discipline under Law 4 asks
+ * So this does not bound a suspect. It bounds *the work item*, "build a
+ * replacement", which is what the retried-work discipline under Law 4 asks
  * for: backoff, a failure budget, a parked state and an operator action, for the retried
  * unit rather than for each of its limbs. It converts every unnamed mechanism,
  * including ones nobody has thought of, from an indefinite freeze into a
@@ -773,18 +773,18 @@ function isMissingSourceFailure(error: unknown): boolean {
  * Everything core knows about why recovery ran out of options, in one chain.
  *
  * **Core supplies context; the host decides what a viewer sees.** Presentation
- * is the host's — it knows the surface, the audience and how much detail is
- * appropriate — so nothing here composes viewer-facing prose or picks which
+ * is the host's (it knows the surface, the audience and how much detail is
+ * appropriate), so nothing here composes viewer-facing prose or picks which
  * half of the story matters. What core owes is not to lose anything it holds,
  * and to put it somewhere a host can find without being told the shape.
  *
  * The chain leads with the failure that **started** the recovery, which is the
  * one worth defaulting to: a source failure on the node holding the session
  * sends the walk to every other candidate, and `create()` throws the last of
- * those to refuse — so leading with *that* names a node the session was never
+ * those to refuse, so leading with *that* names a node the session was never
  * on. Observed live on 2026-09-17: the session was on es-1, the walk ended on
  * fi-1, and the screen read `Macha endpoint http://10.35.1.50:7438 failed:
- * Failed to fetch` — fi-1's address, for a session fi-1 had never held. A day
+ * Failed to fetch`, fi-1's address, for a session fi-1 had never held. A day
  * of diagnosis went to the wrong node.
  *
  * **But "what ended it" is the other half and must survive**, because leading
@@ -797,8 +797,8 @@ function isMissingSourceFailure(error: unknown): boolean {
  *
  * **Appended at the tail rather than only onto an empty `cause`.** The earlier
  * form attached the ending failure only when `originating.cause` was unset,
- * which meant an originating error that already carried one — and
- * `PlaybackSourceError` takes a cause in its constructor — silently discarded
+ * which meant an originating error that already carried one (and
+ * `PlaybackSourceError` takes a cause in its constructor) silently discarded
  * the ending. That is core deciding a host does not need something core is
  * holding, which is exactly the judgement that does not belong here.
  */
@@ -849,8 +849,8 @@ function completePreferences(session: PlaybackSession): PlaybackPreferencesUpdat
  * same request names them again. For the per-stream fields that is the point.
  * An override outliving the mode it belonged to is what made every session
  * the chooser started refuse a later bare `{"mode":"direct"}` as "direct
- * copies every stream" — judged against an instruction the client had not
- * sent in that request — so they are deliberately left to clear here.
+ * copies every stream", judged against an instruction the client had not
+ * sent in that request, so they are deliberately left to clear here.
  *
  * A quality ceiling is a different kind of thing. The viewer set it from
  * another control for another reason, and clearing it because they touched
@@ -861,18 +861,18 @@ function completePreferences(session: PlaybackSession): PlaybackPreferencesUpdat
  * there is correct rather than lossy.
  *
  * The segment container is restated even though it does not need to be.
- * `container` is parsed apart from `mode` and is not in the cleared set —
+ * `container` is parsed apart from `mode` and is not in the cleared set:
  * confirmed against 0.34.0's code and a live node, where a session created as
  * MPEG-TS and then PATCHed with `mode` alone still serves MPEG-TS. It is sent
  * anyway because the two failure postures are not symmetric, and that
  * asymmetry does not go away because the server currently behaves: a
  * redundant field costs one line of JSON, while a device handed fragmented
  * MP4 where it asked for MPEG-TS shows a black picture and reports nothing.
- * The value is not a guess either — it is the container this generation
+ * The value is not a guess either; it is the container this generation
  * already asked for.
  *
  * Only fields the update leaves absent are filled, so a fresh cap or
- * container in the same request always wins — including one merged in from an
+ * container in the same request always wins, including one merged in from an
  * earlier queued mutation that never reached the wire.
  */
 export function restatePreferencesClearedByMode(
@@ -988,14 +988,14 @@ function namedStreamsForPatch(update: PlaybackUpdate, session: PlaybackSession):
  *
  * Shared by the update path above and by `currentPreferences` below, because
  * the two were not sharing it and the gap had a body count. A PATCH restated
- * the container; a *failover* did not — it rebuilt the generation from the
+ * the container; a *failover* did not: it rebuilt the generation from the
  * session's confirmed preferences, and `container` is not among them. So a
  * Samsung set that had asked for MPEG-TS was handed fragmented MP4 by every
  * replacement node, which is the one carriage it cannot play: black picture,
  * no error, nothing fetched. Each silent starvation was then charged to a
  * perfectly healthy node until the cluster ran out of candidates.
  *
- * Measured on the set 2026-09-09 — two replacements, two 20 s starvations at
+ * Measured on the set 2026-09-09: two replacements, two 20 s starvations at
  * `readyState: HAVE_NOTHING`, and instant playback from the *same* node the
  * moment a PATCH went through it. The asymmetry was the whole fault.
  *
@@ -1020,19 +1020,19 @@ function withRestatedSegmentContainer(
  * and nothing else clears the `video: 'copy'` that made it a copy and the
  * replacement node plans video from scratch. Measured on the Android TV client
  * 2026-09-20: a generation passing HEVC 1920x1040 through untouched was reaped,
- * and its replacement re-encoded that stream to H264 — taking the node's only
+ * and its replacement re-encoded that stream to H264, taking the node's only
  * `max_video_transcodes` slot to convert a picture the television was decoding
  * natively. The node was asked for it. Nothing was wrong with the node.
  *
  * **Restated from the instruction, not from the session's echo.** The two
  * differ after a server-side substitution, and `session.transform` is what the
  * node did rather than what was asked for. Restating that makes one bad plan
- * permanent — each recovery would rebuild from the last recovery's downgrade,
+ * permanent: each recovery would rebuild from the last recovery's downgrade,
  * and the copy would never come back. It is also the only source that can
  * disagree with the `mode` sitting beside it: `mode` comes from the session's
  * *confirmed preferences* overlaid with anything the viewer has changed since,
  * so pairing it with the node's echo can state `remux` alongside a transcoded
- * video — an instruction nobody chose and the server is entitled to refuse.
+ * video, an instruction nobody chose and the server is entitled to refuse.
  * `degradeInstruction` is the same coupling from the other side: giving up an
  * audio copy forces `remux` to become `transcode`, because a remux that does
  * not copy every stream is not a remux.
@@ -1043,7 +1043,7 @@ function withRestatedSegmentContainer(
  * did not belong to is the failure this whole item is about, inverted.
  *
  * Fields already present win, so a viewer's in-flight change is never
- * overwritten — the same precedence the container follows. `direct` copies
+ * overwritten, the same precedence the container follows. `direct` copies
  * every stream by definition and has no per-stream step, so it is skipped.
  */
 function withRestatedTransforms(
@@ -1138,7 +1138,7 @@ export class PlaybackCoordinator {
    * (see `promoteSilentDirectAlternate`) moves session bookkeeping forward
    * without ever touching the player, so the read-ahead worker's fallback
    * registration must keep addressing the URL genuinely loaded in the video
-   * element — not whatever session is current for lifecycle purposes — or
+   * element, not whatever session is current for lifecycle purposes, or
    * it targets a source key the worker never configured.
    */
   private activeDirectPlaySource?: PlaybackSource;
@@ -1148,7 +1148,7 @@ export class PlaybackCoordinator {
    * The viewer position the last regeneration was started from.
    *
    * The loop stop. A `404` means either a reaped session or a fragment past
-   * the end of the plan, and only the first is fixed by regenerating — so a
+   * the end of the plan, and only the first is fixed by regenerating, so a
    * player that keeps asking for something no plan will ever contain would
    * otherwise regenerate, ask again, regenerate, for as long as the viewer sat
    * there. Arriving here twice at the same position means the last
@@ -1168,8 +1168,8 @@ export class PlaybackCoordinator {
    * and that is a deliberate decision rather than an oversight: the viewer
    * whose session was reaped is the same viewer the slot would be held for, so
    * nobody else is being kept out of something they were using. It does mean
-   * this must be released on every path that abandons it — closing, seeking,
-   * failing over — which is why it is torn down in `close()` alongside the
+   * this must be released on every path that abandons it (closing, seeking,
+   * failing over), which is why it is torn down in `close()` alongside the
    * standbys rather than left to `serverSession`, which still points at the
    * source actually playing.
    */
@@ -1336,13 +1336,13 @@ export class PlaybackCoordinator {
     // cached value is then stale in the one direction that matters, and the
     // instruction it produced can be refused. That is deliberately left to
     // the 400 path in `resolveInstructed` rather than re-fetched on every
-    // failover — a refusal is loud and recoverable, whereas re-probing on
+    // failover: a refusal is loud and recoverable, whereas re-probing on
     // each attempt would put a request on the viewer's critical path during
     // the exact moment playback is already struggling.
     //
     // **A failure is not cached.** Caching the *answer* is right; caching a
-    // thrown lookup meant one transient fault — a node 500ing, a blip, a
-    // request issued microseconds before the session existed — permanently
+    // thrown lookup meant one transient fault (a node 500ing, a blip, a
+    // request issued microseconds before the session existed) permanently
     // condemned this generation to the factless fallback, with no retry
     // possible for as long as playback lasted. That is what a viewer met: a
     // facts call that failed 18 ms after load, and a picture that never
@@ -1419,7 +1419,7 @@ export class PlaybackCoordinator {
         this.log.warn('instruction-without-facts-supplier', { mediaId: this.options.media.id });
       }
       // No facts to reason from. Transcode is the only instruction that is
-      // always performable, so it is the safe answer — never a corrupt
+      // always performable, so it is the safe answer: never a corrupt
       // picture, at the cost of quality nobody can verify was needed.
       //
       // The carriage is not part of that concession, and asking for none was
@@ -1427,7 +1427,7 @@ export class PlaybackCoordinator {
       // other one is broken on its device, which is true whether or not a
       // facts lookup answered: `segmentContainer` needs neither the profile
       // nor the node's operations to decide it. Left out, a Samsung host that
-      // asked for MPEG-TS got whatever the node defaults to — fMP4 — and
+      // asked for MPEG-TS got whatever the node defaults to (fMP4), and
       // failover then faithfully restated that wrong answer into every
       // replacement. Silent starvation, which is the class 0.6.3 already paid
       // for once.
@@ -1613,7 +1613,7 @@ export class PlaybackCoordinator {
    *
    * Deliberately narrow, because a silent downgrade would hide server bugs:
    * once only, never over a mode the viewer chose themselves, and only for a
-   * 400 — the node saying "I cannot do this", as distinct from 429 capacity
+   * 400, the node saying "I cannot do this", as distinct from 429 capacity
    * or 5xx health, which failover handles and which degrading would mask.
    * The downgrade is logged and surfaced as a notice rather than swallowed.
    */
@@ -1723,9 +1723,9 @@ export class PlaybackCoordinator {
   /**
    * The one step down this failure allows, or nothing.
    *
-   * Narrow on purpose, and the narrowness is the point: only a 400 — the node
-   * saying it cannot perform this, as distinct from 429 capacity or 5xx health
-   * — only against an instruction the chooser produced, and never over a mode
+   * Narrow on purpose, and the narrowness is the point: only a 400 (the node
+   * saying it cannot perform this, as distinct from 429 capacity or 5xx health),
+   * only against an instruction the chooser produced, and never over a mode
    * the viewer chose themselves.
    */
   private degradedInstructionFor(error: unknown): PlaybackInstruction | undefined {
@@ -1739,8 +1739,8 @@ export class PlaybackCoordinator {
    *
    * The snapshot report is patched, not just the private field. It was not,
    * and the gap mattered twice over: a host's diagnostics went on showing
-   * `video: 'copy'` for a generation the node had refused to copy, and — once
-   * recoveries began restating the transforms — the value a replacement would
+   * `video: 'copy'` for a generation the node had refused to copy, and, once
+   * recoveries began restating the transforms, the value a replacement would
    * have been rebuilt from was the refused one, so every recovery re-asked for
    * the copy the first attempt had already given up on.
    */
@@ -1805,7 +1805,7 @@ export class PlaybackCoordinator {
    * once if the node refuses them.
    *
    * Restating `video`/`audio` is what stops a recovery silently re-encoding a
-   * stream that was being passed through — but it also asks a node that has
+   * stream that was being passed through, but it also asks a node that has
    * never agreed to that copy to perform it, and a 400 is **not** a retryable
    * endpoint failure: `create` throws it rather than walking to the next
    * candidate. Without this the fix would trade a silent full transcode for a
@@ -1928,7 +1928,7 @@ export class PlaybackCoordinator {
     this.livenessTimer = undefined;
     this.livenessProbe?.abort(abortError('Playback coordinator closed'));
     this.livenessProbe = undefined;
-    // Only a decision, never a session — see `discardPendingReplacement`. The
+    // Only a decision, never a session; see `discardPendingReplacement`. The
     // shape this replaced had a live generation here holding the node's only
     // transcode slot, which had to be closed explicitly or leaked for thirty
     // minutes. Deferring creation removed the obligation rather than meeting
@@ -1941,7 +1941,7 @@ export class PlaybackCoordinator {
       // A recovery in flight is still negotiating a replacement session on
       // another node, and that session is created *after* this point. Both
       // paths stop what they built once they see `disposed`, so nothing is
-      // orphaned — but that stop is the last thing this coordinator owes the
+      // orphaned, but that stop is the last thing this coordinator owes the
       // cluster, and without waiting for it `close()` resolves while it is
       // still outstanding. A host that tears down auth on the strength of
       // that resolution races its own `DELETE`.
@@ -2100,7 +2100,7 @@ export class PlaybackCoordinator {
     this.seekIntentActive = true;
     // Pinned by the viewer, not by a source appearing. Until the generation
     // they asked for is actually presented, nothing the outgoing source
-    // reports may lower this — it is still playing, still moving, and still
+    // reports may lower this: it is still playing, still moving, and still
     // somewhere else entirely.
     this.seekIntentPinnedByPresentation = false;
     this.seekIntentPositionMs = undefined;
@@ -2182,13 +2182,13 @@ export class PlaybackCoordinator {
     // the request and carries the remainder as the offset, so the generation
     // always contains the position that was asked for. Reaching here against
     // such a node therefore means the viewer moved *backwards* while it was
-    // being negotiated — a seek they made, not an alignment artefact. So
+    // being negotiated: a seek they made, not an alignment artefact. So
     // renegotiate, which is what returning `undefined` asks the callers to do.
     //
     // **That is only safe because the snap direction changed.** Rejecting was
     // tried before and livelocked: a node aligning *forward* is deterministic,
     // so asking again for the same position returned the same unusable
-    // generation for ever. Measured — 147 negotiations in 33.3 s, every
+    // generation for ever. Measured: 147 negotiations in 33.3 s, every
     // `serverSeekMs` identical, nothing ever activated, the viewer's seek never
     // happening and the node taking four requests a second for its trouble.
     // Against a backward-snapping node the next answer contains the request, so
@@ -2253,8 +2253,8 @@ export class PlaybackCoordinator {
     }
 
     // "Decide for me" must mean the same thing at any point in a session, not
-    // only at the start. Without this the control appears to work — it
-    // highlights — and changes nothing, because an absent mode leaves the
+    // only at the start. Without this the control appears to work (it
+    // highlights) and changes nothing, because an absent mode leaves the
     // server on whatever it was already doing.
     if (update.preferences?.mode === 'choose') {
       void this.queueChosenInstruction(update);
@@ -2277,9 +2277,9 @@ export class PlaybackCoordinator {
    * **Structurally a failover that nothing failed.** It is not an `update`:
    * `PlaybackUpdate` is `{preferences, seekMs, mediaId}` and a node is none of
    * those, and `resolver.update` is pinned to the node holding the generation
-   * precisely because a session cannot move. The server settled that — the
+   * precisely because a session cannot move. The server settled that (the
    * session map is in-process and node-local, there is no replication and no
-   * control-call forwarding, and a session owns node-local resources — so the
+   * control-call forwarding, and a session owns node-local resources), so the
    * only possible shape is create there, promote, release here.
    *
    * **Acquire before release, which costs nothing.** `max_sessions_per_account`
@@ -2293,7 +2293,7 @@ export class PlaybackCoordinator {
    * `resolver.failover()` releases the session it abandons, which is why the
    * failover path above closes nothing; `prepareOn` deliberately does not,
    * because the whole point is that the old generation is still serving. So
-   * this owns the close, and it happens after activation rather than before —
+   * this owns the close, and it happens after activation rather than before:
    * a node left holding an abandoned transcode holds its slot for
    * `session_idle`, which is thirty minutes on the deployed cluster.
    *
@@ -2420,7 +2420,7 @@ export class PlaybackCoordinator {
    * Zero unless the player can hold through a lead, and zero when the lead
    * would reach past the end of the title: there is nothing to ask for there,
    * and a move near the end is better made at the viewer's position than not
-   * at all. Never remembered — re-read on every move, because a node's start
+   * at all. Never remembered: re-read on every move, because a node's start
    * cost moves with its load.
    */
   private moveLeadMs(
@@ -2544,7 +2544,7 @@ export class PlaybackCoordinator {
    * `seek()` pins its target optimistically, and until the player reports
    * reaching it `onPlayerEvent` deliberately ignores real positions. A
    * mutation that never lands would otherwise leave that target pinned for
-   * the rest of the session — the scrubber (`PlayerScreen` renders
+   * the rest of the session: the scrubber (`PlayerScreen` renders
    * `intent.positionMs`) frozen at a position playback never reached while it
    * plays on elsewhere, and resume requests derived from the same field.
    * Fall back to the last position the player actually reported, unless newer
@@ -2741,7 +2741,7 @@ export class PlaybackCoordinator {
      * tears its element down synchronously the two are the same instant, which
      * is why this survived until a host existed that prepares the replacement
      * on a second element and cuts to it only when the join is resident. That
-     * opens a window — measured at nine seconds — in which the *outgoing*
+     * opens a window, measured at nine seconds, in which the *outgoing*
      * element is still the one playing and reporting.
      *
      * Switching at call time mapped that element's ranges through the incoming
@@ -2754,7 +2754,7 @@ export class PlaybackCoordinator {
      * position latch was fixed, `intent` was frozen through that window and the
      * error showed up as a gap between playhead and buffer. With the latch
      * releasing on progress, a call-time switch would instead report the
-     * outgoing element's position through the incoming offset — playhead and
+     * outgoing element's position through the incoming offset: playhead and
      * buffer wrong *together*, consistently, so the gap closes and the readout
      * states a position ten minutes out with no visible sign. A seek taken in
      * that window would start from it. The two fixes are not independent, and
@@ -2772,7 +2772,7 @@ export class PlaybackCoordinator {
       this.streamOffsetMs = nextStreamOffsetMs;
       // Source attachment emits transient zero/paused media events. Keep the
       // requested transport target authoritative until the active player
-      // reports that it is tracking — see the release condition in
+      // reports that it is tracking; see the release condition in
       // `onPlayerEvent`, which must not require an exact arrival.
       this.seekIntentActive = true;
       this.seekIntentPositionMs = undefined;
@@ -2856,7 +2856,7 @@ export class PlaybackCoordinator {
    * The confirmed set does not carry everything a generation was created with.
    * `container` and the per-stream transforms are named in the instruction and
    * echoed nowhere a replacement can read them back, so both are restated from
-   * the instruction report before this leaves — see
+   * the instruction report before this leaves; see
    * `withRestatedSegmentContainer` and `withRestatedTransforms` for why naming
    * a `mode` without them is not a smaller request but a different one.
    */
@@ -2923,7 +2923,7 @@ export class PlaybackCoordinator {
     // Dropped rather than swapped in: hls.js reports one of these every few
     // seconds while it retries a dead source, and acting on the first would
     // collapse the deferral straight back into the buffer-flush it exists to
-    // prevent. Nothing is lost by waiting — the replacement is already built,
+    // prevent. Nothing is lost by waiting: the replacement is already built,
     // and the ordinary runway and buffering triggers decide when it goes in.
     if (this.pendingReplacement || this.regenerationPromise) {
       this.log.debug('source-degradation-superseded-by-replacement', {
@@ -2933,7 +2933,7 @@ export class PlaybackCoordinator {
       return;
     }
     // Before the endpoint-evidence guard, which would otherwise drop this on
-    // the floor now that `not-found` is not endpoint evidence — and before the
+    // the floor now that `not-found` is not endpoint evidence, and before the
     // standby machinery below, which is the wrong answer to it.
     //
     // **This is the best moment core ever gets at this fault**, and it is
@@ -2965,8 +2965,8 @@ export class PlaybackCoordinator {
    * specifically: promote a rescue that is already built, or build one.
    *
    * Named and separated so `recoverFromMissingSession` can fall back into it.
-   * A `not-found` whose meaning could not be established is exactly this case
-   * — evidence core cannot act on specifically — and the first version of that
+   * A `not-found` whose meaning could not be established is exactly this case,
+   * evidence core cannot act on specifically, and the first version of that
    * method simply returned instead, which made the degradation channel *worse*
    * than before `not-found` existed.
    */
@@ -2980,7 +2980,7 @@ export class PlaybackCoordinator {
     //
     // Measured, on a node stopped mid-playback: the standby was ready 267 ms
     // in, was discarded unused when its thirty-second window expired, and the
-    // identical session was rebuilt from scratch 33 seconds after that — 63.6 s
+    // identical session was rebuilt from scratch 33 seconds after that: 63.6 s
     // of black screen for work that had been finished in under a second. The
     // two budgets were chosen independently and each is defensible; their
     // product is a rescue guaranteed to go stale, because a player's own retry
@@ -2988,7 +2988,7 @@ export class PlaybackCoordinator {
     // standby.
     //
     // Two failures inside the standby's own lifetime is the evidence threshold,
-    // and it is the strongest one available — there is no positive "recovered"
+    // and it is the strongest one available: there is no positive "recovered"
     // signal to wait for. The first failure is what built the rescue; the
     // second is the node saying it meant it.
     if (this.alternateSessions.size > 0) {
@@ -2996,7 +2996,7 @@ export class PlaybackCoordinator {
       return;
     }
     // A seek already outside local coverage is itself replacing this
-    // generation via resolver.update() — the server tearing down the old
+    // generation via resolver.update(); the server tearing down the old
     // pipeline to honor that PATCH is expected, not independent failure
     // evidence. Without this, a stream error surfacing from that expected
     // teardown raced a second, fully redundant session into existence
@@ -3013,8 +3013,8 @@ export class PlaybackCoordinator {
   /**
    * Swap to a standby that is already built, validated and waiting.
    *
-   * Unlike Direct Play — where `addDirectSourceAlternative` hands the fallback
-   * to the read-ahead worker and the swap is invisible — a manifest source has
+   * Unlike Direct Play, where `addDirectSourceAlternative` hands the fallback
+   * to the read-ahead worker and the swap is invisible, a manifest source has
    * no in-band handoff, so this reloads the player against the new generation.
    * That costs a visible rebuffer of roughly a second, against a minute of
    * black screen for waiting out the primary's retry budget.
@@ -3053,7 +3053,7 @@ export class PlaybackCoordinator {
     this.alternateExpiryTimers.delete(alternate.sessionId);
 
     this.serverSession = alternate;
-    // The node never refused a session — it stopped serving bytes — so nothing
+    // The node never refused a session; it stopped serving bytes, so nothing
     // else would tell the registry it is unwell, and a later failover would
     // pick it back up as an apparently untried candidate.
     if (session.endpoint) this.options.resolver.recordEndpointFailure?.(session.endpoint.id);
@@ -3062,7 +3062,7 @@ export class PlaybackCoordinator {
     // Closed now rather than after buffered evidence on the replacement: the
     // standby was promoted because the primary stopped serving, so there is
     // nothing to fall back to and no reason to hold the slot. Fire and
-    // forget, exactly as the silent direct promotion does — retrying belongs
+    // forget, exactly as the silent direct promotion does; retrying belongs
     // to the resolver, which is the layer every client passes through.
     void this.options.resolver.stop(session.sessionId, { endpointAlreadyCharged: true }).catch((error) => {
       this.log.warn('superseded-primary-close-failed', { sessionId: session.sessionId, error });
@@ -3115,7 +3115,7 @@ export class PlaybackCoordinator {
           // fallback source now so an in-flight range request fails over
           // silently the moment the primary node stops answering, with no
           // video reload or visible stall. Must address the source actually
-          // loaded in the player, not `session.source` — a prior silent
+          // loaded in the player, not `session.source`: a prior silent
           // promotion already moved session bookkeeping on without ever
           // touching the player, and the read-ahead worker only recognises
           // the key it was originally configured with.
@@ -3167,8 +3167,8 @@ export class PlaybackCoordinator {
    * disposable, thirty-second standby: leaving it on that clock would let it
    * be stopped server-side while still in silent use, and would keep any
    * future failure evidence pointed at a session that is no longer really
-   * the one in service. `activeDirectPlaySource` is deliberately left alone
-   * — the player itself is never touched here.
+   * the one in service. `activeDirectPlaySource` is deliberately left alone:
+   * the player itself is never touched here.
    */
   private promoteSilentDirectAlternate(previous: PlaybackSession, alternate: PlaybackSession): void {
     this.serverSession = alternate;
@@ -3178,8 +3178,8 @@ export class PlaybackCoordinator {
       alternateSessionId: alternate.sessionId,
       endpoint: alternate.endpoint,
     });
-    // No session-negotiation failure ever surfaces for this endpoint — the
-    // transport layer just quietly stopped using it — so nothing else would
+    // No session-negotiation failure ever surfaces for this endpoint; the
+    // transport layer just quietly stopped using it, so nothing else would
     // ever tell the registry it is down. Without this, a later reactive
     // failover (for an unrelated cause) can still blindly pick this same
     // endpoint back up as an apparently-untried, apparently-healthy candidate.
@@ -3236,7 +3236,7 @@ export class PlaybackCoordinator {
     const requested = instruction.container;
     const performedMode = session.mode;
     // The node's echo of what it was asked for, which is the only thing the
-    // performed mode may be compared against — see `modeHonoured`.
+    // performed mode may be compared against; see `modeHonoured`.
     const requestedMode = session.preferences?.mode;
     const modeHonoured = requestedMode === undefined || performedMode === undefined
       ? undefined
@@ -3289,8 +3289,8 @@ export class PlaybackCoordinator {
     // start of the film.
     //
     // Forward only, therefore. Real progress through the buffered tail should
-    // move the resume point — the replacement ought to start after what the
-    // viewer actually saw — but nothing a dying source says can move it back.
+    // move the resume point (the replacement ought to start after what the
+    // viewer actually saw), but nothing a dying source says can move it back.
     // A viewer seek during a failover is exempt: that is a position the
     // viewer chose, not one the source reported.
     const replacingSource = this.failoverPromise !== undefined && !this.seekIntentActive;
@@ -3337,7 +3337,7 @@ export class PlaybackCoordinator {
         durationMs: absolute.durationMs,
         remainingMs: absolute.durationMs - absolute.positionMs,
       });
-      // A source known to be reaped running out of buffer is not a failure —
+      // A source known to be reaped running out of buffer is not a failure;
       // it is the moment the replacement was being deferred for, and on some
       // hosts it arrives as a premature `ended` rather than as a stall.
       if (this.pendingReplacement) {
@@ -3357,7 +3357,7 @@ export class PlaybackCoordinator {
       } else {
         // **It may never reach it, and then this latch is the bug.** It exists
         // only to stop the transient zero/paused events a source emits while
-        // attaching from overwriting a transport target — a job that is over
+        // attaching from overwriting a transport target, a job that is over
         // within a second or two. Waiting for an exact arrival makes it
         // permanent whenever the player settles somewhere else, and a host
         // that replaces a source seamlessly does exactly that: it cuts at the
@@ -3365,7 +3365,7 @@ export class PlaybackCoordinator {
         // nominated.
         //
         // Measured in the live client: after such a handover the reported
-        // position froze at the new generation's origin and never recovered —
+        // position froze at the new generation's origin and never recovered:
         // 11 consecutive samples identical to six decimal places while the
         // element advanced ten seconds, the buffer ran a further 80 s ahead,
         // and the drawn gap between playhead and buffer *grew* as hls.js
@@ -3375,7 +3375,7 @@ export class PlaybackCoordinator {
         // seek, because each one is computed from the frozen value.
         //
         // So the release condition is the player demonstrating it is tracking
-        // — two consecutive non-seeking reports that moved — rather than the
+        // (two consecutive non-seeking reports that moved) rather than the
         // player confirming a number core chose.
         // **Only once the source core asked for is the one being reported.**
         // Movement alone is not evidence: during a seek that needs a new
@@ -3387,7 +3387,7 @@ export class PlaybackCoordinator {
         // position the viewer was already at. The scrubber snapped back.
         //
         // That is the same fault as the freeze this replaced, in the other
-        // direction — the latch driven by "is the player moving" when the
+        // direction: the latch driven by "is the player moving" when the
         // question is "has what core asked for been presented". Never released
         // became released instantly. `present()` is the answer to the real
         // question and it already exists.
@@ -3444,7 +3444,7 @@ export class PlaybackCoordinator {
       // can surface from the server tearing down this generation to honor an
       // in-flight seek PATCH, indistinguishable at the moment it arrives from
       // a genuine fatal failure. Unlike degrade(), a fatal error must always
-      // end up recovered or shown — never silently dropped — so instead of a
+      // end up recovered or shown (never silently dropped), so instead of a
       // bare early return, wait for the mutation to settle and judge from
       // what actually happened: if it replaced the source, this error was
       // about a generation already gone and is dropped as stale; otherwise
@@ -3467,7 +3467,7 @@ export class PlaybackCoordinator {
   private failNow(fatalError: Error): void {
     const failedSession = this.snapshot.session ?? this.serverSession;
     // A replacement for this exact source is already built, or being built.
-    // Nothing the dying source says now is news — and, more sharply, **there
+    // Nothing the dying source says now is news, and, more sharply, **there
     // is nobody left to ask about it**: `regenerate()` releases the old
     // session from the resolver, so the endpoint binding `sessionAlive()`
     // needs is gone the moment the replacement exists. A late fatal naming a
@@ -3479,7 +3479,7 @@ export class PlaybackCoordinator {
     // the probe threw `has no endpoint provenance`, "could not find out" sent
     // it to failover, and failover released the replacement on its way past.
     // Every step doing exactly what it was told. **Strictly worse than the
-    // stall the hold exists to prevent** — the element was emptied and
+    // stall the hold exists to prevent**: the element was emptied and
     // playback moved to a node that had never served the title.
     //
     // This is not about the error's kind or the delivery path. Any player
@@ -3487,8 +3487,8 @@ export class PlaybackCoordinator {
     // arrives here, and hls.js always does.
     if (this.pendingReplacement) {
       // The player giving up is not the buffer running out. A fatal arrives
-      // when the *loader* concedes — hls.js after about thirty seconds of
-      // retries — while the element may still hold a minute of playable
+      // when the *loader* concedes (hls.js after about thirty seconds of
+      // retries) while the element may still hold a minute of playable
       // video, and that video is the whole reason the replacement is being
       // held. Swapping here would discard it to fix a problem the viewer does
       // not have yet. So the failure is absorbed and the ordinary triggers go
@@ -3501,7 +3501,7 @@ export class PlaybackCoordinator {
       // its loader and pauses the element inside its terminal leaves nothing
       // to play out, and absorbing the failure would park the viewer on a
       // dead element. The web adapter did exactly that until this landed, and
-      // the two changes are not separable — which is why they ship together.
+      // the two changes are not separable, which is why they ship together.
       //
       // Safe for every adapter that has not opted in, because an adapter that
       // never reports `not-found` never builds a replacement and never
@@ -3532,7 +3532,7 @@ export class PlaybackCoordinator {
     // stopped nor unsubscribed while the replacement is negotiated, so it goes
     // on emitting: the element plays out whatever it had buffered and reports
     // `ended` short of duration, which `onPlayerEvent` correctly reads as a
-    // premature end and sends back here as a second fatal failure — from the
+    // premature end and sends back here as a second fatal failure, from the
     // same source, about the same outage, one to three seconds after the
     // first. Taken terminal it closes the coordinator and the replacement that
     // was seconds from ready is discarded by the disposed path, so the viewer
@@ -3594,7 +3594,7 @@ export class PlaybackCoordinator {
    * if this coordinator is in a position to.
    *
    * Returns whether it took ownership of the error. A `false` on the terminal
-   * path means the caller must carry on to its ordinary handling — this is the
+   * path means the caller must carry on to its ordinary handling; this is the
    * one place a missing resolver capability or an in-flight recovery has to be
    * distinguishable from "handled", because the alternative is a viewer left
    * looking at a stalled player with nothing running.
@@ -3629,9 +3629,9 @@ export class PlaybackCoordinator {
   /**
    * Ask whether the session still exists, and act on the answer.
    *
-   * The `404` itself cannot say which of two things happened — a reaped
+   * The `404` itself cannot say which of two things happened (a reaped
    * session and a fragment past the end of the plan are the same status and
-   * the same `not_found` code, measured on one node in one run — so this asks
+   * the same `not_found` code, measured on one node in one run), so this asks
    * the only question that separates them and treats the three possible
    * answers as three different situations rather than collapsing them:
    *
@@ -3665,7 +3665,7 @@ export class PlaybackCoordinator {
      * **Not an answer, and it must not be treated as one.** On the terminal
      * channel there is nothing left to protect and failover is the remaining
      * option. On the degradation channel the source may still be playing, so
-     * this is evidence core cannot act on specifically — which is what the
+     * this is evidence core cannot act on specifically, which is what the
      * standby machinery is for, and what this same evidence used to get before
      * `not-found` existed, when it arrived as `stream`.
      *
@@ -3728,9 +3728,9 @@ export class PlaybackCoordinator {
       return;
     }
 
-    // The session is gone and this source is finished. Nothing is built yet —
-    // see `REPLACEMENT_LEAD_TIME_MS` for why building now would be worse than
-    // useless — so the decision is recorded and the runway decides when.
+    // The session is gone and this source is finished. Nothing is built yet
+    // (see `REPLACEMENT_LEAD_TIME_MS` for why building now would be worse than
+    // useless), so the decision is recorded and the runway decides when.
     const runwayMs = this.runwayMs();
     const leadTimeMs = this.leadTimeMs(session);
     this.log.warn('source-reaped', {
@@ -3752,8 +3752,8 @@ export class PlaybackCoordinator {
     // this kind leaves the element alone, so a fatal arrives with the viewer's
     // buffer intact and is worth deferring for exactly like any other notice.
     //
-    // Left as it was, a player that concedes before the lead is reached — hls
-    // gives up around 28 s, against a lead of 10 — would force an immediate
+    // Left as it was, a player that concedes before the lead is reached (hls
+    // gives up around 28 s, against a lead of 10) would force an immediate
     // build every time and the deferral would never happen at all.
     if (runwayMs > leadTimeMs) {
       this.startPendingReplacement(session, runwayMs, leadTimeMs);
@@ -3783,7 +3783,7 @@ export class PlaybackCoordinator {
    * whether to keep the session, which is the same reason
    * `awaitWithEndpointDeadline` observes rather than aborts. If the
    * negotiation lands after this has given up, the session it produced is
-   * released rather than leaked — a success nobody is waiting for is a
+   * released rather than leaked: a success nobody is waiting for is a
    * generation nobody will ever close, and on a node whose
    * `max_video_transcodes` is 1 that is the next viewer's refusal.
    *
@@ -3925,7 +3925,7 @@ export class PlaybackCoordinator {
    *
    * It carries the close options, and `keepalive` is the reason this is not
    * an inline `stop()`. A page-unload teardown sets it because a `DELETE`
-   * issued as the document goes away is cancelled otherwise — and a session
+   * issued as the document goes away is cancelled otherwise, and a session
    * created during the unload is the one most likely to be cancelled, since
    * it is negotiated at the last possible moment. Without the flag that node
    * holds the transcode entitlement until `session_idle`, thirty minutes,
@@ -3992,7 +3992,7 @@ export class PlaybackCoordinator {
       }
       // The failed session is not closed here. `resolver.failover()` released
       // it as it abandoned it, which is the only layer every client passes
-      // through — two of the four never build a coordinator at all — and a
+      // through (two of the four never build a coordinator at all), and a
       // second owner here would DELETE a session already gone and charge the
       // registry for the node failing to answer about it.
       this.log.info('source-failover-ready', {
@@ -4021,7 +4021,7 @@ export class PlaybackCoordinator {
    *
    * **Silence reads as none, deliberately.** `forwardBufferMs` is optional on
    * `PlaybackEvent` and an adapter that reports no buffer figure is not an
-   * adapter with an empty buffer — but a replacement held against a runway
+   * adapter with an empty buffer, but a replacement held against a runway
    * nobody is measuring is a replacement that is never swapped in, and the
    * viewer's source is already dead. Treating the absence as "swap now" costs
    * a buffer flush; treating it as "wait" costs the session.
@@ -4046,7 +4046,7 @@ export class PlaybackCoordinator {
    * **Taken from the session being replaced**, which is the only one that
    * exists when this is decided. It is the same node and the same
    * configuration as the replacement will be created on, so it is the right
-   * proxy — and if the node is reconfigured between the two, the replacement
+   * proxy, and if the node is reconfigured between the two, the replacement
    * reports the new figure and the next decision uses it.
    *
    * Absent means the node is too old to say, and the default is already
@@ -4071,7 +4071,7 @@ export class PlaybackCoordinator {
    * Bytes are what a read-ahead honestly knows; a duration is what the swap
    * decision needs. The conversion belongs here rather than in the adapter
    * because the session carries the bitrate and the adapter does not
-   * necessarily. Zero whenever anything in the chain is unknown — an
+   * necessarily. Zero whenever anything in the chain is unknown: an
    * unconvertible figure must not become a confident one.
    */
   private readAheadRunwayMs(): number {
@@ -4113,7 +4113,7 @@ export class PlaybackCoordinator {
    * **A buffer drains only while the viewer is playing**, which is why this is
    * not simply elapsed time. The fault this whole path exists for begins with
    * a pause long enough to have the session reaped, so the paused case is the
-   * common one rather than the corner — and charging a paused viewer for the
+   * common one rather than the corner, and charging a paused viewer for the
    * probe would build a replacement against cover they still have. Measured
    * once already, on the timer this replaced: a 63.3 s span covered 59.4 s of
    * playback across one 3.9 s pause.
@@ -4136,7 +4136,7 @@ export class PlaybackCoordinator {
    * report zero, and `lastObservedPositionMs` keeps it forward-only so one
    * reading from a source already given up on cannot send the viewer back to
    * the start of the film. **`forwardBufferMs` rides through the same spread
-   * with no such guard**, and it feeds a decision that is not reversible — a
+   * with no such guard**, and it feeds a decision that is not reversible: a
    * spurious zero spends the cover the deferral exists to protect.
    *
    * The test is a contradiction rather than a heuristic: an element that is
@@ -4170,7 +4170,7 @@ export class PlaybackCoordinator {
    *
    * Every path that abandons one has to come through here, because it is
    * holding a transcode slot. Tom's call to hold the slot at all rests on the
-   * viewer who lost their session being the same viewer it is held for — which
+   * viewer who lost their session being the same viewer it is held for, which
    * stops being true the moment they close the player or seek somewhere the
    * generation cannot serve.
    */
@@ -4181,7 +4181,7 @@ export class PlaybackCoordinator {
    * shape created the session immediately, so abandoning one meant closing it
    * on the node or leaking its transcode slot until `session_idle`. Nothing is
    * created until it is nearly needed now, so there is no session to close and
-   * no slot to leak — only a decision to forget.
+   * no slot to leak, only a decision to forget.
    */
   /**
    * Record that this source must be replaced, and guarantee it will be.
@@ -4191,7 +4191,7 @@ export class PlaybackCoordinator {
    * element reports it is buffering, or it ends short. All three are ordinary
    * and all three arrive first. But the client that reports `not-found` no
    * longer tears its presentation down, which means core is now the only thing
-   * that will ever end this playback — and a recovery that depends on an event
+   * that will ever end this playback, and a recovery that depends on an event
    * arriving is a recovery that hangs when one does not.
    *
    * So the wait is bounded by what the viewer actually has. Worst case it
@@ -4217,8 +4217,8 @@ export class PlaybackCoordinator {
    * **The first version predicted, and could not.** It armed a timer for
    * `runway - lead` on the reasoning that a buffer drains a second per second.
    * It does not: it drains only while the viewer is *playing*, and this whole
-   * fault begins with a pause long enough to have the session reaped. Measured
-   * — a 63.3 s timer spanned 59.4 s of playback across one 3.9 s pause, and
+   * fault begins with a pause long enough to have the session reaped. Measured:
+   * a 63.3 s timer spanned 59.4 s of playback across one 3.9 s pause, and
    * drained 59.2 s of buffer. Exact, and exactly wrong. Every run built on the
    * timer rather than the runway, so the mechanism never once decided.
    *
@@ -4227,7 +4227,7 @@ export class PlaybackCoordinator {
    *
    * So the runway decides, from player events, which were measured tracking
    * the element to the millisecond. This only asks whether those events have
-   * stopped arriving at all — and it is disarmed while the viewer is paused,
+   * stopped arriving at all, and it is disarmed while the viewer is paused,
    * because a paused element reports nothing and has nothing to report.
    */
   private armPendingReplacementGuard(): void {

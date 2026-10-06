@@ -94,7 +94,7 @@ describe('PlaylistStore', () => {
   it('treats an out-of-range removal as a no-op rather than a change', () => {
     // `move` already guards this. Without the same guard, a removal that
     // removes nothing still bumps `updatedAt` and so reorders a list sorted by
-    // it — an action that did nothing visibly rearranging the screen.
+    // it: an action that did nothing visibly rearranging the screen.
     const store = new PlaylistStore('client', new MemoryStorage());
     const playlist = store.create('Road trip', [track('a'), track('b')]);
     const before = store.get(playlist.id)!.updatedAt;

@@ -6,7 +6,7 @@ export function errorMessage(error: unknown): string {
  * A cancellation error, built without assuming a DOM.
  *
  * `DOMException` is a browser global, not an ECMAScript one. Hermes supplies
- * nothing DOM, and React Native — which does ship an implementation — never
+ * nothing DOM, and React Native (which does ship an implementation) never
  * installs it on `globalThis`, so a bare `new DOMException(...)` there throws
  * `ReferenceError: Property 'DOMException' doesn't exist`.
  *
@@ -14,7 +14,7 @@ export function errorMessage(error: unknown): string {
  * reason it does not is why this went unnoticed. `reason` is a later addition
  * to `AbortSignal`; React Native's `AbortController` polyfill predates it and
  * never sets one. So on the web the fallback almost never runs and on React
- * Native it *always* runs — the one platform that cannot evaluate the
+ * Native it *always* runs: the one platform that cannot evaluate the
  * expression is the one that always reaches it. A web client and a full test
  * suite will both stay green.
  *
@@ -25,7 +25,7 @@ export function errorMessage(error: unknown): string {
  *
  * A plain `Error` with `name = 'AbortError'` satisfies every consumer, since
  * `name` is what they all test. `DOMException` is still preferred where it
- * exists so web behaviour — including `instanceof DOMException` in host code —
+ * exists so web behaviour (including `instanceof DOMException` in host code)
  * is unchanged.
  */
 export function abortError(message = 'Aborted'): Error {

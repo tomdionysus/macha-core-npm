@@ -25,7 +25,7 @@ export interface MachaClientConfigurationOptions {
   /** Persistent storage. Defaults to the configured host's. */
   storage?: StorageLike;
   /**
-   * Endpoints supplied by the build or the environment — a `.env` value on the
+   * Endpoints supplied by the build or the environment: a `.env` value on the
    * web, an app config on native. Used when the client has never been
    * configured by hand.
    */
@@ -61,13 +61,13 @@ export class MachaClientConfiguration {
   }
 
   /**
-   * Resolved on use, never captured at construction — the same rule, and for
+   * Resolved on use, never captured at construction: the same rule, and for
    * the same reason, as `SessionManager.storage`.
    *
    * Capturing it here meant a host that constructs this at **module scope**
    * pinned it to whatever `detectHost()` guessed before `configureMachaHost()`
    * ran. Under ESM every import resolves before the importing module's body,
-   * so on React Native that is `memoryStorage()` — a `Map` this object then
+   * so on React Native that is `memoryStorage()`, a `Map` this object then
    * held for the life of the process, while the later `configureMachaHost`
    * call replaced the module host and could not reach inside.
    *
@@ -88,7 +88,7 @@ export class MachaClientConfiguration {
    * For callers that need to key something by identity but must not create an
    * identity to do it. `clientId()` mints on absence, and on a host whose
    * storage is a prefix-hydrated cache an unhydrated key is indistinguishable
-   * from an absent one — so minting there invents a fresh identity and
+   * from an absent one, so minting there invents a fresh identity and
    * destroys the previous one. **A read that finds nothing is harmless; a
    * write that invents an identity is not.** Core uses this, never `clientId`,
    * for anything it wires on a host's behalf.
@@ -152,7 +152,7 @@ export class MachaClientConfiguration {
   setBootstrapEndpoints(urls: readonly string[]): void {
     const normalized = normalizeUrls(urls);
     // Clearing the configuration removes it, exactly as
-    // `setDiscoveredEndpoints` does — the two setters used to disagree about
+    // `setDiscoveredEndpoints` does; the two setters used to disagree about
     // what an empty list means, and this one wrote a record that then read
     // back as "configured with nothing".
     if (normalized.length === 0) this.storage.removeItem(BOOTSTRAP_ENDPOINTS_KEY);
@@ -163,7 +163,7 @@ export class MachaClientConfiguration {
 
   /**
    * Endpoints this client has actually reached successfully at some point, but
-   * never configured by the user — runtime-discovered cluster membership, not
+   * never configured by the user: runtime-discovered cluster membership, not
    * bootstrap configuration (discovered candidates must never be persisted as
    * user configuration). Purely a resumable-history hint for the next start's
    * registry seed, never authoritative: the live cluster is always free to
@@ -205,8 +205,8 @@ export class MachaClientConfiguration {
    * Rewrite a stored list that read back in a form we would not have written.
    *
    * Separate from the read's own `catch`, which removes the key: this write
-   * used to sit inside that `try`, so a store refusing a write — a full
-   * television, a private-mode quota — **deleted the endpoints the read had
+   * used to sit inside that `try`, so a store refusing a write (a full
+   * television, a private-mode quota) **deleted the endpoints the read had
    * just successfully parsed**. The value was sound and the tidy-up was
    * optional; the failure of the optional half destroyed the sound whole.
    * Losing the normalisation until next time costs nothing.
@@ -246,7 +246,7 @@ export class MachaClientConfiguration {
  *
  * A candidate that is non-empty but contains no usable URL also falls through
  * here. That is a deliberate, small departure from the single-value original,
- * which would have stopped at it and returned nothing — falling back is
+ * which would have stopped at it and returned nothing; falling back is
  * strictly more useful, and nothing can depend on the old behaviour except a
  * misconfiguration.
  */

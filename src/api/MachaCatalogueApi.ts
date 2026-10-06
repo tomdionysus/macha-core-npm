@@ -111,8 +111,8 @@ export class MachaCatalogueApi implements CatalogueApi {
       );
       if (profile === undefined || mediaProfilePending(profile)) return undefined;
       // Accept any schema the server declares from 1 upward. The profile
-      // schema grows additively — 2 added colour transfer, level and the
-      // Dolby Vision fields to the same stream objects — so pinning an exact
+      // schema grows additively (2 added colour transfer, level and the
+      // Dolby Vision fields to the same stream objects), so pinning an exact
       // version means every server upgrade silently disables opportunistic
       // player preparation on every client, with a 502 nobody sees. Fields
       // the core does not know about are ignored; fields it expects and does
@@ -229,8 +229,8 @@ export class MachaCatalogueApi implements CatalogueApi {
 
   /**
    * A signed artwork capability URL arrives as a bare path, meaningful only
-   * relative to the node that issued it. Absolutizing it here — the same
-   * place MachaPlaybackResolver absolutizes stream/subtitle URLs — means
+   * relative to the node that issued it. Absolutizing it here, the same
+   * place MachaPlaybackResolver absolutizes stream/subtitle URLs, means
    * every higher layer (ClusterCatalogueApi across nodes, MachaMediaApi,
    * `<img src>`) can treat it as already correct, never rediscovering which
    * node it came from. Left relative, the browser would resolve it against
@@ -242,7 +242,7 @@ export class MachaCatalogueApi implements CatalogueApi {
     // No configured node base: the same-origin deployment, where the client
     // is served by the node that issued this path. A host with no origin at
     // all (React Native) never reaches here, because it always talks to an
-    // explicit endpoint — and if it somehow did, a relative artwork URL would
+    // explicit endpoint, and if it somehow did, a relative artwork URL would
     // fail later, somewhere with no evidence of why.
     const origin = machaHost().origin;
     if (origin) return new URL(path, origin).toString();
@@ -281,8 +281,8 @@ export class MachaCatalogueApi implements CatalogueApi {
       // `202 Accepted` with Retry-After may intentionally have no body while
       // the immutable profile is being generated.
       if (response.status === 202) return undefined as T;
-      // A 200 that is not JSON at all — a captive portal or a proxy answering
-      // with HTML — used to surface as a raw `SyntaxError`, which carries no
+      // A 200 that is not JSON at all (a captive portal or a proxy answering
+      // with HTML) used to surface as a raw `SyntaxError`, which carries no
       // status, so the router read it as non-retryable and "Unexpected token
       // <" reached the viewer with no failover attempted.
       if (error instanceof SyntaxError) {

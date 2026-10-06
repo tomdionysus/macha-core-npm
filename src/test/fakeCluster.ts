@@ -20,7 +20,7 @@ export interface WireSessionOverrides {
  *
  * **The stream URL is fixture data, never a path this package composes.** Core
  * takes `stream.url` off the session and does not build it, which is why the
- * server's route move costs core nothing — but a fixture still has to look
+ * server's route move costs core nothing, but a fixture still has to look
  * like what a node answers, or a test proves a shape no node serves. Server
  * 0.48.0 removed `/api/v1/playback/stream/...` outright and the stream now
  * hangs off the session resource, carrying a capability token and, on a
@@ -73,7 +73,7 @@ export interface FakeClusterNode {
   queueSession(id: string, overrides?: WireSessionOverrides): void;
   /** Queue a bare HTTP status (e.g. 204 for a DELETE, or a 5xx/429 server error). */
   queueStatus(status: number, body?: unknown): void;
-  /** Queue a transport failure (connection refused, DNS, CORS) — a TypeError, matching real `fetch`. */
+  /** Queue a transport failure (connection refused, DNS, CORS): a TypeError, matching real `fetch`. */
   queueNetworkFailure(message?: string): void;
   /** Queue a request that never settles, to exercise client-side deadlines. */
   queueHang(): void;

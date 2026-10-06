@@ -14,7 +14,7 @@ import { SEGMENT_NOT_READY_STATUS, SERVER_SEGMENT_HOLD_MS } from './streamProtoc
  * `nonAssessableResult` below).
  *
  * **Everything here is protocol, not presentation.** What a `500` means, how
- * deep to descend, which URI a tag carries — none of it varies by platform.
+ * deep to descend, which URI a tag carries: none of it varies by platform.
  * Only `fetch` does, so only `fetch` is injected.
  */
 
@@ -32,8 +32,8 @@ import { SEGMENT_NOT_READY_STATUS, SERVER_SEGMENT_HOLD_MS } from './streamProtoc
  * hold. A transcode standby probed while it was still producing its first
  * fragment could not pass: the walk timed out, reported failure, and the
  * coordinator destroyed a standby that was about to become servable. That is
- * the same defect `streamProtocol.ts` warns about in its own doc comment —
- * two numbers chosen independently, each defensible alone — and it survived
+ * the same defect `streamProtocol.ts` warns about in its own doc comment
+ * (two numbers chosen independently, each defensible alone), and it survived
  * in both clients because neither constant recorded the relationship.
  */
 export const HLS_WALK_TIMEOUT_MS = SERVER_SEGMENT_HOLD_MS + 2_000;
@@ -59,7 +59,7 @@ function sourceHoldMs(source: PlaybackSource): number {
 export const HLS_PREFLIGHT_RANGE = 'bytes=0-65535';
 
 /**
- * Readiness reads no payload at all — it only needs the status line.
+ * Readiness reads no payload at all; it only needs the status line.
  *
  * `bytes=0-0` rather than a `HEAD`: a node answers a range request through the
  * same path that serves the fragment, so it holds and answers `500` the same
@@ -72,8 +72,8 @@ export const HLS_READINESS_RANGE = 'bytes=0-0';
  * Cache suppression as **request headers**, never as `RequestInit.cache`.
  *
  * `cache: 'no-store'` is unusable here and actively harmful on one host.
- * React Native implements it by rewriting the URL — appending `_=<epoch
- * millis>` to the query — and Macha media is reached by **signed capability
+ * React Native implements it by rewriting the URL (appending `_=<epoch
+ * millis>` to the query), and Macha media is reached by **signed capability
  * URLs**, so that rewrite alters what was signed and the node rejects a
  * request that would otherwise have succeeded. Tizen 3 drops the option
  * entirely, with no header and no URL change, so the response stays cacheable.
@@ -170,7 +170,7 @@ function recompose(parts: UriParts): string {
  * **Core ships this rather than calling the host's `URL`, and that is
  * deliberate.** React Native's `URL` does not resolve relative references at
  * all: it strips one trailing slash from the base and concatenates, so
- * `.../abc/index.m3u8` + `seg1.m4s` becomes `.../abc/index.m3u8seg1.m4s` —
+ * `.../abc/index.m3u8` + `seg1.m4s` becomes `.../abc/index.m3u8seg1.m4s`,
  * a URL that 404s, reported as the source being unservable.
  *
  * It is also deliberately **not** an injected seam. Making resolution a
@@ -273,16 +273,16 @@ export type HlsWalkOutcome =
  * A playlist is fetched whole, with no `Range`.
  *
  * Ranging a playlist was wrong twice over. A readiness probe is documented as
- * reading no payload, yet was pulling up to 64 KB per playlist per attempt —
+ * reading no payload, yet was pulling up to 64 KB per playlist per attempt,
  * on a television, against the node already struggling to produce a fragment.
  * And a long media playlist *exceeds* 64 KB (a two-hour film at six-second
  * segments is around 1,200 entries), so a node honouring the range answers
  * `206` with a **silently truncated playlist**. Parsing from the top hid it,
- * because the first fragment still resolved — the next person to read further
+ * because the first fragment still resolved; the next person to read further
  * down would not have seen it coming.
  */
 function requestHeaders(source: PlaybackSource, range: string | undefined): Record<string, string> {
-  // Source headers beat cache suppression — a host that must send an
+  // Source headers beat cache suppression: a host that must send an
   // Authorization header has no alternative, and a cached answer is a lesser
   // problem than an unauthorized one. `Range` is applied last and is therefore
   // not overridable: a source header that replaced it would silently turn a
@@ -342,7 +342,7 @@ interface BufferedBody {
   blob?: () => Promise<{ size: number }>;
 }
 
-/** What a body read established — including that it established nothing. */
+/** What a body read established, including that it established nothing. */
 type ByteEvidence = 'bytes' | 'empty' | 'unreadable';
 
 /**
@@ -354,7 +354,7 @@ type ByteEvidence = 'bytes' | 'empty' | 'unreadable';
  *
  * **The buffered path is the normal one on React Native, not a fallback.** Its
  * `fetch` is an XHR polyfill with no streaming body, and it can hand back a
- * `body` object that exists but has no `getReader` — which a `if (!body)`
+ * `body` object that exists but has no `getReader`, which a `if (!body)`
  * guard sails straight past before throwing. Guard on the method, not on the
  * object.
  */
@@ -372,7 +372,7 @@ async function receivedBytes(response: Response): Promise<ByteEvidence> {
     }
   }
   // `arrayBuffer` first, `blob` second. React Native's `blob()` depends on the
-  // app having the Blob module, and rejects where it does not — while
+  // app having the Blob module, and rejects where it does not, while
   // `arrayBuffer` is the accessor the client implementations here used before
   // this module existed. A host that has one usually has the other, so trying
   // both costs a branch and removes a whole-platform failure mode.
@@ -425,7 +425,7 @@ function causeDetail(error: unknown): string | undefined {
  *
  * The primitive both walks share. Exported because a host with a third
  * question should ask it over these targets rather than parse a manifest
- * again — a fourth copy of this descent was days from being written when this
+ * again: a fourth copy of this descent was days from being written when this
  * module was created.
  */
 /**
@@ -434,7 +434,7 @@ function causeDetail(error: unknown): string | undefined {
  * **This exists because the status was being thrown away, and a node paid for
  * it.** `hlsWalkTargets` used to return `[]` for a manifest that answered
  * `404`, which `probeHlsReadiness` could only report as `unassessable /
- * empty-manifest` — indistinguishable from a `200` that parsed to nothing.
+ * empty-manifest`, indistinguishable from a `200` that parsed to nothing.
  * Measured on the Android TV client on 2026-09-20: a reaped session makes the
  * *master* playlist answer `404`, the walk read `.ok`, discarded the number,
  * and the host had no choice but to classify the failure `unknown`. Core reads
@@ -486,7 +486,7 @@ export async function hlsWalkTargets(
  * important line in this module.** `false` means "this node will not serve
  * it", and `PlaybackCoordinator` destroys the standby on a `false`. A source
  * that is not a manifest is one this walk **cannot assess**, not one it has
- * judged — `isManifest` is stated by the resolver and `PlaybackSource`
+ * judged: `isManifest` is stated by the resolver and `PlaybackSource`
  * documents that it must never be inferred from the extension or the mode, so
  * a byte-source is a perfectly ordinary thing to be handed here.
  *
@@ -512,7 +512,7 @@ export async function preflightHlsSource(
   }
   // An empty target list means the manifest was unreadable or had no media in
   // it, which is a negative answer about this node rather than an absence of
-  // one — a served manifest with nothing to play will not play.
+  // one: a served manifest with nothing to play will not play.
   if (targets.length === 0) return false;
   for (const target of targets) {
     try {
@@ -527,7 +527,7 @@ export async function preflightHlsSource(
       // answered, the status says it is serving, and all that failed was this
       // package's ability to read the body on this host. Condemning on it
       // would destroy every standby on a platform whose body accessors this
-      // walk cannot use — silently, with no status and no log line, looking
+      // walk cannot use, silently, with no status and no log line, looking
       // exactly like "seamless failover does not work on this device".
       if (await receivedBytes(response) === 'empty') return false;
     } catch {
@@ -564,7 +564,7 @@ export async function probeHlsReadiness(
     // for telling a stalled node from a timed-out one from a refused one, and
     // swallowing this leaves it printing "the node did not answer".
     // A playlist that answered with a status is exactly as much evidence as a
-    // fragment that did, and it is reported the same way — see `:545`, which
+    // fragment that did, and it is reported the same way; see `:545`, which
     // this now mirrors. `detail` names *which* playlist, because the status
     // alone cannot separate a reaped session (the master 404s) from a variant
     // the node has lost, and on a television the trail is the only console.

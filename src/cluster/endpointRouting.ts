@@ -26,7 +26,7 @@ export const READ_YOUR_WRITES_MS = 5_000;
  * How a `find` walk that produced nothing ended.
  *
  * `find` answers `undefined` both when every node said "not here yet" and when
- * some said that while another failed — deliberately, so optional metadata
+ * some said that while another failed, deliberately, so optional metadata
  * cannot be blocked by an unrelated node failure. For some callers those are
  * different answers: an absent media profile makes the chooser transcode
  * everything, silently, and "nobody has it" and "the node that might have had
@@ -84,13 +84,13 @@ export class ClusterEndpointRouter {
    * A safe read, walking candidates until one answers.
    *
    * `signal` cancels the walk, not just the in-flight attempt: without it a
-   * caller that has gone away — a screen unmounted mid-load — still pays for
+   * caller that has gone away (a screen unmounted mid-load) still pays for
    * every remaining candidate before the result is discarded. Cancellation is
    * client intent and never endpoint evidence, so an abort records no failure
    * against any node.
    *
    * `advisory` is for a read whose outcome is health evidence but which is not
-   * a claim on API authority — the ten-second cluster status call is the case
+   * a claim on API authority: the ten-second cluster status call is the case
    * it exists for. Control work must not reshuffle the endpoint the viewer's
    * media is flowing through: a status timeout would otherwise un-stick the
    * preferred node, and a status success elsewhere would steal preference from
@@ -152,15 +152,15 @@ export class ClusterEndpointRouter {
    * A playback session lives on the node that created it: a PATCH to any other
    * node addresses a session that does not exist there, so failing over is not
    * a fallback but a different and wrong request. That makes this a third
-   * category rather than a stricter `mutation` — `mutation` picks the best
+   * category rather than a stricter `mutation`: `mutation` picks the best
    * candidate and declines to retry, while this one has no choice to make.
    *
    * It exists so pinned work still feeds endpoint health. Calling a node's API
    * directly is the obvious alternative and silently costs the registry every
    * success and failure on the node doing the most work.
    *
-   * A per-title failure — a file this node cannot read, a pipeline that would
-   * not start — leaves the health record alone. It says nothing about the
+   * A per-title failure (a file this node cannot read, a pipeline that would
+   * not start) leaves the health record alone. It says nothing about the
    * node's ability to serve anything else, and with a small cluster and an
    * escalating cooldown a single unplayable file could otherwise empty the
    * candidate list.

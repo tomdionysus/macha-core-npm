@@ -12,18 +12,18 @@ import type {
  * example `fmp4`, `mpegts`, or a source container such as `matroska` for a
  * direct session.
  *
- * Only ever from what the server says it produced — `output.container`, or
+ * Only ever from what the server says it produced: `output.container`, or
  * `output.format` where the node could not name a container. Never from the
  * request: synthesising it there would put the thing we asked for on screen
  * wearing the clothes of the thing we got, and the entire value of this field
- * is telling those two apart — a segment-container preference that the node
+ * is telling those two apart: a segment-container preference that the node
  * quietly ignored looks identical to one it honoured until something reports
  * back. Absent means absent, never a default.
  */
 function servedContainer(session: PlaybackSession): string | undefined {
   // `output.format` is the fallback, not a default: it is still the server
   // describing what it produced, and it is the only answer for a direct
-  // session whose container the server could not name — the six .avi files
+  // session whose container the server could not name: the six .avi files
   // report `container: ""` with `format: "avi"`. If that is fixed server-side
   // the fallback simply stops being reached.
   const container = session.output.container?.trim() || session.output.format?.trim();
@@ -48,12 +48,12 @@ export type PlaybackDelivery = 'direct' | 'remux';
  *
  * A manifest settles it on its own. An MPEG-TS source packaged into MPEG-TS
  * segments changes no container at all, and is still a playlist and a pile of
- * segments rather than the file — so container equality cannot answer this
+ * segments rather than the file, so container equality cannot answer this
  * and `isManifest` is the honest tell. That case is not hypothetical: it is
  * .ts and .m2ts sources on a host whose policy asks for MPEG-TS carriage,
  * which is the television.
  *
- * `isManifest` is not an independent witness — it is derived from the
+ * `isManifest` is not an independent witness; it is derived from the
  * session's stream mime type, which the server sets from the same plan the
  * mode comes from. What recommends it is that the player picks its loading
  * path from that same value, so a wrong one breaks playback loudly instead of
@@ -179,7 +179,7 @@ export function describePlaybackSession(session?: PlaybackSession, activeStreamO
   // that is worth naming per stream: the session as a whole is either the file
   // handed over untouched or the same streams rewrapped in a new container.
   // Calling a direct hand-off a stream copy describes an operation the server
-  // never performed — it did not copy a stream anywhere, it sent the file.
+  // never performed; it did not copy a stream anywhere, it sent the file.
   const copiedOrAbsent = (transform: PlaybackTransform) => transform === 'copy' || transform === 'omit';
   if (copiedOrAbsent(session.transform.video) && copiedOrAbsent(session.transform.audio)) {
     result.delivery = copyDelivery(session);

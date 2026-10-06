@@ -47,7 +47,7 @@ export interface NodeRuntimeStatus {
    */
   cpu_cores?: number;
   /**
-   * Physical RAM on the machine, not the node's own footprint — `rss_bytes`
+   * Physical RAM on the machine, not the node's own footprint; `rss_bytes`
    * above is the process's resident set and answers a different question.
    * Optional for the same reason as `cpu_cores`: older nodes do not send it.
    *
@@ -55,7 +55,7 @@ export interface NodeRuntimeStatus {
    * comparable between machines of different sizes, total memory does not
    * make any other figure mean more: a node is not slower for having less of
    * it until it runs out, and by then `load1` is already saying so. The
-   * endpoint ranking deliberately does not read it — ranking on total memory
+   * endpoint ranking deliberately does not read it: ranking on total memory
    * would prefer a large thrashing machine to a small healthy one, which is
    * not a subtle inaccuracy but the axis voting for the wrong node.
    */
@@ -74,7 +74,7 @@ export interface NodeRuntimeStatus {
  * status call exactly as `load1` and `cpu_cores` are. No node computes these
  * for a peer, and nothing here is a cluster-wide figure.
  *
- * **Absent means the node cannot say** — it predates server 0.46.2, or it runs
+ * **Absent means the node cannot say**: it predates server 0.46.2, or it runs
  * with `streaming.enabled` false and will not honour a playback budget it does
  * not run. Never read absence as a default: a client that substitutes its own
  * number has invented one, and a number that came from nowhere is
@@ -104,7 +104,7 @@ export interface WireTranscodeRate {
 export interface NodePlaybackBudgets {
   /**
    * How long this node may take to bring a transformed stream up before it
-   * abandons the attempt — its `startup_timeout_ms`.
+   * abandons the attempt: its `startup_timeout_ms`.
    *
    * Bounds what the *node* spends: it starts when the node begins work and
    * stops when the node gives up on itself. Getting the request there and the
@@ -131,7 +131,7 @@ export interface NodePlaybackBudgets {
   transcode_rates?: WireTranscodeRate[];
   /**
    * How long this node holds a request for a fragment it has not produced yet
-   * before answering `500 segment_not_ready` — its `segment_timeout_ms`.
+   * before answering `500 segment_not_ready`: its `segment_timeout_ms`.
    *
    * A hold is the node working, not the node failing. Any client deadline that
    * expires inside one abandons a node that was about to answer.
@@ -139,7 +139,7 @@ export interface NodePlaybackBudgets {
   segment_timeout_ms?: number;
   /**
    * How long this node keeps a transcode pipeline alive with nothing pulling
-   * from it before reclaiming the engine — its `streaming.pipeline_idle_ms`.
+   * from it before reclaiming the engine: its `streaming.pipeline_idle_ms`.
    *
    * **Not the session clock.** `pipeline_idle` reclaims the *engine* while
    * `session_idle` erases the *session*, and they are half an hour apart. A
@@ -169,7 +169,7 @@ export interface ClusterNodeStatus {
   host: string;
   port: number;
   /**
-   * The URL a client dials to reach this node's HTTP API — scheme, host and
+   * The URL a client dials to reach this node's HTTP API: scheme, host and
    * optional port, never a path.
    *
    * Distinct from `host`/`port` above, which is the node's internal RPC bind
@@ -184,7 +184,7 @@ export interface ClusterNodeStatus {
    * while clients must be told HTTPS on the proxy's.
    *
    * Optional because a node predating this does not send it. It arrives absent
-   * rather than partial — the server rejects anything without `://` — so a
+   * rather than partial (the server rejects anything without `://`), so a
    * client can treat presence as sufficient and never has to guess a scheme.
    */
   api_endpoint?: string;
@@ -312,8 +312,8 @@ export interface ClusterStatusSnapshot {
    * Which node produced this response, matching an `id` in `nodes[]`.
    *
    * **The one thing a client cannot work out for itself.** Every node in
-   * `nodes[]` states an `api_endpoint`, but that is the name a node advertises
-   * — not necessarily the address the caller dialled. A client reaching a node
+   * `nodes[]` states an `api_endpoint`, but that is the name a node advertises,
+   * not necessarily the address the caller dialled. A client reaching a node
    * by a LAN address while the node advertises a DNS name had no way to learn
    * the two were one machine, so the registry held it as two nodes: counted
    * twice, offered twice in a selector, and a failover could "move" to the box

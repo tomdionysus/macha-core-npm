@@ -98,7 +98,7 @@ describe('client server endpoint persistence', () => {
 
   it('keeps endpoints that read back fine when the tidy-up write is refused', () => {
     // The self-healing rewrite sat inside the read's own `try`, and that
-    // `catch` removes the key — so a store refusing a write, a full television
+    // `catch` removes the key, so a store refusing a write, a full television
     // or a private-mode quota, deleted endpoints the read had just parsed
     // successfully. The normalisation is optional; the value is not.
     const readable = memoryStorage({
@@ -238,8 +238,8 @@ describe('parseEndpointList', () => {
 
 describe('the host is resolved on use, never captured', () => {
   /**
-   * A host that constructs this at module scope — which the Android TV client
-   * does — pinned it to whatever `detectHost()` guessed before
+   * A host that constructs this at module scope (which the Android TV client
+   * does) pinned it to whatever `detectHost()` guessed before
    * `configureMachaHost()` ran. Under ESM every import resolves before the
    * importing module's body, so on React Native that is `memoryStorage()`: a
    * Map held for the life of the process while the real store sat unused.
@@ -263,7 +263,7 @@ describe('the host is resolved on use, never captured', () => {
 describe('reading an identity without creating one', () => {
   /**
    * On a host whose storage is a prefix-hydrated cache, an unhydrated key is
-   * indistinguishable from an absent one — so minting there invents a fresh
+   * indistinguishable from an absent one, so minting there invents a fresh
    * identity and destroys the previous one. A read that finds nothing is
    * harmless; a write that invents an identity is not. Core uses this, never
    * `clientId()`, for anything it wires on a host's behalf.

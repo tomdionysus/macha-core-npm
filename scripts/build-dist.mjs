@@ -9,7 +9,7 @@
  *
  * This has now failed in both available directions, hours apart:
  *
- * - `tsc` emitting straight into `dist` left **orphans** — output whose source
+ * - `tsc` emitting straight into `dist` left **orphans**: output whose source
  *   had been deleted, since `tsc` removes nothing. A client found
  *   `dist/state/volume.js` still resolvable after `VolumeStore` was deleted,
  *   which is exactly the artefact that makes someone believe a deletion did
@@ -17,7 +17,7 @@
  *   *exist*, so a vanished source is the one case it is structurally blind to.
  * - Fixing that by emptying `dist` first made the window **worse**, not
  *   better. Before, a client building mid-rebuild got something stale but
- *   complete — importable, suite runs, probably passes. After, it got a
+ *   complete: importable, suite runs, probably passes. After, it got a
  *   directory that was absent or partial, and every import failed at once. One
  *   client watched its whole suite collapse to "45 files failed / no tests"
  *   and went looking for a breakage in its own tree first, which is the cost
@@ -29,7 +29,7 @@
  * problems close, rather than one being traded for the other.
  *
  * A failed compile leaves `dist` untouched, which is the other half of the
- * point — a broken build must not be able to break every client with it.
+ * point: a broken build must not be able to break every client with it.
  */
 import { rmSync, renameSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -54,7 +54,7 @@ if (compile.status !== 0) {
 }
 
 // Two renames rather than a remove-then-rename: `rename` will not replace a
-// non-empty directory, so the old tree has to move aside first — and doing it
+// non-empty directory, so the old tree has to move aside first, and doing it
 // this way leaves a gap of microseconds between two atomic operations instead
 // of a gap spanning a directory deletion.
 if (existsSync(OUT)) renameSync(OUT, PREVIOUS);

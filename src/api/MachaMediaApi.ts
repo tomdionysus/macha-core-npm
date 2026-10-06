@@ -56,12 +56,12 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
 
 /**
  * Whether a capability URL's own `exp` has passed. The server signs the
- * expiry into the URL, so this is answerable without asking a node — and has
+ * expiry into the URL, so this is answerable without asking a node, and has
  * to be, since the alternative is learning it from four refusals in a row.
  *
  * **When this actually fires, as of server `0.40.0`.** The server quantises
- * the expiry — `(now / ttl + 2) * ttl`, floor to the current bucket then add
- * two — and **the bucket is the TTL**, so the invariant is a relationship
+ * the expiry (`(now / ttl + 2) * ttl`, floor to the current bucket then add
+ * two), and **the bucket is the TTL**, so the invariant is a relationship
  * rather than a duration: remaining validity is always **more than one TTL and
  * at most two**, whatever the TTL is configured to be. The artwork response's
  * own `max-age` is that same TTL, so the floor is *strictly* greater than it
@@ -70,7 +70,7 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
  *
  * Stated as a relationship deliberately. With the default 24 h TTL it works
  * out as (24 h, 48 h] behind `max-age=86400`, and writing *that* down would
- * quietly become false the first time a cluster reconfigured the TTL — which
+ * quietly become false the first time a cluster reconfigured the TTL, which
  * is the same trap as a stall budget written as a number instead of against
  * `SERVER_SEGMENT_HOLD_MS`.
  *
@@ -81,15 +81,15 @@ function consumeArtwork(promise: Promise<Blob>, signal?: AbortSignal): Promise<B
  *
  * So a capability from a *freshly read* catalogue payload is never expired
  * here, and this guard exists for one case: **a payload held across a bucket
- * boundary** — persisted state, a long-lived cache, a client resuming after a
+ * boundary**: persisted state, a long-lived cache, a client resuming after a
  * long idle. Worth knowing before treating a hit as a server fault.
  *
  * **`exp` is unix milliseconds, not seconds.** Earlier builds computed it as
  * `unix_ms() + ttl` per call and verified it as `unix_ms() >= expires`, where
  * `unix_ms()` is a `duration_cast<milliseconds>` of the system clock
  * (`src/types.cpp`); a capability observed on the wire carries a
- * thirteen-digit value. That is unusual — JWT's `exp` is seconds, and most
- * things that look like this are too — so it is worth stating rather than
+ * thirteen-digit value. That is unusual (JWT's `exp` is seconds, and most
+ * things that look like this are too), so it is worth stating rather than
  * inferring, because getting it wrong fails silently in the safe-looking
  * direction: seconds compared against `Date.now()` make every live
  * capability look long expired, no alternate is ever offered, and the
@@ -328,9 +328,9 @@ export class MachaMediaApi implements MediaApi {
     }
     // Then promote whichever node last served artwork, which is the whole of
     // the cache fix. Everything above orders by the *streaming* preferred
-    // endpoint — `ClusterCatalogueApi.artworkUrls` returns candidates
+    // endpoint (`ClusterCatalogueApi.artworkUrls` returns candidates
     // preferred-node-first, and `signed` was absolutised against whichever
-    // node answered the catalogue read — so without this a pre-emptive swap
+    // node answered the catalogue read), so without this a pre-emptive swap
     // renames every poster and a platform HTTP cache re-downloads bytes it
     // already holds.
     //
@@ -361,7 +361,7 @@ export class MachaMediaApi implements MediaApi {
         this.log.debug('request-complete', { artworkId: ref.id, sizeBytes: blob.size });
         // This path does not learn the host: `CatalogueApi.artwork` walks
         // candidates internally and returns bytes, not the endpoint that
-        // produced them. Recorded as a known gap rather than plumbed out — the
+        // produced them. Recorded as a known gap rather than plumbed out; the
         // blob path is the fallback, the URL path is what renders a library
         // screen, and a caller using it reports through `noteArtworkLoaded`.
         return blob;

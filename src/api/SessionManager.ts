@@ -25,18 +25,18 @@ const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
  *
  * **There is no renewal to schedule, and that is now a decision rather than a
  * gap.** Confirmed with the server on 2026-09-13: the session TTL is 30 days,
- * counted from *creation* and never extended — `validate()` does not slide it
- * — and there are no refresh tokens. So this timer does not refresh anything;
+ * counted from *creation* and never extended (`validate()` does not slide it)
+ * and there are no refresh tokens. So this timer does not refresh anything;
  * it re-mints, which is a different operation with a different result.
  *
  * **For a credentialed session that difference is the whole story.** A re-mint
  * presents no credentials, so at the 30-day mark a signed-in viewer's session
  * becomes a session for whatever an empty set of credentials authenticates.
- * Re-minting is still the right thing to attempt — it is the only thing this
- * can present — but **do not assume the result is a usable browsing session.**
+ * Re-minting is still the right thing to attempt (it is the only thing this
+ * can present), but **do not assume the result is a usable browsing session.**
  *
- * On a cluster where the anonymous account holds no roles — the shape of any
- * deployment that requires accounts — the re-mint degrades a signed-in viewer
+ * On a cluster where the anonymous account holds no roles (the shape of any
+ * deployment that requires accounts), the re-mint degrades a signed-in viewer
  * not to browsing but **to nothing**: the library empties mid-use and the
  * application renders its refused state, unannounced, looking exactly like a
  * fault. That is worse than a logout, because a logout at least says what
@@ -46,7 +46,7 @@ const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
  * `media_viewer` removed from the anonymous account: `POST /api/v1/session`
  * with empty credentials mints successfully on every node and returns
  * `roles: []`, and `/catalogue/items` then answers `403 requires the
- * 'media_viewer' role`. So the degraded session is not merely limited — it
+ * 'media_viewer' role`. So the degraded session is not merely limited; it
  * cannot read the catalogue at all, which presents as an empty client rather
  * than as a sign-out.*
  *
@@ -55,7 +55,7 @@ const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
  * to the account it belonged to; {@link sessionLockedOut} on
  * {@link SessionManager.roles} says whether what replaced it can do anything
  * at all. Read together they separate "your session aged out" from "this
- * cluster refuses you" — two states that look identical to a gate and read
+ * cluster refuses you": two states that look identical to a gate and read
  * very differently to a person. Core states neither sentence, because a 401
  * does not distinguish an expiry from a revoke from a `credential_generation`
  * bump.
@@ -76,19 +76,19 @@ const REFRESH_SAFETY_MARGIN_MS = 30_000;
  */
 const MAX_TIMER_DELAY_MS = 24 * 60 * 60 * 1000;
 
-/** Everything an API client needs to make an authenticated request — nothing more. */
+/** Everything an API client needs to make an authenticated request, nothing more. */
 export interface AuthenticatedFetch {
   fetch(url: string, init?: RequestInit): Promise<Response>;
   /**
    * The `Authorization` header value for a request this client will not make
-   * itself — a URL handed to a native player, an `<img>`, or a platform
+   * itself: a URL handed to a native player, an `<img>`, or a platform
    * downloader, all of which fetch on their own and cannot go through `fetch`
    * above. Undefined when the client is unauthenticated.
    *
    * Async because the honest answer may not exist yet: a session being minted
    * for the first time, or re-minted after a 401, has no valid token until
    * that settles, and handing back the expired one would produce a 401 the
-   * caller cannot retry — the fetch is happening inside a player.
+   * caller cannot retry; the fetch is happening inside a player.
    *
    * Returns the whole header value rather than the bare token, deliberately.
    * Callers that need it in a query parameter can strip the prefix, but they
@@ -112,7 +112,7 @@ export function fixedBearerToken(token: string | undefined, fetchImpl?: typeof f
   const trimmed = token?.trim() || undefined;
   return {
     // `fetchImpl ?? fetch` is resolved on every call, not once at
-    // construction — `NO_AUTH` below is a module-level constant built at
+    // construction: `NO_AUTH` below is a module-level constant built at
     // import time, long before a test's `vi.stubGlobal('fetch', ...)` runs;
     // capturing `fetch` as a bound default parameter here would freeze in
     // whatever `fetch` was at that moment and silently ignore every stub.
@@ -124,11 +124,11 @@ export function fixedBearerToken(token: string | undefined, fetchImpl?: typeof f
   };
 }
 
-/** Sends no Authorization header at all — the default for a test/caller that doesn't care about auth. */
+/** Sends no Authorization header at all, the default for a test/caller that doesn't care about auth. */
 export const NO_AUTH: AuthenticatedFetch = fixedBearerToken(undefined);
 
 /**
- * Owns the client's anonymous session end to end — minting, proactive
+ * Owns the client's anonymous session end to end: minting, proactive
  * refresh before expiry, reactive re-mint on 401, and attaching the current
  * token to every request made through `fetch()`. Every API client depends
  * on this (or `fixedBearerToken`, for a manual override) instead of
@@ -136,7 +136,7 @@ export const NO_AUTH: AuthenticatedFetch = fixedBearerToken(undefined);
  * owns the contract, not a copy in every client class.
  *
  * One instance (`sessionManager`, below) exists for the life of the app; a
- * host's own session binding is a thin interface onto it, not an owner —
+ * host's own session binding is a thin interface onto it, not an owner;
  * tests instantiate their own via `new SessionManager()`.
  */
 /**
@@ -147,7 +147,7 @@ export const NO_AUTH: AuthenticatedFetch = fixedBearerToken(undefined);
  * asked, and those need opposite handling: a refusal deserves a login, and
  * being away from home deserves a notice over whatever is already on screen
  * and a retry. Three client sessions built something on the guess in one day
- * and all three removed it — one had a login wall that would have replaced a
+ * and all three removed it: one had a login wall that would have replaced a
  * playing film with a sign-in screen on a network blip, because its condition
  * re-evaluated on every notification and an empty token looked like a policy.
  *
@@ -157,7 +157,7 @@ export const NO_AUTH: AuthenticatedFetch = fixedBearerToken(undefined);
  */
 export interface SessionMintFailure {
   /**
-   * `refused` — a node answered and said no. `unreachable` — nothing answered.
+   * `refused`: a node answered and said no. `unreachable`: nothing answered.
    *
    * A refusal is a policy a cluster stated; the client may be able to do
    * something about it, and telling a viewer to sign in is only honest here.
@@ -194,7 +194,7 @@ function describeMintFailure(error: unknown): SessionMintFailure {
 export interface SessionIdentityChange {
   from?: string;
   to?: string;
-  /** `Date.now()` at the moment the new session was adopted — an absolute instant, not `machaHost().now()`. */
+  /** `Date.now()` at the moment the new session was adopted, an absolute instant, not `machaHost().now()`. */
   at: number;
 }
 
@@ -202,8 +202,8 @@ export interface SessionIdentityChange {
  * `fetch()` was called on a manager that has no registry to mint against.
  *
  * **Deliberately a `MachaConnectionError`.** "We could not ask" is what a
- * connection state means in this package — the distinction `mintNow` already
- * draws between a node refusing and a node being unreachable — and a caller
+ * connection state means in this package (the distinction `mintNow` already
+ * draws between a node refusing and a node being unreachable), and a caller
  * that already falls back for one should fall back for the other. The phone
  * client's `MediaApi.serve` serves its downloaded library on exactly that
  * classification, and a fresh error type would have escaped it and put a
@@ -213,12 +213,12 @@ export interface SessionIdentityChange {
  *
  * `reason` distinguishes them because they are different faults:
  *
- * - `not-started` — `start()` has never been called. **Routine rather than a
+ * - `not-started`: `start()` has never been called. **Routine rather than a
  *   programming error on React Native**: React runs child effects before
  *   parent effects, so a screen's first request fires before the provider's
  *   effect starts the manager. Both RN clients reach it that way on every cold
  *   start.
- * - `stopped` — `start()` ran and `stop()` has since torn it down, typically a
+ * - `stopped`: `start()` ran and `stop()` has since torn it down, typically a
  *   reconfiguration whose cleanup stopped the manager while a request was in
  *   flight. A restart usually follows within milliseconds.
  *
@@ -227,14 +227,14 @@ export interface SessionIdentityChange {
  *
  * **It is not evidence that any node is unreachable, and must not be reported
  * as connectivity.** It is a `MachaConnectionError` because the *request*
- * could not be made, but no node was asked and none has said anything — so a
+ * could not be made, but no node was asked and none has said anything, so a
  * host that calls something like `reportUnreachable()` on every
  * `MachaConnectionError` will flip a viewer to an offline state on a
  * perfectly healthy cluster. The phone client traced that cost on its own
  * tree: the cold-start route reaches its transport branch, the UI flips
  * offline, and its probe suppression then withholds real requests for twenty
  * seconds, so a viewer sees their downloads instead of their library on every
- * launch. **Branch on `reason` before treating this as a network fault** —
+ * launch. **Branch on `reason` before treating this as a network fault**:
  * that is what `reason` is for.
  */
 export class SessionNotStartedError extends MachaConnectionError {
@@ -276,8 +276,8 @@ export class SessionManager implements AuthenticatedFetch {
    * Resolved on use, never captured at construction.
    *
    * `sessionManager` below is created when this module is first evaluated,
-   * which under ESM happens strictly before the importing entry module's body
-   * — so before any `configureMachaHost()` call in it. Reading the host in a
+   * which under ESM happens strictly before the importing entry module's body,
+   * so before any `configureMachaHost()` call in it. Reading the host in a
    * constructor default would pin the singleton to the auto-detected
    * environment and silently ignore whatever the host went on to configure.
    * On the web those are the same object; on a host that supplies its own
@@ -303,8 +303,8 @@ export class SessionManager implements AuthenticatedFetch {
   /**
    * What the current session may do, or `undefined` if nothing has said yet.
    *
-   * Roles arrive with the token on every path — the mint response states them,
-   * and so does the record returned by validating a cached token — so there is
+   * Roles arrive with the token on every path (the mint response states them,
+   * and so does the record returned by validating a cached token), so there is
    * no separate fetch to fail and nothing to retry. That is the point: this
    * was the one part of the session lifecycle living outside this class, and a
    * client fetching it once per API identity never re-asked, because failover
@@ -340,16 +340,16 @@ export class SessionManager implements AuthenticatedFetch {
    * it is a comparison rather than a special case.** A 401 is answered by
    * re-minting, and a re-mint presenting no credentials gets a session for
    * whatever account an empty set of credentials authenticates. That is the
-   * right thing to attempt — it is the only thing core can present, and
-   * browsing anonymously beats no session at all — but it means an
+   * right thing to attempt (it is the only thing core can present, and
+   * browsing anonymously beats no session at all), but it means an
    * administrator whose roles changed underneath them, or whose password was
    * changed elsewhere, silently becomes somebody else. Sections vanish, writes
    * start failing, and nothing says why: an auth event wearing the costume of
    * a UI bug.
    *
    * Core records the change and says nothing about what it means. *Why* the
-   * identity moved — an expiry, a revoke, a `credential_generation` bump from
-   * a role change, someone signing out on another device — is not something a
+   * identity moved (an expiry, a revoke, a `credential_generation` bump from
+   * a role change, someone signing out on another device) is not something a
    * 401 distinguishes, and "your session timed out" is the wrong sentence for
    * most of those. The application knows its viewer; it decides the wording
    * and whether to interrupt.
@@ -397,7 +397,7 @@ export class SessionManager implements AuthenticatedFetch {
    * Failure is thrown rather than swallowed, unlike the background mint: a
    * wrong password is something the person at the keyboard has to be told,
    * and retrying it on a timer would lock the account out on their behalf.
-   * The previous session is simply replaced — it belonged to a different
+   * The previous session is simply replaced; it belonged to a different
    * user, so revoking it here would sign out whoever else was holding it.
    *
    * Playback must be stopped before calling this, for the same reason it must
@@ -437,7 +437,7 @@ export class SessionManager implements AuthenticatedFetch {
    * Revoking is done here rather than left to the caller, because forgetting a
    * token is not signing out: the session stays valid on every node until it
    * expires and anyone holding it keeps the access. The two halves are ordered
-   * so they cannot conflict — **local state is cleared first and
+   * so they cannot conflict: **local state is cleared first and
    * unconditionally**, since once the viewer has asked to be signed out,
    * ending up still signed in is the one outcome that must not happen; then
    * the revoke runs and **its failure is not swallowed**. A caller that shows
@@ -446,7 +446,7 @@ export class SessionManager implements AuthenticatedFetch {
    *
    * Playback must be stopped before calling this. Nothing connects a playback
    * session to an identity, and once the token changes a session created under
-   * the old one can no longer be closed — the node then holds its transcode
+   * the old one can no longer be closed: the node then holds its transcode
    * entitlement until `session_idle`, thirty minutes, and on a one-slot node
    * the next viewer gets `429 resource_limit` with nothing pointing at the
    * client that caused it.
@@ -459,7 +459,7 @@ export class SessionManager implements AuthenticatedFetch {
     const registry = this.registry;
     // Local state first, unconditionally. The viewer has asked to be signed
     // out, and ending up still signed in is the one outcome that must not
-    // happen — so nothing below is allowed to leave a token behind, however
+    // happen, so nothing below is allowed to leave a token behind, however
     // it fails.
     this.token = undefined;
     this.sessionRoles = undefined;
@@ -478,7 +478,7 @@ export class SessionManager implements AuthenticatedFetch {
     this.notify();
     // Then the part that actually ends it. Dropping the token locally leaves
     // the session valid on every node until it expires, and anyone holding
-    // that token keeps the access — so a "sign out" that only forgets is a
+    // that token keeps the access, so a "sign out" that only forgets is a
     // sign-out in name only.
     //
     // The error is not swallowed. A failed revoke means the session is still
@@ -520,11 +520,11 @@ export class SessionManager implements AuthenticatedFetch {
   /**
    * The current `Authorization` header for a request made outside this class.
    *
-   * Waits for a bootstrap already in flight, exactly as `fetch` does — a cold
+   * Waits for a bootstrap already in flight, exactly as `fetch` does: a cold
    * start would otherwise hand a native player `undefined` and produce a 401
    * inside a component that has no way to retry. It waits across a reactive
    * re-mint too, because `fetch` drops a token a node has rejected before
-   * asking for a new one — so there is no window in which this hands out a
+   * asking for a new one, so there is no window in which this hands out a
    * credential already known to be refused. Beyond that it cannot promise
    * much: the token is a snapshot, and a caller holding it across a re-mint
    * holds a dead one. Ask again per request rather than caching it.
@@ -544,9 +544,9 @@ export class SessionManager implements AuthenticatedFetch {
    * a session exists yet or is still valid:
    *
    * - Fired before the first token exists while a bootstrap is in flight, the
-   *   request waits for that bootstrap rather than going out tokenless — a
+   *   request waits for that bootstrap rather than going out tokenless: a
    *   request that can only 401 is not worth sending.
-   * - Fired with **no registry at all** — never started, or stopped since — it
+   * - Fired with **no registry at all** (never started, or stopped since), it
    *   throws {@link SessionNotStartedError} rather than sending. There is
    *   nothing to mint against, so the request could only 401, and returning
    *   that 401 to a caller told it would never see one is worse than refusing:
@@ -556,7 +556,7 @@ export class SessionManager implements AuthenticatedFetch {
    *   re-mint (coalesced with any mint already in flight) and retry once with
    *   the new token. A 401 for a token that has *already* been replaced by
    *   the time it arrives (a slow request overlapping someone else's re-mint)
-   *   must not mint again — that would clobber the good new session — so it
+   *   must not mint again (that would clobber the good new session), so it
    *   just retries with the current one.
    * - If re-minting fails there is nothing better to retry with: the
    *   original 401 is returned, and the failure-retry timer owns recovery.
@@ -611,7 +611,7 @@ export class SessionManager implements AuthenticatedFetch {
       // The whole record, not just the credential. `cacheSession` has always
       // written `username` and `roles`; this used to parse them and throw them
       // away, which made a restored session structurally indistinguishable
-      // from a freshly minted anonymous one — so after a reload core could not
+      // from a freshly minted anonymous one, so after a reload core could not
       // tell it had ever been signed in, and the identity check below had
       // nothing to compare against.
       return {
@@ -639,7 +639,7 @@ export class SessionManager implements AuthenticatedFetch {
     //
     // `settle()` used to run here, at the top, so the first notification a
     // subscriber received carried `isReady === true` with no token and no
-    // roles — momentarily indistinguishable from a session the cluster
+    // roles, momentarily indistinguishable from a session the cluster
     // granted nothing. A three-state gate reading unknown / granted / denied
     // sees that window as a refusal, which is how a privileged viewer lands on
     // a login screen. The window always existed; a restored signed-in session
@@ -652,7 +652,7 @@ export class SessionManager implements AuthenticatedFetch {
     this.mintFailure = undefined;
     // Compared only when the node actually named an account. A node too old to
     // state `username` says nothing about who this is, which is not evidence
-    // that the account changed — the same reasoning as the roles line below,
+    // that the account changed, the same reasoning as the roles line below,
     // and the direction that avoids inventing a sign-out nobody performed.
     if (session.username !== undefined) {
       if (this.adopted && this.sessionUsername !== session.username) {
@@ -675,12 +675,12 @@ export class SessionManager implements AuthenticatedFetch {
 
   /**
    * `start()`'s entry point. A cached, unexpired token is worth a cheap
-   * server-side validity check before falling back to a full mint — Law 2
+   * server-side validity check before falling back to a full mint: Law 2
    * (`docs/principles-and-laws.md`) forbids adding viewer-visible delay, and
    * minting always costs a real round trip plus server-side session creation
    * where validating is a single lightweight authenticated GET that doubles
    * as an endpoint-reachability check. A definitive rejection (401, from any
-   * node — anonymous sessions are valid cluster-wide, so this is not
+   * node: anonymous sessions are valid cluster-wide, so this is not
    * node-specific) skips straight to minting; an unreachable-endpoint
    * failure is treated the same, since minting will hit the identical nodes
    * and fail the same way regardless.
@@ -749,7 +749,7 @@ export class SessionManager implements AuthenticatedFetch {
     }
   }
 
-  /** Reactive re-mint (401 from `fetch()`, or the failure-retry timer) — skips validation since the current token is already known bad. */
+  /** Reactive re-mint (401 from `fetch()`, or the failure-retry timer): skips validation since the current token is already known bad. */
   private mint(): Promise<void> {
     if (!this.registry) return Promise.resolve();
     if (this.inFlight && this.inFlightGeneration === this.generation) return this.inFlight;
@@ -772,5 +772,5 @@ export class SessionManager implements AuthenticatedFetch {
   }
 }
 
-/** The one session for the life of the app. `useSession` configures and reads this — it does not own it. */
+/** The one session for the life of the app. `useSession` configures and reads this; it does not own it. */
 export const sessionManager = new SessionManager();

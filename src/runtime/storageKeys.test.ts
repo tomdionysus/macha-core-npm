@@ -18,8 +18,8 @@ import {
  * key held a value or not.
  *
  * Reads count as much as writes here. A host enumerating storage has to
- * recognise a key this package *reads* — the legacy Continue Watching key is
- * read and deliberately never deleted — or it either leaves the value behind
+ * recognise a key this package *reads* (the legacy Continue Watching key is
+ * read and deliberately never deleted) or it either leaves the value behind
  * when clearing Macha's data or, worse, reports it as somebody else's.
  */
 function recordingStorage(): { storage: StorageLike; touched: Set<string> } {
@@ -51,7 +51,7 @@ function recordingStorage(): { storage: StorageLike; touched: Set<string> } {
  * **Add a component here when you add one that persists.** That is the whole
  * mechanism: the assertion below cannot know about a store nobody drove, so a
  * new store with an unregistered key is caught only if it is listed here. This
- * is deliberately a list of constructions rather than a list of key strings —
+ * is deliberately a list of constructions rather than a list of key strings:
  * a list of strings copied from `storageKeys.ts` would agree with it by
  * construction and prove nothing.
  */
@@ -149,7 +149,7 @@ describe('isMachaStorageKey', () => {
 
   it('rejects a host key that merely looks like ours', () => {
     // The phone client namespaces its own keys `macha.`, so this is not a
-    // hypothetical collision — it is the arrangement that exists today.
+    // hypothetical collision; it is the arrangement that exists today.
     expect(isMachaStorageKey('macha.theme')).toBe(false);
     expect(isMachaStorageKey('macha.session.v1.extra')).toBe(false);
     expect(isMachaStorageKey('some-other-app-key')).toBe(false);
@@ -164,7 +164,7 @@ describe("the boundary between core's keys and a host's own", () => {
    * core's doc comment said "use this rather than a prefix test of your own",
    * which reads as an instruction to replace a host's own startup hydration
    * filter. The phone client checked what that would cost by making the
-   * change rather than reasoning about it — its filter covers a strictly
+   * change rather than reasoning about it: its filter covers a strictly
    * larger set, and substituting this function drops every key below.
    *
    * `macha.clientId.v1` is the one that matters most: it is the namespace the

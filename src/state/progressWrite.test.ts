@@ -10,7 +10,7 @@ const playing = { paused: false, durationMs: 7_200_000 };
 const paused = { paused: true, durationMs: 7_200_000 };
 
 /**
- * When a resume point is written, and — as much — when it is not.
+ * When a resume point is written, and, as much, when it is not.
  *
  * Ported from the Android TV client's own suite along with the rule, so the
  * cases that found its two defects on the set are the ones that pin it here.
@@ -23,7 +23,7 @@ describe('when a resume point is due', () => {
   });
 
   it('writes once for a pause, not on every snapshot while held there', () => {
-    // Position is not moving, so a second write records nothing new — and this
+    // Position is not moving, so a second write records nothing new, and this
     // store is backed by AsyncStorage, where a write per playback event on a
     // paused film is pure churn.
     expect(progressWriteDue({ paused: true, wroteAtMs: 1_000, attemptedAtMs: 0 }, paused, 2_000, INTERVAL, TICK)).toBeUndefined();
@@ -97,7 +97,7 @@ describe('after an attempted write', () => {
   it('leaves the clock alone when core declined the entry', () => {
     // Core stores nothing below 30 s of position and reports it by returning a
     // list the entry is absent from. Advancing here pushed the next attempt a
-    // full interval out, so a film killed at seventy seconds recorded nothing —
+    // full interval out, so a film killed at seventy seconds recorded nothing:
     // measured on the set, 2026-09-22.
     expect(nextWatermark({ paused: false, wroteAtMs: 10, attemptedAtMs: 0 }, false, 5_000, false)).toEqual({
       paused: false,
@@ -116,8 +116,8 @@ describe('after an attempted write', () => {
  * Retrying a declined write must not become a storage write four times a
  * second.
  *
- * The Android TV client's player sends playback snapshots at 4 Hz. A declined write leaves the clock where it was —
- * deliberately, so the next attempt is soon — which without a floor means every
+ * The Android TV client's player sends playback snapshots at 4 Hz. A declined write leaves the clock where it was
+ * (deliberately, so the next attempt is soon), which without a floor means every
  * one of those snapshots retries for the whole of the first 30 s of a film, on
  * a set whose load average reached 30 during a system update.
  */

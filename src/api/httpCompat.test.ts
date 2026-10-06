@@ -15,8 +15,8 @@ describe('fetchWithTimeout', () => {
   it('abandons a hung request once the timeout elapses, as a retryable connection failure', async () => {
     vi.useFakeTimers();
     try {
-      // A real fetch() rejects with an AbortError once its own signal aborts
-      // — this helper relies on that contract (unlike ClusterCatalogueApi's
+      // A real fetch() rejects with an AbortError once its own signal aborts;
+      // this helper relies on that contract (unlike ClusterCatalogueApi's
       // artworkAttempt, which settles a request on its own even when the
       // underlying implementation ignores the signal entirely).
       const fetcher = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
@@ -41,7 +41,7 @@ describe('fetchWithTimeout', () => {
       });
     });
 
-    // The composed signal (not the caller's own object — no `AbortSignal.any`
+    // The composed signal (not the caller's own object; no `AbortSignal.any`
     // on the legacy browsers this app also targets) is what fetch sees;
     // aborting the caller's controller must still reach it, forwarded, and
     // must stay a genuine AbortError so `retryableEndpointFailure` keeps

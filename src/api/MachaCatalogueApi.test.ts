@@ -53,7 +53,7 @@ describe('MachaCatalogueApi', () => {
   it('names the server when a success body is not the envelope, and stays retryable', async () => {
     // `response.items.map` on a 200 without `items` threw `TypeError` at the
     // call site, and `retryableEndpointFailure` reads a bare `TypeError` as a
-    // transport failure — so a schema mismatch cooled the node down as though
+    // transport failure, so a schema mismatch cooled the node down as though
     // it had been unreachable, and the caller was told about `.map`.
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ results: [item] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -246,7 +246,7 @@ describe('MachaCatalogueApi', () => {
 
     // The bounded-timeout wrapper composes the caller's signal into its own
     // AbortController rather than passing the same object through (no
-    // `AbortSignal.any` on the legacy browsers this app also targets) — so
+    // `AbortSignal.any` on the legacy browsers this app also targets), so
     // cancelling the caller's controller must still abort whatever signal
     // fetch actually received, even though it is no longer the same object.
     const request = api.artwork('abcd', controller.signal);
@@ -312,8 +312,8 @@ describe('artwork URL absolutization', () => {
 
   it('refuses a relative artwork URL when no node base and no host origin can absolutize it', async () => {
     // Silently returning the relative path lets it resolve against whatever
-    // the presentation layer's own origin happens to be — on React Native,
-    // nothing at all — and fails later with no evidence of why.
+    // the presentation layer's own origin happens to be (on React Native,
+    // nothing at all) and fails later with no evidence of why.
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [withArtwork] }));
     vi.stubGlobal('fetch', fetchMock);
 

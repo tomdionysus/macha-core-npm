@@ -1,6 +1,6 @@
 # Async storage on a synchronous interface
 
-The core's `StorageLike` is **synchronous** — `getItem` / `setItem` / `removeItem`, no promises. On the web that is `localStorage`. React Native's `AsyncStorage` is not, so a native host bridges the two.
+The core's `StorageLike` is **synchronous**: `getItem` / `setItem` / `removeItem`, no promises. On the web that is `localStorage`. React Native's `AsyncStorage` is not, so a native host bridges the two.
 
 The interface will not change: making it async would push `await` into every state read in the core, most of which sit on paths that must not yield. The bridge belongs in the host, and it is small.
 
@@ -48,7 +48,7 @@ Every store in the core ports as-is on top of this.
 
 **The serialized write chain matters more than it looks.** Without it, two writes to the same key can land in the wrong order and the losing value survives the restart.
 
-**Reads are cheap; writes are not free.** A read is a `Map` lookup; a write schedules device I/O. Anything updating at media or network frequency — a download progress callback, a playback position tick — must stay in memory and persist on a boundary such as pause, completion or backgrounding. Writing through this interface per chunk is enough to starve a multi-megabyte transfer into stalling.
+**Reads are cheap; writes are not free.** A read is a `Map` lookup; a write schedules device I/O. Anything updating at media or network frequency (a download progress callback, a playback position tick) must stay in memory and persist on a boundary such as pause, completion or backgrounding. Writing through this interface per chunk is enough to starve a multi-megabyte transfer into stalling.
 
 ## Ephemeral storage
 
@@ -56,4 +56,4 @@ Every store in the core ports as-is on top of this.
 
 ## Key prefixes
 
-The core's persisted keys are enumerated in `MACHA_STORAGE_KEY_PREFIXES`. A host that hydrates selectively, or caches by prefix, reads that list rather than hardcoding `macha.` — a key that is never hydrated is indistinguishable from one that was never written, and read-time migrations silently carry nothing across.
+The core's persisted keys are enumerated in `MACHA_STORAGE_KEY_PREFIXES`. A host that hydrates selectively, or caches by prefix, reads that list rather than hardcoding `macha.`; a key that is never hydrated is indistinguishable from one that was never written, and read-time migrations silently carry nothing across.

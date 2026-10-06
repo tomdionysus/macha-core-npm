@@ -10,7 +10,7 @@ import type { EndpointCandidate, EndpointRegistry } from '../cluster/EndpointReg
  * **There is no separate anonymous session type, and there was never a reason
  * for one.** This carried the name `Session` while being the type of
  * every session in the package, including one minted from a username and
- * password — and that one wrong word produced four defects: the cache dropped
+ * password, and that one wrong word produced four defects: the cache dropped
  * `username` and `roles` on the way back in (why keep them, for anonymous?),
  * the token was persisted to tab-lifetime storage (an anonymous session dies
  * with the tab), and a 401 re-minted and adopted whatever came back without
@@ -29,7 +29,7 @@ export interface Session {
    * The account this session belongs to, where the server names it.
    *
    * Absent from a node that has sessions but not yet accounts, which is not
-   * the same as an unnamed user — the caller has to be able to tell "the
+   * the same as an unnamed user: the caller has to be able to tell "the
    * server did not say" from "the server said anonymous".
    */
   username?: string;
@@ -37,7 +37,7 @@ export interface Session {
    * What this session may do, as the minting node resolved it.
    *
    * Absent means the node did not say, which is not the same as an empty
-   * array — that is a session the cluster deliberately granted nothing, and
+   * array: that is a session the cluster deliberately granted nothing, and
    * the two need opposite handling. See `sessionPermits` and
    * `sessionLockedOut`.
    *
@@ -63,7 +63,7 @@ export class SessionAuthError extends Error {
      *
      * Load-bearing rather than diagnostic: `anonymous_disabled` is how a
      * deployment says "this cluster requires an account", and a client that
-     * cannot read it has to guess from an empty token — which reads exactly
+     * cannot read it has to guess from an empty token, which reads exactly
      * the same as a node being unreachable. Two clients built a login wall on
      * that guess and removed it again, because telling a viewer who is merely
      * away from home that they need an account is the worst version of being
@@ -87,7 +87,7 @@ export class SessionAuthError extends Error {
  * whether the credentials are right.
  *
  * Whether a refusal is *final* is a separate question, and it depends on what
- * was asked — see `mintSessionAnyNode`. This only says the node
+ * was asked; see `mintSessionAnyNode`. This only says the node
  * answered and said no.
  */
 export function isSessionRefusal(error: unknown): boolean {
@@ -96,20 +96,20 @@ export function isSessionRefusal(error: unknown): boolean {
 }
 
 /**
- * `POST /api/v1/session` — the one endpoint that takes no Authorization header.
+ * `POST /api/v1/session`: the one endpoint that takes no Authorization header.
  *
  * Credentials are optional because there is no such thing as an
  * unauthenticated session: omitting them authenticates the `anonymous` user
  * and supplying them authenticates whoever they name. Same route, same
- * response, one lifecycle — which is why signing in does not need a parallel
+ * response, one lifecycle, which is why signing in does not need a parallel
  * set of everything below. Credentials are the only difference between the
  * two calls, and they are an argument rather than a code path.
  */
 export async function mintSession(baseUrl: string, credentials?: SessionCredentials): Promise<Session> {
   const url = `${normalizeBaseUrl(baseUrl)}/api/v1/session`;
   // Bounded here, because nothing above can bound it. Every request in the
-  // application waits on a mint — `SessionManager.fetch` blocks on `inFlight`
-  // through bootstrap and through a 401 re-mint — and a `fetchWithTimeout`
+  // application waits on a mint (`SessionManager.fetch` blocks on `inFlight`
+  // through bootstrap and through a 401 re-mint) and a `fetchWithTimeout`
   // wrapped around one of those callers composes a controller this request
   // never sees. Unbounded, a node that died without an RST leaves a half-open
   // connection that costs the OS timeout, and a cold start pays that per
@@ -130,7 +130,7 @@ export async function mintSession(baseUrl: string, credentials?: SessionCredenti
   if (!response.ok) {
     // Through the envelope parser, not off the top level. Macha answers
     // `{ error: { code, message } }`, so reading `record.message` found
-    // nothing and every refusal degraded to status plus statusText — and
+    // nothing and every refusal degraded to status plus statusText, and
     // `statusText` is empty on React Native's fetch, so a wrong password
     // reached the viewer as "Could not start a session: 401" while the
     // server's own sentence, and the code the client needed, were both in the
@@ -213,7 +213,7 @@ export async function mintSessionAnyNode(registry: EndpointRegistry, credentials
         // A refusal is not a fault. A node that answers "those credentials are
         // wrong" has done its job perfectly, and marking it unhealthy for
         // saying so would let one mistyped password walk the whole cluster and
-        // mark every node failed — degrading endpoint ranking and playback
+        // mark every node failed, degrading endpoint ranking and playback
         // failover because somebody fumbled a login.
         registry.recordSuccess(endpoint.id);
         // Whether that refusal settles the question depends on what was asked.
@@ -223,7 +223,7 @@ export async function mintSessionAnyNode(registry: EndpointRegistry, credentials
         // be told the same thing. But an *anonymous* mint offers no
         // credentials: a 403 there means "this node does not allow anonymous",
         // which is that node's configuration and nothing else's. Observed
-        // mid-deployment by the Android TV client — one stale node answered
+        // mid-deployment by the Android TV client: one stale node answered
         // 403 while the rest would have minted happily, and stopping at its
         // opinion denied a session the cluster was willing to grant. Taking
         // one node's word for the cluster is the thing this package exists
@@ -240,14 +240,14 @@ export async function mintSessionAnyNode(registry: EndpointRegistry, credentials
 }
 
 /**
- * `DELETE /api/v1/session` — end this session server-side.
+ * `DELETE /api/v1/session`: end this session server-side.
  *
  * **Dropping a token locally is not a logout.** The session stays valid on
  * every node until it expires, and anyone holding the token keeps the access
  * it grants. This is what actually revokes it, and the revocation propagates.
  *
  * A mutation, so it executes **once**: the walk continues only while nodes
- * fail to *answer*. A node that answers at all has taken the request — and a
+ * fail to *answer*. A node that answers at all has taken the request, and a
  * refusal is an answer, because a token the cluster will not accept is a
  * token that no longer needs revoking. Retrying elsewhere after an answer
  * could only revoke something already gone, while masking the first attempt
@@ -287,20 +287,20 @@ export async function revokeSessionAnyNode(registry: EndpointRegistry, token: st
  *
  * Minting a brand new session does real server-side work (creating a session
  * record); checking that an existing token still authenticates is far cheaper
- * and, as a side effect, proves the node actually answers — so a warm reload
+ * and, as a side effect, proves the node actually answers, so a warm reload
  * with a live cached token never pays for a full mint (Law 2: Thou Shalt Not
  * Make The Viewer Wait, `docs/principles-and-laws.md`).
  *
  * It asks the session about itself, and deliberately not a catalogue or
- * status route. Under the roles model those need a role — `media_viewer` for
- * the catalogue, `view_status` for cluster status from server 0.38.5 — so a
+ * status route. Under the roles model those need a role (`media_viewer` for
+ * the catalogue, `view_status` for cluster status from server 0.38.5), so a
  * session the cluster granted nothing would have every cached token
  * classified dead on every reload and re-mint forever, having been told
  * nothing about the token at all. A session's own record is the one thing it
  * can always ask about, because the answer is about the asker.
  *
  * Confirmed with the server session: it is the one route explicitly exempt
- * from the role gate, on that same reasoning — needing a role to find out
+ * from the role gate, on that same reasoning: needing a role to find out
  * which roles you have is not a thing that can work.
  *
  * It also answers a stronger question than "is this token well formed". The
@@ -311,7 +311,7 @@ export async function revokeSessionAnyNode(registry: EndpointRegistry, token: st
  *
  * The corollary matters more than it looks: a 401 here does **not** only mean
  * "expired". It can mean the account changed underneath the token. The
- * response is the same either way — mint fresh — but a caller that reports
+ * response is the same either way (mint fresh), but a caller that reports
  * the reason to a viewer must not claim the session timed out.
  */
 export async function validateSession(baseUrl: string, token: string, signal?: AbortSignal): Promise<CurrentSession | undefined> {
@@ -324,7 +324,7 @@ export async function validateSession(baseUrl: string, token: string, signal?: A
   );
   // A reachable node that rejects the token is a definitive, cluster-wide
   // answer (sessions are valid cluster-wide, so a rejection is not
-  // node-specific) — no point asking another node the same question.
+  // node-specific): no point asking another node the same question.
   //
   // 403 counts too, and that is not hypothetical: a rolling upgrade leaves
   // sessions minted by the older build carrying a role vocabulary the new one
@@ -343,7 +343,7 @@ export async function validateSession(baseUrl: string, token: string, signal?: A
   // carries the answer to a second question nothing else was asking: what the
   // session may do. Re-reading roles was the one part of the session
   // lifecycle living outside this module, and a client that fetched them once
-  // per API identity never re-asked — failover changes the preferred endpoint
+  // per API identity never re-asked: failover changes the preferred endpoint
   // inside the registry without changing that identity, so one transient
   // failure left roles unknown for a whole run.
   const record = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : undefined;

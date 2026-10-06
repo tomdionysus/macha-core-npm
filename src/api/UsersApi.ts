@@ -12,7 +12,7 @@ export type UserRole = 'media_viewer' | 'importer' | 'manager' | 'manage_users' 
 /**
  * Declared as a record so the compiler enforces completeness. A role added to
  * `UserRole` and forgotten here would exist in the type and be invisible in
- * every client's role picker — a silent failure four clients would each have
+ * every client's role picker: a silent failure four clients would each have
  * to discover separately. Key order is the listing order; insertion order is
  * guaranteed for string keys.
  */
@@ -27,13 +27,13 @@ const ROLE_LISTING: Record<UserRole, true> = {
 export const USER_ROLES: readonly UserRole[] = Object.keys(ROLE_LISTING) as UserRole[];
 
 /**
- * `view_status` gates the cluster and node status screens — `/api/v1/status`
+ * `view_status` gates the cluster and node status screens: `/api/v1/status`
  * and `/api/v1/status/*` from server 0.38.5.
  *
  * It gates the *diagnostic* view: the node roster, per-node capacity, and who
  * is being asked for what. It does not gate liveness. Whether a node is alive
  * is answered by `/api/v1/health`, which needs no session and no role, and
- * that is the route this package probes — so nothing about health, ranking or
+ * that is the route this package probes, so nothing about health, ranking or
  * failover depends on a viewer holding this.
  *
  * Every existing capability implies it, resolved at mint, so no account that
@@ -77,7 +77,7 @@ export interface MachaUser {
   /**
    * Bumped by a password or role change. Every session minted before the bump
    * stops validating cluster-wide, which is why a role change signs the user
-   * out — a demotion that took up to thirty days to bite would not be a
+   * out; a demotion that took up to thirty days to bite would not be a
    * demotion.
    */
   credential_generation: number;
@@ -104,7 +104,7 @@ export interface PasswordPolicy {
  *
  * This is the whoami. It needs a valid token and **no role at all**, which is
  * what makes it usable both for validating a cached session on reload and as
- * a health probe — including on a node whose catalogue is still recovering
+ * a health probe, including on a node whose catalogue is still recovering
  * and would answer anything else with a 503.
  */
 export interface CurrentSession {
@@ -142,8 +142,8 @@ export interface CurrentSession {
 /**
  * Whether this session may do the thing `role` gates.
  *
- * **Unknown is not none.** A session record that has not answered — still in
- * flight, the node unreachable, or a node too old to have the route — must
+ * **Unknown is not none.** A session record that has not answered (still in
+ * flight, the node unreachable, or a node too old to have the route) must
  * never read as a session with no privileges, or a client's navigation empties
  * for everyone the moment one node is slow. The failure of guessing wrong in
  * the permissive direction is a control that errors when pressed; the failure
@@ -170,7 +170,7 @@ export function sessionPermits(roles: readonly UserRole[] | undefined, role: Use
  * its operator intended.
  *
  * Distinct from `undefined`, which is the unknown state and is never locked
- * out — see `sessionPermits`. The distinction is the whole point: a client
+ * out; see `sessionPermits`. The distinction is the whole point: a client
  * that collapses them puts a login wall in front of a viewer whose only
  * problem is a slow node, and one of the four clients built exactly that and
  * removed it before it shipped.
@@ -204,7 +204,7 @@ export interface UsersApi {
   /**
    * Change your own password.
    *
-   * Accepts a password and nothing else — a roles change here would be an
+   * Accepts a password and nothing else: a roles change here would be an
    * escalation route open to every viewer. Returns a fresh token, because the
    * change invalidates the session that made it and being signed out by your
    * own password change is a bug, not a security measure.
@@ -227,8 +227,8 @@ export interface UsersApi {
  *
  * Fixed rather than configurable: it is one of the two accounts the server
  * refuses to rename, which is what makes comparing against it safe. Nothing
- * about its *session* is special — it carries roles and is validated like any
- * other — but a viewer holding one has not chosen to be anyone, so the UI
+ * about its *session* is special (it carries roles and is validated like any
+ * other), but a viewer holding one has not chosen to be anyone, so the UI
  * offers them a way to sign in rather than an account to manage.
  */
 export const ANONYMOUS_USERNAME = 'anonymous';
@@ -237,7 +237,7 @@ export const ANONYMOUS_USERNAME = 'anonymous';
  * Whether this session represents a person who has signed in.
  *
  * False for the anonymous account, and false where the server names no user
- * at all — an older node with sessions but no accounts cannot say who this
+ * at all: an older node with sessions but no accounts cannot say who this
  * is, and offering "change your password" for a user it does not model would
  * be a promise nothing can keep.
  */

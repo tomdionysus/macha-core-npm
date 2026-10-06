@@ -68,8 +68,8 @@ export class ClusterStatusRouter implements ClusterStatusApi {
    * cluster membership and load, so routing it as normal work would let
    * bookkeeping decide which node the viewer's media flows through: one status
    * timeout un-sticks the preferred endpoint, one status success on another
-   * node steals preference from it. Health evidence is still recorded — a node
-   * that cannot answer is still in trouble — through the probe variants that
+   * node steals preference from it. Health evidence is still recorded (a node
+   * that cannot answer is still in trouble) through the probe variants that
    * update health without touching authority.
    */
   private async read<T>(operation: (api: MachaClusterStatusApi) => Promise<T>): Promise<T> {

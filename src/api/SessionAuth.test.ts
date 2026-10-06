@@ -5,7 +5,7 @@ import { DEFAULT_REQUEST_TIMEOUT_MS } from './httpCompat.js';
 import { MachaConnectionError } from './serverConnection.js';
 
 /**
- * A node that accepted the connection and then said nothing — the half-open
+ * A node that accepted the connection and then said nothing: the half-open
  * socket a machine that died without an RST leaves behind. It answers the
  * abort and nothing else, which is what a real fetch() does.
  */
@@ -122,7 +122,7 @@ describe('a node refusing to mint', () => {
   it('carries the server\'s own sentence and machine code, not the status line', async () => {
     // Macha answers `{ error: { code, message } }`. Read off the top level,
     // `record.message` found nothing and every refusal degraded to status
-    // plus statusText — and statusText is empty on React Native's fetch, so a
+    // plus statusText, and statusText is empty on React Native's fetch, so a
     // wrong password reached a viewer on a device as "Could not start a
     // session: 401" while the server's own sentence sat in the body.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
@@ -141,7 +141,7 @@ describe('a node refusing to mint', () => {
     // A credential refusal is checked against a replicated table and every
     // node reaches the same verdict. An anonymous refusal is not: 403 there
     // means "this node does not allow anonymous", which is that node's own
-    // configuration. Seen mid-deployment by the Android TV client — one stale
+    // configuration. Seen mid-deployment by the Android TV client: one stale
     // node answered 403 while the rest would have minted happily, and
     // stopping at its opinion denied a session the cluster was willing to
     // grant.

@@ -1,7 +1,7 @@
 # Driving the resolver directly
 
 `ClusterPlaybackResolver` is a supported entry point. `PlaybackCoordinator` is
-built on it, and a host may use either — but almost every other document here
+built on it, and a host may use either, but almost every other document here
 is written as though the coordinator is there, and several of its rules stop
 being true when it is not. This says which.
 
@@ -23,7 +23,7 @@ for you.
 
 This one has been got wrong in the field rather than in theory. A client
 scrubbed to 1:44:35, the node built a generation at `seek_ms 6275725`, and its
-progress bar read 0:13 — the honest generation-local position of a generation
+progress bar read 0:13, the honest generation-local position of a generation
 that starts at 1:44:22. Direct play hid it, because a direct source starts at
 zero and the two timelines coincide.
 
@@ -38,9 +38,9 @@ replacement it promotes, and every session left behind by a process that died.
 An abandoned session holds its node's transcode entitlement and counts against
 the per-account cap on that node until the node reaps it.
 
-`stop()` will act on a session id even when this resolver has no record of it —
-core mints `${endpoint.id}::${nodeSessionId}` and recovers the node from the id
-— so a host that persists the ids it was handed can close them after a restart.
+`stop()` will act on a session id even when this resolver has no record of it
+(core mints `${endpoint.id}::${nodeSessionId}` and recovers the node from the id),
+so a host that persists the ids it was handed can close them after a restart.
 `sessionAlive()` recovers the same way, so an orphan can be asked about before
 it is closed. An untracked close never throws and never charges a node, because
 it cannot tell a session abandoned deliberately from one left by a crash.
@@ -56,8 +56,8 @@ Classify with the exported accessors rather than by hand; the package README's
 this entry point.
 
 **Standbys and promotion.** `prepareAlternate` builds one and
-`alternateRecoveryWindowMs` says how long it is worth holding. Promoting it —
-and releasing what it replaces — is the host's.
+`alternateRecoveryWindowMs` says how long it is worth holding. Promoting it,
+and releasing what it replaces, is the host's.
 
 ## Rules that assume the coordinator
 

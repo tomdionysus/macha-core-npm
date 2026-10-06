@@ -62,7 +62,7 @@ export function machaStorageKeyClientId(key: string): string | undefined {
  * Retired and deliberately absent: `macha.volume.v1.`. `0.11.0` removed
  * `VolumeStore`, so core neither writes nor reads it, and this list means the
  * keys core owns *today*. An older build's value is orphaned on devices that
- * ran one — which costs nothing, because every install is a tester's.
+ * ran one, which costs nothing, because every install is a tester's.
  * Contrast `macha-client-progress:` below, which stays because core still
  * **reads** it.
  */
@@ -115,7 +115,7 @@ export const MACHA_STORAGE_KEY_PREFIXES = [
 
 /**
  * Written and deleted immediately at startup to find out whether a store
- * accepts writes at all — Safari in private mode and a WebView with site data
+ * accepts writes at all: Safari in private mode and a WebView with site data
  * disabled both expose the object and throw on write. Listed so a host that
  * enumerates keys is not surprised by it; it never persists.
  */
@@ -128,20 +128,20 @@ export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
  * conventions are covered, the probe key is included, and a key added here in
  * a later release starts being recognised without the host changing anything.
  *
- * **It does not answer "is this key Macha's".** It cannot — it knows only what
+ * **It does not answer "is this key Macha's".** It cannot; it knows only what
  * core owns, and a host owns more. **Never substitute it for the filter that
  * decides which keys your own application restores at startup.** The phone
  * client checked what that would cost by making the change rather than
  * reasoning about it: its `owned()` set is strictly larger, and this function
  * returns false for every one of `macha.clientId.v1`, `macha.endpoints.v1`,
  * `macha.discoveredEndpoints.v1`, `macha.downloads.v1.`, `macha.musicLibrary.v1.`
- * and `macha.progress.v1:` — none of which are core's.
+ * and `macha.progress.v1:`, none of which are core's.
  *
  * The worst of those is `macha.clientId.v1`, because it is the namespace the
  * per-client stores are keyed under: drop it and the client id is fresh on
  * every cold start, orphaning Continue Watching, the queue, the playlists and
  * the music library at once. Silent, and the same shape as the sign-out
- * incident described at the top of this file — which is the point. This
+ * incident described at the top of this file, which is the point. This
  * function exists because of that incident and could, read as a blanket
  * instruction, cause a larger version of it.
  *
@@ -149,12 +149,12 @@ export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
  * question really is "is this one of yours".
  *
  * **And one use that is not about clearing at all.** A host that backs
- * `MachaHost.storage` with a cache hydrated by prefix — rather than reading
- * straight through — must load every key here *before* core reads anything,
+ * `MachaHost.storage` with a cache hydrated by prefix, rather than reading
+ * straight through, must load every key here *before* core reads anything,
  * retired keys included. Core cannot distinguish "your cache never loaded
  * this" from "this key is absent", so a read-time migration against such a
- * host silently carries nothing across. A coupling rather than a live risk —
- * this package has no users — but it holds for migrations not yet written.
+ * host silently carries nothing across. A coupling rather than a live risk
+ * (this package has no users), but it holds for migrations not yet written.
  * See the note on `MachaHost.storage`.
  */
 export function isMachaStorageKey(key: string): boolean {

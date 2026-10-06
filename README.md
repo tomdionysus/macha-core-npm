@@ -4,15 +4,15 @@
 
 The platform-independent half of a Macha client: everything a client does that is not presentation.
 
-Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on — a React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds what is genuinely the same on all of them, so they cannot drift apart.
+Macha is a self-hosted media server that runs as a cluster of nodes. This package is the shared client library four apps are built on: a React web/TV app, its Samsung Tizen build, a React Native phone app and a React Native Android TV app. It holds what is genuinely the same on all of them, so they cannot drift apart.
 
 | Area | What it owns |
 | --- | --- |
-| `api/` | The Macha REST families — catalogue, media, manage, acquisition, users, server and cluster status — plus HTTP compatibility, error-envelope decoding and the session lifecycle. |
+| `api/` | The Macha REST families (catalogue, media, manage, acquisition, users, server and cluster status), plus HTTP compatibility, error-envelope decoding and the session lifecycle. |
 | `cluster/` | The endpoint registry, evidence-ranked routing, failure classification, and the bounded health and discovery loop. |
 | `playback/` | Deciding how to play something, resolving a session against the cluster, coordinating transport and failover, and the stall and start watchdogs. |
 | `state/` | Continue Watching, the play queue, playlists and volume, over an injected synchronous storage. |
-| `runtime/` | The host environment — storage, clock, id generator, base origin — the connection-state bus, and client configuration. |
+| `runtime/` | The host environment (storage, clock, id generator, base origin), the connection-state bus, and client configuration. |
 | `platform/` | The `Platform` and `Player` interfaces a host implements. |
 
 - **The server chooses nothing.** It reports what the media is and performs what it is told; there is no `auto`. The client decides whether to play a file as it is, repackage it, or re-encode it, and this package makes that decision once for every client. See [Choosing how to play something](docs/choosing-playback.md).
@@ -54,7 +54,7 @@ const configuration = new MachaClientConfiguration({
 });
 ```
 
-`storage` is a `StorageLike`: `getItem` / `setItem` / `removeItem`, all **synchronous**. React Native's `AsyncStorage` is not, so a native host hydrates it into memory at start and writes through behind that interface — see [Async storage on a synchronous interface](docs/async-storage.md).
+`storage` is a `StorageLike`: `getItem` / `setItem` / `removeItem`, all **synchronous**. React Native's `AsyncStorage` is not, so a native host hydrates it into memory at start and writes through behind that interface; see [Async storage on a synchronous interface](docs/async-storage.md).
 
 Then bring up the session, the registry and the services over them:
 
@@ -80,7 +80,7 @@ new EndpointHealthMonitor({
 }).start();
 ```
 
-Memoize `createMachaServices` on `endpointRegistry` and `auth`. Rebuilding services mid-playback orphans the active generation's node ownership, and a token refresh is never a reason to — every service authenticates through `auth` at request time.
+Memoize `createMachaServices` on `endpointRegistry` and `auth`. Rebuilding services mid-playback orphans the active generation's node ownership, and a token refresh is never a reason to: every service authenticates through `auth` at request time.
 
 `EndpointHealthMonitor` feeds routing its evidence: endpoint ranking, sibling discovery, and the per-node playback budgets. Without it running, ranking has nothing to rank on and falls back to configured order. `start()` and `stop()` bind to whatever lifecycle the host has; `stop()` is idempotent.
 
@@ -88,7 +88,7 @@ Memoize `createMachaServices` on `endpointRegistry` and `auth`. Rebuilding servi
 
 The core drives a `Player` the host implements, and never touches a media element or a native view. It decides what should be playing and from where, hands that to the player, and reasons about what comes back.
 
-`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform, and several of its contracts are not visible in the types — read [Writing a player](docs/writing-a-player.md) and start from `FakePlayer` in `@machafoundation/core/testing`.
+`Player.attach(host)` takes a `PlaybackHost`, treated as opaque: a DOM element on the web, a native view handle on React Native. Implementing a `Player` is the main cost of a new platform, and several of its contracts are not visible in the types; read [Writing a player](docs/writing-a-player.md) and start from `FakePlayer` in `@machafoundation/core/testing`.
 
 `PlaybackResolver` is an interface, and every consumer takes the interface rather than a concrete class, so a resolver can be composed in front of another to answer what it can and delegate the rest.
 
@@ -96,7 +96,7 @@ The core drives a `Player` the host implements, and never touches a media elemen
 
 **Core writes no viewer text.** Every word a viewer sees is the host's. Core supplies codes, kinds and data to word it from, and passes the server's own sentences through untouched. `playbackFailureCode` and `playbackFailureStatus` walk the cause chain for what the server said; `isAccountSessionLimit` names the one refusal a viewer can genuinely act on; `playbackFailureDetail` returns the server's own sentence, where it gave one. API errors carry the same as `detail`, and snapshot notices are codes.
 
-**Do not render `.message`.** It is a log line, and by the time a playback failure has crossed `endpointFailure` it reads *"Macha endpoint https://node.example failed: Macha playback request failed: …"* — two of core's envelopes and a node address, in front of someone trying to watch a film. Three clients displayed exactly that before these existed.
+**Do not render `.message`.** It is a log line, and by the time a playback failure has crossed `endpointFailure` it reads *"Macha endpoint https://node.example failed: Macha playback request failed: …"*: two of core's envelopes and a node address, in front of someone trying to watch a film. Three clients displayed exactly that before these existed.
 
 Do not reconstruct it either. Stripping core's prefixes means matching on core's wording, which goes quiet the first time one is reworded. Key on the code; `playbackFailureDetail` returning `undefined` means the server said nothing in words, so write your own rather than falling back.
 
@@ -115,7 +115,7 @@ Presentation, navigation, React, the web `hls.js` player and any Service Worker 
 
 The last two cannot be decided here and are invisible when wrong. A session nobody closed goes on counting against the node's per-account cap until `session_idle` reaps it, half an hour later, and on a one-slot node an abandoned transcode is felt by the *next* viewer as a `429` with nothing pointing at the client responsible. Server 0.48.1 releases the transcode entitlement after a few minutes of no stream activity, which bounds that half of it; the session record is not bounded, and closing it is the host's.
 
-`pagehide` is right for a browser tab and useless on a television, which suspends without firing it, so a clean exit cannot be the only mechanism. What makes the rest recoverable is that a session id states its own node — core mints `${endpoint.id}::${nodeSessionId}` — so `stop()` acts on an id this process never created, and `sessionAlive()` will say whether it is worth closing. A host that persists the ids it was handed can reconcile them at start; one that does not is relying on the node's timers.
+`pagehide` is right for a browser tab and useless on a television, which suspends without firing it, so a clean exit cannot be the only mechanism. What makes the rest recoverable is that a session id states its own node (core mints `${endpoint.id}::${nodeSessionId}`), so `stop()` acts on an id this process never created, and `sessionAlive()` will say whether it is worth closing. A host that persists the ids it was handed can reconcile them at start; one that does not is relying on the node's timers.
 
 The closing `DELETE` rides on `keepalive`, which is browser-only, so on a native host the exit path alone is best-effort. Reconciliation at start is what closes that gap rather than a better exit hook.
 
@@ -150,7 +150,7 @@ Two conventions to keep:
 - **Timing defaults carry their derivation.** Request timeouts, retry cooldowns, throughput thresholds and standby windows each state in a comment what they are derived from. Change the derivation, not the number.
 - **Deadlines that belong to a node are read from that node.** `startup_timeout_ms` and `segment_timeout_ms` arrive per endpoint on the cluster status payload; the compiled-in constants in `streamProtocol.ts` are the answer only for a node too old to report them. Do not add a new private copy of a server figure.
 
-Releases are cut from `develop`: bump the version with `npm version <x.y.z> --no-git-tag-version` in its own commit, which also stamps the version under this README's title, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last — `dist:check` compares mtimes, and a branch switch rewrites them.
+Releases are cut from `develop`: bump the version with `npm version <x.y.z> --no-git-tag-version` in its own commit, which also stamps the version under this README's title, merge to `main`, annotate a bare-semver tag (`0.14.0`, never `v0.14.0`), push, then `git checkout develop` and build last: `dist:check` compares mtimes, and a branch switch rewrites them.
 
 ## Licence
 

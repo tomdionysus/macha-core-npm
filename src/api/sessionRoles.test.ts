@@ -4,8 +4,8 @@ import { sessionLockedOut, sessionPermits } from './UsersApi.js';
 describe('what a role list means', () => {
   describe('sessionPermits', () => {
     it('permits everything while the roles are unknown', () => {
-      // A session record that has not answered — still in flight, node
-      // unreachable, node too old to have the route — must not read as a
+      // A session record that has not answered (still in flight, node
+      // unreachable, node too old to have the route) must not read as a
       // session with no privileges, or a client's navigation empties for
       // everyone the moment one node is slow. Guessing permissively gives a
       // control that errors when pressed; guessing the other way gives an
@@ -39,7 +39,7 @@ describe('what a role list means', () => {
 
     it('never locks out a session whose roles are merely unknown', () => {
       // The distinction is the whole point. Collapsing it puts a login wall
-      // in front of a viewer whose only problem is a slow node — one client
+      // in front of a viewer whose only problem is a slow node; one client
       // built exactly that and removed it before it shipped.
       expect(sessionLockedOut(undefined)).toBe(false);
     });

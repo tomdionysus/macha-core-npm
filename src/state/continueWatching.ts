@@ -9,7 +9,7 @@ import { machaHost } from '../runtime/host.js';
 /**
  * Client state keys are `macha.<store>.v1.<clientId>` throughout this package.
  * Continue Watching predates that convention and until now was the one store
- * that did not follow it — hyphenated, unversioned, and separating the client
+ * that did not follow it: hyphenated, unversioned, and separating the client
  * id with a colon.
  */
 /** The name before 2026-10-05, adopted on read. */
@@ -20,7 +20,7 @@ const V1_PREFIX = 'macha.continueWatching.v1.';
  *
  * The old key is deliberately left in place rather than deleted. It costs a few
  * hundred bytes, and it is the only way back if a client is rolled back to a
- * build that still reads it — a wrong call here loses every viewer's position
+ * build that still reads it; a wrong call here loses every viewer's position
  * in everything, which is not a failure anyone reports, they simply find the
  * app has forgotten them.
  */
@@ -116,8 +116,8 @@ export class ContinueWatchingStore {
    * between mutations.
    *
    * Without this, `list()` filters, sorts and slices a fresh array on every
-   * call. A hook that subscribes and then reads memoises on the store — whose
-   * identity never changes — so the row freezes at whatever it first computed
+   * call. A hook that subscribes and then reads memoises on the store (whose
+   * identity never changes), so the row freezes at whatever it first computed
    * while the store underneath goes on changing. Code that looks correct,
    * producing a list that silently stops updating.
    */
@@ -180,7 +180,7 @@ export class ContinueWatchingStore {
    * resume affordance reading the raw value would drop someone two minutes
    * from the end of something they have already watched, and "start again" is
    * what they meant by pressing play on a finished title. The stored entry is
-   * left alone — this is a question about resuming, not about the record.
+   * left alone; this is a question about resuming, not about the record.
    */
   positionFor(itemId: string): number {
     const entry = this.entryFor(itemId);
@@ -199,7 +199,7 @@ export class ContinueWatchingStore {
    * Removes the pre-rename key as well as the current one. Clearing only the
    * current key would leave the legacy entries in place for the next `read()`
    * to adopt, and a viewer who deliberately erased their history would watch
-   * it come back — which is a worse outcome than never having offered the
+   * it come back, which is a worse outcome than never having offered the
    * button.
    */
   clearAll(): void {
@@ -225,7 +225,7 @@ export class ContinueWatchingStore {
     //
     // **That guarantee is only as strong as the storage it was handed.** A
     // host caching by prefix answers null for a key it never hydrated, which
-    // is indistinguishable here from the key being absent — so adoption
+    // is indistinguishable here from the key being absent, so adoption
     // silently carries nothing across. No device holds a pre-0.10.0 key today,
     // so this is a coupling rather than a live risk, and it is the shape that
     // matters for the next read-time migration rather than this one.
@@ -244,7 +244,7 @@ export class ContinueWatchingStore {
       const parsed: unknown = JSON.parse(value);
       // The entries too, not just the array. This was the one store that
       // checked only `Array.isArray`, so a single `null` in the list threw out
-      // of `isFinished` on every `list()` — a viewer's whole Continue Watching
+      // of `isFinished` on every `list()`: a viewer's whole Continue Watching
       // row broken until somebody cleared their history, by one bad write.
       // Bad entries are dropped rather than the list discarded: the rest of
       // the history is still true, and refusing all of it costs the viewer

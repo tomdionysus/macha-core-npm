@@ -34,7 +34,7 @@ import type {
  * The DELETE usually goes to a node that is already gone, so one attempt is
  * not a policy. Bounded rather than open-ended because the node's own
  * `session_idle` reclaims the lease after thirty minutes and this ladder only
- * has to cover a node that comes back sooner than that — roughly half a
+ * has to cover a node that comes back sooner than that, roughly half a
  * minute of it. Longer would be a timer nothing in this class can cancel.
  */
 const FAILED_SESSION_CLOSE_ATTEMPTS = 5;
@@ -56,7 +56,7 @@ interface OwnedSession {
  * The deadline abandons only the local wait: the HTTP operation is left
  * running and observed rather than cancelled, because a client-cancelled POST
  * tells the node nothing about whether it should keep the work. That is why
- * `onAbandoned` has to exist — a request left running is a request that can
+ * `onAbandoned` has to exist: a request left running is a request that can
  * still succeed, and a success nobody is waiting for is a session nobody will
  * ever close.
  */
@@ -97,8 +97,8 @@ function awaitWithEndpointDeadline<T>(
  *
  * `container` is not among a session's confirmed preferences, so a replacement
  * built from those asks for whatever the node defaults to. A set that had asked
- * for MPEG-TS is then handed fragmented MP4 by every replacement node — the one
- * carriage it cannot play — and a native player given that fetches nothing and
+ * for MPEG-TS is then handed fragmented MP4 by every replacement node, the one
+ * carriage it cannot play, and a native player given that fetches nothing and
  * reports nothing, so each silent starvation is charged to a healthy node until
  * the candidate list is empty.
  *
@@ -109,10 +109,10 @@ function awaitWithEndpointDeadline<T>(
  *
  * `PlaybackCoordinator` already restates it on the paths it owns. This is the
  * same fix one layer down, where **every** consumer passes rather than only the
- * three that drive the coordinator — a fix landing in the coordinator reaches
+ * three that drive the coordinator: a fix landing in the coordinator reaches
  * three of four clients and silently misses the fourth.
  *
- * It deliberately uses `output.container` — what the node *served* — rather
+ * It deliberately uses `output.container` (what the node *served*) rather
  * than what the instruction asked for. Those agree until they do not, and a
  * node answering with something other than what was requested is precisely the
  * case a failover is most likely to be recovering from. The replacement should
@@ -145,8 +145,8 @@ function withServedSegmentContainer(
  * A generation this resolver has no record of.
  *
  * **Typed because the bare `Error` it replaces reached a television screen.**
- * It was thrown as prose — *"Playback generation 72baee93… has no endpoint
- * provenance."* — carrying no code and no status, so `playbackFailureCode` and
+ * It was thrown as prose, *"Playback generation 72baee93… has no endpoint
+ * provenance."*, carrying no code and no status, so `playbackFailureCode` and
  * `playbackFailureStatus` both answered `undefined` and a host had nothing to
  * classify it by. It rendered verbatim, which is a sentence about core's
  * internal bookkeeping shown to somebody trying to watch a film.
@@ -156,7 +156,7 @@ function withServedSegmentContainer(
  * a handle that has been superseded. Acting on it would PATCH a generation the
  * viewer has already moved off. `stop` and `sessionAlive` recover the node
  * from the id instead, because closing or asking about a session is safe
- * whatever its state — mutating one is not.
+ * whatever its state; mutating one is not.
  *
  * `code` is what a host branches on and words for itself; core writes no
  * viewer text.
@@ -186,7 +186,7 @@ function unknownGeneration(sessionId: string): MachaPlaybackError {
  * Same media on a different node were the only questions asked, and they are
  * not enough. A standby prepared as a remux cannot replace a transcode, and
  * two transformed generations reporting different segment containers hand the
- * device carriage it may not be able to play — the exact case
+ * device carriage it may not be able to play, the exact case
  * `withServedSegmentContainer` exists for, arriving through the standby door
  * rather than the fresh-create one.
  *
@@ -275,7 +275,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     options: Pick<PlaybackRequestOptions, 'onStartProgress'> = {},
   ): Promise<PlaybackSession> {
     // Shares the exact bookkeeping PlaybackCoordinator calls explicitly for a
-    // silent (no-reload) transition — see recordEndpointFailure below — so
+    // silent (no-reload) transition, see recordEndpointFailure below, so
     // "an endpoint just failed" is recorded identically regardless of which
     // path noticed it, rather than two independent inline copies drifting.
     if (failedSession.endpoint) this.recordEndpointFailure(failedSession.endpoint.id);
@@ -308,7 +308,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * **The condition this exists for is a node reaping a paused session.**
    * `streaming.session_idle_ms` erases any session whose client has stopped
-   * asking for media, and a paused client is exactly that — see
+   * asking for media, and a paused client is exactly that; see
    * `SERVER_SESSION_IDLE_MS`. Afterwards a reaped session is indistinguishable
    * from one that never existed: the session route and the stream route both
    * answer `404 not_found`. That `404` is a statement about **one session's
@@ -316,8 +316,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * pipeline, and is the right place to ask again.
    *
    * Until this existed there was nowhere else to ask. Every terminal source
-   * error had one exit, `failover`, whose first act is `recordEndpointFailure`
-   * — so the node was charged for answering honestly, dropped from the
+   * error had one exit, `failover`, whose first act is `recordEndpointFailure`,
+   * so the node was charged for answering honestly, dropped from the
    * candidate list, and the viewer was sent to whatever remained. Observed
    * live on 2026-09-17: the session was created on es-1, es-1 was excluded for
    * the `404`, and the failure screen named fi-1, a node that had never held
@@ -326,14 +326,14 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * So: no `recordEndpointFailure`, no entry in `failedGenerationEndpoints`,
    * same endpoint, same viewer position. A failure of the **new** admission is
-   * ordinary endpoint evidence and is recorded as such — that is the node
+   * ordinary endpoint evidence and is recorded as such: that is the node
    * refusing fresh work, which is a different claim from it having forgotten
    * an old session.
    *
    * **The old session is closed before the new one is asked for, and this
    * waits for it.** `failover` does not wait, because it is going to a
-   * different node. Here the node's video transcode slot — its only one, where
-   * `max_video_transcodes` is 1 — is held by the session being replaced, so
+   * different node. Here the node's video transcode slot (its only one, where
+   * `max_video_transcodes` is 1) is held by the session being replaced, so
    * asking before releasing is asking to be refused. When the session was
    * reaped there is nothing to release and the `404` returns at once.
    *
@@ -362,7 +362,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     // `warn`, like every other step of this recovery. At `info` these two
     // were the only blind spots on a path whose other lines are all visible,
     // so a capture could not distinguish "the POST never returned" from "the
-    // POST returned and the failure is after it" — which cost the Android TV
+    // POST returned and the failure is after it", which cost the Android TV
     // client a hardware run on 2026-09-20. A regeneration is a degraded state
     // by definition; the contract says those must be visible.
     this.log.warn('generation-regenerate', {
@@ -374,7 +374,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     });
     // **Bounded, and proceeding anyway is the point.** `releaseFailedSession`
     // resolves when the first `DELETE` settles, and nothing anywhere bounds
-    // that `DELETE` — the attempt deadline wraps the `POST` in `createOn` and
+    // that `DELETE`: the attempt deadline wraps the `POST` in `createOn` and
     // nothing else. So this `await` is the one unbounded wait on the whole
     // recovery path, on a call whose own docblock says it must never be
     // awaited because "a slow node is exactly where failover fires".
@@ -390,7 +390,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
     //
     // On expiry the release continues in the background on its own ladder and
     // the create is attempted regardless. If the slot really is still held
-    // the node refuses, which throws, which fails over — bounded and visible,
+    // the node refuses, which throws, which fails over, bounded and visible,
     // and strictly better than a viewer watching a frozen frame. Same budget
     // as the create deliberately: one number for "how long core may spend on
     // this node before giving up on it".
@@ -423,8 +423,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * Normally every endpoint that has failed during this playback, so one
    * recovery does not walk back onto a node another recovery already gave up
-   * on. But that set only ever grows — it is cleared by `resolve()` and
-   * nothing else — so on a long item it eventually names every node. Two
+   * on. But that set only ever grows (it is cleared by `resolve()` and
+   * nothing else), so on a long item it eventually names every node. Two
    * nodes and a two-hour film: A blips at minute ten, B at minute ninety, the
    * candidate list is empty, and the viewer gets a bare "No untried Macha
    * playback endpoint remains" while A has been probed healthy for eighty
@@ -434,12 +434,12 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * is left in the list. "Is the list empty" only answers correctly in a two
    * node cluster: with three, one node cooling down from a failed health
    * probe keeps the list non-empty, so the recovery walks to the one endpoint
-   * that is known to be unwell, fails, and gives up — while two nodes that
+   * that is known to be unwell, fails, and gives up, while two nodes that
    * recovered an hour ago sit excluded and idle. Readiness is a question only
    * the registry can answer, because `retryAt` is a reading of its clock.
    *
    * When nothing outside the exclusion is ready, it collapses to the one
-   * endpoint that must never be chosen — the one being failed away from this
+   * endpoint that must never be chosen: the one being failed away from this
    * second. Everything else has had a cooldown, and probably a successful
    * probe, since it last misbehaved; the registry's ordering decides between
    * them and already puts anything out of cooldown ahead of anything still in
@@ -467,13 +467,13 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * Close the session being failed away from, without waiting for it.
    *
    * The decision to abandon it is made here, so closing it belongs here. A
-   * caller asked to fail over, not to end up holding two sessions — and every
+   * caller asked to fail over, not to end up holding two sessions, and every
    * consumer of `failover` has this exposure, not only the ones driving a
    * coordinator that happens to do its own superseded cleanup.
    *
    * What skipping it costs: a node counts a session against
    * `max_video_transcodes` from admission until the session record is erased,
-   * which is `session_idle` — **30 minutes** — and reclaiming the idle pipeline
+   * which is `session_idle`, **30 minutes**, and reclaiming the idle pipeline
    * at 60 s does not release it. With one slot per node, failing away from a
    * node that is alive but slow closes it to every other viewer's transcode
    * for half an hour, and the viewer who caused it is the one person who
@@ -491,7 +491,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *   against the endpoint when the DELETE throws, and the endpoint has
    *   already been charged once for this outage by `recordEndpointFailure`
    *   above. One observation was becoming a fresh record per attempt, walking
-   *   the cooldown ladder — 500 ms, 2 s, 10 s, 30 s — for a node that failed
+   *   the cooldown ladder (500 ms, 2 s, 10 s, 30 s) for a node that failed
    *   exactly once.
    * - **It does not wait for success to drop the map entry.** `stop()` deletes
    *   only on success, so a throwing DELETE left the session in `sessions`,
@@ -535,15 +535,15 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * **The ladder gives up after about 31 seconds; the node holds the slot for
    * thirty minutes.** Between those two numbers sits a session nothing will
-   * release, and core is the only party that can close it — the server cannot,
+   * release, and core is the only party that can close it: the server cannot,
    * because the node enforcing the cap is the node holding the session and it
    * considers itself perfectly reachable. It never saw a failed connection; it
    * saw requests stop arriving.
    *
    * **Measured by the web client on 2026-09-21, and it is the long strand
    * rather than the short one.** Its failover isolated the node *inside the
-   * client* — page-context `fetch` and `XMLHttpRequest` rewritten to a closed
-   * local port — so the process never died and the session map stayed intact.
+   * client* (page-context `fetch` and `XMLHttpRequest` rewritten to a closed
+   * local port), so the process never died and the session map stayed intact.
    * A process kill would have cleared the map and ended the strand; this
    * leaves a session that **was playing**, so the node's 120-second
    * unused-idle never applies and it holds one of `max_sessions` (8 on es-1,
@@ -552,7 +552,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * **Opportunistic on purpose: no timer, no polling, no subscription.** The
    * retry rides on the next successful admission against that endpoint, which
    * is free and cannot itself fail a viewer. A node core never returns to
-   * keeps its strand until the server expires it — exactly what happens today,
+   * keeps its strand until the server expires it, exactly what happens today,
    * so this is strictly better and never worse.
    */
   private rememberAbandonedRelease(endpointId: string, nodeSessionId: string, resolver: MachaPlaybackResolver): void {
@@ -573,12 +573,12 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * `{preferences, seekMs, mediaId}` and every other way into another node is
    * entered on failure, so "serve this from that node instead" had no
    * expression at all. A client that wanted it had to close the generation and
-   * start a new one, which is a visible gap — 13.2 s measured on a web client
+   * start a new one, which is a visible gap: 13.2 s measured on a web client
    * moving between fi-1 and gbni-1, against machinery built to be invisible.
    *
    * **Acquire before release, and it costs nothing to do so.** The server
-   * counts `max_sessions_per_account` per node — `sessions_held_by_locked`
-   * iterates that node's own session map — so holding the old generation while
+   * counts `max_sessions_per_account` per node (`sessions_held_by_locked`
+   * iterates that node's own session map), so holding the old generation while
    * the new one comes up does not spend an account slot twice. The one case
    * that does is moving to a node where this account already holds sessions,
    * which a caller can check first because the listing is per node too. This
@@ -588,7 +588,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * **A move is not a re-plan.** `withServedSegmentContainer` restates the
    * container the player is already consuming, and a replacement that comes
-   * back in a different mode is stopped and refused rather than returned —
+   * back in a different mode is stopped and refused rather than returned:
    * a viewer asking for a different *node* has not asked for a different
    * *transform*, and silently delivering one is how a deliberate action turns
    * into a surprise.
@@ -596,7 +596,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * Returns `undefined` when the target is the node already serving, when it
    * is not a candidate this registry knows, or when the node would not build
    * an equivalent generation. Unlike `prepareAlternate` this is not
-   * opportunistic — it is a viewer's instruction — so the error from a node
+   * opportunistic (it is a viewer's instruction), so the error from a node
    * that refuses is allowed to propagate rather than being swallowed.
    */
   async awaitProduced(session: PlaybackSession, signal?: AbortSignal): Promise<'produced' | 'gone' | 'unknown'> {
@@ -662,7 +662,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       return undefined;
     }
     // Everything but the chosen node. `create` walks `candidates(excluded)`,
-    // so excluding the rest is what turns a ranked walk into an instruction —
+    // so excluding the rest is what turns a ranked walk into an instruction,
     // and it keeps the attempt budget, the logging and the close ladder that
     // the walk already owns rather than growing a second copy of them.
     const excluded = new Set(
@@ -702,8 +702,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * on the reasoning that the node had expired them anyway. That made a
    * server number core had assumed into a correctness boundary, and it is
    * wrong in both directions: if a node's real `session_idle_ms` is shorter,
-   * core sends a request that harmlessly `404`s; if it is **longer** — and an
-   * operator may set it to anything above 30 s — core silently abandons
+   * core sends a request that harmlessly `404`s; if it is **longer** (and an
+   * operator may set it to anything above 30 s), core silently abandons
    * strands the node is still holding, which is the leak this whole mechanism
    * exists to close.
    *
@@ -745,8 +745,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
 
     // Resolves when the *first* close settles, either way; the retry ladder
     // below goes on in the background regardless. Failing over does not wait
-    // — it is going to a different node, so the old node's slot is not in its
-    // way — but regenerating on the same node is blocked by exactly that slot,
+    // (it is going to a different node, so the old node's slot is not in its
+    // way), but regenerating on the same node is blocked by exactly that slot,
     // so it does wait. See `regenerate`.
     let firstAttemptSettled!: () => void;
     const firstAttempt = new Promise<void>((resolve) => { firstAttemptSettled = resolve; });
@@ -823,13 +823,13 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
       // Standby preparation is opportunistic and must never become a viewer
       // failure or alter the already-playing primary generation. **But
       // swallowing it whole made core unable to tell "no standby was
-      // available" from "the node refused one" from "this threw" — three very
+      // available" from "the node refused one" from "this threw": three very
       // different states behind one silent `undefined`.**
       //
       // That gap becomes acute with the per-account session cap. A standby is
       // the *first* thing an account at its limit will be refused, because it
-      // is the speculative request rather than the one a viewer is waiting on
-      // — so the mechanism most likely to meet the cap first was the one that
+      // is the speculative request rather than the one a viewer is waiting on,
+      // so the mechanism most likely to meet the cap first was the one that
       // could not report having met it. Seamless failover would simply stop
       // happening, with nothing on any trail saying why, and the first
       // evidence would be a viewer watching a stall.
@@ -904,7 +904,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * endpoint-namespaced session id every other method looks up by, ownership
    * recorded so the session can be closed later, and the registry told.
    *
-   * It deliberately does **not** classify a failure — it throws whatever the
+   * It deliberately does **not** classify a failure; it throws whatever the
    * node threw, raw. Its two callers want opposite things from one: the walk
    * in `create` records and moves to the next candidate, while `regenerate`
    * has no next candidate and wraps it for the caller to failover on.
@@ -1001,7 +1001,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   /**
    * Ask the node that issued this generation whether it still holds it.
    *
-   * Pinned to the owning node — there is no walk and no failover. Every other
+   * Pinned to the owning node; there is no walk and no failover. Every other
    * node would answer `404` truthfully for a session it never had, so asking a
    * second one could only produce a confident wrong answer.
    *
@@ -1029,8 +1029,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
   async sessionAlive(sessionId: string, signal?: AbortSignal): Promise<boolean> {
     // Recovered from the id when the map has no entry, for the same reason
     // `stop` does: this is pinned to the owning node, and the id names it. A
-    // host asking whether an orphan from a previous run is still alive — which
-    // is exactly what a reclaim does before closing one — had no way to be
+    // host asking whether an orphan from a previous run is still alive (which
+    // is exactly what a reclaim does before closing one) had no way to be
     // answered, because the map died with the process that created it.
     const owned = this.sessions.get(sessionId) ?? this.provenanceFromId(sessionId);
     if (!owned) throw unknownGeneration(sessionId);
@@ -1063,7 +1063,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    *
    * The idempotency key is no help: sessions are node-local, so the retry
    * lands somewhere else and this node is left holding a session nothing
-   * refers to — on a one-slot node, its only transcode slot — until
+   * refers to (on a one-slot node, its only transcode slot) until
    * `session_idle` reclaims it thirty minutes later. The slow node the
    * deadline exists to route around is exactly the one that pays for it, and
    * it pays in the resource that made it slow.
@@ -1110,7 +1110,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * reports what happened to the trail instead of to the caller.
    *
    * **That distinction is load-bearing and was nearly lost.** Dropping the map
-   * entry is how a released session is marked as dealt with — `failover`
+   * entry is how a released session is marked as dealt with: `failover`
    * abandons and charges once, and the missing entry is what stops every later
    * cleanup path charging the same outage again, walking a healthy node up the
    * 500 ms / 2 s / 10 s / 30 s cooldown ladder for one failure. Recovering
@@ -1119,7 +1119,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    */
   private async stopByIdAlone(sessionId: string, options?: PlaybackStopOptions): Promise<void> {
     // `endpointAlreadyCharged` is the caller stating that it owns this
-    // teardown and has already accounted for it — the seam that keeps one
+    // teardown and has already accounted for it, the seam that keeps one
     // outage from walking the cooldown ladder. It is also the only thing that
     // tells a session deliberately abandoned moments ago from one left behind
     // by a process that died, because both are simply absent from the map. So
@@ -1143,8 +1143,8 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * Recover which node holds a session from the session id alone.
    *
    * **This is why every client leaked sessions.** `stop()` looked the id up in
-   * `this.sessions` and returned silently when it was missing — no request, no
-   * log, a resolved promise — so a host could close everything it had and
+   * `this.sessions` and returned silently when it was missing (no request, no
+   * log, a resolved promise), so a host could close everything it had and
    * produce no `DELETE` at all while believing it had cleaned up. Measured on
    * fi-1: 57 creates and zero deletes since 13:00, across four clients that
    * each leak by a different route.
@@ -1158,7 +1158,7 @@ export class ClusterPlaybackResolver implements PlaybackResolver {
    * It states it because core mints it: `${endpoint.id}::${nodeSessionId}`,
    * with the node part URI-encoded. `encodeURIComponent` escapes `:` as
    * `%3A`, so the encoded half contains no colon and the **last** `::` is
-   * always the separator — which is what keeps an IPv6 endpoint id like
+   * always the separator, which is what keeps an IPv6 endpoint id like
    * `http://[::1]:7438` from being split in the middle of its own address.
    *
    * Returns `undefined` for an id this core did not mint or an endpoint the

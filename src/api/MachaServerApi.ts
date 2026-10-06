@@ -34,7 +34,7 @@ function stringValue(value: unknown): string | undefined {
 /**
  * The node's version, from the body alone.
  *
- * There was a header fallback here — `x-macha-version`, then
+ * There was a header fallback here: `x-macha-version`, then
  * `x-server-version`, then parsing a `Server` header. **All three were read and
  * none was ever sent.** Verified against the server source and against a live
  * 0.36.9 node, which emits no `Server` header at all. It was three links of a
@@ -44,13 +44,13 @@ function stringValue(value: unknown): string | undefined {
  *
  * Removing it also settles a property worth keeping: this package now reads no
  * custom response header anywhere. Macha requires no custom request header
- * either — a node advertises the whole set it will accept as
+ * either: a node advertises the whole set it will accept as
  * `Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, Range`,
  * which is checkable with one request rather than by auditing source.
  *
- * The version is not one universal field across every endpoint — it is
+ * The version is not one universal field across every endpoint; it is
  * `server_version` on the playback and catalogue status calls, and
- * `nodes[].version` on cluster status — so this stays tolerant of several
+ * `nodes[].version` on cluster status, so this stays tolerant of several
  * spellings rather than demanding one.
  */
 function reportedVersion(body: Record<string, unknown>): string | null {

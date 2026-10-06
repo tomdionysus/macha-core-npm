@@ -10,7 +10,7 @@
  * needs a check rather than a habit.
  *
  * The comparison is per file and by mtime. Mtimes are a weak signal in general
- * — a checkout or a copy can reorder them — but they are the right one here,
+ * (a checkout or a copy can reorder them), but they are the right one here,
  * because the thing being detected is precisely "someone edited a source file
  * and did not rebuild", which is the one case mtimes report reliably.
  *
@@ -49,7 +49,7 @@ let distStat;
 try {
   distStat = statSync(distRoot);
 } catch {
-  console.error('dist-check: no dist/ at all — run `npm run build` in @machafoundation/core.');
+  console.error('dist-check: no dist/ at all; run `npm run build` in @machafoundation/core.');
   process.exit(1);
 }
 if (!distStat.isDirectory()) {
@@ -78,7 +78,7 @@ if (!stale.length && !missing.length) {
 
 // Name the files rather than just the count: the usual cause is one forgotten
 // rebuild after one edit, and seeing which edit says whether it mattered.
-console.error('dist-check: dist is behind src — run `npm run build` in @machafoundation/core.');
+console.error('dist-check: dist is behind src; run `npm run build` in @machafoundation/core.');
 for (const path of missing) console.error(`  never built  ${path}`);
 for (const path of stale) console.error(`  stale        ${path}`);
 process.exit(1);

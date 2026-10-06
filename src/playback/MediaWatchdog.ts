@@ -3,13 +3,13 @@ import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
 /**
  * Bounds the one playback failure the player could not previously see: a media
  * element that accepted a source, began its fetch, and then received nothing
- * at all — ever.
+ * at all, ever.
  *
  * Every other deadline in this client covers a *server request*: the session
  * POST and PATCH, the endpoint deadlines, the API layer's own request timeout,
  * the HLS standby preflight. Once `video.src` is assigned, nothing watched
  * whether the element got anywhere, because every failure and degradation
- * channel is driven by something the element *emits* — a `MediaError`, an
+ * channel is driven by something the element *emits*: a `MediaError`, an
  * hls.js error, a read-ahead worker failure. An element sitting silently at
  * `HAVE_NOTHING` emits none of those, so this fault shape walked straight past
  * the entire cluster-failover apparatus that exists precisely for "this node
@@ -20,14 +20,14 @@ import { SERVER_SEGMENT_HOLD_MS } from './streamProtocol.js';
  * That is an unbounded wait, which `docs/principles-and-laws.md` forbids
  * outright: failure and degraded states must be visible and actionable rather
  * than becoming indefinite waiting. This bound holds whatever the underlying
- * cause turns out to be, which is the point — the cause is still open.
+ * cause turns out to be, which is the point: the cause is still open.
  *
  * Two things keep it honest rather than making it a blunt timer.
  *
  * **It triggers on zero bytes, never on "slow".** A media element fires
  * `progress` as data arrives, well before `readyState` climbs off
- * `HAVE_NOTHING`, so a link that is merely bad — and one node here is
- * deliberately across a saturated WAN — cancels this watch on its first few
+ * `HAVE_NOTHING`, so a link that is merely bad (and one node here is
+ * deliberately across a saturated WAN) cancels this watch on its first few
  * bytes and is never judged. Only a source that has delivered literally
  * nothing can reach the deadline.
  *
@@ -175,7 +175,7 @@ class VisibleDeadline {
 /**
  * The start watchdog: a source the element accepted and never got a byte from.
  *
- * Triggers on *zero bytes ever*, never on "slow" — a media element fires
+ * Triggers on *zero bytes ever*, never on "slow": a media element fires
  * `progress` as data arrives, well before `readyState` leaves `HAVE_NOTHING`,
  * so a merely bad link cancels this on its first few bytes and is never judged.
  */
@@ -218,8 +218,8 @@ export class MediaStartWatchdog {
  *
  * The seven-second measurement below is deliberately *not* cleared.
  *
- * On 2026-09-08 a node that was working — producing a transcode below realtime
- * — delivered in bursts separated by **seven seconds** of no progress at all.
+ * On 2026-09-08 a node that was working (producing a transcode below realtime)
+ * delivered in bursts separated by **seven seconds** of no progress at all.
  * That was first read as a floor to stay above, so as not to blame a healthy
  * node. Wrong frame: whether the node deserves blame is not the question this
  * budget answers. A node that goes quiet for seven seconds is making the
@@ -230,12 +230,12 @@ export class MediaStartWatchdog {
  * generation is a session POST and a first fragment, while a node delivering
  * in bursts goes on doing it for the length of the film. And on a set whose
  * native player raises no `MediaError` this budget is the *whole* of failover
- * detection — the picture is simply frozen for all of it before anything is
+ * detection: the picture is simply frozen for all of it before anything is
  * told.
  *
  * Was fifteen seconds, then five, then this, over 2026-09-08 and 09. Fifteen
  * was a viewer staring at a frozen frame; five proved too eager in use and sat
- * *under* the server's own hold — so a node answering a held fragment exactly
+ * *under* the server's own hold, so a node answering a held fragment exactly
  * as designed was called stalled before it could answer.
  *
  * That is why this is now expressed against `SERVER_SEGMENT_HOLD_MS` rather
@@ -247,13 +247,13 @@ export class MediaStartWatchdog {
  * hold ends with a response rather than with silence, so the budget only had
  * to outlast the wait. That is wrong about what this watchdog can see. It
  * reads `currentTime` and `buffered` and nothing else, and a `500` carries no
- * bytes — so the response that ends the hold moves neither. What has to fit
+ * bytes, so the response that ends the hold moves neither. What has to fit
  * inside the budget is the hold *plus* the player's retry delay *plus* the
  * first byte of the fragment that finally arrives, and that total exceeds
  * seven seconds routinely.
  *
  * So: **a node that holds a fragment for its full timeout will trip this, and
- * that is accepted.** It is the same trade the budget is built on — the
+ * that is accepted.** It is the same trade the budget is built on: the
  * viewer has been waiting six seconds and the client has somewhere better to
  * be, whether or not the node deserves blame. Recorded plainly because the
  * previous phrasing invited someone to shave the margin on the strength of an
@@ -267,8 +267,8 @@ export const MEDIA_STALL_MARGIN_MS = 1_000;
 /**
  * The stall budget for the node actually serving this source.
  *
- * The rule above — longer than the longest legitimate wait the node can impose
- * — was only ever expressible against a compiled-in guess at that wait. Where
+ * The rule above (longer than the longest legitimate wait the node can impose)
+ * was only ever expressible against a compiled-in guess at that wait. Where
  * the node states its own `segment_timeout_ms` this uses it, so a node
  * configured with a longer hold is no longer called dead for using it.
  * {@link MEDIA_STALL_TIMEOUT_MS} remains the answer for a node that cannot say.
@@ -281,8 +281,8 @@ export function mediaStallTimeoutMs(source?: PlaybackSource): number {
 /**
  * The stall watchdog: playback stopped and nothing is arriving to restart it.
  *
- * The reason this exists is that failover already works — `PlaybackCoordinator`
- * recovers a `'stream'` failure onto another node — and on a platform whose
+ * The reason this exists is that failover already works (`PlaybackCoordinator`
+ * recovers a `'stream'` failure onto another node), and on a platform whose
  * player reports nothing, no one ever tells it to. A Samsung set had a frame
  * frozen for thirty seconds with every recovery mechanism intact and idle,
  * because its native HLS player swallowed the failure and the element's
@@ -290,13 +290,13 @@ export function mediaStallTimeoutMs(source?: PlaybackSource): number {
  *
  * **Position alone is the wrong signal, and this is the whole design.** A node
  * producing a transcode below realtime freezes the picture repeatedly while
- * remaining perfectly healthy — bytes keep arriving, the buffer keeps growing,
+ * remaining perfectly healthy: bytes keep arriving, the buffer keeps growing,
  * playback simply cannot keep ahead. Judging on a stopped clock would evict
  * exactly the node that was doing the work. So a stall is only evidence when
  * the buffer has stopped growing too: nothing playing *and* nothing arriving.
  * Slow is a buffer that advances while the picture waits; dead is neither.
  *
- * Deliberately player-agnostic — `currentTime` and `buffered` are all it reads,
+ * Deliberately player-agnostic: `currentTime` and `buffered` are all it reads,
  * so it works behind hls.js, behind a television's native HLS player, and
  * behind a progressive file alike. That matters because the platforms most
  * likely to swallow a failure are the ones least able to report it.
@@ -305,7 +305,7 @@ export function mediaStallTimeoutMs(source?: PlaybackSource): number {
  * What was true when a stall was called.
  *
  * `bufferedEndMs` is absent when the platform could not measure it, which is
- * the same figure `note()` was given — a stall reported without one carries no
+ * the same figure `note()` was given; a stall reported without one carries no
  * evidence about the node, only that the viewer was waiting.
  */
 export interface StallDetail {
@@ -334,8 +334,8 @@ export class MediaStallWatchdog {
    *
    * **A host should call this whenever it attaches a source**, because the
    * watchdog outlives any one generation while the figure belongs to a node.
-   * A host that does not is no worse off than before — the constructed default
-   * still applies — but it keeps guessing a number the node is now stating.
+   * A host that does not is no worse off than before (the constructed default
+   * still applies), but it keeps guessing a number the node is now stating.
    */
   useSourceBudgets(source?: PlaybackSource): void {
     this.deadline.setTimeoutMs(mediaStallTimeoutMs(source));
@@ -356,7 +356,7 @@ export class MediaStallWatchdog {
    * restarts the countdown; neither advancing lets it run.
    *
    * **`bufferedEndMs` may be omitted by a platform that cannot measure it**,
-   * and absent is not zero — a player reporting zero buffering forever would
+   * and absent is not zero: a player reporting zero buffering forever would
    * otherwise read as permanently stalled while perfectly healthy. Omitting it
    * costs the slow-versus-dead distinction: without a buffer figure a node
    * producing below realtime looks the same as one that has died, and this
@@ -364,20 +364,20 @@ export class MediaStallWatchdog {
    *
    * That is the right trade only because of what the caller does next. Moving
    * off a node the viewer is waiting on is correct whether or not the node
-   * deserves blame — those are different questions, and this budget answers
+   * deserves blame; those are different questions, and this budget answers
    * the second one. But a caller acting on a stall from a platform that cannot
    * measure buffering must not *record endpoint health* from it: it has
    * evidence that a viewer is waiting and no evidence about the node. Core
    * already draws exactly that line for per-title failures, which move a
    * session without condemning the endpoint.
    *
-   * **The first report only establishes a baseline — it must not start a
+   * **The first report only establishes a baseline; it must not start a
    * countdown.** A generation that has never produced anything has not
    * stalled, it has not started, and that is the start watchdog's business at
    * its own deadline. Arming here on first sight made this watchdog kill every
    * freshly promoted source after 15 s, which on a failover meant: recover
    * onto a healthy node, kill it before it could deliver a frame, recover
-   * again, and exhaust the cluster — surfacing as "No untried Macha playback
+   * again, and exhaust the cluster, surfacing as "No untried Macha playback
    * endpoint remains" with three working nodes. Observed on a Samsung set
    * 2026-09-08, caused by this method.
    */
@@ -386,7 +386,7 @@ export class MediaStallWatchdog {
     const first = this.lastPositionMs === undefined;
 
     // A discontinuity: the timeline this was measuring against no longer
-    // exists. Either the position moved backwards, or the buffered end did —
+    // exists. Either the position moved backwards, or the buffered end did,
     // and ordinary playback can do neither. A seek is the ordinary cause, and
     // on a D-pad it is the *only* seek affordance, so on a television this is
     // routine viewing rather than an edge case.
@@ -397,8 +397,8 @@ export class MediaStallWatchdog {
     const discontinuity = movedBack || bufferRebuilt;
     // Re-base rather than carry the old high-water mark forward. `advanced`
     // compares the buffer against a running max, so without this the buffer
-    // growing at the new position never counts — it is still below where the
-    // buffer had reached before the seek — and a node busy refilling is called
+    // growing at the new position never counts (it is still below where the
+    // buffer had reached before the seek), and a node busy refilling is called
     // dead 7 s later. That is precisely the eviction of a healthy
     // below-realtime transcode this class exists to avoid, arrived at from the
     // other direction.
@@ -440,7 +440,7 @@ export class MediaStallWatchdog {
    * Paused is not stalled: the viewer stopped it on purpose.
    *
    * The flag matters as much as the disarm. Only advancement re-arms the
-   * deadline, and a node that dies while paused produces none — so resuming
+   * deadline, and a node that dies while paused produces none, so resuming
    * onto a dead node would leave the picture frozen with nothing counting,
    * which is the failure this whole class exists to prevent, reached through
    * the one door that was left open.

@@ -10,7 +10,7 @@ import { LIVENESS_PATH } from '../api/serverConnection.js';
  * What liveness was asked on before `/api/v1/health` existed.
  *
  * Kept for any node the liveness route cannot answer for: one too old to have
- * it, and — measured, not assumed — builds that have it but gate it. This one
+ * it, and (measured, not assumed) builds that have it but gate it. This one
  * needs `media_viewer`, so it is no better for a role-less session; it is a
  * fallback because it is *different*, not because it is right, and a node
  * that refuses both is simply ungraded rather than condemned.
@@ -27,16 +27,16 @@ const log = createClientLogger('cluster.health');
 /**
  * What one probe learned, which is not the same as whether it succeeded.
  *
- * - `healthy` — 2xx. The node says it is serving, and this is the only case
+ * - `healthy`: 2xx. The node says it is serving, and this is the only case
  *   that carries a latency measurement.
- * - `unhealthy` — a 5xx. `/api/v1/health` answers `503` with `starting` or
+ * - `unhealthy`: a 5xx. `/api/v1/health` answers `503` with `starting` or
  *   `failed`, which is the node reporting that it is *not* serving. Negative
  *   evidence it volunteered about itself.
- * - `absent` — `404`. A node too old to have the liveness route, not a node
+ * - `absent`: `404`. A node too old to have the liveness route, not a node
  *   in trouble.
- * - `answered` — anything else. Reached, and nothing learned: a proxy, a
+ * - `answered`: anything else. Reached, and nothing learned: a proxy, a
  *   gateway, an address that is not Macha at all.
- * - `unreachable` — no HTTP answer of any kind.
+ * - `unreachable`: no HTTP answer of any kind.
  */
 interface ProbeResult {
   status: 'healthy' | 'unhealthy' | 'absent' | 'answered' | 'unreachable';
@@ -51,8 +51,8 @@ interface ProbeResult {
  * The option means three different things across this project's three hosts,
  * measured rather than assumed: a browser sends the directive; React Native's
  * `whatwg-fetch` implements it by appending `_=<epoch>` to the query; and
- * Tizen 3 does not have the property at all — `'cache' in new Request(url,
- * {cache:'no-store'})` is `false` — so it vanishes silently, header and all.
+ * Tizen 3 does not have the property at all (`'cache' in new Request(url,
+ * {cache:'no-store'})` is `false`), so it vanishes silently, header and all.
  *
  * On that last one the consequence is not cosmetic. A cached
  * `/api/v1/catalogue/status` makes a dead node answer `200` from the WebView's
@@ -62,7 +62,7 @@ interface ProbeResult {
  * A unique URL is the one mechanism every host honours, because none of them
  * can cache a request they have never seen. Doing it here makes the behaviour
  * the same everywhere instead of three-way different, and Macha ignores query
- * parameters it does not know — which is the accurate guarantee, rather than
+ * parameters it does not know, which is the accurate guarantee, rather than
  * "the query string is never inspected". It is inspected elsewhere: session
  * creation validates the *content* of a parameter it knows and answers 400.
  * So this stays safe only while `_` remains unknown to every endpoint it is
@@ -71,19 +71,19 @@ interface ProbeResult {
  * **It is not a polyfill workaround and does not retire with Tizen 3.**
  * `no-store` is a *request* directive: it governs the caches the client can
  * speak to, and says nothing to an intermediary. A proxy or CDN between this
- * client and a node can still answer from its own store — a live possibility
- * on a WAN endpoint rather than a theoretical one — and a health probe served
+ * client and a node can still answer from its own store (a live possibility
+ * on a WAN endpoint rather than a theoretical one), and a health probe served
  * from anyone's cache reports a dead node healthy. A URL nobody has seen
  * before defeats every cache on the path, which no header can promise.
  *
  * **It must not be built from `machaHost().now()`, and was.** That clock is
- * monotonic — `performance.now()` wherever the host has it — so it restarts
+ * monotonic (`performance.now()` wherever the host has it), so it restarts
  * near zero on every page load, and the first probe of a load fires at a fixed
  * point in startup. Measured on the running web client: two consecutive
  * reloads produced 744 and 571. The value space for a load's first probe is a
  * few hundred integers, re-entered from the beginning every time, so a
  * collision is close to certain for anyone who reloads more than a handful of
- * times — and the cache then answers a probe for a node that is gone. A
+ * times, and the cache then answers a probe for a node that is gone. A
  * defeated cache-buster fails silently and in the worst direction.
  *
  * The counter is what makes this never-repeating rather than merely unlikely:
@@ -95,8 +95,8 @@ let probeSequence = 0;
 function cacheBustedProbeUrl(baseUrl: string, path: string): string {
   // Deliberately NOT `startedAt`. That value is the other half of the latency
   // measurement and has to stay monotonic; this half needs an absolute value
-  // that never repeats. They are different clocks for different jobs — see the
-  // note on `MachaHost.now()` — and the second reading costs nothing here
+  // that never repeats. They are different clocks for different jobs (see the
+  // note on `MachaHost.now()`), and the second reading costs nothing here
   // because it is taken before the timed region rather than inside it.
   probeSequence += 1;
   return `${baseUrl}${path}?_=${Date.now()}-${probeSequence}`;
@@ -135,9 +135,9 @@ async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch):
   // node in the field still running 0.38.1. A 404-only fallback would have
   // fired on every node except the single one that needs it.
   //
-  // Without it that node is permanently ungraded — no latency samples, so no
+  // Without it that node is permanently ungraded: no latency samples, so no
   // ranking on the one axis that can see a bad network path, and no
-  // pre-emptive swap — which makes it second-class for running an old build.
+  // pre-emptive swap, which makes it second-class for running an old build.
   //
   // The fallback is no better for a role-less session, since the old route
   // needs `media_viewer` on any build new enough to gate it. It is a fallback
@@ -157,7 +157,7 @@ async function probeEndpoint(endpoint: MachaEndpoint, auth: AuthenticatedFetch):
 
 /**
  * A small, bounded set of endpoints this client has actually reached at some
- * point, but never configured — a restart's only fallback if the single
+ * point, but never configured: a restart's only fallback if the single
  * configured bootstrap endpoint happens to be down at that exact moment
  * (`EndpointRegistry` otherwise reseeds runtime-discovered membership from
  * nothing every time). Purely a resumable-history hint: recomputed from live
@@ -204,7 +204,7 @@ const IDENTITY_RESOLUTIONS_PER_CYCLE = 2;
  * Ask an endpoint which node it is, when nothing else can say.
  *
  * **The membership advertisement cannot answer this.** It is built from each
- * node's `api_endpoint` — the name the node advertises — so an endpoint
+ * node's `api_endpoint` (the name the node advertises), so an endpoint
  * reached by any *other* address matches nothing and keeps no `nodeId` at all.
  * A LAN address beside a DNS name for one machine is then two nodes to the
  * registry: counted twice, offered twice in a selector, and a failover that
@@ -218,12 +218,12 @@ const IDENTITY_RESOLUTIONS_PER_CYCLE = 2;
  * matching an `id` in `nodes[]`.
  *
  * Asked of the endpoint directly rather than through the routed API, because
- * the whole question is *which address this is* — a routed call answers from
+ * the whole question is *which address this is*: a routed call answers from
  * whichever node it picked and says nothing about the one being identified.
  *
  * **Only ever claims an address already in the registry.** It advertises
  * endpoints that are already configured or discovered, so nothing here can
- * mint a plaintext address for a node someone put behind TLS — the rule the
+ * mint a plaintext address for a node someone put behind TLS, the rule the
  * membership advertisement is built around.
  *
  * An endpoint that will not answer is left unidentified and is not asked
@@ -241,8 +241,8 @@ export async function identifyUnclaimedEndpoints(
   for (const { endpoint } of unclaimed) {
     if (signal?.aborted) return;
     // Once per endpoint, whatever the answer. A node that answers is claimed
-    // and never appears here again; one that will not answer — unreachable, or
-    // refusing the route to this session's roles — must not be re-asked every
+    // and never appears here again; one that will not answer (unreachable, or
+    // refusing the route to this session's roles) must not be re-asked every
     // cycle for the life of the client.
     asked.add(endpoint.baseUrl);
     try {
@@ -253,7 +253,7 @@ export async function identifyUnclaimedEndpoints(
       // it. Identity is not membership.
       if (typeof nodeId === 'string' && nodeId.length > 0) registry.claimNodeId(endpoint.baseUrl, nodeId);
     } catch {
-      // Unreachable or refusing the route. Neither is a health signal — this
+      // Unreachable or refusing the route. Neither is a health signal; this
       // is a question about identity, and an endpoint that cannot answer it is
       // simply not identified.
     }
@@ -277,11 +277,11 @@ export async function discoverClusterEndpoints(
     const { nodes } = await clusterStatusApi.status();
     // `stop()` may have run while that was in flight. Applying an
     // advertisement after it reshapes the registry and fires every host
-    // listener on behalf of a monitor the host has already torn down — the
+    // listener on behalf of a monitor the host has already torn down, the
     // same rule the cycle applies either side of the probe walk, which this
     // call sat above rather than inside.
     if (signal?.aborted) return;
-    // `host`/`port` is the node's internal RPC bind address, not its HTTP API —
+    // `host`/`port` is the node's internal RPC bind address, not its HTTP API;
     // using it here would guess at a port that is frequently wrong, and at a
     // scheme that TLS offload makes unguessable. `api_endpoint` is the whole
     // URL the node says to dial, so nothing is assembled here and no scheme is
@@ -295,7 +295,7 @@ export async function discoverClusterEndpoints(
 
     // This payload already describes every node's load, and it arrives on a
     // call the health cycle makes anyway. Reading it costs nothing; the
-    // alternative — a synthetic throughput or load probe — would compete with
+    // alternative, a synthetic throughput or load probe, would compete with
     // viewer traffic for the exact resource it claims to measure, and on a
     // weak link would consume the capacity it was trying to observe.
     //
@@ -461,7 +461,7 @@ export class EndpointHealthMonitor {
    * Run a cycle now, and re-base the interval from it.
    *
    * **The monitor cannot see the one event that most justifies a probe.** A
-   * radio coming back is a host fact — no timer here can observe it — and it
+   * radio coming back is a host fact (no timer here can observe it), and it
    * is simultaneously the moment the cluster's state is most likely to have
    * changed and the viewer most likely to be waiting. Waiting out the
    * remainder of a ten second cycle is a real cost, not a tidy-up. The seam is
@@ -470,7 +470,7 @@ export class EndpointHealthMonitor {
    *
    * Clients were achieving this with `stop()` then `start()`. That is safe,
    * but it aborts a probe already in flight and restarts the interval from
-   * zero — it throws away the answer it was about to get in order to ask the
+   * zero: it throws away the answer it was about to get in order to ask the
    * question again.
    *
    * **A cycle already running is awaited rather than duplicated.** Two
@@ -519,7 +519,7 @@ export class EndpointHealthMonitor {
       // `setItem` used to reject this cycle, and the `void` on the caller
       // swallowed it: no reschedule ever ran, `running` stayed `true`, and the
       // health loop was dead with nothing said. `EndpointBandwidth.write()`
-      // has caught for exactly this reason since it was written — two copies
+      // has caught for exactly this reason since it was written: two copies
       // of one rule, and only one of them was true.
       if (configuration) {
         try {

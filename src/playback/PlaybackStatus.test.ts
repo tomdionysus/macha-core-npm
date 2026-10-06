@@ -137,7 +137,7 @@ describe('describePlaybackSession', () => {
 
     // The worker moved the transfer to node B while the session's own
     // bookkeeping stayed on node A. What is serving the picture is node B, and
-    // that is what the panel shows — the change of origin is the signal.
+    // that is what the panel shows; the change of origin is the signal.
     expect(described?.endpoint).toBe('http://node-b.test:7438');
   });
 

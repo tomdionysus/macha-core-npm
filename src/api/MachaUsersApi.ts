@@ -56,7 +56,7 @@ export class MachaUsersApiError extends Error {
 /**
  * The account list.
  *
- * **`items` is the envelope.** It was `users` — this comment stated that as
+ * **`items` is the envelope.** It was `users`; this comment stated that as
  * fact, and the server has since moved the list under `items` like every
  * other collection in this API. `users` is kept because a node may be
  * stranded on an older build, and mixed-version clusters are the ordinary
@@ -65,7 +65,7 @@ export class MachaUsersApiError extends Error {
  *
  * Being generous about the envelope is what made that change a non-event, and
  * it is why the accepted shapes are listed rather than assumed: single records
- * come back bare while collections come wrapped. Getting it wrong is silent —
+ * come back bare while collections come wrapped. Getting it wrong is silent:
  * reading a key a payload does not have yields `undefined`, which is not an
  * error anywhere downstream, so the screen renders its heading and nothing
  * else and looks broken rather than reporting a bad answer. An unrecognised

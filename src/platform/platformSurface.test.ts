@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { checkPlatformSurface, missingRequiredSurface } from './platformSurface.js';
 
 /**
- * These run on Node, which supplies core's whole declared surface — so the
+ * These run on Node, which supplies core's whole declared surface, so the
  * interesting assertions are about the probe's own behaviour rather than about
  * Node. The one bug a probe must not have is throwing, and the second is a
  * false negative on a required member; both are covered.
@@ -68,7 +68,7 @@ describe('platform surface probe', () => {
 describe('required is derived from the declaration, not restated', () => {
   it('marks exactly the three members the declaration types as possibly absent', () => {
     // A per-probe boolean would be a second copy of the contract and would
-    // drift from `platform-neutral.d.ts` silently — the same failure as a
+    // drift from `platform-neutral.d.ts` silently: the same failure as a
     // server constant living in three repositories. If this list and the
     // declaration disagree, one of them is wrong and this test says which.
     const optional = checkPlatformSurface().filter((finding) => !finding.required).map((f) => f.name);

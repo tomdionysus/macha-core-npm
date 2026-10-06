@@ -1,4 +1,4 @@
-# Handover — 2026-10-04
+# Handover: 2026-10-04
 
 For the next session on `@machafoundation/core`. [ACTIVE.md](ACTIVE.md) has the open list. The previous handover and the full ACTIVE before its rewrite are in [archive/](archive/).
 

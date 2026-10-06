@@ -13,7 +13,7 @@ import type {
 /**
  * Users across the cluster: reads fail over, mutations execute once.
  *
- * The same split every other cluster API uses, and for the same reason — a
+ * The same split every other cluster API uses, and for the same reason: a
  * read retried elsewhere costs nothing, while a create retried after an
  * ambiguous failure makes a second account. Users replicate on change rather
  * than on a tick, so a read that follows a write by more than the propagation
