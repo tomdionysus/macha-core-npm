@@ -1,11 +1,18 @@
 import { machaHost } from './host.js';
-import type { StorageLike } from '../state/storage.js';
+import { readAdopted, type StorageLike } from '../state/storage.js';
+import { machaCoreKey } from './storageKeys.js';
 
-const CLIENT_ID_KEY = 'macha-client-id';
+const CLIENT_ID_KEY = machaCoreKey('clientId');
 const SERVER_URL_KEY = 'macha-server-url';
 const INTERIM_SERVER_ENDPOINTS_KEY = 'macha-server-endpoints-v1';
-const BOOTSTRAP_ENDPOINTS_KEY = 'macha-bootstrap-endpoints-v1';
-const DISCOVERED_ENDPOINTS_KEY = 'macha-discovered-endpoints-v1';
+const BOOTSTRAP_ENDPOINTS_KEY = machaCoreKey('bootstrapEndpoints');
+const DISCOVERED_ENDPOINTS_KEY = machaCoreKey('discoveredEndpoints');
+/** Each key's name before 2026-10-05, adopted on read; see `readAdopted`. */
+const LEGACY_KEYS: Readonly<Record<string, readonly string[]>> = {
+  [CLIENT_ID_KEY]: ['macha-client-id'],
+  [BOOTSTRAP_ENDPOINTS_KEY]: ['macha-bootstrap-endpoints-v1'],
+  [DISCOVERED_ENDPOINTS_KEY]: ['macha-discovered-endpoints-v1'],
+};
 /** A cluster realistically has a handful of nodes; this only guards against a pathological advertisement. */
 const MAX_DISCOVERED_ENDPOINTS = 16;
 
@@ -87,12 +94,12 @@ export class MachaClientConfiguration {
    * for anything it wires on a host's behalf.
    */
   existingClientId(): string | undefined {
-    return this.storage.getItem(CLIENT_ID_KEY) ?? undefined;
+    return readAdopted(this.storage, CLIENT_ID_KEY, LEGACY_KEYS[CLIENT_ID_KEY]!) ?? undefined;
   }
 
   /** Stable per-installation identity, minted on first use. */
   clientId(): string {
-    const existing = this.storage.getItem(CLIENT_ID_KEY);
+    const existing = readAdopted(this.storage, CLIENT_ID_KEY, LEGACY_KEYS[CLIENT_ID_KEY]!);
     if (existing) return existing;
     const id = machaHost().uuid();
     this.storage.setItem(CLIENT_ID_KEY, id);
@@ -176,7 +183,7 @@ export class MachaClientConfiguration {
   }
 
   private readEndpointValue(key: string): string[] | undefined {
-    const raw = this.storage.getItem(key);
+    const raw = readAdopted(this.storage, key, LEGACY_KEYS[key] ?? []);
     if (!raw) return undefined;
     try {
       const value: unknown = JSON.parse(raw);

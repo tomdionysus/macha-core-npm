@@ -1,4 +1,4 @@
-import { MachaConnectionError } from '../api/serverConnection.js';
+import { MachaConnectionError, MachaRequestTimeoutError } from '../api/serverConnection.js';
 
 export type EndpointFailureKind = 'transport' | 'unavailable' | 'capacity' | 'session-missing';
 
@@ -81,10 +81,6 @@ function failureReason(error: unknown): string | undefined {
 }
 
 export function retryableEndpointFailure(error: unknown): boolean {
-  // Cluster-wide, and said so (server 0.64.0: error.scope "cluster",
-  // alternative_may_succeed false): metadata is unwritable, so every node
-  // would refuse the same, and walking to the next only multiplies it.
-  if (CLUSTER_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   const reason = failureReason(error);
   // A stated reason outranks the status. A node reporting a 5xx for a file it
   // cannot decode is telling the truth about the file, and asking its
@@ -114,8 +110,6 @@ export function retryableEndpointFailure(error: unknown): boolean {
   return status === 429 || (status !== undefined && status >= 500 && status <= 599);
 }
 
-/** Refusals every node gives alike; see `retryableEndpointFailure`. */
-const CLUSTER_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['metadata_unavailable']);
 
 /**
  * Server error codes that describe one title's outcome on a node, not the
@@ -201,6 +195,37 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  * that was never built.
  */
 
+/**
+ * Refusals that say one API family failed on a node that is otherwise
+ * serving, and do not say for whom.
+ *
+ * `catalogue_unavailable` is the server's answer to any exception inside the
+ * catalogue, with no scope: some causes are this node's ("shard unavailable
+ * locally") and some are not. So the walk goes on, since another node may
+ * have its catalogue, but the node is not charged. A charge cools it down for
+ * every family, and on 2026-09-24 the Android TV client's Home reported every
+ * endpoint failed while only the catalogue was down and playback answered.
+ *
+ * `metadata_unavailable` was the opposite until server 0.88.0: every node's
+ * metadata unwritable, so not walked at all. From 0.88.0 it means only a node
+ * with no namespace yet, still joining, while its neighbours may have one. So
+ * it is walked like `catalogue_unavailable` and charged to no one. Against an
+ * older node, which still means the cluster by it, the walk costs one
+ * identical refusal per node. A mutation is not walked either way.
+ */
+const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable', 'metadata_unavailable']);
+
+/**
+ * Refusals that state what a node is built or configured to do, not how it is.
+ *
+ * `media_engine_unavailable` (server 0.87.x, the media profile route): a node
+ * with streaming disabled holds the file but no stored profile and has no
+ * engine to make one. Another node may have it, so the walk goes on, but the
+ * node is as healthy as it was, and a charge would cool it down for all
+ * traffic each time a detail page asked for a profile.
+ */
+const CAPABILITY_FAILURE_CODES: ReadonlySet<string> = new Set(['media_engine_unavailable']);
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -232,6 +257,8 @@ export function failureBlamesEndpoint(
 ): boolean {
   if (isPerTitleFailure(error)) return false;
   if (isAccountScopedFailure(error)) return false;
+  if (FAMILY_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
+  if (CAPABILITY_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   // A capacity refusal on a pinned path. The node is **full, not unwell**, and
   // the caller cannot act on the charge: `update` and `stop` are pinned to the
   // node that holds the generation, so there is no walk for the charge to
@@ -311,6 +338,27 @@ export function playbackFailureCode(error: unknown): string | undefined {
 }
 
 /**
+ * Whether a write may have been done although it failed here: the request ran
+ * out of time before the node answered, so the node may have finished it.
+ *
+ * **Not a failure, and a host must not report one.** On 2026-10-05 every one
+ * of 13 unmatched deletes succeeded on the node while 11 were reported as not
+ * deleted, because they answered after the client stopped waiting. Reload
+ * what the write changes and judge from that. Core does not charge the node
+ * for it either: it was working.
+ */
+export function mutationOutcomeUnknown(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    if (current instanceof MachaRequestTimeoutError) return true;
+    seen.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
  * Is this the account's own session cap refusing, rather than anything about
  * the node or the title?
  *
@@ -373,8 +421,21 @@ export function isAccountSessionLimit(error: unknown): boolean {
  * predicates that classify it, so the two modules do not import each other.
  */
 export class MachaClusterRouteError extends Error {
-  constructor(public readonly endpointIds: readonly string[], public readonly unreachable: boolean, public readonly cause?: unknown) {
-    super(unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
+  constructor(
+    public readonly endpointIds: readonly string[],
+    public readonly unreachable: boolean,
+    public readonly cause?: unknown,
+    /**
+     * The walk stopped because a node in good standing ran out of time on a
+     * read that makes it do real work: the server is slow, not gone, and
+     * asking the next node would repeat the same work. `unreachable` is then
+     * false. Only a read routed with `holdOnTimeout` ends this way.
+     */
+    public readonly slow = false,
+  ) {
+    super(slow
+      ? 'A Macha API endpoint did not finish in time.'
+      : unreachable ? 'No configured Macha API endpoint could be reached.' : 'All configured Macha API endpoints failed.');
     this.name = 'MachaClusterRouteError';
   }
 }
@@ -406,4 +467,24 @@ export function endpointFailure(
         : 'transport';
   const detail = error instanceof Error ? error.message : String(error);
   return new MachaEndpointError(`Macha endpoint ${endpointId} failed: ${detail}`, endpointId, baseUrl, kind, error);
+}
+
+/**
+ * Every endpoint is one this host cannot reach at all, so nothing was sent:
+ * a secure page and only plain-`http` nodes (`MachaHost.secureContext`).
+ * `code` is for the client to word; `blocked` lists the endpoint ids.
+ */
+export class MachaNoReachableEndpointError extends Error {
+  readonly code = 'insecure_from_secure_page';
+
+  constructor(public readonly blocked: readonly string[]) {
+    super(`Every Macha endpoint is plain http, which this secure page cannot reach: ${blocked.join(', ')}.`);
+    this.name = 'MachaNoReachableEndpointError';
+  }
+}
+
+/** The error for an empty candidate list: blocked by the host, or nothing configured. */
+export function noEndpointError(registry: { snapshot(): readonly { endpoint: { id: string }; blockedByHost?: string }[] }): Error {
+  const blocked = registry.snapshot().filter((candidate) => candidate.blockedByHost).map((candidate) => candidate.endpoint.id);
+  return blocked.length > 0 ? new MachaNoReachableEndpointError(blocked) : new Error('No Macha API endpoint is configured.');
 }

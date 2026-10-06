@@ -687,11 +687,21 @@ describe('the session a failover walks away from', () => {
       return new Response(JSON.stringify(wireSession('session-b')), { status: 201, headers: { 'Content-Type': 'application/json' } });
     });
     vi.stubGlobal('fetch', fetchMock);
-    const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    // Fake timers, and the close ladder run out before the test ends. On real
+    // timers its retries outlived this test by seconds and fired into a later
+    // test's stubbed fetch: "retries the close when that node next answers"
+    // then counted 9 DELETEs instead of 5, under load only.
+    vi.useFakeTimers();
+    try {
+      const resolver = new ClusterPlaybackResolver(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
 
-    const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
-    await expect(resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' })).resolves.toBeTruthy();
-    await flushMicrotasks();
+      const primary = await resolver.resolve(media, capabilities, 0, { mode: 'direct' });
+      await expect(resolver.failover(primary, media, capabilities, 20_000, { mode: 'direct' })).resolves.toBeTruthy();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

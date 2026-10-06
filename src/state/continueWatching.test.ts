@@ -38,7 +38,7 @@ describe('ContinueWatchingStore', () => {
     // bad write broke a viewer's whole Continue Watching row until somebody
     // cleared their history. The rest of the history is still true.
     const storage = new MemoryStorage();
-    storage.setItem('macha.continueWatching.v1.client', JSON.stringify([
+    storage.setItem('macha.core.client.client.continueWatching', JSON.stringify([
       null,
       progress('good', 50_000, 100_000, 2),
       { mediaId: 'half-written' },
@@ -76,7 +76,7 @@ describe('ContinueWatchingStore', () => {
 
   describe('the key rename', () => {
     const legacyKey = (clientId: string) => `macha-client-progress:${clientId}`;
-    const currentKey = (clientId: string) => `macha.continueWatching.v1.${clientId}`;
+    const currentKey = (clientId: string) => `macha.core.client.${clientId}.continueWatching`;
     const entry = progress('m1', 40_000);
 
     it('keeps a viewer\'s place across the rename', () => {
@@ -134,7 +134,7 @@ describe('ContinueWatchingStore', () => {
 
   describe('resuming, forgetting and building a record', () => {
     const legacyKey = (clientId: string) => `macha-client-progress:${clientId}`;
-    const currentKey = (clientId: string) => `macha.continueWatching.v1.${clientId}`;
+    const currentKey = (clientId: string) => `macha.core.client.${clientId}.continueWatching`;
 
     it('answers where the viewer was', () => {
       const storage = new MemoryStorage();
@@ -279,7 +279,7 @@ describe('resuming as if the viewer never left', () => {
 
   it('reads an entry stored under the old name as the title, and resumes it as a fresh start', () => {
     const storage = new MemoryStorage();
-    storage.setItem('macha.continueWatching.v1.client', JSON.stringify([
+    storage.setItem('macha.core.client.client.continueWatching', JSON.stringify([
       { mediaId: 'tmdb:movie:1', positionMs: 60_000, durationMs: 100_000, updatedAt: 1 },
     ]));
     const store = new ContinueWatchingStore('client', storage);

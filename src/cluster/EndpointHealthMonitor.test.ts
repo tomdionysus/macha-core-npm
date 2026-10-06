@@ -408,11 +408,11 @@ describe('persisted endpoint memory across a reload', () => {
     registry.applyAdvertisement([{ nodeId: 'node-51', apiBaseUrls: ['http://10.44.1.51:7438'] }]);
 
     persistConfirmedEndpoints(registry, configuration);
-    expect(storage.getItem('macha-discovered-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).toBeNull();
 
     registry.recordProbeSuccess('http://10.44.1.51:7438');
     persistConfirmedEndpoints(registry, configuration);
-    expect(JSON.parse(storage.getItem('macha-discovered-endpoints-v1') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.core.discoveredEndpoints') ?? '')).toEqual({
       version: 1,
       urls: ['http://10.44.1.51:7438'],
     });
@@ -426,7 +426,7 @@ describe('persisted endpoint memory across a reload', () => {
     registry.recordSuccess('http://10.44.1.50:7438');
     persistConfirmedEndpoints(registry, configuration);
 
-    expect(storage.getItem('macha-discovered-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).toBeNull();
   });
 
   it('clears previously persisted endpoints once none are confirmed reachable any more', () => {
@@ -436,13 +436,13 @@ describe('persisted endpoint memory across a reload', () => {
     registry.applyAdvertisement([{ nodeId: 'node-51', apiBaseUrls: ['http://10.44.1.51:7438'] }]);
     registry.recordProbeSuccess('http://10.44.1.51:7438');
     persistConfirmedEndpoints(registry, configuration);
-    expect(storage.getItem('macha-discovered-endpoints-v1')).not.toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).not.toBeNull();
 
     // The next discovery cycle no longer reports node-51 online at all.
     registry.applyAdvertisement([{ nodeId: 'node-50', apiBaseUrls: ['http://10.44.1.50:7438'] }]);
     persistConfirmedEndpoints(registry, configuration);
 
-    expect(storage.getItem('macha-discovered-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).toBeNull();
   });
 });
 
@@ -839,6 +839,19 @@ describe("a node's name from status", () => {
     const registry = new EndpointRegistry(bootstrapEndpoints(['http://seed:7438']));
     await discoverClusterEndpoints(registry, fakeClusterStatusApi([node({ host: 'corvus-fi-1', node_name: null })]));
     expect(registry.nodeName('https://peer.example')).toBe('corvus-fi-1');
+  });
+});
+
+describe("a node's state from status", () => {
+  it('ranks a node the cluster reports offline behind one it reports online', async () => {
+    // es-1, configured and down since 2026-09-24: first in the configured
+    // order, and never answering to say which node it is.
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://es', 'http://fi']));
+    await discoverClusterEndpoints(registry, fakeClusterStatusApi([
+      { id: 'es-1', state: 'offline', host: 'es-1', api_endpoint: 'http://es', runtime: {} },
+      { id: 'fi-1', state: 'online', host: 'fi-1', api_endpoint: 'http://fi', runtime: {} },
+    ] as unknown as ClusterNodeStatus[]));
+    expect(registry.candidates().map(({ endpoint, lapsed }) => [endpoint.id, lapsed])).toEqual([['http://fi', false], ['http://es', true]]);
   });
 });
 

@@ -188,12 +188,14 @@ describe('cluster torrents (server 0.64.0)', () => {
   });
 });
 
-describe('a refusal every node would give alike', () => {
-  it('is not walked to the next node', async () => {
-    const { retryableEndpointFailure } = await import('../cluster/endpointFailure.js');
-    const refusal = Object.assign(new Error('metadata not writable'), { status: 503, code: 'metadata_unavailable' });
-    expect(retryableEndpointFailure(refusal)).toBe(false);
-    expect(retryableEndpointFailure(Object.assign(new Error('x'), { status: 503, code: 'playback_unavailable' }))).toBe(true);
+describe('a node with no namespace yet (server 0.88.0)', () => {
+  // `metadata_unavailable` no longer means every node's metadata is
+  // unwritable: only that this node is still joining.
+  it('is walked to the next node, which may have one, and charged nothing', async () => {
+    const { failureBlamesEndpoint, retryableEndpointFailure } = await import('../cluster/endpointFailure.js');
+    const refusal = Object.assign(new Error('metadata snapshot not yet available'), { status: 503, code: 'metadata_unavailable' });
+    expect(retryableEndpointFailure(refusal)).toBe(true);
+    expect(failureBlamesEndpoint(refusal)).toBe(false);
   });
 });
 

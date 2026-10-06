@@ -1,3 +1,5 @@
+import { machaCoreKey } from '../runtime/storageKeys.js';
+import { readAdopted } from '../state/storage.js';
 import { machaHost } from '../runtime/host.js';
 import type { StorageLike } from '../state/storage.js';
 import { isSessionRefusal, mintSessionAnyNode, revokeSessionAnyNode, SessionAuthError, validateSessionAnyNode, type Session, type SessionCredentials } from './SessionAuth.js';
@@ -14,7 +16,8 @@ import type { EndpointRegistry } from '../cluster/EndpointRegistry.js';
  * out of tab-lifetime storage already forces one fresh mint everywhere, so the
  * key change costs nothing on top of it. Doing it later would cost a second.
  */
-const SESSION_CACHE_KEY = 'macha.session.v1';
+const SESSION_CACHE_KEY = machaCoreKey('session');
+const LEGACY_SESSION_CACHE_KEYS = ['macha.session.v1'];
 const RETRY_AFTER_MINT_FAILURE_MS = 10_000;
 /**
  * How far before the server-declared expiry to re-mint rather than wait to be
@@ -467,6 +470,7 @@ export class SessionManager implements AuthenticatedFetch {
     this.refreshTimer = undefined;
     try {
       this.storage?.removeItem(SESSION_CACHE_KEY);
+      for (const legacy of LEGACY_SESSION_CACHE_KEYS) this.storage?.removeItem(legacy);
     } catch {
       // An unwritable store cannot keep us signed in: the in-memory token is
       // already gone, and a stale cached one is rejected on the next reload.
@@ -599,7 +603,7 @@ export class SessionManager implements AuthenticatedFetch {
   }
 
   private loadCachedSession(): Session | undefined {
-    const raw = this.storage?.getItem(SESSION_CACHE_KEY);
+    const raw = this.storage ? readAdopted(this.storage, SESSION_CACHE_KEY, LEGACY_SESSION_CACHE_KEYS) : null;
     if (!raw) return undefined;
     try {
       const parsed = JSON.parse(raw) as Partial<Session>;

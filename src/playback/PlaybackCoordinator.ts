@@ -289,12 +289,32 @@ export interface PlaybackInstructionReport {
  */
 const FACTS_ATTEMPT_BUDGET = 3;
 
+
+/**
+ * How often a playing coordinator asks the node whether its session is still
+ * there, so a reap, a DELETE or a node restart is caught within one interval
+ * whether or not the player reports a failure. Measured on the Android TV set
+ * 2026-09-23: 66 s from a DELETE to the player's fatal.
+ *
+ * Tom, 2026-10-04: the exception to "never on a timer". It holds only while
+ * the viewer is playing, when segment fetches already keep the session and a
+ * check pins nothing more; paused, nothing is sent (`SERVER_SESSION_IDLE_MS`).
+ * One small GET per interval per playing viewer. A guess, stated as one.
+ */
+export const SESSION_LIVENESS_CHECK_MS = 15_000;
+
 export interface PlaybackCoordinatorOptions {
   media: MediaSummary;
   player: Player;
   resolver: PlaybackResolver;
   capabilities: () => Promise<PlaybackCapabilities>;
   initialPositionMs: number;
+  /**
+   * Start paused: the first source loads paused, and nothing plays until the
+   * viewer does. Tom, 2026-10-05: a television woken from standby into the
+   * player comes back where it stopped, paused, with the chrome on Play.
+   */
+  initialPaused?: boolean;
   initialPreferences?: PlaybackPreferencesUpdate;
   /**
    * What the media is, and what the node can do with it, for choosing an
@@ -1155,6 +1175,10 @@ export class PlaybackCoordinator {
    */
   private pendingReplacement?: PlaybackSession;
   private pendingReplacementTimer?: ReturnType<typeof setTimeout>;
+  /** The next liveness check; see `SESSION_LIVENESS_CHECK_MS`. */
+  private livenessTimer?: ReturnType<typeof setTimeout>;
+  /** The check in flight, aborted on close. */
+  private livenessProbe?: AbortController;
 
   /**
    * When the last player event landed, on the duration clock.
@@ -1178,7 +1202,7 @@ export class PlaybackCoordinator {
     this.log = createClientLogger('playback.coordinator', { mediaId: options.media.id });
     const initialPositionMs = Math.max(0, options.initialPositionMs);
     this.snapshot = {
-      intent: { positionMs: initialPositionMs, paused: false },
+      intent: { positionMs: initialPositionMs, paused: options.initialPaused ?? false },
       event: {
         positionMs: initialPositionMs,
         durationMs: options.media.durationMs ?? 0,
@@ -1211,8 +1235,62 @@ export class PlaybackCoordinator {
   }
 
   start(): Promise<void> {
-    if (!this.startPromise) this.startPromise = this.startInternal();
+    if (!this.startPromise) {
+      this.startPromise = this.startInternal().then(() => this.scheduleLivenessCheck());
+    }
     return this.startPromise;
+  }
+
+  /**
+   * Arm the next liveness check, replacing any armed one. Only where the
+   * resolver can both ask and regenerate, since an answer of "gone" is acted
+   * on through `beginMissingSessionRecovery`.
+   */
+  private scheduleLivenessCheck(): void {
+    if (this.livenessTimer !== undefined) clearTimeout(this.livenessTimer);
+    this.livenessTimer = undefined;
+    const resolver = this.options.resolver;
+    if (this.disposed || !resolver.sessionAlive || !resolver.regenerate) return;
+    this.livenessTimer = setTimeout(() => {
+      this.livenessTimer = undefined;
+      void this.checkLiveness().finally(() => this.scheduleLivenessCheck());
+    }, SESSION_LIVENESS_CHECK_MS);
+  }
+
+  /**
+   * Ask once whether the session core owns is still there, if the viewer is
+   * playing and nothing is already recovering it.
+   *
+   * Only "gone" is acted on, and through the same path as a player's
+   * `not-found`, which asks again before regenerating. An unanswered check is
+   * not evidence: the player is still the witness for a node that is down.
+   */
+  private async checkLiveness(): Promise<void> {
+    const { intent, event, fatalError } = this.snapshot;
+    if (this.disposed || fatalError || intent.paused || event.paused || event.ended) return;
+    if (this.failoverPromise || this.regenerationPromise || this.pendingReplacement) return;
+    const session = this.serverSession ?? this.snapshot.session;
+    if (!session) return;
+    const controller = new AbortController();
+    this.livenessProbe = controller;
+    let alive: boolean;
+    try {
+      alive = await this.options.resolver.sessionAlive!(session.sessionId, controller.signal);
+    } catch (error) {
+      if (!controller.signal.aborted) this.log.debug('session-liveness-check-unanswered', { sessionId: session.sessionId, error });
+      return;
+    } finally {
+      if (this.livenessProbe === controller) this.livenessProbe = undefined;
+    }
+    if (alive || this.disposed) return;
+    // Replaced while the question was out: the answer is about a session
+    // core no longer owns.
+    if ((this.serverSession ?? this.snapshot.session)?.sessionId !== session.sessionId) return;
+    this.log.warn('session-gone-on-liveness-check', { sessionId: session.sessionId, endpoint: session.endpoint, positionMs: this.snapshot.intent.positionMs });
+    this.beginMissingSessionRecovery(
+      new PlaybackSourceError(`Session ${session.sessionId} was gone at a liveness check while playing.`, 'not-found'),
+      false,
+    );
   }
 
   /**
@@ -1228,6 +1306,25 @@ export class PlaybackCoordinator {
   private chosenInstruction?: PlaybackInstruction;
   private substitutionReportedFor?: string;
   private unclassifiedReportedFor?: string;
+
+  /**
+   * One lookup. Its retries are the supplier's: core's own facts lookup
+   * retries a failure itself (`FACTS_RETRY_DELAYS_MS` in
+   * `ClusterPlaybackFactsApi`), for every caller, so retrying here as well
+   * would multiply them.
+   */
+  private async lookUpFacts(): Promise<readonly FileFacts[] | undefined> {
+    try {
+      const facts = filesFrom(await this.options.facts?.(this.options.media));
+      this.factsError = undefined;
+      return facts;
+    } catch (error: unknown) {
+      // Kept, not swallowed: a thrown lookup and an absent supplier both
+      // yield undefined, and they are not the same thing at all.
+      this.factsError = error;
+      return undefined;
+    }
+  }
 
   private facts(): Promise<readonly FileFacts[] | undefined> {
     // Cached for this generation so a viewer can toggle the mode control
@@ -1251,14 +1348,7 @@ export class PlaybackCoordinator {
     // facts call that failed 18 ms after load, and a picture that never
     // recovered even once the cluster was answering perfectly.
     if (this.cachedFacts) return this.cachedFacts;
-    const attempt = Promise.resolve(this.options.facts?.(this.options.media))
-      .then(filesFrom)
-      .catch((error: unknown) => {
-        // Kept, not swallowed: a thrown lookup and an absent supplier both
-        // yield undefined, and they are not the same thing at all.
-        this.factsError = error;
-        return undefined;
-      });
+    const attempt = this.lookUpFacts();
     this.cachedFacts = attempt;
     void attempt.then((facts) => {
       if (facts !== undefined) this.factsSeen = facts;
@@ -1834,6 +1924,10 @@ export class PlaybackCoordinator {
     const ownedAtClose = this.serverSession ?? this.snapshot.session;
     if (this.pendingReplacementTimer !== undefined) clearTimeout(this.pendingReplacementTimer);
     this.pendingReplacementTimer = undefined;
+    if (this.livenessTimer !== undefined) clearTimeout(this.livenessTimer);
+    this.livenessTimer = undefined;
+    this.livenessProbe?.abort(abortError('Playback coordinator closed'));
+    this.livenessProbe = undefined;
     // Only a decision, never a session — see `discardPendingReplacement`. The
     // shape this replaced had a live generation here holding the node's only
     // transcode slot, which had to be closed explicitly or leaked for thirty

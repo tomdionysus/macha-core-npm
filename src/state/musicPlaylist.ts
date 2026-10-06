@@ -1,15 +1,18 @@
 import type { MediaSummary } from '../types.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { savedRow, savedTitle, type SavedTitle } from './savedTitle.js';
+import { readAdoptedJson, removeAdopted, type StorageLike } from './storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface MusicPlaylistEntry {
   entryId: string;
-  track: MediaSummary;
+  /** Slimmed to what a row needs; see `SavedTitle`. */
+  track: SavedTitle;
 }
 
-function validTrack(value: unknown): value is MediaSummary {
+function validTrack(value: unknown): value is SavedTitle {
   if (!value || typeof value !== 'object') return false;
-  const item = value as Partial<MediaSummary>;
+  const item = value as Partial<SavedTitle>;
   return item.kind === 'track' && typeof item.id === 'string' && typeof item.title === 'string' && Array.isArray(item.mediaIds);
 }
 
@@ -23,15 +26,33 @@ function newEntryId(index: number): string {
   return `${Date.now().toString(36)}-${index.toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+/**
+ * A single unnamed list of tracks, in one row. Entries are `SavedTitle`s, and
+ * a change that would take the row past `SAVED_ROW_LIMIT_BYTES` throws
+ * `MachaSavedRowLimitError` and saves nothing, because a row larger than
+ * Android's read window cannot be read back. `PlaylistStore` is the
+ * collection, with a row per playlist.
+ */
+/** Where `MusicPlaylistStore` keeps a client's list, and its names before 2026-10-05. */
+export function musicPlaylistKey(clientId: string): string {
+  return machaClientKey(clientId, 'musicPlaylist');
+}
+
+export function legacyMusicPlaylistKeys(clientId: string): readonly string[] {
+  return [`macha.musicPlaylist.v1.${clientId}`];
+}
+
 export class MusicPlaylistStore {
   private readonly key: string;
+  private readonly legacyKeys: readonly string[];
 
   constructor(clientId: string, private readonly storage: StorageLike = machaHost().storage) {
-    this.key = `macha.musicPlaylist.v1.${clientId}`;
+    this.key = musicPlaylistKey(clientId);
+    this.legacyKeys = legacyMusicPlaylistKeys(clientId);
   }
 
   load(): MusicPlaylistEntry[] {
-    return readValidatedJson(this.storage, this.key, isValidPlaylist) ?? [];
+    return readAdoptedJson(this.storage, this.key, this.legacyKeys, isValidPlaylist) ?? [];
   }
 
   add(tracks: MediaSummary[]): MusicPlaylistEntry[] {
@@ -61,23 +82,28 @@ export class MusicPlaylistStore {
   }
 
   clear(): MusicPlaylistEntry[] {
-    this.storage.removeItem(this.key);
+    removeAdopted(this.storage, this.key, this.legacyKeys);
     return [];
   }
 
   private entriesFor(tracks: MediaSummary[]): MusicPlaylistEntry[] {
     return tracks.filter((track) => track.kind === 'track').map((track, index) => ({
       entryId: newEntryId(index),
-      track,
+      track: savedTitle(track),
     }));
   }
 
   private save(entries: MusicPlaylistEntry[]): MusicPlaylistEntry[] {
     if (entries.length === 0) {
-      this.storage.removeItem(this.key);
+      removeAdopted(this.storage, this.key, this.legacyKeys);
       return [];
     }
-    return writeJson(this.storage, this.key, entries);
+    const saved = entries.map((entry) => ({ ...entry, track: savedTitle(entry.track) }));
+    this.storage.setItem(this.key, savedRow(this.key, saved));
+    // `replace` writes without reading, so an old key not yet adopted would
+    // otherwise linger under the new one.
+    for (const legacy of this.legacyKeys) this.storage.removeItem(legacy);
+    return saved;
   }
 }
 

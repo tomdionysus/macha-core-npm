@@ -18,8 +18,9 @@ import { LIVENESS_PATH } from '../api/serverConnection.js';
 const LEGACY_PROBE_PATH = '/api/v1/catalogue/status';
 import { machaHost } from '../runtime/host.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
+import { ENDPOINT_HEALTH_INTERVAL_MS } from './healthCycle.js';
 
-export const ENDPOINT_HEALTH_INTERVAL_MS = 10_000;
+export { ENDPOINT_HEALTH_INTERVAL_MS };
 
 const log = createClientLogger('cluster.health');
 
@@ -308,6 +309,14 @@ export async function discoverClusterEndpoints(
     for (const node of nodes) {
       const name = typeof node.node_name === 'string' && node.node_name.trim() ? node.node_name : node.host;
       if (typeof node.id === 'string' && typeof name === 'string') registry.recordNodeName(node.id, name);
+      // Ranks a node the cluster calls offline behind every node in good
+      // standing, until this client reaches it itself (see `lapsed`). Its
+      // configured address learns its id from the node's own last stated
+      // `api_endpoint`, since a node that is down never answers to say it.
+      if (typeof node.id === 'string' && typeof node.state === 'string') {
+        if (node.state !== 'online' && node.api_endpoint?.includes('://')) registry.claimNodeId(node.api_endpoint, node.id);
+        registry.recordNodeState(node.id, node.state);
+      }
     }
     const observedAt = machaHost().now();
     for (const node of online) {
@@ -364,7 +373,9 @@ export async function probeKnownEndpoints(
   auth: AuthenticatedFetch,
   signal: AbortSignal,
 ): Promise<number> {
-  const endpoints = registry.snapshot().map(({ endpoint }) => endpoint);
+  // An endpoint this host cannot reach at all is not probed: the request
+  // would never leave, and its failure is not evidence about the node.
+  const endpoints = registry.snapshot().filter(({ blockedByHost }) => !blockedByHost).map(({ endpoint }) => endpoint);
   let reachable = 0;
   await Promise.all(endpoints.map(async (endpoint) => {
     // The lifecycle signal governs whether this result is still publishable;

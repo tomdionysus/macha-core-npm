@@ -13,12 +13,51 @@ import type {
   MatchSearchResult,
   ProviderArtworkOption,
   ProviderArtworkRole,
+  ProviderReleaseTrack,
+  FileContentDeletion,
+  TitleFileRemoval,
+  TitleFileUnmatch,
   ProviderMatchRef,
   ProviderSearchKind,
   ProviderSearchResult,
   UnmatchedDetail,
   UnmatchedFile,
 } from './ManageApi.js';
+
+/**
+ * The budget for a management read that makes the node do real work: listing
+ * unmatched files (about 200 KB), one file's detail, and its prospective
+ * matches. Measured by the web client on 2026-10-01: 18 s on fi-1 at worst,
+ * 2.3 s a moment later, 1 to 6 s on gbni-1. Under `DEFAULT_REQUEST_TIMEOUT_MS`
+ * the slowest of those failed on every node in turn. 30 s is the worst
+ * measured with two thirds again as margin; if a node is measured past it,
+ * move the derivation, not the number.
+ *
+ * **Every management write runs under it too.** A node runs management
+ * writes one at a time, each its own metadata commit of 2 to 3 s, so the Nth
+ * of a burst answers after about N times that. On 2026-10-05 a burst of 13
+ * unmatched deletes all succeeded, answering at 3.7 s up to 24.1 s, and under
+ * the 8 s default 11 were reported as not deleted. A burst longer than this
+ * budget still times out: send writes one after another.
+ */
+export const MANAGE_WORK_TIMEOUT_MS = 30_000;
+
+const MUSICBRAINZ_RELEASE_REF = 'musicbrainz:release:';
+
+function removedIds(response: { removed_item_ids?: unknown } | undefined): string[] {
+  const ids = response?.removed_item_ids;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+}
+
+function titleWent(removedItemIds: readonly string[], itemId: string | undefined): boolean {
+  return itemId === undefined ? removedItemIds.length > 0 : removedItemIds.includes(itemId);
+}
+
+/** `/a b/c.mkv` as the files route takes it: each segment percent-encoded, the slashes kept. */
+function encodedFilePath(path: string): string {
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  return `/${segments.map(encodeURIComponent).join('/')}`;
+}
 
 export class MachaManageApiError extends Error {
   constructor(
@@ -41,19 +80,19 @@ export class MachaManageApi implements ManageApi {
   }
 
   async unmatched(): Promise<UnmatchedFile[]> {
-    const response = await this.request<{ items: UnmatchedFile[] }>('/api/v1/manage/unmatched', { method: 'GET', cache: 'no-store' });
+    const response = await this.request<{ items: UnmatchedFile[] }>('/api/v1/manage/unmatched', { method: 'GET', cache: 'no-store' }, MANAGE_WORK_TIMEOUT_MS);
     return envelopeArray<UnmatchedFile>(response, 'items', (message) => (
       new MachaManageApiError(message, 502, 'invalid_response')
     ));
   }
 
   unmatchedDetail(id: string): Promise<UnmatchedDetail> {
-    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}`, { method: 'GET' });
+    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}`, { method: 'GET' }, MANAGE_WORK_TIMEOUT_MS);
   }
 
   prospectiveMatches(id: string, query?: string): Promise<MatchSearchResult> {
     const qs = queryString([['q', query]]);
-    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}/matches${qs ? `?${qs}` : ''}`, { method: 'GET' });
+    return this.request(`/api/v1/manage/unmatched/${encodeURIComponent(id)}/matches${qs ? `?${qs}` : ''}`, { method: 'GET' }, MANAGE_WORK_TIMEOUT_MS);
   }
 
   async retry(id: string): Promise<void> {
@@ -105,6 +144,18 @@ export class MachaManageApi implements ManageApi {
     return Array.isArray(response?.options) ? response.options : [];
   }
 
+  async providerReleaseTracks(ref: string): Promise<ProviderReleaseTrack[]> {
+    const mbid = ref.startsWith(MUSICBRAINZ_RELEASE_REF) ? ref.slice(MUSICBRAINZ_RELEASE_REF.length) : '';
+    if (!mbid) throw new MachaManageApiError(`Not a MusicBrainz release reference: ${ref}.`, 400, 'bad_ref');
+    // Manage work: the node may wait its turn at the MusicBrainz gate.
+    const response = await this.request<{ tracks?: ProviderReleaseTrack[] }>(
+      `/api/v1/manage/providers/musicbrainz/releases/${encodeURIComponent(mbid)}/tracks`,
+      { method: 'GET' },
+      MANAGE_WORK_TIMEOUT_MS,
+    );
+    return Array.isArray(response?.tracks) ? response.tracks : [];
+  }
+
   async chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean } = {}): Promise<ManageCatalogueMatch> {
     const response = await this.request<{ item: ManageCatalogueMatch }>('/api/v1/manage/providers/artwork/choose', {
       method: 'POST',
@@ -112,6 +163,38 @@ export class MachaManageApi implements ManageApi {
       body: JSON.stringify({ item_id: itemId, role, option_id: optionId, ...options }),
     });
     return response.item;
+  }
+
+  async unmatchFile(itemId: string, mediaId: string, expectedRevision?: number): Promise<TitleFileUnmatch> {
+    const response = await this.request<{ item?: ManageCatalogueMatch; removed_item_ids?: string[] }>(
+      `/api/v1/catalogue/items/${encodeURIComponent(itemId)}/media/${encodeURIComponent(mediaId)}`,
+      { method: 'DELETE', ...(expectedRevision !== undefined ? { headers: { 'If-Match': `"rev-${expectedRevision}"` } } : {}) },
+    );
+    const removedItemIds = removedIds(response);
+    return {
+      titleRemoved: response?.item === undefined || removedItemIds.includes(itemId),
+      removedItemIds,
+      ...(response?.item ? { item: response.item } : {}),
+    };
+  }
+
+  async deleteFilePath(path: string, itemId?: string): Promise<TitleFileRemoval> {
+    const response = await this.request<{ removed_item_ids?: string[] }>(`/api/v1/files${encodedFilePath(path)}`, { method: 'DELETE' });
+    const removedItemIds = removedIds(response);
+    return { titleRemoved: titleWent(removedItemIds, itemId), removedItemIds };
+  }
+
+  async deleteFileContent(mediaId: string, itemId?: string): Promise<FileContentDeletion> {
+    const response = await this.request<{ paths?: string[]; removed_item_ids?: string[] }>(
+      `/api/v1/files?${queryString([['hash', mediaId]])}`,
+      { method: 'DELETE' },
+    );
+    const removedItemIds = removedIds(response);
+    return {
+      titleRemoved: titleWent(removedItemIds, itemId),
+      removedItemIds,
+      paths: Array.isArray(response?.paths) ? response.paths.filter((path): path is string => typeof path === 'string') : [],
+    };
   }
 
   async deleteUnmatched(id: string): Promise<void> {
@@ -160,12 +243,16 @@ export class MachaManageApi implements ManageApi {
     });
   }
 
-  private async request<T>(path: string, init: RequestInit): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    timeoutMs = (init.method ?? 'GET') === 'GET' ? DEFAULT_REQUEST_TIMEOUT_MS : MANAGE_WORK_TIMEOUT_MS,
+  ): Promise<T> {
     const response = await fetchWithTimeout(
       (url, requestInit) => this.auth.fetch(url, requestInit),
       `${this.baseUrl}${path}`,
       { ...init, headers: mergeRequestHeaders(init.headers, { Accept: 'application/json' }) },
-      DEFAULT_REQUEST_TIMEOUT_MS,
+      timeoutMs,
     );
     if (!response.ok) {
       const { body, wasJson } = await readResponseBody(response);

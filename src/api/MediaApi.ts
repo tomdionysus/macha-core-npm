@@ -7,7 +7,16 @@ export interface MediaSearchOptions {
   categories?: readonly SearchCategoryKey[];
 }
 
-/** UI-facing catalogue facade. It contains no playback or per-client state. */
+/**
+ * UI-facing catalogue facade. It contains no playback or per-client state.
+ *
+ * **Order.** `home`, `movies`, `shows`, `artists`, `albums` and `tracks`
+ * answer in the server's order, which from server 0.90.18 is catalogue id,
+ * not title. A host that shows one sorts it, with `orderMedia` and the sorts
+ * in `mediaSort`. `details` orders its children itself: seasons and episodes
+ * by number, albums by year then title, tracks by disc then track. `search`
+ * keeps the server's relevance ranking.
+ */
 export interface MediaApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
   home(signal?: AbortSignal): Promise<LibraryHome>;

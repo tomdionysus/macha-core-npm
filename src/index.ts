@@ -36,10 +36,15 @@ export {
   type MachaClientConfigurationOptions,
 } from './runtime/configuration.js';
 export {
+  MACHA_CORE_KEY_PREFIX,
+  MACHA_LEGACY_STORAGE_KEYS,
   MACHA_STORAGE_KEYS,
   MACHA_STORAGE_KEY_PREFIXES,
   MACHA_STORAGE_PROBE_KEY,
   isMachaStorageKey,
+  machaClientKey,
+  machaCoreKey,
+  machaStorageKeyClientId,
 } from './runtime/storageKeys.js';
 
 // ------------------------------------------------------------------ model
@@ -47,6 +52,7 @@ export * from './types.js';
 
 // -------------------------------------------------------------------- api
 export * from './api/AcquisitionApi.js';
+export * from './api/availability.js';
 export * from './api/CatalogueApi.js';
 export * from './api/ClusterAcquisitionApi.js';
 export * from './api/ClusterCatalogueApi.js';
@@ -107,6 +113,8 @@ export * from './state/continueWatching.js';
 export * from './state/continueWatchingMigration.js';
 export * from './state/musicPlaylist.js';
 export * from './state/playlist.js';
+export * from './state/savedTitle.js';
+export * from './state/artworkHedge.js';
 export * from './state/qualityPreference.js';
 export * from './state/playbackQueue.js';
 export * from './state/progressWrite.js';

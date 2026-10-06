@@ -1,5 +1,7 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary } from '../types.js';
-import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
+import { readAdoptedJson, removeAdopted, writeJson, type StorageLike } from './storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
 import { machaHost } from '../runtime/host.js';
 
 export interface PlaybackQueueState {
@@ -53,17 +55,19 @@ const PERSISTED_QUEUE_BEHIND = 50;
 
 /** The saved form of a queue: the window around the current item, the index rebased into it. */
 export function persistedQueue(state: PlaybackQueueState): PlaybackQueueState {
-  if (state.items.length <= PERSISTED_QUEUE_LIMIT) return state;
+  // Never availability, which is how things stand now: see `withoutAvailability`.
+  if (state.items.length <= PERSISTED_QUEUE_LIMIT) return { ...state, items: state.items.map(withoutAvailability) };
   const start = Math.max(0, Math.min(state.currentIndex - PERSISTED_QUEUE_BEHIND, state.items.length - PERSISTED_QUEUE_LIMIT));
   return {
     ...state,
-    items: state.items.slice(start, start + PERSISTED_QUEUE_LIMIT),
+    items: state.items.slice(start, start + PERSISTED_QUEUE_LIMIT).map(withoutAvailability),
     currentIndex: state.currentIndex - start,
   };
 }
 
 export class PlaybackQueueStore {
   private readonly key: string;
+  private readonly legacyKeys: readonly string[];
   private readonly listeners = new Set<() => void>();
   /**
    * The snapshot handed to reactive callers, held so its identity is stable
@@ -83,7 +87,8 @@ export class PlaybackQueueStore {
   private cacheLoaded = false;
 
   constructor(clientId: string, private readonly storage: StorageLike = machaHost().storage) {
-    this.key = `macha.playbackQueue.v1.${clientId}`;
+    this.key = machaClientKey(clientId, 'playbackQueue');
+    this.legacyKeys = [`macha.playbackQueue.v1.${clientId}`];
   }
 
   /** Stable between mutations, as `useSyncExternalStore` requires. */
@@ -109,7 +114,7 @@ export class PlaybackQueueStore {
   }
 
   load(): PlaybackQueueState | undefined {
-    return readValidatedJson(this.storage, this.key, validState);
+    return readAdoptedJson(this.storage, this.key, this.legacyKeys, validState);
   }
 
   /**
@@ -231,7 +236,7 @@ export class PlaybackQueueStore {
   }
 
   clear(): void {
-    this.storage.removeItem(this.key);
+    removeAdopted(this.storage, this.key, this.legacyKeys);
     this.changed();
   }
 }
