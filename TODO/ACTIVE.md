@@ -9,7 +9,7 @@ Each item says who it waits on. "Tom" means a decision, "core" means core builds
 ## Where things stand
 
 - **Branch: `develop`.** The object-ledger experiment was merged into it on 2026-10-06 (`5860da4`) and its branch deleted. `main` moves only by the release procedure, on Tom's word.
-- **Published: `0.21.0`** (2026-09-29). npm `latest`, `gitHead` `5569ddd` (`main`'s merge), tag `0.21.0` on `5773c48`. `develop` is at `1217429`, one commit past it (the traffic types).
+- **Published: `0.22.0`** (2026-10-06). npm `latest`, `gitHead` `6e78168` (`main`'s merge), tag `0.22.0` on `9fdbda4`. `develop` is fast-forwarded to `main`. Clients move to `^0.22.0` from the registry, each on Tom's word in its own session.
 - **Clients on 0.21.0 from npm:** web 0.20.0 (`main` `1fa0bc4`), Android TV 0.9.0 (`main` `263e308`), phone 0.12.0 (`main` `6c293ad`). The phone reports a later 0.13.0 at `8f95141`, not checked here.
 - **The experiment branch, past `develop`:** HEAD `83c53e9`, 1340 tests in 77 files, dist hash `cf700f02b7db`. It carries:
   - `6f4c396`, `c211268`: two server asks deferred until the experiment ends (below).
