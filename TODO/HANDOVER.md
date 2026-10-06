@@ -4,7 +4,7 @@ For the next session on `@machafoundation/core`. [ACTIVE.md](ACTIVE.md) has the 
 
 ## First things
 
-1. **Stay on `experiment/object-ledger`.** `main` and `develop` are closed until Tom says otherwise (2026-10-01). Check with `git rev-parse --abbrev-ref HEAD` before any commit.
+1. **Work on `develop`.** The experiment was merged into it on 2026-10-06 (`5860da4`) and its branch deleted. `main` moves only by the release procedure, on Tom's word. Check with `git rev-parse --abbrev-ref HEAD` before any commit.
 2. **The tree is clean and pushed**, so clients linked to it compile against what is on origin. Keep it that way: never leave a half-made change in the working tree.
 3. **Check the inbox.** Peers send work by cross-session message. Use `ListAgents` for current names; the phone session is now "Macha Phone Client".
 

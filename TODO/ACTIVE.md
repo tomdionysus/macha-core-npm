@@ -8,7 +8,7 @@ Each item says who it waits on. "Tom" means a decision, "core" means core builds
 
 ## Where things stand
 
-- **Branch: `experiment/object-ledger` only.** Tom, 2026-10-01: core works on this branch, or on branches cut from it. `main` and `develop` are closed; do not commit to, merge into or push either. The server's experiment line is `experiment/object-ledger` (step branches `-t0` and on), and its `develop` is frozen. How the experiment folds back onto `develop` before the next release is Tom's call. Ask before preparing one.
+- **Branch: `develop`.** The object-ledger experiment was merged into it on 2026-10-06 (`5860da4`) and its branch deleted. `main` moves only by the release procedure, on Tom's word.
 - **Published: `0.21.0`** (2026-09-29). npm `latest`, `gitHead` `5569ddd` (`main`'s merge), tag `0.21.0` on `5773c48`. `develop` is at `1217429`, one commit past it (the traffic types).
 - **Clients on 0.21.0 from npm:** web 0.20.0 (`main` `1fa0bc4`), Android TV 0.9.0 (`main` `263e308`), phone 0.12.0 (`main` `6c293ad`). The phone reports a later 0.13.0 at `8f95141`, not checked here.
 - **The experiment branch, past `develop`:** HEAD `83c53e9`, 1340 tests in 77 files, dist hash `cf700f02b7db`. It carries:
@@ -58,7 +58,11 @@ Gated checks, each status checked before committing: `npm run typecheck`, `npm r
 
 ## Waiting on Tom
 
-- **Merge the experiment down to `develop`?** Relayed by the server, 2026-10-06: Tom closed the object-ledger experiment there and said "Tell all clients to merge down the experiment branches to develop." Core's rule is that `main` and `develop` stay closed until Tom says so here, and what happens to `main` and the branch after is his call.
+- Nothing open from 2026-10-06.
+
+## Merged down, 2026-10-06
+
+- **The experiment is closed.** Tom, in this session: "merge everything down into develop please and remove the experiment branches". Merged `--no-ff` as `5860da4` and pushed; `experiment/object-ledger` deleted locally and on origin. `main` is untouched and moves only by the release procedure below.
 
 ## Built 2026-10-06 on Tom's word ("Yes do all")
 
