@@ -151,6 +151,20 @@ export interface TorrentPublication {
  * true. A host shows the change as pending until then, and as stale once
  * twice `refreshIntervalMs` has passed with it still false.
  */
+/**
+ * The swarm as the owning node's engine sees it (server 0.90.20). `seeds`
+ * and `peers` are what trackers report, null when none has said; they are
+ * not the job's own `seeds` and `peers`. `availability` is the copies of
+ * the torrent among connected peers and this node: below 1.0, some piece
+ * is held by no one connected, and the download cannot finish until such a
+ * peer appears.
+ */
+export interface TorrentSwarm {
+  seeds: number | null;
+  peers: number | null;
+  availability: number;
+}
+
 export interface TorrentJob {
   id: string;
   name: string;
@@ -178,6 +192,14 @@ export interface TorrentJob {
   live_as_of_unix_ms?: number | null;
   /** The node pinned at add, if any (0.64.0). */
   pinned_node_id?: string | null;
+  /**
+   * The node holding this job's ingest job, the node that ran the torrent;
+   * null while there is none (server 0.90.20, absent before). Tom asked that
+   * clients be told which node has it.
+   */
+  ingest_node_id?: string | null;
+  /** The swarm while the owning node's engine runs the torrent; null otherwise (server 0.90.20, absent before). */
+  swarm?: TorrentSwarm | null;
   /** How long after completion the job is removed; null is never (0.64.0). */
   remove_after_ms?: number | null;
   remove_at_unix_ms?: number | null;

@@ -253,3 +253,26 @@ describe('a paused add whose follow-up pause fails', () => {
     expect(result.pauseError).toBeDefined();
   });
 });
+
+describe('a torrent job\'s ingest node and swarm (server 0.90.20)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries both through the snapshot, and absent on an older node', async () => {
+    const swarm = { seeds: 12, peers: null, availability: 0.75 };
+    const jobs = [
+      { id: 't-1', node_id: 'fi-1', ingest_node_id: 'gbni-1', swarm },
+      { id: 't-2', node_id: 'fi-1' },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/status')) return jsonResponse({});
+      return jsonResponse({ jobs: url.includes('torrents') ? jobs : [] });
+    }));
+
+    const snapshot = await new MachaAcquisitionApi('').snapshot();
+
+    expect(snapshot.torrentJobs[0]).toMatchObject({ ingest_node_id: 'gbni-1', swarm });
+    expect(snapshot.torrentJobs[1]?.ingest_node_id).toBeUndefined();
+    expect(snapshot.torrentJobs[1]?.swarm).toBeUndefined();
+  });
+});
+
