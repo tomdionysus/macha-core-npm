@@ -198,6 +198,14 @@ export interface CatalogueApi {
    * `400 bad_parent_kind`). Locks the item unless `lock` is false.
    */
   patch(id: string, fields: CatalogueItemPatch, expectedRevision?: number): Promise<CatalogueItem>;
+  /**
+   * Remove the item and its descendants. From server 0.90.25 their files go
+   * straight to the unmatched list (`GET /api/v1/manage/unmatched`, result
+   * `unmatched_by_operator`), to be identified by hand; before, they were
+   * queued for an automatic rematch. `expectedRevision` is sent as
+   * `If-Match`, refused `409 catalogue_conflict` when stale (`conflict`
+   * before 0.90.25).
+   */
   clearMetadata(id: string, expectedRevision?: number): Promise<void>;
   /**
    * `filter` narrows the search on the server, before `limit` (server
