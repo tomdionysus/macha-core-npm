@@ -111,3 +111,24 @@ describe('MachaPlaybackFactsApi against server 0.58.0', () => {
     expect(facts?.operations.copyIntoFmp4).toEqual({ video: true, audio: true });
   });
 });
+
+describe('MachaPlaybackFactsApi availability (server 0.82.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("carries each file's availability (server 0.82.0), and none from an older server", async () => {
+    respond({
+      item_id: 'movie:1',
+      media: [
+        { ...entry, availability: 'unavailable', extents: 12, extents_local: 0, extents_unavailable: 12, extents_unknown: 0, surveyed_generation: 9, surveyed_unix_ms: 5 },
+        { ...entry, media_id: 'macha:def' },
+      ],
+    });
+
+    const [held, older] = await new MachaPlaybackFactsApi('http://node.test').facts({ itemId: 'movie:1' });
+
+    expect(held.availability).toEqual({
+      availability: 'unavailable', extents: 12, extentsLocal: 0, extentsUnavailable: 12, extentsUnknown: 0, surveyedGeneration: 9, surveyedUnixMs: 5,
+    });
+    expect(older).not.toHaveProperty('availability');
+  });
+});

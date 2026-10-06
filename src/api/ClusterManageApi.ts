@@ -2,7 +2,7 @@ import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type {
   IdentityAssociationResetRequest, IdentityAssociationResetResult, MachaDfsDirectory,
-  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole,
+  ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole, ProviderReleaseTrack, FileContentDeletion, TitleFileRemoval, TitleFileUnmatch,
   ProviderMatchRef, ProviderSearchKind, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
 } from './ManageApi.js';
 import { MachaManageApi } from './MachaManageApi.js';
@@ -12,9 +12,9 @@ export class ClusterManageApi implements ManageApi {
   private readonly apis = new Map<string, MachaManageApi>();
   constructor(private readonly router: ClusterEndpointRouter, private readonly auth: AuthenticatedFetch = NO_AUTH) {}
 
-  unmatched(): Promise<UnmatchedFile[]> { return this.read((api) => api.unmatched()); }
-  unmatchedDetail(id: string): Promise<UnmatchedDetail> { return this.read((api) => api.unmatchedDetail(id)); }
-  prospectiveMatches(id: string, query?: string): Promise<MatchSearchResult> { return this.read((api) => api.prospectiveMatches(id, query)); }
+  unmatched(): Promise<UnmatchedFile[]> { return this.readWork((api) => api.unmatched()); }
+  unmatchedDetail(id: string): Promise<UnmatchedDetail> { return this.readWork((api) => api.unmatchedDetail(id)); }
+  prospectiveMatches(id: string, query?: string): Promise<MatchSearchResult> { return this.readWork((api) => api.prospectiveMatches(id, query)); }
   retry(id: string): Promise<void> { return this.write((api) => api.retry(id)); }
   match(id: string, catalogueItemId: string): Promise<void> { return this.write((api) => api.match(id, catalogueItemId)); }
   manual(id: string, metadata: ManualMetadata): Promise<ManualMetadataResult> { return this.write((api) => api.manual(id, metadata)); }
@@ -25,10 +25,17 @@ export class ClusterManageApi implements ManageApi {
   providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]> {
     return this.read((api) => api.providerArtwork(ref, role, numbers));
   }
+
+  providerReleaseTracks(ref: string): Promise<ProviderReleaseTrack[]> {
+    return this.read((api) => api.providerReleaseTracks(ref));
+  }
   chooseArtwork(itemId: string, role: ProviderArtworkRole, optionId: string, options?: { ref?: string; season_number?: number; episode_number?: number; lock?: boolean }): Promise<ManageCatalogueMatch> {
     return this.write((api) => api.chooseArtwork(itemId, role, optionId, options));
   }
   deleteUnmatched(id: string): Promise<void> { return this.write((api) => api.deleteUnmatched(id)); }
+  unmatchFile(itemId: string, mediaId: string, expectedRevision?: number): Promise<TitleFileUnmatch> { return this.write((api) => api.unmatchFile(itemId, mediaId, expectedRevision)); }
+  deleteFilePath(path: string, itemId?: string): Promise<TitleFileRemoval> { return this.write((api) => api.deleteFilePath(path, itemId)); }
+  deleteFileContent(mediaId: string, itemId?: string): Promise<FileContentDeletion> { return this.write((api) => api.deleteFileContent(mediaId, itemId)); }
   browse(path: string): Promise<MachaDfsDirectory> { return this.read((api) => api.browse(path)); }
   mkdir(path: string): Promise<void> { return this.write((api) => api.mkdir(path)); }
   rename(path: string, destination: string): Promise<void> { return this.write((api) => api.rename(path, destination)); }
@@ -42,6 +49,11 @@ export class ClusterManageApi implements ManageApi {
 
   private async read<T>(operation: (api: MachaManageApi) => Promise<T>): Promise<T> {
     return this.router.request((endpoint) => operation(this.api(endpoint)));
+  }
+
+  /** A read that makes the node do real work: a slow node is held, not walked past (`MANAGE_WORK_TIMEOUT_MS`). */
+  private async readWork<T>(operation: (api: MachaManageApi) => Promise<T>): Promise<T> {
+    return this.router.request((endpoint) => operation(this.api(endpoint)), undefined, { holdOnTimeout: true });
   }
 
   private async write<T>(operation: (api: MachaManageApi) => Promise<T>): Promise<T> {

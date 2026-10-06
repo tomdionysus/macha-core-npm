@@ -76,6 +76,22 @@ export function isGatewayConnectionFailure(response: Response, bodyWasJson: bool
   return (response.status === 500 || response.status === 503) && !bodyWasJson;
 }
 
+/**
+ * A request that got no answer within its budget.
+ *
+ * Still a `MachaConnectionError`, so everything that fails over on one does
+ * here too. Told apart for the one case where it means something else: a node
+ * the health cycle hears from, running out of time on a read that makes it do
+ * real work, is working rather than gone (see `ClusterEndpointRouter.request`'s
+ * `holdOnTimeout`).
+ */
+export class MachaRequestTimeoutError extends MachaConnectionError {
+  constructor(message: string, public readonly timeoutMs: number) {
+    super(message);
+    this.name = 'MachaRequestTimeoutError';
+  }
+}
+
 export function serverUnreachable(): MachaConnectionError {
   return new MachaConnectionError();
 }

@@ -1,7 +1,9 @@
+import { withoutAvailability } from '../api/availability.js';
 import type { MediaSummary, PlaybackProgress, PlaybackResumeState } from '../types.js';
 import type { PlaybackCoordinatorSnapshot } from '../playback/PlaybackCoordinator.js';
 import type { PlaybackPreferencesUpdate } from '../playback/PlaybackResolver.js';
-import type { StorageLike } from './storage.js';
+import { readAdopted, removeAdopted, type StorageLike } from './storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
 import { machaHost } from '../runtime/host.js';
 
 /**
@@ -10,7 +12,8 @@ import { machaHost } from '../runtime/host.js';
  * that did not follow it — hyphenated, unversioned, and separating the client
  * id with a colon.
  */
-const PREFIX = 'macha.continueWatching.v1.';
+/** The name before 2026-10-05, adopted on read. */
+const V1_PREFIX = 'macha.continueWatching.v1.';
 /**
  * The key this store used before it was brought into line. Read once, when the
  * current key holds nothing, so a viewer keeps their place across the upgrade.
@@ -154,7 +157,7 @@ export class ContinueWatchingStore {
     const entries = this.read().filter((entry) => entry.itemId !== progress.itemId);
 
     if (!isFinished(progress) && progress.positionMs >= MINIMUM_PROGRESS_MS) {
-      entries.unshift(progress);
+      entries.unshift(progress.media ? { ...progress, media: withoutAvailability(progress.media) } : progress);
     }
 
     const limited = entries
@@ -200,17 +203,21 @@ export class ContinueWatchingStore {
    * button.
    */
   clearAll(): void {
-    this.storage.removeItem(this.key());
-    this.storage.removeItem(`${LEGACY_PREFIX}${this.clientId}`);
+    removeAdopted(this.storage, this.key(), this.legacyKeys());
     this.changed();
   }
 
   private key(): string {
-    return `${PREFIX}${this.clientId}`;
+    return machaClientKey(this.clientId, 'continueWatching');
+  }
+
+  /** Older names, newest first. The pre-0.10.0 one has its own adoption below. */
+  private legacyKeys(): readonly string[] {
+    return [`${V1_PREFIX}${this.clientId}`, `${LEGACY_PREFIX}${this.clientId}`];
   }
 
   private read(): PlaybackProgress[] {
-    const current = this.parse(this.storage.getItem(this.key()));
+    const current = this.parse(readAdopted(this.storage, this.key(), [`${V1_PREFIX}${this.clientId}`]));
     if (current !== undefined) return current;
     // Adopt on first read rather than in a migration the caller has to
     // remember to run: nothing may read this store before it is migrated, and

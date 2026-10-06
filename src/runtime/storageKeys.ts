@@ -3,26 +3,60 @@
  *
  * **This exists because a host cannot be expected to grep a dependency.** The
  * phone client namespaces its own keys `macha.` and hydrated its store with a
- * `startsWith('macha.')` filter — which matches one of the two conventions
- * below exactly and misses the other, including the session. The token was
- * written faithfully on every launch and never read back, nothing errored,
- * nothing logged, and because a session re-mints in milliseconds the only
- * symptom was *a person* being signed out on every cold start. Nobody notices
- * that until an account actually matters.
+ * `startsWith('macha.')` filter, which matched one of core's two old
+ * conventions and missed the other, the session included. The token was
+ * written on every launch and never read back, and the only symptom was a
+ * person signed out on every cold start.
  *
- * That was not a careless filter. It was a foreseeable consequence of core
- * shipping two conventions and naming neither.
+ * **One convention, from 2026-10-05** (Tom: "There will be a lot of version
+ * churn, it can't be brittle."):
  *
- * **There are two conventions, and that is a defect rather than a design.**
- * The state stores use dotted `macha.<name>.v<n>.<clientId>`; the runtime and
- * cluster layers use hyphenated `macha-<name>`. New keys take the dotted form.
- * The hyphenated ones are listed here as what they are — legacy — and each
- * costs a forced re-read or a lost value to rename, so they move when
- * something else already forces that cost. `macha-session` was retired to
- * `macha.session.v1` in `0.10.0` for exactly that reason: moving the session
- * out of tab-lifetime storage already forced one fresh mint everywhere, so the
- * rename rode along for nothing.
+ * - Everything core owns is under `macha.core.`, so no client key can
+ *   collide with one of core's, whatever either names next.
+ * - A key that belongs to one client id is `macha.core.client.<clientId>.<store>`,
+ *   with any row of the store after a further dot. The id sits at a fixed
+ *   place, and `machaStorageKeyClientId` reads it, so no host parses keys.
+ * - **A key never carries a version.** A store's schema version is in its
+ *   value (`version`, absent meaning 1), and a store migrates on read. A
+ *   schema change renames nothing, and no host filter has to learn it.
+ *
+ * The keys before it are listed below as legacy: each store adopts its old
+ * key on first read, moving the value to the new key and removing the old.
+ * A host that hydrates a cache by prefix must still load them until every
+ * device has run this once.
  */
+
+/** Everything this package writes from 2026-10-05 is under this prefix. */
+export const MACHA_CORE_KEY_PREFIX = 'macha.core.';
+
+const MACHA_CORE_CLIENT_PREFIX = `${MACHA_CORE_KEY_PREFIX}client.`;
+
+/** A key core owns that belongs to no client id. */
+export function machaCoreKey(name: string): string {
+  return `${MACHA_CORE_KEY_PREFIX}${name}`;
+}
+
+/** A key core owns for one client id: `macha.core.client.<clientId>.<store>`. */
+export function machaClientKey(clientId: string, store: string): string {
+  return `${MACHA_CORE_CLIENT_PREFIX}${clientId}.${store}`;
+}
+
+/**
+ * The client id a key of core's belongs to, or `undefined` for a key that
+ * belongs to none or is not core's. Reads the current convention and the
+ * legacy per-client prefixes alike, a row after the id included, so a host
+ * recovering an orphaned client id never parses keys itself.
+ */
+export function machaStorageKeyClientId(key: string): string | undefined {
+  if (key.startsWith(MACHA_CORE_CLIENT_PREFIX)) {
+    const id = key.slice(MACHA_CORE_CLIENT_PREFIX.length).split('.')[0];
+    return id ? id : undefined;
+  }
+  const prefix = MACHA_LEGACY_CLIENT_KEY_PREFIXES.find((candidate) => key.startsWith(candidate));
+  if (!prefix) return undefined;
+  const id = key.slice(prefix.length).split('.')[0];
+  return id ? id : undefined;
+}
 
 /**
  * Retired and deliberately absent: `macha.volume.v1.`. `0.11.0` removed
@@ -33,8 +67,22 @@
  * **reads** it.
  */
 
-/** Keys that are complete in themselves. */
+/** Core's keys that belong to no client id. */
 export const MACHA_STORAGE_KEYS = [
+  machaCoreKey('session'),
+  machaCoreKey('clientId'),
+  machaCoreKey('bootstrapEndpoints'),
+  machaCoreKey('discoveredEndpoints'),
+  machaCoreKey('qualityPreference'),
+  machaCoreKey('artworkHost'),
+] as const;
+
+/**
+ * Keys before 2026-10-05, each adopted into its `macha.core.` key on first
+ * read and then removed. `macha-server-url` and `macha-server-endpoints-v1`
+ * are older still, adopted into the bootstrap endpoints.
+ */
+export const MACHA_LEGACY_STORAGE_KEYS = [
   'macha.session.v1',
   'macha-client-id',
   'macha-server-url',
@@ -42,28 +90,27 @@ export const MACHA_STORAGE_KEYS = [
   'macha-bootstrap-endpoints-v1',
   'macha-discovered-endpoints-v1',
   'macha.qualityPreference.v1',
+  'macha.artworkHost.v1',
 ] as const;
 
-/**
- * Keys completed at runtime by appending a client id (or, for bandwidth, an
- * endpoint-scoped record). A host matching these must match by prefix.
- */
-export const MACHA_STORAGE_KEY_PREFIXES = [
+/** The per-client keys before 2026-10-05, each followed by a client id. */
+const MACHA_LEGACY_CLIENT_KEY_PREFIXES = [
   'macha.continueWatching.v1.',
   'macha.playbackQueue.v1.',
   'macha.playlists.v1.',
   'macha.musicPlaylist.v1.',
   'macha-client-bandwidth:',
-  /**
-   * Continue Watching's pre-`0.10.0` key. Still read when the current key holds
-   * nothing, and deliberately never deleted — see `state/continueWatching.ts`,
-   * which keeps it as the way back from a rollback.
-   *
-   * Listed because this package still owns it. A host clearing Macha's data on
-   * `isMachaStorageKey` would otherwise leave it behind, and a host auditing
-   * what is in its store would read it as some other application's.
-   */
+  /** Continue Watching's pre-`0.10.0` key, adopted the same way. */
   'macha-client-progress:',
+] as const;
+
+/**
+ * Prefixes a host matching core's keys must match by: the current one and
+ * the legacy per-client ones.
+ */
+export const MACHA_STORAGE_KEY_PREFIXES = [
+  MACHA_CORE_KEY_PREFIX,
+  ...MACHA_LEGACY_CLIENT_KEY_PREFIXES,
 ] as const;
 
 /**
@@ -113,5 +160,6 @@ export const MACHA_STORAGE_PROBE_KEY = 'macha-storage-probe';
 export function isMachaStorageKey(key: string): boolean {
   if (key === MACHA_STORAGE_PROBE_KEY) return true;
   if ((MACHA_STORAGE_KEYS as readonly string[]).includes(key)) return true;
+  if ((MACHA_LEGACY_STORAGE_KEYS as readonly string[]).includes(key)) return true;
   return MACHA_STORAGE_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }

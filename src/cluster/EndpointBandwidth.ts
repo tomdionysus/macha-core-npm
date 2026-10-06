@@ -1,7 +1,9 @@
 import { machaHost } from '../runtime/host.js';
-import type { StorageLike } from '../state/storage.js';
+import { readAdopted, type StorageLike } from '../state/storage.js';
+import { machaClientKey } from '../runtime/storageKeys.js';
 
-const PREFIX = 'macha-client-bandwidth:';
+/** The name before 2026-10-05, adopted on read. */
+const LEGACY_PREFIX = 'macha-client-bandwidth:';
 
 /**
  * Below this, a transfer measures round-trip time and server handler cost, not
@@ -183,7 +185,7 @@ export class EndpointBandwidth {
   private readStored(): Record<string, unknown> | undefined {
     try {
       const key = this.key();
-      const value = key === undefined ? null : this.storage?.getItem(key);
+      const value = key === undefined || !this.storage ? null : readAdopted(this.storage, key, [this.legacyKey()!]);
       if (!value) return undefined;
       const parsed = JSON.parse(value) as unknown;
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -205,9 +207,18 @@ export class EndpointBandwidth {
     }
   }
 
+  private id(): string | undefined {
+    return typeof this.clientId === 'function' ? this.clientId() : this.clientId;
+  }
+
   private key(): string | undefined {
-    const id = typeof this.clientId === 'function' ? this.clientId() : this.clientId;
-    return id ? `${PREFIX}${id}` : undefined;
+    const id = this.id();
+    return id ? machaClientKey(id, 'bandwidth') : undefined;
+  }
+
+  private legacyKey(): string | undefined {
+    const id = this.id();
+    return id ? `${LEGACY_PREFIX}${id}` : undefined;
   }
 }
 

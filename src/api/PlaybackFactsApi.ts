@@ -1,3 +1,4 @@
+import type { ExtentAvailability } from './availability.js';
 import type { MediaTechnicalProfile } from '../types.js';
 
 /**
@@ -50,6 +51,8 @@ export interface PlaybackMediaFacts extends PlaybackDecisionFacts {
   path?: string;
   sizeBytes?: number;
   operations: PlaybackOperations;
+  /** How much of this file the reachable cluster holds (server 0.82.0); absent from an older server. */
+  availability?: ExtentAvailability;
 }
 
 /**

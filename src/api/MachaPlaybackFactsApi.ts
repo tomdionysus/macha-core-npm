@@ -1,3 +1,4 @@
+import { extentAvailability } from './availability.js';
 import { mergeRequestHeaders, normalizeBaseUrl, queryString, readResponseBody } from './httpCompat.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { parseErrorEnvelope } from './errorEnvelope.js';
@@ -136,6 +137,7 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
         sizeBytes: typeof item.size === 'number' ? item.size : undefined,
         streams: streams.map(mapStream),
       };
+      const availability = extentAvailability(item);
       return [{
         mediaId,
         itemId: typeof record?.item_id === 'string' ? record.item_id : undefined,
@@ -143,6 +145,7 @@ export class MachaPlaybackFactsApi implements PlaybackFactsApi {
         sizeBytes: profile.sizeBytes,
         profile,
         operations: mapOperations(item.operations, profile.streams),
+        ...(availability ? { availability } : {}),
       }];
     });
     return { files, unavailable };

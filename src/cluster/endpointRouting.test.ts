@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
-import { ClusterEndpointRouter } from './endpointRouting.js';
-import { reportClusterReachable } from '../api/serverConnection.js';
+import { ClusterEndpointRouter, READ_YOUR_WRITES_MS } from './endpointRouting.js';
+import { configureMachaHost, resetMachaHost } from '../runtime/host.js';
+import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
+import { MachaClusterRouteError, mutationOutcomeUnknown } from './endpointFailure.js';
+import { MachaApiError } from '../api/MachaCatalogueApi.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
 beforeEach(() => {
@@ -222,5 +225,188 @@ describe('ClusterEndpointRouter', () => {
 
       expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
     });
+  });
+
+  describe('holdOnTimeout, for a read that makes the node work', () => {
+    const timeout = () => new MachaRequestTimeoutError('exceeded', 30_000);
+
+    it('stops at a node in good standing that ran out of time, says slow, and charges nothing', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async () => { throw timeout(); });
+
+      const error = await router.request(operation, undefined, { holdOnTimeout: true }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(MachaClusterRouteError);
+      expect(error).toMatchObject({ slow: true, unreachable: false, endpointIds: ['http://a'] });
+      expect(operation).toHaveBeenCalledTimes(1);
+      expect(registry.snapshot()[0].health.consecutiveFailures).toBe(0);
+    });
+
+    it('walks on past a lapsed node that times out', async () => {
+      let now = 0;
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+      for (; now <= 30_000; now += 10_000) {
+        registry.recordProbeFailure('http://a');
+        registry.recordProbeFailure('http://b');
+      }
+      registry.recordProbeSuccess('http://b');
+      for (; now <= 70_000; now += 10_000) registry.recordProbeFailure('http://b');
+      // Both lapsed: neither is in good standing, so a timeout is no evidence of work.
+      expect(registry.candidates().every(({ lapsed }) => lapsed)).toBe(true);
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw timeout();
+        return endpoint.id;
+      });
+
+      await expect(router.request(operation, undefined, { holdOnTimeout: true })).resolves.toBe('http://b');
+    });
+
+    it('still walks on a refused connection, and on a timeout without the option', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const refused = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw new TypeError('connection refused');
+        return endpoint.id;
+      });
+      await expect(router.request(refused, undefined, { holdOnTimeout: true })).resolves.toBe('http://b');
+
+      const slow = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://b') throw timeout();
+        return endpoint.id;
+      });
+      await expect(router.request(slow)).resolves.toBe('http://a');
+    });
+  });
+
+  describe('a failure that is not the node\'s', () => {
+    // The Android TV client, 2026-09-24: every node answered 503
+    // catalogue_unavailable while playback answered, and Home reported every
+    // endpoint failed. The server gives that code no scope.
+    const catalogueDown = () => new MachaApiError('catalogue metadata durability unavailable', 503, 'catalogue_unavailable');
+    const failures = (registry: EndpointRegistry) => registry.snapshot().map(({ health }) => health.consecutiveFailures);
+
+    it('walks on past catalogue_unavailable without charging any node', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const operation = vi.fn(async (endpoint: { id: string }) => {
+        if (endpoint.id === 'http://a') throw catalogueDown();
+        return endpoint.id;
+      });
+      await expect(router.request(operation)).resolves.toBe('http://b');
+      await expect(router.find(async (endpoint) => { if (endpoint.id === 'http://a') throw catalogueDown(); return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('charges neither a mutation\'s node nor an advisory read\'s for it', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      await expect(router.mutation(async () => { throw catalogueDown(); })).rejects.toThrow();
+      await expect(router.request(async () => { throw catalogueDown(); }, undefined, { advisory: true })).rejects.toThrow();
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('does not charge an account-scoped refusal on a walk, as its comment always said', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const limit = new MachaApiError('limit', 429, 'account_session_limit');
+      await expect(router.request(async (endpoint) => { if (endpoint.id === 'http://a') throw limit; return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([0, 0]);
+    });
+
+    it('still charges a node\'s own 5xx', async () => {
+      const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+      const router = new ClusterEndpointRouter(registry);
+      const broken = new MachaApiError('boom', 500, 'internal_error');
+      await expect(router.request(async (endpoint) => { if (endpoint.id === 'http://a') throw broken; return endpoint.id; })).resolves.toBe('http://b');
+      expect(failures(registry)).toEqual([1, 0]);
+    });
+  });
+});
+
+describe('a write that ran out of time', () => {
+  // 2026-10-05: 13 unmatched deletes all succeeded on fi-1, answering from
+  // 3.7 s to 24.1 s, while the client reported 11 as not deleted and charged
+  // the node for each.
+  it('charges the node nothing, and says the outcome is unknown rather than failed', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+
+    const outcome = await router.mutation(async () => {
+      throw new MachaRequestTimeoutError('Request exceeded 8000 ms.', 8000);
+    }).catch((error: unknown) => error);
+
+    expect(mutationOutcomeUnknown(outcome)).toBe(true);
+    expect(registry.candidates().map((candidate) => candidate.health.consecutiveFailures ?? 0)).toEqual([0, 0]);
+    expect(registry.candidates()[0]?.endpoint.id).toBe('http://a');
+  });
+
+  it('still charges a write the node refused for its own reasons', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+
+    const outcome = await router.mutation(async () => {
+      throw new MachaApiError('unavailable', 503);
+    }).catch((error: unknown) => error);
+
+    expect(mutationOutcomeUnknown(outcome)).toBe(false);
+    expect(registry.snapshot().find((candidate) => candidate.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(1);
+  });
+});
+
+describe('reading back what was just written (server 0.90.0)', () => {
+  // A write is visible on the node that took it at once, and on the others a
+  // round trip later. Tom, 2026-10-05: keep the reads that follow on it.
+  let now = 0;
+  beforeEach(() => { now = 1_000; configureMachaHost({ now: () => now }); });
+  afterEach(() => resetMachaHost());
+
+  function writtenThroughA() {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']), () => now);
+    const router = new ClusterEndpointRouter(registry);
+    return { registry, router, write: () => router.mutation(async (endpoint) => endpoint.id) };
+  }
+
+  it('reads from the node that took the write, though the ranking has moved', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await expect(write()).resolves.toBe('http://a');
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
+    await expect(router.mutation(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
+  });
+
+  it('returns to the ranking once the window has passed', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.prefer('http://b');
+    now += READ_YOUR_WRITES_MS;
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://b');
+  });
+
+  it('does not hold to a writer that has failed since', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.recordFailure('http://a');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://b');
+  });
+
+  it('leaves an advisory read on the ranking', async () => {
+    const { registry, router, write } = writtenThroughA();
+    await write();
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id, undefined, { advisory: true })).resolves.toBe('http://b');
+  });
+
+  it('holds reads to a node whose write timed out, since it may have been done there', async () => {
+    const { registry, router } = writtenThroughA();
+    await router.mutation(async () => { throw new MachaRequestTimeoutError('slow', 30_000); }).catch(() => undefined);
+    registry.prefer('http://b');
+
+    await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
   });
 });

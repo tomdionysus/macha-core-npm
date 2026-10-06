@@ -795,3 +795,36 @@ describe('an album names its artist', () => {
     expect(details.albums[0]?.musicContext?.artist?.title).toBe('Artist');
   });
 });
+
+describe('availability on the media model (server 0.83.0)', () => {
+  class AvailabilityCatalogue extends FakeCatalogue {
+    override get(id: string): Promise<CatalogueItem> {
+      if (id === 'movie-partial') return Promise.resolve(catalogueItem('movie-partial', 'movie', { title: 'Partial', availability: 'partial', availability_members: null }));
+      if (id === 'show-mixed') {
+        return Promise.resolve(catalogueItem('show-mixed', 'show', {
+          title: 'Mixed', availability: 'partial',
+          availability_members: { total: 3, complete: 1, partial: 0, unavailable: 2, unknown: 0 },
+        }));
+      }
+      return super.get(id);
+    }
+  }
+
+  it("carries an item's code and a set's member counts, as data", async () => {
+    const api = new MachaMediaApi(new AvailabilityCatalogue());
+    const movie = await api.details('movie-partial');
+    expect(movie.availability).toBe('partial');
+    expect(movie).not.toHaveProperty('availabilityMembers');
+
+    const show = await api.details('show-mixed');
+    expect(show.availability).toBe('partial');
+    expect(show.availabilityMembers).toEqual({ total: 3, complete: 1, partial: 0, unavailable: 2, unknown: 0 });
+  });
+
+  it('leaves both out for an item from an older server', async () => {
+    const movie = await new MachaMediaApi(new AvailabilityCatalogue()).details('movie-with-capability-url');
+    expect(movie).not.toHaveProperty('availability');
+    expect(movie).not.toHaveProperty('availabilityMembers');
+  });
+});
+

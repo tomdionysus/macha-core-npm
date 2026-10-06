@@ -1,5 +1,6 @@
 import { machaHost } from '../runtime/host.js';
-import type { StorageLike } from './storage.js';
+import { readAdopted, removeAdopted, type StorageLike } from './storage.js';
+import { machaCoreKey } from '../runtime/storageKeys.js';
 
 /**
  * Not scoped by client id, unlike every other store here.
@@ -11,7 +12,8 @@ import type { StorageLike } from './storage.js';
  * id for no benefit, and the worst a shared value can do is cost one client a
  * single re-download.
  */
-export const ARTWORK_HOST_KEY = 'macha.artworkHost.v1';
+export const ARTWORK_HOST_KEY = machaCoreKey('artworkHost');
+const LEGACY_ARTWORK_HOST_KEYS = ['macha.artworkHost.v1'];
 
 /**
  * The path every node serves artwork under. Splitting on it recovers the node
@@ -92,7 +94,7 @@ export class ArtworkHostPreference {
     if (!this.loaded) {
       this.loaded = true;
       try {
-        this.value = this.storage?.getItem(ARTWORK_HOST_KEY) || undefined;
+        this.value = (this.storage ? readAdopted(this.storage, ARTWORK_HOST_KEY, LEGACY_ARTWORK_HOST_KEYS) : null) || undefined;
       } catch {
         // An unreadable store costs cache warmth and nothing else.
       }
@@ -186,7 +188,7 @@ export class ArtworkHostPreference {
     this.value = undefined;
     this.loaded = true;
     try {
-      this.storage?.removeItem(ARTWORK_HOST_KEY);
+      if (this.storage) removeAdopted(this.storage, ARTWORK_HOST_KEY, LEGACY_ARTWORK_HOST_KEYS);
     } catch {
       // Already forgotten in memory, which is what this run will act on.
     }

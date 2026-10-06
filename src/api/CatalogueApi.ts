@@ -1,3 +1,4 @@
+import type { Availability, AvailabilityMembers } from './availability.js';
 export type CatalogueKind =
   | 'movie'
   | 'show'
@@ -36,6 +37,15 @@ export interface CatalogueItem {
   effective_artwork?: CatalogueArtwork[];
   revision: number;
   updated_ns: number;
+  /**
+   * How much of the item the reachable cluster holds (server 0.83.0); see
+   * `Availability`. An item with files takes the best of them, since any one
+   * can be played; a set is judged over its members. Absent before 0.83.0.
+   * Ignored by the server when a PUT or PATCH echoes it.
+   */
+  availability?: Availability;
+  /** A set's members by availability (0.83.0); null for an item that is not a set. */
+  availability_members?: AvailabilityMembers | null;
 }
 
 export interface CatalogueStatus {

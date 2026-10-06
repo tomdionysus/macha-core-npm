@@ -3,16 +3,21 @@ import { isSearchable, MIN_SEARCH_TERM_LENGTH, searchTerms } from './searchTerms
 import { indexedTitle } from './titleIndex.js';
 
 describe('searchTerms', () => {
-  it('drops the words titles are ordered without, wherever they appear', () => {
+  it('drops a word titles are ordered without at the start of the query', () => {
     expect(searchTerms('the matrix')).toBe('matrix');
     expect(searchTerms('a man called')).toBe('man called');
-    expect(searchTerms('Return of THE King')).toBe('Return of King');
     expect(searchTerms('An American in Paris')).toBe('American in Paris');
   });
 
-  it('leaves nothing for a query of only those words', () => {
+  it('keeps those words anywhere after the start', () => {
+    expect(searchTerms('Plan A')).toBe('Plan A');
+    expect(searchTerms('Return of THE King')).toBe('Return of THE King');
+    expect(searchTerms('the Lord of the Rings')).toBe('Lord of the Rings');
+  });
+
+  it('drops one leading word, as title ordering does', () => {
     expect(searchTerms('the')).toBe('');
-    expect(searchTerms('  A  the an ')).toBe('');
+    expect(searchTerms('  A  the an ')).toBe('the an');
   });
 
   it('matches whole words only, and collapses the whitespace', () => {

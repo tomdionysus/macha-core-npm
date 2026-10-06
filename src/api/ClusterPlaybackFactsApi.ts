@@ -1,10 +1,20 @@
 import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
-import { failureBlamesEndpoint, retryableEndpointFailure } from '../cluster/endpointFailure.js';
+import { failureBlamesEndpoint, noEndpointError, retryableEndpointFailure } from '../cluster/endpointFailure.js';
 import { MachaPlaybackFactsApi } from './MachaPlaybackFactsApi.js';
 import type { PlaybackFactsApi, PlaybackFactsReport, PlaybackMediaFacts } from './PlaybackFactsApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { abortError } from '../errors.js';
+
+/**
+ * The waits between tries of one facts lookup before it gives up. Tom,
+ * 2026-10-04: "Retry bounded, then decide without facts", and 2026-10-06: in
+ * core's facts lookup itself, so playback and downloads on every client get
+ * it, not only a start through `PlaybackCoordinator`. Two retries, about
+ * 1.3 s in all on top of the requests, ride out a blip or a session that had
+ * not quite arrived. A choice, not a measurement.
+ */
+export const FACTS_RETRY_DELAYS_MS: readonly number[] = [250, 1000];
 
 /**
  * Playback facts from whichever endpoint is currently preferred, resolved per
@@ -66,6 +76,22 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
    * What no node could read stays in `unavailable`, with the last reason.
    */
   async factsReport(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport> {
+    // Retried while the walk fails for a reason a moment may cure. A `404`
+    // from every node is an answer (the media is not there), and a refusal
+    // no node would change is final, so neither is retried.
+    for (let retry = 0; ; retry += 1) {
+      try {
+        return await this.walk(ref, signal);
+      } catch (error) {
+        const wait = FACTS_RETRY_DELAYS_MS[retry];
+        const status = (error as { status?: unknown }).status;
+        if (wait === undefined || signal?.aborted || status === 404 || !retryableEndpointFailure(error)) throw error;
+        await delay(wait, signal);
+      }
+    }
+  }
+
+  private async walk(ref: { itemId?: string; mediaId?: string }, signal?: AbortSignal): Promise<PlaybackFactsReport> {
     const candidates = this.router.registry.candidates().map(({ endpoint }) => endpoint);
     let lastError: unknown;
     let attempted = 0;
@@ -86,7 +112,7 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
         lastError = error;
       }
     }
-    if (attempted === 0) throw new Error('No Macha API endpoint is configured.');
+    if (attempted === 0) throw noEndpointError(this.router.registry);
     throw lastError;
   }
 
@@ -115,4 +141,22 @@ export class ClusterPlaybackFactsApi implements PlaybackFactsApi {
     }
     return api;
   }
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? abortError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    }, ms);
+    const cancel = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? abortError());
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+  });
 }

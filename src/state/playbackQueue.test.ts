@@ -74,7 +74,7 @@ describe('PlaybackQueueStore', () => {
 
   it('discards malformed persisted state', () => {
     const storage = new MemoryStorage();
-    storage.setItem('macha.playbackQueue.v1.client', '{"items":[],"currentIndex":99}');
+    storage.setItem('macha.core.client.client.playbackQueue', '{"items":[],"currentIndex":99}');
     expect(new PlaybackQueueStore('client', storage).load()).toBeUndefined();
   });
 
@@ -213,7 +213,7 @@ describe('a queue of a whole library', () => {
     const store = new PlaybackQueueStore('client', storage);
     store.replace(library, 2_500);
     expect(store.getSnapshot()?.items).toHaveLength(5_000);
-    const saved = JSON.parse(storage.getItem('macha.playbackQueue.v1.client')!) as { items: MediaSummary[]; currentIndex: number };
+    const saved = JSON.parse(storage.getItem('macha.core.client.client.playbackQueue')!) as { items: MediaSummary[]; currentIndex: number };
     expect(saved.items).toHaveLength(PERSISTED_QUEUE_LIMIT);
     expect(saved.items[saved.currentIndex]?.id).toBe('track:2500');
     // What was playing and what comes next.

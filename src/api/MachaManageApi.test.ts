@@ -325,6 +325,31 @@ describe('the metadata editor (server 0.67.0)', () => {
     expect(results).toEqual([result]);
   });
 
+  it("lists a release's tracks from its reference, by the release's own path", async () => {
+    const track = { disc_number: 1, track_number: 4, title: 'Kid A', length_ms: 284000, recording_id: 'rec' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', tracks: [track, { ...track, track_number: null, length_ms: null, recording_id: null }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaManageApi('http://n');
+
+    const tracks = await api.providerReleaseTracks('musicbrainz:release:b1392450-e666-3926-a536-22c65f834433');
+
+    const url = new URL(calls(fetchMock)[0]![0]);
+    expect(url.pathname).toBe('/api/v1/manage/providers/musicbrainz/releases/b1392450-e666-3926-a536-22c65f834433/tracks');
+    expect(url.search).toBe('');
+    expect(tracks).toHaveLength(2);
+    expect(tracks[1]?.track_number).toBeNull();
+  });
+
+  it('refuses a reference that is not a MusicBrainz release, before any request', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaManageApi('http://n');
+
+    await expect(api.providerReleaseTracks('tmdb:movie:603')).rejects.toMatchObject({ status: 400, code: 'bad_ref' });
+    await expect(api.providerReleaseTracks('musicbrainz:release:')).rejects.toMatchObject({ code: 'bad_ref' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("lists a role's artwork options and chooses one", async () => {
     const option = { option_id: 'o1', role: 'still', width: 1920, height: 1080, language: null, preview_url: 'https://image/w300.jpg' };
     const fetchMock = vi.fn()
@@ -346,3 +371,75 @@ describe('the metadata editor (server 0.67.0)', () => {
     expect(JSON.parse(String(calls(fetchMock)[0]![1].body))).toEqual({ kind: 'episode', season_id: 'tmdb:season:1399:1', episode_number: 4, title: 'Pilot' });
   });
 });
+
+describe('a management write on a node that runs them one at a time', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it('waits past the 8 s default for a delete the node is still doing', async () => {
+    // A node commits management writes one after another at 2 to 3 s each,
+    // so a delete late in a burst answers after the default budget.
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(new Response(null, { status: 204 })), 20_000);
+      init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+    })));
+    const deleted = new MachaManageApi('http://n').deleteUnmatched('u1');
+    const settled = expect(deleted).resolves.toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await settled;
+  });
+});
+
+describe('removing a file from a title (server 0.90.15)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const calls = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls as Array<[string, RequestInit]>;
+
+  it('unmatches a file, sending the revision, and answers the title as it now stands', async () => {
+    const item = { id: 'movie:1', revision: 8, media_ids: ['macha:b'] };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'unmatched', item, removed_item_ids: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').unmatchFile('movie:1', 'macha:a', 7);
+
+    const [url, init] = calls(fetchMock)[0]!;
+    expect(new URL(url).pathname).toBe('/api/v1/catalogue/items/movie%3A1/media/macha%3Aa');
+    expect(init.method).toBe('DELETE');
+    expect(new Headers(init.headers).get('If-Match')).toBe('"rev-7"');
+    expect(result).toEqual({ titleRemoved: false, removedItemIds: [], item });
+  });
+
+  it('says the title went when its last file was unmatched', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ status: 'unmatched', removed_item_ids: ['track:1', 'album:1'] })));
+    const result = await new MachaManageApi('http://n').unmatchFile('track:1', 'macha:a');
+    expect(result).toEqual({ titleRemoved: true, removedItemIds: ['track:1', 'album:1'] });
+  });
+
+  it('deletes one path, each segment encoded and the slashes kept', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'deleted', path: '/Movies/A b.mkv', removed_item_ids: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').deleteFilePath('/Movies/A b.mkv', 'movie:1');
+
+    expect(new URL(calls(fetchMock)[0]![0]).pathname).toBe('/api/v1/files/Movies/A%20b.mkv');
+    expect(result).toEqual({ titleRemoved: false, removedItemIds: [] });
+  });
+
+  it('deletes every copy of a content, naming the paths and the titles that went', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'deleted', paths: ['/a.mkv', '/b.mkv'], removed_item_ids: ['movie:1'] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new MachaManageApi('http://n').deleteFileContent('macha:a', 'movie:1');
+
+    const url = new URL(calls(fetchMock)[0]![0]);
+    expect(url.pathname).toBe('/api/v1/files');
+    expect(url.searchParams.get('hash')).toBe('macha:a');
+    expect(result).toEqual({ titleRemoved: true, removedItemIds: ['movie:1'], paths: ['/a.mkv', '/b.mkv'] });
+  });
+
+  it('carries the server code on a refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: 'catalogue_conflict', message: 'revision moved' }, { status: 409 })));
+    await expect(new MachaManageApi('http://n').unmatchFile('movie:1', 'macha:a', 7)).rejects.toMatchObject({ status: 409, code: 'catalogue_conflict' });
+  });
+});
+

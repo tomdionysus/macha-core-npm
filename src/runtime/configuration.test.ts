@@ -13,7 +13,7 @@ describe('client server endpoint persistence', () => {
 
     expect(configured(storage).bootstrapEndpoints()).toEqual(['http://node-a']);
     expect(storage.getItem('macha-server-url')).toBeNull();
-    expect(JSON.parse(storage.getItem('macha-bootstrap-endpoints-v1') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.core.bootstrapEndpoints') ?? '')).toEqual({
       version: 1,
       urls: ['http://node-a'],
     });
@@ -29,11 +29,11 @@ describe('client server endpoint persistence', () => {
 
   it('removes obsolete same-origin entries from persisted endpoint state', () => {
     const storage = memoryStorage({
-      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['', 'http://node-a', '/', 'http://node-a/'] }),
+      'macha.core.bootstrapEndpoints': JSON.stringify({ version: 1, urls: ['', 'http://node-a', '/', 'http://node-a/'] }),
     });
 
     expect(configured(storage).bootstrapEndpoints()).toEqual(['http://node-a']);
-    expect(JSON.parse(storage.getItem('macha-bootstrap-endpoints-v1') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.core.bootstrapEndpoints') ?? '')).toEqual({
       version: 1,
       urls: ['http://node-a'],
     });
@@ -46,9 +46,9 @@ describe('client server endpoint persistence', () => {
   });
 
   it('discards malformed versioned state and falls back safely', () => {
-    const storage = memoryStorage({ 'macha-bootstrap-endpoints-v1': '{broken' });
+    const storage = memoryStorage({ 'macha.core.bootstrapEndpoints': '{broken' });
     expect(configured(storage).bootstrapEndpoints()).toEqual([]);
-    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.bootstrapEndpoints')).toBeNull();
   });
 
   it('migrates the interim multi-endpoint key without losing candidates', () => {
@@ -65,7 +65,7 @@ describe('client server endpoint persistence', () => {
 
     expect(configuration.bootstrapEndpoints()).toEqual(['http://env-a']);
     // A fallback must not write itself into user configuration.
-    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.bootstrapEndpoints')).toBeNull();
 
     configuration.setBootstrapEndpoints(['http://typed-in']);
     expect(configuration.bootstrapEndpoints()).toEqual(['http://typed-in']);
@@ -82,7 +82,7 @@ describe('client server endpoint persistence', () => {
 
     configuration.setBootstrapEndpoints([]);
 
-    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.bootstrapEndpoints')).toBeNull();
     expect(configuration.bootstrapEndpoints()).toEqual(['http://env-a']);
   });
 
@@ -90,7 +90,7 @@ describe('client server endpoint persistence', () => {
     // Written as absent is not enough on its own: the record exists in the
     // field, so it has to read as absent too.
     const storage = memoryStorage({
-      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: [] }),
+      'macha.core.bootstrapEndpoints': JSON.stringify({ version: 1, urls: [] }),
     });
 
     expect(configured(storage, { environmentEndpoints: ['http://env-a'] }).bootstrapEndpoints()).toEqual(['http://env-a']);
@@ -102,7 +102,7 @@ describe('client server endpoint persistence', () => {
     // or a private-mode quota, deleted endpoints the read had just parsed
     // successfully. The normalisation is optional; the value is not.
     const readable = memoryStorage({
-      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://node-a/'] }),
+      'macha.core.bootstrapEndpoints': JSON.stringify({ version: 1, urls: ['http://node-a/'] }),
     });
     const storage = {
       getItem: (key: string) => readable.getItem(key),
@@ -114,12 +114,12 @@ describe('client server endpoint persistence', () => {
 
     expect(configuration.bootstrapEndpoints()).toEqual(['http://node-a']);
     // Still there for the next read, which will try to normalise it again.
-    expect(readable.getItem('macha-bootstrap-endpoints-v1')).not.toBeNull();
+    expect(readable.getItem('macha.core.bootstrapEndpoints')).not.toBeNull();
   });
 
   it('lets a pinned build ignore stale stored configuration entirely', () => {
     const storage = memoryStorage({
-      'macha-bootstrap-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://stale-dev-install'] }),
+      'macha.core.bootstrapEndpoints': JSON.stringify({ version: 1, urls: ['http://stale-dev-install'] }),
     });
     const configuration = configured(storage, { environmentEndpoints: ['http://pinned'], pinnedEndpoints: true });
 
@@ -134,8 +134,8 @@ describe('discovered endpoint persistence', () => {
     configuration.setDiscoveredEndpoints(['http://node-b/', '', ' http://node-c ', 'http://node-b']);
 
     expect(configuration.discoveredEndpoints()).toEqual(['http://node-b', 'http://node-c']);
-    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
-    expect(JSON.parse(storage.getItem('macha-discovered-endpoints-v1') ?? '')).toEqual({
+    expect(storage.getItem('macha.core.bootstrapEndpoints')).toBeNull();
+    expect(JSON.parse(storage.getItem('macha.core.discoveredEndpoints') ?? '')).toEqual({
       version: 1,
       urls: ['http://node-b', 'http://node-c'],
     });
@@ -149,7 +149,7 @@ describe('discovered endpoint persistence', () => {
 
     configuration.setDiscoveredEndpoints([]);
     expect(configuration.discoveredEndpoints()).toEqual([]);
-    expect(storage.getItem('macha-discovered-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).toBeNull();
   });
 
   it('bounds the persisted discovered set instead of accumulating unbounded discovery history', () => {
@@ -168,25 +168,25 @@ describe('discovered endpoint persistence', () => {
     // hardcoded one, or a discovered-endpoints value that needs normalizing
     // would silently leak into user-facing bootstrap configuration.
     const storage = memoryStorage({
-      'macha-discovered-endpoints-v1': JSON.stringify({ version: 1, urls: ['http://node-b/', '/'] }),
+      'macha.core.discoveredEndpoints': JSON.stringify({ version: 1, urls: ['http://node-b/', '/'] }),
     });
 
     expect(configured(storage).discoveredEndpoints()).toEqual(['http://node-b']);
-    expect(JSON.parse(storage.getItem('macha-discovered-endpoints-v1') ?? '')).toEqual({
+    expect(JSON.parse(storage.getItem('macha.core.discoveredEndpoints') ?? '')).toEqual({
       version: 1,
       urls: ['http://node-b'],
     });
-    expect(storage.getItem('macha-bootstrap-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.bootstrapEndpoints')).toBeNull();
   });
 
   it('discards malformed discovered-endpoints state and falls back to empty, independent of bootstrap state', () => {
     const storage = memoryStorage();
     const configuration = configured(storage);
     configuration.setBootstrapEndpoints(['http://node-a']);
-    storage.setItem('macha-discovered-endpoints-v1', '{broken');
+    storage.setItem('macha.core.discoveredEndpoints', '{broken');
 
     expect(configuration.discoveredEndpoints()).toEqual([]);
-    expect(storage.getItem('macha-discovered-endpoints-v1')).toBeNull();
+    expect(storage.getItem('macha.core.discoveredEndpoints')).toBeNull();
     expect(configuration.bootstrapEndpoints()).toEqual(['http://node-a']);
   });
 });
@@ -256,7 +256,7 @@ describe('the host is resolved on use, never captured', () => {
 
     configuration.setBootstrapEndpoints(['https://node.example']);
 
-    expect(configured.getItem('macha-bootstrap-endpoints-v1')).toContain('https://node.example');
+    expect(configured.getItem('macha.core.bootstrapEndpoints')).toContain('https://node.example');
   });
 });
 
@@ -273,11 +273,11 @@ describe('reading an identity without creating one', () => {
     const configuration = new MachaClientConfiguration({ storage });
 
     expect(configuration.existingClientId()).toBeUndefined();
-    expect(storage.getItem('macha-client-id')).toBeNull();
+    expect(storage.getItem('macha.core.clientId')).toBeNull();
   });
 
   it('answers the stored identity when there is one', () => {
-    const configuration = new MachaClientConfiguration({ storage: memoryStorage({ 'macha-client-id': 'client-42' }) });
+    const configuration = new MachaClientConfiguration({ storage: memoryStorage({ 'macha.core.clientId': 'client-42' }) });
 
     expect(configuration.existingClientId()).toBe('client-42');
   });
