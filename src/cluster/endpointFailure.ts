@@ -212,8 +212,13 @@ const ACCOUNT_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set([
  * it is walked like `catalogue_unavailable` and charged to no one. Against an
  * older node, which still means the cluster by it, the walk costs one
  * identical refusal per node. A mutation is not walked either way.
+ *
+ * `provider_unavailable` is a metadata provider refusing or rate-limiting
+ * the node (MusicBrainz, TMDB), not the node failing. Each node has its own
+ * gate, so another may answer and the walk goes on, but a charge would cool
+ * a healthy node down for all traffic over a provider's limit.
  */
-const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable', 'metadata_unavailable']);
+const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_unavailable', 'metadata_unavailable', 'provider_unavailable']);
 
 /**
  * Refusals that state what a node is built or configured to do, not how it is.
@@ -332,6 +337,24 @@ export function playbackFailureCode(error: unknown): string | undefined {
     seen.add(current);
     const code = (current as { code?: unknown }).code;
     if (typeof code === 'string' && code.length > 0) return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
+ * How long until asking again may succeed, wherever it sits in the chain:
+ * a provider's rate limit the node is waiting out (server 0.90.19,
+ * `provider_unavailable`). For a client to say "try again in N s". Walked
+ * like `playbackFailureCode`, so a host never walks `cause` itself.
+ */
+export function failureRetryAfterMs(error: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current);
+    const value = (current as { retryAfterMs?: unknown }).retryAfterMs;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
     current = (current as { cause?: unknown }).cause;
   }
   return undefined;

@@ -44,6 +44,14 @@ export const MANAGE_WORK_TIMEOUT_MS = 30_000;
 
 const MUSICBRAINZ_RELEASE_REF = 'musicbrainz:release:';
 
+/** A `Retry-After` header in seconds, as milliseconds; the server sends `retry_after_ms` beside it. */
+function retryAfterHeaderMs(response: Response): number | undefined {
+  const header = response.headers.get('Retry-After');
+  if (header === null || header.trim() === '') return undefined;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
+}
+
 function removedIds(response: { removed_item_ids?: unknown } | undefined): string[] {
   const ids = response?.removed_item_ids;
   return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
@@ -66,6 +74,8 @@ export class MachaManageApiError extends Error {
     public readonly code?: string,
     /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
     public readonly detail?: string,
+    /** How long until asking again may succeed, where the server says; see `ParsedErrorEnvelope.retryAfterMs`. */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'MachaManageApiError';
@@ -258,7 +268,7 @@ export class MachaManageApi implements ManageApi {
       const { body, wasJson } = await readResponseBody(response);
       if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
       const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-      throw new MachaManageApiError(`Macha management request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
+      throw new MachaManageApiError(`Macha management request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail, parsed.retryAfterMs ?? retryAfterHeaderMs(response));
     }
     if (response.status === 204) return undefined as T;
     try {

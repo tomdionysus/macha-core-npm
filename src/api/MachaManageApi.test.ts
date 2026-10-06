@@ -443,3 +443,24 @@ describe('removing a file from a title (server 0.90.15)', () => {
   });
 });
 
+describe('a provider rate-limiting the node (server 0.90.19)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries how long until asking again may succeed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(
+      { status: 'provider_unavailable', error: { code: 'provider_unavailable', message: 'Provider unavailable', retry_after_ms: 4000 } },
+      { status: 503 },
+    )));
+    await expect(new MachaManageApi('http://n').providerSearch('kid a', 'album'))
+      .rejects.toMatchObject({ status: 503, code: 'provider_unavailable', retryAfterMs: 4000 });
+  });
+
+  it('falls back to the Retry-After header', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(
+      { error: 'provider_unavailable', message: 'Provider unavailable' },
+      { status: 503, headers: { 'Content-Type': 'application/json', 'Retry-After': '3' } },
+    )));
+    await expect(new MachaManageApi('http://n').providerSearch('kid a', 'album')).rejects.toMatchObject({ retryAfterMs: 3000 });
+  });
+});
+

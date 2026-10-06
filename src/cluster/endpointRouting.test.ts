@@ -3,7 +3,7 @@ import { bootstrapEndpoints, EndpointRegistry } from './EndpointRegistry.js';
 import { ClusterEndpointRouter, READ_YOUR_WRITES_MS } from './endpointRouting.js';
 import { configureMachaHost, resetMachaHost } from '../runtime/host.js';
 import { MachaRequestTimeoutError, reportClusterReachable } from '../api/serverConnection.js';
-import { MachaClusterRouteError, mutationOutcomeUnknown } from './endpointFailure.js';
+import { failureRetryAfterMs, MachaClusterRouteError, mutationOutcomeUnknown } from './endpointFailure.js';
 import { MachaApiError } from '../api/MachaCatalogueApi.js';
 import { clearClientDiagnostics, clientDiagnosticsSnapshot, configureClientDiagnostics } from '../diagnostics/ClientLog.js';
 
@@ -410,3 +410,30 @@ describe('reading back what was just written (server 0.90.0)', () => {
     await expect(router.request(async (endpoint) => endpoint.id)).resolves.toBe('http://a');
   });
 });
+
+describe('a provider refusing the node (server 0.90.19)', () => {
+  it('is walked to the next node, which has its own gate, and charges nothing', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+    const refusal = Object.assign(new MachaApiError('provider', 503, 'provider_unavailable'), { retryAfterMs: 4000 });
+
+    const answered = await router.request(async (endpoint) => {
+      if (endpoint.id === 'http://a') throw refusal;
+      return endpoint.id;
+    });
+
+    expect(answered).toBe('http://b');
+    expect(registry.snapshot().map((candidate) => candidate.health.consecutiveFailures)).toEqual([0, 0]);
+  });
+
+  it('keeps the wait readable through the route error', async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a']));
+    const router = new ClusterEndpointRouter(registry);
+    const refusal = Object.assign(new MachaApiError('provider', 503, 'provider_unavailable'), { retryAfterMs: 4000 });
+
+    const outcome = await router.request(async () => { throw refusal; }).catch((error: unknown) => error);
+
+    expect(failureRetryAfterMs(outcome)).toBe(4000);
+  });
+});
+

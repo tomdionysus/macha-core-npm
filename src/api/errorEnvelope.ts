@@ -29,6 +29,13 @@ export interface ParsedErrorEnvelope {
    */
   choice?: string;
   choices?: Array<number | string>;
+  /**
+   * How long until asking again may succeed, where the server knows: from
+   * server 0.90.19, `retry_after_ms` on `provider_unavailable`, when the
+   * node is waiting out a provider's rate limit. For a client to say "try
+   * again in N s"; core does not retry on it.
+   */
+  retryAfterMs?: number;
 }
 
 function asRecord(value: unknown): ErrorRecord | undefined {
@@ -106,5 +113,13 @@ export function parseErrorEnvelope(body: unknown, fallback: string): ParsedError
     ? rawChoices.filter((entry): entry is number | string => typeof entry === 'number' || typeof entry === 'string')
     : undefined;
 
-  return { message, detail, code, reason, ...(choice ? { choice } : {}), ...(choices ? { choices } : {}) };
+  const rawRetryAfter = structuredError?.retry_after_ms ?? envelope.retry_after_ms;
+  const retryAfterMs = typeof rawRetryAfter === 'number' && Number.isFinite(rawRetryAfter) && rawRetryAfter >= 0 ? rawRetryAfter : undefined;
+
+  return {
+    message, detail, code, reason,
+    ...(choice ? { choice } : {}),
+    ...(choices ? { choices } : {}),
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+  };
 }
