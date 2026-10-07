@@ -365,18 +365,8 @@ export interface NodeRepairDiagnostics {
 /** The set may grow, so keep a code this does not name. */
 export type RepairPace = 'paced' | 'running' | 'settling' | 'awaiting_credit' | 'unknown' | (string & {});
 
-/**
- * The work classes repair gives way to. From server 0.90.35: `viewer`
- * (playback and the mounted filesystem alike), `loader`, and `peer_viewer`,
- * a viewer on another node whose links repair shares. Before it:
- * `playback`, `mounted_filesystem`, `loader` and `peer_playback`, which an
- * older node still sends. The set may grow, so keep a code this does not
- * name.
- */
-export type RepairPacedBy =
-  | 'viewer' | 'loader' | 'peer_viewer'
-  | 'playback' | 'mounted_filesystem' | 'peer_playback'
-  | (string & {});
+/** `peer_playback` is a viewer on another node, whose links repair shares. The set may grow. */
+export type RepairPacedBy = 'playback' | 'mounted_filesystem' | 'loader' | 'peer_playback' | (string & {});
 
 /** A server thread's health, as `/api/v1/status` states it from 0.63.0. */
 export interface ServerThreadStatus {
