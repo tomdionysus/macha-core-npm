@@ -1908,6 +1908,7 @@ export class PlaybackCoordinator {
     if (this.closePromise) return this.closePromise;
 
     this.disposed = true;
+    this.modeSwitch = undefined;
     this.mutationRevision += 1;
     this.sourceActivationRevision += 1;
     this.pendingMutation = undefined;
@@ -1981,6 +1982,13 @@ export class PlaybackCoordinator {
 
   /** The report before a viewer's mode change, until it lands; see `update`. */
   private instructionBeforeModeChange?: PlaybackInstructionReport;
+
+  /**
+   * A viewer's mode switch, held from the press until the new source is the
+   * one presenting; see `holdForModeSwitch`. `resume` is whether to play on
+   * once it is, and goes false when the viewer works the transport meanwhile.
+   */
+  private modeSwitch?: { resume: boolean };
 
   /** The last facts that answered; see `facts`. */
   private factsSeen?: readonly FileFacts[];
@@ -2061,6 +2069,12 @@ export class PlaybackCoordinator {
 
   setPaused(paused: boolean): void {
     if (this.disposed) return;
+    // The viewer's own word on the transport outlasts a held switch.
+    if (this.modeSwitch) this.modeSwitch.resume = false;
+    this.pauseTransport(paused);
+  }
+
+  private pauseTransport(paused: boolean): void {
     const intent = { ...this.snapshot.intent, paused };
     this.patchSnapshot({ intent });
     if (paused) this.options.player.pause();
@@ -2213,9 +2227,59 @@ export class PlaybackCoordinator {
       // Kept until the change lands, to put back if the node refuses it.
       this.instructionBeforeModeChange ??= this.snapshot.instruction;
       this.viewerModeChoice = update.preferences.mode !== 'choose';
-      if (update.preferences.mode !== 'choose') this.reportViewerChoice(update.preferences);
+      if (update.preferences.mode !== 'choose') {
+        this.reportViewerChoice(update.preferences);
+        this.holdForModeSwitch();
+      }
     }
     this.applyUpdate(update);
+  }
+
+  /**
+   * Pause at a viewer's mode switch, and keep `preparingSource` until the new
+   * source presents.
+   *
+   * Tom, 2026-10-07: "on some direct play movies, selecting remux appears to
+   * ignore the command. The stream does switch, but there's no indication
+   * that the operation is in progress." `preparingSource` ended when the node
+   * answered, and a host that prepares the replacement alongside went on
+   * playing the outgoing source for seconds after that, so the switch was
+   * invisible from the press to the cut. Now the player pauses at the press,
+   * the snapshot says a source is being prepared, with the mode in
+   * `pendingPreferences`, until `play()` resolves on the new source, and
+   * playback then resumes if it was playing. A refused switch resumes the
+   * source the node still serves.
+   *
+   * The pause is a real one, through the intent, so that the stall and runway
+   * evidence reads a paused player as paused rather than as one that stopped
+   * making progress. Core's own mode changes go through `applyUpdate` and do
+   * not pause: only the viewer asked to see the switch.
+   */
+  private holdForModeSwitch(): void {
+    if (this.modeSwitch) return;
+    const playing = !this.snapshot.intent.paused;
+    this.modeSwitch = { resume: playing };
+    this.log.info('mode-switch-hold', { sessionId: this.snapshot.session?.sessionId, resume: playing });
+    if (playing) this.pauseTransport(true);
+  }
+
+  /** End a held mode switch; `presented` is false when it did not happen. */
+  private releaseModeSwitch(presented: boolean): void {
+    const held = this.modeSwitch;
+    if (!held) return;
+    this.modeSwitch = undefined;
+    this.log.info('mode-switch-release', { sessionId: this.snapshot.session?.sessionId, presented, resume: held.resume });
+    if (!this.mutationLoop && !this.pendingMutation && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
+      this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
+    }
+    // Presented, the activation that called this resumes the player itself,
+    // from the intent; refused, the old source is still attached and resumes.
+    if (held.resume && this.snapshot.intent.paused) {
+      if (presented) {
+        this.patchSnapshot({ intent: { ...this.snapshot.intent, paused: false } });
+        this.armPendingReplacementGuard();
+      } else this.pauseTransport(false);
+    }
   }
 
   /**
@@ -2499,7 +2563,7 @@ export class PlaybackCoordinator {
         this.startMutationLoop();
         return;
       }
-      if (!this.disposed && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
+      if (!this.disposed && !this.modeSwitch && this.seekDebounceTimer === undefined && !this.debouncedSeekMutation) {
         this.patchSnapshot({ preparingSource: false, pendingPreferences: undefined });
       }
     });
@@ -2677,6 +2741,7 @@ export class PlaybackCoordinator {
           ...(restored ? { instruction: restored } : {}),
         });
         this.rollbackUnfulfilledSeek();
+        if (!this.pendingMutation) this.releaseModeSwitch(false);
       } finally {
         if (this.activeMutation?.controller === controller) this.activeMutation = undefined;
         if (!this.disposed && this.snapshot.startProgress) this.patchSnapshot({ startProgress: undefined });
@@ -2797,6 +2862,7 @@ export class PlaybackCoordinator {
         generationStartMs: nextStreamOffsetMs,
         positionMs: absoluteStartMs,
       });
+      this.releaseModeSwitch(true);
     };
 
     this.log.info('source-activate', {

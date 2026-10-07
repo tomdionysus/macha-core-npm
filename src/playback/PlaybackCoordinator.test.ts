@@ -4536,6 +4536,102 @@ describe("the playing file's facts on the snapshot", () => {
  * another viewer took it meanwhile. The node leaves the playing generation as
  * it was; the snapshot must say so.
  */
+/**
+ * Tom, 2026-10-07: switching from Direct Play to Remux mid-play "appears to
+ * ignore the command. The stream does switch, but there's no indication that
+ * the operation is in progress." The switch now pauses at the press and says
+ * a source is being prepared until the new one presents.
+ */
+describe('a viewer switching mode mid-play', () => {
+  async function playing(updateImpl?: (update: PlaybackUpdate) => Promise<PlaybackSession>) {
+    const player = new FakePlayer();
+    const api = resolver(session({ mode: 'direct' }), updateImpl ?? (async () => session({ mode: 'remux' })));
+    const coordinator = new PlaybackCoordinator({
+      media: media(), player, resolver: api, capabilities: async () => capabilities(), initialPositionMs: 0,
+    });
+    await coordinator.start();
+    await flush();
+    return { player, api, coordinator };
+  }
+
+  it('pauses at once and holds the switch until the new source presents, then plays on', async () => {
+    const { player, api, coordinator } = await playing();
+    const cut = deferred<boolean>();
+    player.playResult = cut.promise;
+
+    coordinator.update({ preferences: { mode: 'remux' } });
+    expect(player.pauseCalls).toBe(1);
+    expect(coordinator.getSnapshot().intent.paused).toBe(true);
+    expect(coordinator.getSnapshot().preparingSource).toBe(true);
+    expect(coordinator.getSnapshot().pendingPreferences?.mode).toBe('remux');
+
+    // The node has answered and the host is preparing the new source.
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+    expect(api.update).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(coordinator.getSnapshot().preparingSource).toBe(true);
+    expect(coordinator.getSnapshot().pendingPreferences?.mode).toBe('remux');
+    expect(player.resumeCalls).toBe(0);
+
+    cut.resolve(true);
+    await flush();
+    const snapshot = coordinator.getSnapshot();
+    expect(snapshot.session?.mode).toBe('remux');
+    expect(snapshot.preparingSource).toBe(false);
+    expect(snapshot.pendingPreferences).toBeUndefined();
+    expect(snapshot.intent.paused).toBe(false);
+    expect(player.resumeCalls).toBe(1);
+  });
+
+  it('leaves a paused viewer paused once the switch lands', async () => {
+    const { player, coordinator } = await playing();
+    coordinator.setPaused(true);
+    coordinator.update({ preferences: { mode: 'remux' } });
+    await vi.waitFor(() => expect(coordinator.getSnapshot().session?.mode).toBe('remux'));
+    await flush();
+    expect(coordinator.getSnapshot().preparingSource).toBe(false);
+    expect(coordinator.getSnapshot().intent.paused).toBe(true);
+    expect(player.resumeCalls).toBe(0);
+  });
+
+  it('stays paused when the viewer pauses during the switch', async () => {
+    const { player, coordinator } = await playing();
+    const cut = deferred<boolean>();
+    player.playResult = cut.promise;
+    coordinator.update({ preferences: { mode: 'remux' } });
+    coordinator.setPaused(true);
+    await vi.waitFor(() => expect(player.playCalls).toHaveLength(2));
+    cut.resolve(true);
+    await flush();
+    expect(coordinator.getSnapshot().preparingSource).toBe(false);
+    expect(coordinator.getSnapshot().intent.paused).toBe(true);
+    expect(player.resumeCalls).toBe(0);
+  });
+
+  it('resumes the source the node still serves when it refuses the switch', async () => {
+    const { player, coordinator } = await playing(async () => {
+      throw Object.assign(new Error('transcode limit reached'), { status: 429, code: 'resource_limit' });
+    });
+    coordinator.update({ preferences: { mode: 'transcode' } });
+    expect(coordinator.getSnapshot().intent.paused).toBe(true);
+    await vi.waitFor(() => expect(coordinator.getSnapshot().notice?.code).toBe('update-failed'));
+    await flush();
+    const snapshot = coordinator.getSnapshot();
+    expect(snapshot.session?.mode).toBe('direct');
+    expect(snapshot.preparingSource).toBe(false);
+    expect(snapshot.intent.paused).toBe(false);
+    expect(player.resumeCalls).toBe(1);
+    expect(player.playCalls).toHaveLength(1);
+  });
+
+  it('does not pause for a change that names no mode', async () => {
+    const { player, coordinator } = await playing(async () => session({ mode: 'direct' }));
+    coordinator.update({ preferences: { audioLanguage: 'fr' } });
+    expect(player.pauseCalls).toBe(0);
+    expect(coordinator.getSnapshot().intent.paused).toBe(false);
+  });
+});
+
 describe('a switch back into transcode refused for capacity', () => {
   it('keeps playing what the node still serves, reports the refusal, and does not claim the transcode', async () => {
     const direct = session({ mode: 'direct' });
