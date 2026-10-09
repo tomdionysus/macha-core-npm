@@ -2,6 +2,7 @@ import type { MediaTechnicalProfile, PlaybackCapabilities } from '../types.js';
 import type { TranscodeSource } from '../cluster/EndpointRegistry.js';
 import type { PlaybackPreferencesUpdate } from './PlaybackResolver.js';
 import type { PlaybackOperations } from '../api/PlaybackFactsApi.js';
+import { playableFirst, type Availability } from '../api/availability.js';
 import type { PlaybackMode } from '../types.js';
 import {
   choosePlaybackInstruction,
@@ -165,6 +166,8 @@ export function qualityCeiling(input: QualityCeilingInput): QualityCeiling | und
 /** One file of the item, with its class and how this device would play it. */
 export interface VersionFile {
   mediaId?: string;
+  /** How much of the file the reachable cluster holds; absent from a server that does not say. */
+  availability?: Availability;
   quality: QualityClass;
   width?: number;
   height?: number;
@@ -332,8 +335,10 @@ export function playbackVersions(
   const files: VersionFile[] = facts.map((fact, index) => {
     const { width, height } = pictureOf(fact.profile);
     const mediaId = fact.mediaId ?? (facts.length === 1 && options.mediaIds?.length === 1 ? options.mediaIds[0] : undefined);
+    const availability = fact.availability?.availability;
     return {
       ...(mediaId !== undefined ? { mediaId } : {}),
+      ...(availability !== undefined ? { availability } : {}),
       quality: qualityClass(width, height),
       ...(width !== undefined ? { width } : {}),
       ...(height !== undefined ? { height } : {}),
@@ -343,12 +348,15 @@ export function playbackVersions(
   });
   if (files.length === 0) return { files, steps: [] };
 
-  const top = Math.max(...files.map((file) => file.quality)) as QualityClass;
+  // Every choice below is among the complete files first; see `playableFirst`.
+  // `files` still lists them all, for a host to show.
+  const playable = playableFirst(files);
+  const top = Math.max(...playable.map((file) => file.quality)) as QualityClass;
   const floor = top < LOWEST_STEP ? top : LOWEST_STEP;
   const stepAt = (quality: QualityClass): VersionStep => {
-    const own = best(files.filter((file) => file.quality === quality));
+    const own = best(playable.filter((file) => file.quality === quality));
     if (own) return fileStep(own);
-    const above = files.filter((file) => file.quality > quality);
+    const above = playable.filter((file) => file.quality > quality);
     const smallest = best(above.filter((file) => file.quality === Math.min(...above.map((f) => f.quality))))!;
     return capped(smallest, quality, capabilities, options.overrides);
   };
@@ -364,7 +372,7 @@ export function playbackVersions(
   const ceiling = deviceLimit !== undefined && (!options.ceiling || deviceLimit < options.ceiling.quality)
     ? { quality: deviceLimit, reason: 'ceiling-device' as const }
     : options.ceiling;
-  const inCeiling = ceiling ? files.filter((file) => file.quality <= ceiling.quality) : files;
+  const inCeiling = ceiling ? playable.filter((file) => file.quality <= ceiling.quality) : playable;
   // A picture no node has transcoded at real speed is left out of automatic
   // play where anything else remains: fi-1 decodes 4K HEVC 10-bit at about
   // 0.33x, and choosing it meant a stall at 0:02. A viewer can still pick it.
@@ -399,7 +407,7 @@ export function playbackVersions(
     automatic,
     // Only where the ceiling excluded a file: a larger file passed over
     // because it needs re-encoding is the ranking, not the ceiling.
-    ...(ceiling && files.some((file) => file.quality > ceiling.quality) ? { limitedBy: ceiling } : {}),
+    ...(ceiling && playable.some((file) => file.quality > ceiling.quality) ? { limitedBy: ceiling } : {}),
     ...(passedOver ? { passedOver } : {}),
   };
 }

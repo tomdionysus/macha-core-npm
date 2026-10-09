@@ -56,6 +56,39 @@ describe('qualityCeiling', () => {
 });
 
 describe('playbackVersions', () => {
+  // The operator, 2026-10-09: Father Ted S02E01 has a complete 1080p HEVC
+  // copy and a 720p one no online node holds, and automatic play chose the
+  // 720p about 120 times.
+  describe('an item with a file no node holds', () => {
+    const held = (f: ReturnType<typeof file>, availability: string) => ({ ...f, availability: { availability } });
+    const fatherTed = [held(file('whole', 1920, 1080, 'hevc', 'matroska'), 'complete'), held(file('gone', 1280, 720), 'unavailable')];
+
+    it('plays the complete file automatically, though the other would play as it is', () => {
+      const versions = playbackVersions(fatherTed, web);
+      expect(versions.automatic?.mediaId).toBe('whole');
+      expect(versions.passedOver).toBeUndefined();
+      expect(versions.files.map((f) => f.availability)).toEqual(['complete', 'unavailable']);
+    });
+
+    it('offers the complete file at every step, a capped transcode where it must', () => {
+      const versions = playbackVersions(fatherTed, web);
+      expect(versions.steps.map((step) => step.mediaId)).toEqual(['whole', 'whole']);
+      expect(versions.steps.find((step) => step.quality === 720)?.source).toBe('transcode');
+    });
+
+    it('caps the complete file to a ceiling only the missing one fits under', () => {
+      const versions = playbackVersions(fatherTed, web, { ceiling: { quality: 720, reason: 'ceiling-preference' } });
+      expect(versions.automatic).toMatchObject({ mediaId: 'whole', source: 'transcode', quality: 720 });
+      expect(versions.limitedBy?.quality).toBe(720);
+    });
+
+    it('falls back to a partial file where none is complete, and chooses as before where none says', () => {
+      const partial = [held(file('half', 1920, 1080, 'hevc', 'matroska'), 'partial'), held(file('gone', 1280, 720), 'unavailable')];
+      expect(playbackVersions(partial, web).automatic?.mediaId).toBe('half');
+      expect(playbackVersions([file('a', 1920, 1080, 'hevc', 'matroska'), file('b', 1280, 720)], web).automatic?.mediaId).toBe('b');
+    });
+  });
+
   it("steps down from the best file's class to 720, a file where one is of the class and a capped transcode where none is", () => {
     const versions = playbackVersions([file('uhd', 3840, 2160, 'hevc', 'matroska'), file('fhd', 1920, 1080)], web);
     expect(versions.steps.map((step) => [step.quality, step.source, step.mediaId])).toEqual([

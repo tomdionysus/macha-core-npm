@@ -544,6 +544,19 @@ describe('chooseAmongFiles', () => {
   it('is undefined for no files', () => {
     expect(chooseAmongFiles([], caps)).toBeUndefined();
   });
+
+  // The operator, 2026-10-09: Father Ted S02E01, where the file chosen was one
+  // no online node held, and every session failed EIO.
+  it('chooses among the complete files first, then any not unavailable', () => {
+    const held = (mediaId: string, codec: string, availability: string) => ({ ...file(mediaId, codec), availability: { availability } });
+    expect(chooseAmongFiles([held('gone', 'h264', 'unavailable'), held('whole', 'hevc', 'complete')], caps)).toMatchObject({ mediaId: 'whole', index: 1 });
+    expect(chooseAmongFiles([held('half', 'h264', 'partial'), held('whole', 'hevc', 'complete')], caps)?.mediaId).toBe('whole');
+    expect(chooseAmongFiles([held('gone', 'h264', 'unavailable'), held('half', 'hevc', 'partial')], caps)?.mediaId).toBe('half');
+    // Where every file is gone, the usual ranking, as before.
+    expect(chooseAmongFiles([held('a', 'hevc', 'unavailable'), held('b', 'h264', 'unavailable')], caps)?.mediaId).toBe('b');
+    // A server that says nothing is chosen from as before.
+    expect(chooseAmongFiles([file('a', 'hevc'), file('b', 'h264')], caps)?.mediaId).toBe('b');
+  });
 });
 
 describe('subtitles by language, full or forced', () => {

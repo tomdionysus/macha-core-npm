@@ -105,6 +105,28 @@ export function availableToPlay(item: { availability?: Availability }): boolean 
   return item.availability !== 'unavailable';
 }
 
+/**
+ * Of an item's files, the ones to choose among: the complete ones where any
+ * is, else every one not `unavailable`, else all of them. Order is kept, and
+ * which of these to play stays the caller's usual ranking.
+ *
+ * The operator, through the server, 2026-10-09: Father Ted S02E01 has a
+ * complete 1080p copy and a 720p one no online node holds a byte of, and the
+ * client chose the 720p about 120 times across both nodes, every session
+ * failing EIO on its first extent. A `partial` or `unknown` file is a
+ * fallback, and a file from a server that reports nothing counts as one, so
+ * an older server's files are chosen exactly as before. Where every file is
+ * `unavailable` they are all returned, since the title itself is then not
+ * offered (`availableToPlay`), and a caller that plays it anyway gets the
+ * node's own refusal.
+ */
+export function playableFirst<T extends { availability?: Availability }>(files: readonly T[]): readonly T[] {
+  const complete = files.filter((file) => file.availability === 'complete');
+  if (complete.length > 0) return complete;
+  const some = files.filter((file) => file.availability !== 'unavailable');
+  return some.length > 0 ? some : files;
+}
+
 /** A title's availability fields, as `MediaSummary` carries them. */
 export interface ItemAvailability {
   availability?: Availability;

@@ -1,5 +1,6 @@
 import type { MediaTechnicalProfile, MediaTechnicalStream, PlaybackCapabilities, PlaybackMode } from '../types.js';
 import type { PlaybackDecisionFacts, PlaybackOperations } from '../api/PlaybackFactsApi.js';
+import { playableFirst, type ExtentAvailability } from '../api/availability.js';
 
 export type StreamInstruction = 'copy' | 'transcode';
 export type SegmentContainer = 'fmp4' | 'mpegts';
@@ -505,8 +506,8 @@ export function degradeInstruction(instruction: PlaybackInstruction): PlaybackIn
   return undefined;
 }
 
-/** One file's facts, and which file, where the facts say. */
-export type FileFacts = PlaybackDecisionFacts & { mediaId?: string };
+/** One file's facts, which file, where the facts say, and how much of it the cluster holds. */
+export type FileFacts = PlaybackDecisionFacts & { mediaId?: string; availability?: ExtentAvailability };
 
 /** The file to play, the instruction for it, and where it stood in the list. */
 export interface FileChoice {
@@ -523,9 +524,10 @@ const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode
  * Which of an item's files to play, and how. Choosing among an item's files
  * is the client's decision (Tom, 2026-09-24), and this is the one ranking every
  * client uses, the coordinator included: an instruction for each file, then
- * the best by mode, with ties to stored order, as the server ranked them. A
- * file whose facts carry no id is named from `mediaIds` when the item has
- * exactly one. Undefined for an empty list.
+ * the best by mode, with ties to stored order, as the server ranked them,
+ * among the complete files first (see `playableFirst`). A file whose facts
+ * carry no id is named from `mediaIds` when the item has exactly one.
+ * Undefined for an empty list.
  */
 export function chooseAmongFiles(
   files: readonly FileFacts[],
@@ -534,7 +536,9 @@ export function chooseAmongFiles(
   mediaIds: readonly string[] = [],
 ): FileChoice | undefined {
   let best: FileChoice | undefined;
+  const considered = new Set(playableFirst(files.map((file) => ({ file, availability: file.availability?.availability }))).map(({ file }) => file));
   files.forEach((file, index) => {
+    if (!considered.has(file)) return;
     const instruction = choosePlaybackInstruction(file.profile, capabilities, { overrides: options.overrides, operations: file.operations });
     if (!best || MODE_RANK[instruction.mode] < MODE_RANK[best.instruction.mode]) {
       best = { instruction, mediaId: file.mediaId, index };
