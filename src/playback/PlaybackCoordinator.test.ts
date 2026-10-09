@@ -4333,6 +4333,35 @@ describe('versions and the quality ceiling', () => {
     expect(coordinator.getSnapshot().versions?.steps.map((step) => step.quality)).toEqual([2160, 1440, 1080, 720]);
   });
 
+  // The server, 2026-10-09: Father Ted S02E01's 720p copy, which no online
+  // node held, was played direct about 120 times. A resume names the file it
+  // last played, and that file can be gone since.
+  describe('a named file no node holds', () => {
+    const held = (f: ReturnType<typeof sized>, availability: string) => ({ ...f, availability: { availability } });
+    const gone = () => [held(sized('uhd', 3840, 2160), 'complete'), held(sized('fhd', 1920, 1080), 'unavailable')];
+
+    it('gives way to a complete file when the mode is left to core', async () => {
+      const { api, coordinator } = start({ facts: gone(), initialPreferences: { mediaId: 'fhd' } });
+      await coordinator.start();
+      expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'uhd' });
+    });
+
+    it('gives way to a complete file when the viewer named the mode', async () => {
+      const { api, coordinator } = start({ facts: gone(), initialPreferences: { mediaId: 'fhd', mode: 'transcode' } });
+      await coordinator.start();
+      expect(api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'uhd', mode: 'transcode' });
+    });
+
+    it('stands where it is complete, or where the facts do not cover it', async () => {
+      const kept = start({ facts: [held(sized('uhd', 3840, 2160), 'complete'), held(sized('fhd', 1920, 1080), 'complete')], initialPreferences: { mediaId: 'fhd', mode: 'transcode' } });
+      await kept.coordinator.start();
+      expect(kept.api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'fhd' });
+      const unknown = start({ facts: [held(sized('uhd', 3840, 2160), 'complete')], initialPreferences: { mediaId: 'fhd', mode: 'transcode' } });
+      await unknown.coordinator.start();
+      expect(unknown.api.resolve.mock.calls[0]?.[3]).toMatchObject({ mediaId: 'fhd' });
+    });
+  });
+
   it("marks the file's own quality for a viewer's uncapped transcode of it", async () => {
     // The Android TV client, 2026-09-27: The Martian resumed as a viewer's
     // transcode of the 720p file, and the Quality row marked nothing.

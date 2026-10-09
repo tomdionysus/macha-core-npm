@@ -16,7 +16,7 @@ import type {
 } from './PlaybackResolver.js';
 import { technicalProfileFromSession } from './MediaTechnicalProfile.js';
 import type { PlaybackDecisionFacts, PlaybackMediaFacts } from '../api/PlaybackFactsApi.js';
-import { chooseAmongFiles, degradeInstruction, segmentContainer, streamsToName, withoutLanguages, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
+import { chooseAmongFiles, degradeInstruction, playableFiles, segmentContainer, streamsToName, withoutLanguages, transcodeUndecodable, type FileFacts, type PlaybackChoiceAssumption, type PlaybackDecisionReason, type PlaybackInstruction, type PlaybackPolicyOverrides, type SegmentContainer } from './choosePlaybackInstruction.js';
 import { machaHost } from '../runtime/host.js';
 import { abortError } from '../errors.js';
 
@@ -1448,8 +1448,11 @@ export class PlaybackCoordinator {
     // stored order), or a capped transcode where every file is above it.
     const ceiling = this.options.qualityCeiling?.();
     // A named file with the mode left to core (a resume from Continue
-    // Watching) keeps its file: automatic play chooses how, not which.
-    const named = preferences.mediaId !== undefined ? facts.filter((file) => file.mediaId === preferences.mediaId) : [];
+    // Watching) keeps its file: automatic play chooses how, not which. Unless
+    // it is one `playableFiles` leaves out: a resume names the file it last
+    // played, which can be gone since (the server, 2026-10-09: Father Ted
+    // S02E01, a 720p copy no node held, chosen about 120 times).
+    const named = preferences.mediaId !== undefined ? playableFiles(facts).filter((file) => file.mediaId === preferences.mediaId) : [];
     const candidates = named.length > 0 ? named : facts;
     const versions = playbackVersions(candidates, capabilities, { overrides: this.options.policyOverrides, mediaIds: this.options.media.mediaIds, offerAll: this.options.offerAll?.() ?? false, transcodeRate: this.transcodeRate, ...(ceiling ? { ceiling } : {}) });
     // The buttons still offer every file's versions.
@@ -1670,7 +1673,11 @@ export class PlaybackCoordinator {
     // Without facts there is nothing to rank, and the server no longer
     // chooses for us, so the first file stands in (see `noFactsMediaId`).
     if (!facts) return { mediaId: named ?? this.noFactsMediaId() };
-    if (named !== undefined) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile, facts };
+    // A named file stands unless the facts show `playableFiles` leaves it
+    // out; see `instructedPreferences`.
+    const left = named !== undefined && facts.some((file) => file.mediaId === named)
+      && !playableFiles(facts).some((file) => file.mediaId === named);
+    if (named !== undefined && !left) return { mediaId: named, profile: facts.find((file) => file.mediaId === named)?.profile, facts };
     const choice = chooseAmongFiles(facts, capabilities, { overrides: this.options.policyOverrides }, mediaIds);
     return { mediaId: choice?.mediaId ?? this.noFactsMediaId(), profile: choice ? facts[choice.index]?.profile : undefined, facts };
   }

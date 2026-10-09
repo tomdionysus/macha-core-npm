@@ -517,6 +517,12 @@ export interface FileChoice {
   index: number;
 }
 
+/** An item's files to choose among, complete ones first; see `playableFirst`. */
+export function playableFiles<T extends FileFacts>(files: readonly T[]): readonly T[] {
+  const wrapped = playableFirst(files.map((file) => ({ file, availability: file.availability?.availability })));
+  return wrapped.map(({ file }) => file);
+}
+
 /** The server's own ranking, from when it chose: direct, then remux, then transcode. */
 const MODE_RANK: Record<PlaybackMode, number> = { direct: 0, remux: 1, transcode: 2 };
 
@@ -536,7 +542,7 @@ export function chooseAmongFiles(
   mediaIds: readonly string[] = [],
 ): FileChoice | undefined {
   let best: FileChoice | undefined;
-  const considered = new Set(playableFirst(files.map((file) => ({ file, availability: file.availability?.availability }))).map(({ file }) => file));
+  const considered = new Set(playableFiles(files));
   files.forEach((file, index) => {
     if (!considered.has(file)) return;
     const instruction = choosePlaybackInstruction(file.profile, capabilities, { overrides: options.overrides, operations: file.operations });
