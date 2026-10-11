@@ -33,7 +33,8 @@ export class MachaAcquisitionApiError extends Error {
      * Which way the request failed, where the server says, from 0.56.0. On
      * `placement_failed` (409): `node_not_member`, `node_refused`,
      * `node_unreachable`, `node_did_not_start`, `missing_uri`, `add_failed`,
-     * or the target node's own code.
+     * `staging_unavailable` (server 0.90.80: the node's staging directory is
+     * missing), or the target node's own code.
      */
     public readonly reason?: string,
     /**

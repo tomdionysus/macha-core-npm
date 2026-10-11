@@ -23,6 +23,11 @@ export interface StagingStatus {
   disk_bytes: number;
   reserved_bytes: number;
   accounted_bytes: number;
+  /**
+   * False when the staging directory is missing, its disk absent, and nothing
+   * is staged (server 0.90.80); absent from an older node.
+   */
+  available?: boolean;
 }
 
 export interface IngestStatus {
@@ -48,7 +53,10 @@ export type IngestJobErrorCode =
   | 'source_disappeared' | 'source_changed' | 'source_unreadable' | 'source_seek_failed' | 'source_short_read'
   | 'source_is_symlink' | 'no_supported_media' | 'destination_parent_not_directory' | 'partial_not_file'
   | 'destination_conflict' | 'namespace_short_write' | 'size_mismatch' | 'metadata_unavailable'
-  | 'filesystem_error' | 'import_failed';
+  | 'filesystem_error' | 'import_failed'
+  // Server 0.90.80, blocked: a staged source while the node's staging
+  // directory is missing. It retries by itself.
+  | 'staging_unavailable';
 
 /**
  * Why a torrent job failed or is blocked, from server 0.56.0. A torrent whose
@@ -66,6 +74,9 @@ export type TorrentJobErrorCode =
   | 'duplicate_torrent' | 'torrent_fault'
   // Server 0.64.0: the node that claimed the job could not start it.
   | 'adopt_failed'
+  // Server 0.90.80, blocked: the node's staging directory is missing. The
+  // download is held and resumes by itself when the directory is back.
+  | 'staging_unavailable'
   | IngestJobErrorCode;
 
 /**
@@ -303,8 +314,10 @@ export interface TorrentNode {
   active_jobs: number;
   /** Whether it takes a new job now. */
   accepting: boolean;
-  not_accepting_reason: 'slots_full' | 'staging_full' | 'draining' | 'unreachable' | (string & {}) | null;
-  staging: { limit_bytes: number; disk_bytes: number; reserved_bytes: number; free_bytes: number };
+  /** `staging_unavailable` from server 0.90.80, ahead of `slots_full` and `staging_full`. */
+  not_accepting_reason: 'staging_unavailable' | 'slots_full' | 'staging_full' | 'draining' | 'unreachable' | (string & {}) | null;
+  /** `available` is false when the staging directory is missing (server 0.90.80); absent from an older node. */
+  staging: { limit_bytes: number; disk_bytes: number; reserved_bytes: number; free_bytes: number; available?: boolean };
 }
 
 export interface TorrentNodes {
