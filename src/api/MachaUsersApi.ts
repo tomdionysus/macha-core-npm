@@ -35,6 +35,8 @@ export class MachaUsersApiError extends Error {
     public readonly code?: string,
     /** The server's own sentence, for a host that shows it. Never core's text; `message` is for a log. */
     public readonly detail?: string,
+    /** How long until asking again may succeed, where the server says; on `429 try_later`. */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = 'MachaUsersApiError';
@@ -78,6 +80,31 @@ function userList(response: unknown): MachaUser[] {
     if (Array.isArray(candidate)) return candidate as MachaUser[];
   }
   throw new MachaUsersApiError('The server returned an unrecognised user list.', 502, 'invalid_user_list');
+}
+
+/**
+ * A write that sets a password, refused with `429 try_later` because every
+ * password slot on the node is in use (server 0.90.64, the same answer
+ * `POST /api/v1/session` gives). Nothing was done, so asking again is safe,
+ * and the server asks for exactly that after `Retry-After`, a second. Done
+ * here so a host's form does not fail on a busy second, and so the cluster
+ * router never sees a refusal it would charge to a working node. Bounded:
+ * a node still full after this is reported, with `retryAfterMs`.
+ */
+const TRY_LATER_ATTEMPTS = 3;
+const TRY_LATER_DEFAULT_MS = 1_000;
+const TRY_LATER_MAX_MS = 5_000;
+
+function isTryLater(error: unknown): error is MachaUsersApiError {
+  return error instanceof MachaUsersApiError && error.status === 429 && error.code === 'try_later';
+}
+
+/** A `Retry-After` header in seconds, as milliseconds. */
+function retryAfterHeaderMs(response: Response): number | undefined {
+  const header = response.headers.get('Retry-After');
+  if (header === null || header.trim() === '') return undefined;
+  const seconds = Number(header);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : undefined;
 }
 
 export class MachaUsersApi implements UsersApi {
@@ -135,12 +162,17 @@ export class MachaUsersApi implements UsersApi {
     await this.request('/api/v1/session', { method: 'DELETE' });
   }
 
-  private json<T>(path: string, method: string, body: unknown): Promise<T> {
-    return this.request(path, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+  private async json<T>(path: string, method: string, body: unknown): Promise<T> {
+    const init = { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.request<T>(path, init);
+      } catch (error) {
+        if (!isTryLater(error) || attempt >= TRY_LATER_ATTEMPTS) throw error;
+        const wait = Math.min(error.retryAfterMs ?? TRY_LATER_DEFAULT_MS, TRY_LATER_MAX_MS);
+        await new Promise<void>((resolve) => { setTimeout(() => resolve(), wait); });
+      }
+    }
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
@@ -154,7 +186,7 @@ export class MachaUsersApi implements UsersApi {
       const { body, wasJson } = await readResponseBody(response);
       if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
       const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
-      throw new MachaUsersApiError(`Macha users request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
+      throw new MachaUsersApiError(`Macha users request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail, parsed.retryAfterMs ?? retryAfterHeaderMs(response));
     }
     if (response.status === 204) return undefined as T;
     return await readJsonBody<T>(response);

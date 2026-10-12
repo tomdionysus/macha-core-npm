@@ -209,3 +209,52 @@ describe('MachaUsersApi failures', () => {
       .rejects.toMatchObject({ status: 401, forbidden: false });
   });
 });
+
+describe('MachaUsersApi password writes on a busy node', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  function tryLater(): Response {
+    return new Response(JSON.stringify({ error: { code: 'try_later', message: 'password slots busy' } }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '1' },
+    });
+  }
+
+  it('asks again after Retry-After when every password slot is in use (server 0.90.64)', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValueOnce(tryLater()).mockResolvedValueOnce(jsonResponse(user('alice')));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = new MachaUsersApi('http://node.test').create({ username: 'alice', password: 'pw', roles: ['media_viewer'] });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(created).resolves.toEqual(user('alice'));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a node still full after three attempts, with how long to wait', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockImplementation(async () => tryLater());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const changed = new MachaUsersApi('http://node.test').changeOwnPassword('pw');
+    const outcome = expect(changed).rejects.toMatchObject({ status: 429, code: 'try_later', retryAfterMs: 1000 });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await outcome;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not ask again for any other 429', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'too_many_users', message: 'full' } }, 429));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new MachaUsersApi('http://node.test').update('id-alice', { password: 'pw' })).rejects.toMatchObject({ code: 'too_many_users' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
