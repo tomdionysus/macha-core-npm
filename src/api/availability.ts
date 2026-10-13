@@ -19,6 +19,14 @@ import type { CatalogueApi } from './CatalogueApi.js';
  * (about 30 s on fi-1, 6 minutes on gbni-1), and for any file a survey could
  * not decide.
  *
+ * From 0.90.94 a node with every other holder out of reach surveys alone, so
+ * a file only an absent node holds reads `unavailable` (it read `complete`
+ * indefinitely before, fi-1 from 2026-10-13 when gbni-1 dropped out), and
+ * reads `complete` again once that node is back and surveyed. A survey a
+ * peer could not finish keeps the last known `unavailable` set rather than
+ * clearing it to `unknown`. So a title moves both ways as nodes come and go:
+ * read it fresh, never keep it (`withoutAvailability`).
+ *
  * Facts about extents being held, from each node's index of what it stores:
  * not a promise the bytes read back, and "no reachable node" is not "lost",
  * since a node that is down may hold them. The server refuses nothing on
