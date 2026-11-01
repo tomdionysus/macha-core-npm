@@ -67,7 +67,7 @@ describe('MachaAcquisitionApi', () => {
     expect((error as Error).message).toContain('jobs');
   });
 
-  it('submits filesystem paths without deleting the source', async () => {
+  it("submits a path and leaves clearing's source rule to the server", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 'ingest-1' }, 202));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -76,7 +76,7 @@ describe('MachaAcquisitionApi', () => {
 
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/ingest/jobs', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ path: '/media/usb/Movies', remove_source: false }),
+      body: JSON.stringify({ path: '/media/usb/Movies' }),
     }));
   });
 
@@ -285,7 +285,7 @@ describe('an ingest job on the node it names (server 0.91.1)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(new MachaAcquisitionApi('').submitPath('/mnt/import/Film', { nodeId: fi1 })).resolves.toEqual({ id: 'ingest-2', nodeId: fi1 });
-    expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({ path: '/mnt/import/Film', remove_source: false, node_id: fi1 });
+    expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({ path: '/mnt/import/Film', node_id: fi1 });
   });
 
   it('says when a receiving node before 0.91.1 ran the job itself instead', async () => {

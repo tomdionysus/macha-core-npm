@@ -125,7 +125,9 @@ export class MachaAcquisitionApi implements AcquisitionApi {
   }
 
   async submitPath(path: string, options: IngestAddOptions = {}): Promise<IngestAddResult> {
-    const body: Record<string, unknown> = { path, remove_source: false };
+    // No `delete_source_on_clear`: whether clearing a job deletes the source is
+    // the server's default, which leaves it (Tom, 2026-11-01).
+    const body: Record<string, unknown> = { path };
     if (options.nodeId !== undefined) body.node_id = options.nodeId;
     const response = await this.request<{ id: string; node_id?: unknown }>('/api/v1/ingest/jobs', {
       method: 'POST',

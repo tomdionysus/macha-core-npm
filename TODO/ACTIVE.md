@@ -17,7 +17,7 @@ Each item says who it waits on. "Tom" means a decision, "core" means core builds
   - `ingestNodes(status)` derives the selector from cluster status (online, and version at least 0.91.1), since the server has no ingest-nodes route.
   - A `503 node_unreachable` the answering node relays about another node is not charged to it.
   - Asked for by the web client, on Tom's "Good shape" for the server's API.
-  - Open with Tom: `submitPath` has always sent `remove_source: false`, which overrides the operator's `ingest.cleanup.delete_external_source_on_clear`. It dates from the first commit, not a ruling.
+  - `submitPath` no longer sends `remove_source: false`. Tom, 2026-11-01: "The server should default to leaving the source", and it does (`delete_external_source_on_clear{false}`, server `config.hpp:350`). So clearing a job follows the operator's setting, not a core override.
 - **Clients on 0.21.0 from npm:** web 0.20.0 (`main` `1fa0bc4`), Android TV 0.9.0 (`main` `263e308`), phone 0.12.0 (`main` `6c293ad`). The phone reports a later 0.13.0 at `8f95141`, not checked here.
 - **The experiment branch, past `develop`:** HEAD `83c53e9`, 1340 tests in 77 files, dist hash `cf700f02b7db`. It carries:
   - `6f4c396`, `c211268`: two server asks deferred until the experiment ends (below).
