@@ -36,6 +36,7 @@ export const routes = {
   ingestTorrents: '/ingest/torrents',
   ingestTorrent: (id: string) => `/ingest/torrents/${segment(id)}`,
   ingestFiles: '/ingest/files',
+  ingestFile: (id: string) => `/ingest/files/${segment(id)}`,
   status: '/status',
   statusClient: '/status/client',
   statusConnectivity: '/status/connectivity',

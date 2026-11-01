@@ -23,6 +23,7 @@ describe('routes', () => {
     expect(routes.ingestTorrents).toBe('/ingest/torrents');
     expect(routes.ingestTorrent('job:1')).toBe('/ingest/torrents/job%3A1');
     expect(routes.ingestFiles).toBe('/ingest/files');
+    expect(routes.ingestFile('job:1')).toBe('/ingest/files/job%3A1');
     expect(routes.status).toBe('/status');
     expect(routes.statusClient).toBe('/status/client');
     expect(routes.statusConnectivity).toBe('/status/connectivity');
