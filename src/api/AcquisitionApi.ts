@@ -135,8 +135,15 @@ export interface IngestJob {
   catalogue?: IngestCatalogueSummary;
 }
 
+/** Where one file of an ingest job stands (server 0.91.2). The set is open. */
+export type IngestJobFileState = 'queued' | 'importing' | 'paused' | 'completed' | 'skipped' | 'cancelled' | (string & {});
+
 /** One imported file of a job, from `ingestJob` only. */
 export interface IngestJobFile {
+  /** Its position in the job's plan, which the per-file actions name (server 0.91.2); absent from an older owner. */
+  index?: number;
+  /** Absent from an owner before 0.91.2. */
+  state?: IngestJobFileState;
   source_path: string;
   destination_path: string;
   size: number;
@@ -416,6 +423,20 @@ export interface AcquisitionApi {
   /** Adds a torrent to the cluster. The job comes back from 0.64.0, so it can show at once. */
   submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult>;
   pauseIngest(id: string): Promise<IngestJob>;
+  /**
+   * One file of a job, by its `index` (server 0.91.2), answering the job as
+   * it now stands. A job whose remaining files are all paused reads `paused`;
+   * resuming one of them resumes it, and `resumeIngest` resumes every paused
+   * file. A cancelled file leaves the job's `files_total` and `bytes_total`.
+   * `404 not_found` is no such job or index. `409 invalid_state` is a file
+   * that cannot take the action (completed, skipped, already cancelled, a
+   * pause of a paused file, a resume of one not paused), a finished job, or
+   * an owner before 0.91.2. `503 node_unreachable` is an owner that could not
+   * be asked.
+   */
+  pauseIngestFile(jobId: string, index: number): Promise<IngestJob>;
+  resumeIngestFile(jobId: string, index: number): Promise<IngestJob>;
+  cancelIngestFile(jobId: string, index: number): Promise<IngestJob>;
   resumeIngest(id: string): Promise<IngestJob>;
   cancelIngest(id: string): Promise<IngestJob>;
   clearIngest(id: string): Promise<void>;

@@ -13,6 +13,9 @@ export class ClusterAcquisitionApi implements AcquisitionApi {
   ingestJob(id: string): Promise<IngestJobDetail> { return this.read((api) => api.ingestJob(id)); }
   submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult> { return this.write((api) => api.submitMagnet(magnet, options)); }
   pauseIngest(id: string): Promise<IngestJob> { return this.write((api) => api.pauseIngest(id)); }
+  pauseIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.write((api) => api.pauseIngestFile(jobId, index)); }
+  resumeIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.write((api) => api.resumeIngestFile(jobId, index)); }
+  cancelIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.write((api) => api.cancelIngestFile(jobId, index)); }
   resumeIngest(id: string): Promise<IngestJob> { return this.write((api) => api.resumeIngest(id)); }
   cancelIngest(id: string): Promise<IngestJob> { return this.write((api) => api.cancelIngest(id)); }
   clearIngest(id: string): Promise<void> { return this.write((api) => api.clearIngest(id)); }

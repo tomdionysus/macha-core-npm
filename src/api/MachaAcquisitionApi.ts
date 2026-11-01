@@ -201,6 +201,9 @@ export class MachaAcquisitionApi implements AcquisitionApi {
   }
 
   pauseIngest(id: string): Promise<IngestJob> { return this.ingestAction(id, 'pause'); }
+  pauseIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.ingestFileAction(jobId, index, 'pause'); }
+  resumeIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.ingestFileAction(jobId, index, 'resume'); }
+  cancelIngestFile(jobId: string, index: number): Promise<IngestJob> { return this.ingestFileAction(jobId, index, 'cancel'); }
   resumeIngest(id: string): Promise<IngestJob> { return this.ingestAction(id, 'resume'); }
   cancelIngest(id: string): Promise<IngestJob> { return this.ingestAction(id, 'cancel'); }
   async clearIngest(id: string): Promise<void> {
@@ -216,6 +219,10 @@ export class MachaAcquisitionApi implements AcquisitionApi {
 
   private ingestAction(id: string, action: 'pause' | 'resume' | 'cancel'): Promise<IngestJob> {
     return this.request(`/api/v1/ingest/jobs/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+  }
+
+  private ingestFileAction(jobId: string, index: number, action: 'pause' | 'resume' | 'cancel'): Promise<IngestJob> {
+    return this.request(`/api/v1/ingest/jobs/${encodeURIComponent(jobId)}/files/${index}/${action}`, { method: 'POST' });
   }
 
   private torrentAction(id: string, action: 'pause' | 'resume' | 'retry' | 'cancel'): Promise<TorrentJob> {

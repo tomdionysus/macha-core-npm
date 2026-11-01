@@ -330,3 +330,31 @@ describe('an ingest job on the node it names (server 0.91.1)', () => {
   });
 });
 
+describe('one file of an ingest job (server 0.91.2)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('posts each action to the file by its index and answers the job', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse({ status: 'ok', id: 'job:1', state: 'importing' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaAcquisitionApi('');
+
+    await expect(api.pauseIngestFile('job:1', 2)).resolves.toMatchObject({ id: 'job:1' });
+    await api.resumeIngestFile('job:1', 2);
+    await api.cancelIngestFile('job:1', 0);
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, (init as RequestInit).method])).toEqual([
+      ['/api/v1/ingest/jobs/job%3A1/files/2/pause', 'POST'],
+      ['/api/v1/ingest/jobs/job%3A1/files/2/resume', 'POST'],
+      ['/api/v1/ingest/jobs/job%3A1/files/0/cancel', 'POST'],
+    ]);
+  });
+
+  it('carries a refusal as a code, through the cluster wrapping', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({
+      status: 'invalid_state', error: { code: 'invalid_state', message: 'file is completed' },
+    }, 409)));
+    const caught = await new MachaAcquisitionApi('http://node.test').cancelIngestFile('j', 1).catch((e: unknown) => e);
+    expect(acquisitionError(endpointFailure('macnessa', 'http://node.test', caught))).toMatchObject({ status: 409, code: 'invalid_state', detail: 'file is completed' });
+  });
+});
+
