@@ -231,6 +231,17 @@ const FAMILY_SCOPED_FAILURE_CODES: ReadonlySet<string> = new Set(['catalogue_una
  */
 const CAPABILITY_FAILURE_CODES: ReadonlySet<string> = new Set(['media_engine_unavailable']);
 
+/**
+ * Refusals a node relays about another node: it answered, and the node the
+ * request was for did not.
+ *
+ * `node_unreachable` (503): an ingest submitted for another node that could
+ * not be asked (server 0.91.1), or an action on a job whose owner could not be
+ * reached. The node that answered is the one that worked; a charge would cool
+ * it down for every family over a peer it does not control.
+ */
+const RELAYED_FAILURE_CODES: ReadonlySet<string> = new Set(['node_unreachable']);
+
 function isAccountScopedFailure(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const code = (error as { code?: unknown }).code;
@@ -264,6 +275,7 @@ export function failureBlamesEndpoint(
   if (isAccountScopedFailure(error)) return false;
   if (FAMILY_SCOPED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   if (CAPABILITY_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
+  if (RELAYED_FAILURE_CODES.has(playbackFailureCode(error) ?? '')) return false;
   // A capacity refusal on a pinned path. The node is **full, not unwell**, and
   // the caller cannot act on the charge: `update` and `stop` are pinned to the
   // node that holds the generation, so there is no walk for the charge to

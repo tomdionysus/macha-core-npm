@@ -10,6 +10,14 @@ Each item says who it waits on. "Tom" means a decision, "core" means core builds
 
 - **Branch: `develop`.** The object-ledger experiment was merged into it on 2026-10-06 (`5860da4`) and its branch deleted. `main` moves only by the release procedure, on Tom's word.
 - **Published: `0.22.0`** (2026-10-06). npm `latest`, `gitHead` `6e78168` (`main`'s merge), tag `0.22.0` on `9fdbda4`. `develop` is fast-forwarded to `main`. Clients move to `^0.22.0` from the registry, each on Tom's word in its own session.
+- **On `develop` since, unreleased: node-targeted ingest (server 0.91.1), 2026-11-01.**
+  - `submitPath(path, { nodeId })` answers `IngestAddResult { id, nodeId, placementIgnored? }`, where it answered a bare id. `placementIgnored` means a receiving node before 0.91.1 ran the job itself.
+  - `ingestJob(id)` answers `IngestJobDetail`, with `files` and `catalogue.items`.
+  - `IngestJob` gains `node_id`, `source_owned`, `delete_source_on_clear` and `catalogue`. It loses `remove_source_on_complete`, which the server no longer sends.
+  - `ingestNodes(status)` derives the selector from cluster status (online, and version at least 0.91.1), since the server has no ingest-nodes route.
+  - A `503 node_unreachable` the answering node relays about another node is not charged to it.
+  - Asked for by the web client, on Tom's "Good shape" for the server's API.
+  - Open with Tom: `submitPath` has always sent `remove_source: false`, which overrides the operator's `ingest.cleanup.delete_external_source_on_clear`. It dates from the first commit, not a ruling.
 - **Clients on 0.21.0 from npm:** web 0.20.0 (`main` `1fa0bc4`), Android TV 0.9.0 (`main` `263e308`), phone 0.12.0 (`main` `6c293ad`). The phone reports a later 0.13.0 at `8f95141`, not checked here.
 - **The experiment branch, past `develop`:** HEAD `83c53e9`, 1340 tests in 77 files, dist hash `cf700f02b7db`. It carries:
   - `6f4c396`, `c211268`: two server asks deferred until the experiment ends (below).

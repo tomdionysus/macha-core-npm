@@ -104,11 +104,17 @@ export interface AcquisitionSource {
 
 export interface IngestJob {
   id: string;
+  /** The node that owns and runs the job, on every job object; absent from an older node. */
+  node_id?: string;
   source_type: string;
   source_ref: string | null;
   display_name: string;
+  /** The resolved source path, on the owning node's own filesystem. */
   source_path: string;
-  remove_source_on_complete: boolean;
+  /** The source is Macha's own (a torrent payload in staging), not the operator's. */
+  source_owned: boolean;
+  /** Whether `clear` deletes the imported source; see the server's *What clear and cancel delete*. */
+  delete_source_on_clear: boolean;
   state: IngestJobState;
   bytes_total: number;
   bytes_completed: number;
@@ -125,6 +131,70 @@ export interface IngestJob {
   error: string | null;
   /** Null when none. Absent on a node older than 0.56.0. */
   error_code?: IngestJobErrorCode | (string & {}) | null;
+  /** The job's imported files through the catalogue, without `items` in a list. */
+  catalogue?: IngestCatalogueSummary;
+}
+
+/** One imported file of a job, from `ingestJob` only. */
+export interface IngestJobFile {
+  source_path: string;
+  destination_path: string;
+  size: number;
+  copied: number;
+  completed: boolean;
+  skipped: boolean;
+  /** False for a sidecar, which is imported but not sent to the catalogue. */
+  catalogue_candidate: boolean;
+}
+
+/** One imported file's catalogue progress, from `ingestJob` only. */
+export interface IngestCatalogueItem {
+  /** The catalogue hint. */
+  id: string;
+  path: string;
+  state: 'queued' | 'processing' | 'deferred' | 'catalogued' | 'no_match' | 'failed' | (string & {});
+  provider: string | null;
+  media_id: string | null;
+  result: string | null;
+  priority: number;
+  attempts: number;
+  error_code: string | null;
+  error: string | null;
+  /** The catalogue items the file became. */
+  catalogue_item_ids: string[];
+}
+
+/**
+ * One job as its owning node answers it (`GET /api/v1/ingest/jobs/{id}`),
+ * for a per-job screen: its files, and each file's catalogue progress. When
+ * the owner cannot be asked, the job is as last polled and `catalogue.items`
+ * is null.
+ */
+export interface IngestJobDetail extends IngestJob {
+  files: IngestJobFile[];
+  catalogue?: IngestCatalogueSummary & { items: IngestCatalogueItem[] | null };
+}
+
+/** Where to run an ingest job (server 0.91.1). */
+export interface IngestAddOptions {
+  /**
+   * The node that runs the job and reads `path` on its own filesystem,
+   * against its own `ingest.source_roots`. Absent is the node that receives
+   * the request. See `ingestNodes` for the nodes that can be named.
+   */
+  nodeId?: string;
+}
+
+export interface IngestAddResult {
+  id: string;
+  /** The node running the job, as the server names it; null from a node before 0.91.1. */
+  nodeId: string | null;
+  /**
+   * Set when a node was asked for and the job does not run there: the
+   * receiving node is older than 0.91.1, ignored `node_id`, and runs the job
+   * itself, reading `path` on its own filesystem. A host says so.
+   */
+  placementIgnored?: true;
 }
 
 // Post-import cataloguing of what the torrent delivered, reported per job by
@@ -132,6 +202,9 @@ export interface IngestJob {
 // in the catalogue is a successful download and a failed acquisition, and only
 // these counts tell the two apart.
 export type TorrentCatalogueState = 'waiting' | 'processing' | 'completed' | 'completed_with_issues';
+
+/** An ingest job's catalogue counts: the same fields and rule as a torrent's. */
+export type IngestCatalogueSummary = TorrentCatalogueSummary;
 
 export interface TorrentCatalogueSummary {
   total: number;
@@ -329,7 +402,17 @@ export interface TorrentNodes {
 
 export interface AcquisitionApi {
   snapshot(): Promise<AcquisitionSnapshot>;
-  submitPath(path: string): Promise<string>;
+  /**
+   * Imports a path, on the named node where given (server 0.91.1). Refusals
+   * arrive as `MachaAcquisitionApiError` (read through `acquisitionError`):
+   * `400 bad_request` with the running node's own `detail` (path missing,
+   * outside its source roots, ingest disabled there); `409 placement_failed`
+   * with `reason` `node_not_member` or `node_not_ingest_capable`;
+   * `503 node_unreachable`, try later.
+   */
+  submitPath(path: string, options?: IngestAddOptions): Promise<IngestAddResult>;
+  /** One job, as its owner answers it, with its files and catalogue items. */
+  ingestJob(id: string): Promise<IngestJobDetail>;
   /** Adds a torrent to the cluster. The job comes back from 0.64.0, so it can show at once. */
   submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult>;
   pauseIngest(id: string): Promise<IngestJob>;

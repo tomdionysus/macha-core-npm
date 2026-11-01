@@ -2,7 +2,10 @@ import type {
   AcquisitionApi,
   AcquisitionSnapshot,
   AcquisitionSource,
+  IngestAddOptions,
+  IngestAddResult,
   IngestJob,
+  IngestJobDetail,
   IngestStatus,
   TorrentAddOptions,
   TorrentAddResult,
@@ -19,7 +22,6 @@ import { isGatewayConnectionFailure, serverUnreachable } from './serverConnectio
 
 interface IngestJobsEnvelope { jobs: IngestJob[]; }
 interface TorrentJobsEnvelope { jobs: TorrentJob[]; }
-interface IdEnvelope { id: string; }
 interface ClearEnvelope { cleared: boolean; }
 
 export class MachaAcquisitionApiError extends Error {
@@ -122,13 +124,23 @@ export class MachaAcquisitionApi implements AcquisitionApi {
     };
   }
 
-  async submitPath(path: string): Promise<string> {
-    const response = await this.request<IdEnvelope>('/api/v1/ingest/jobs', {
+  async submitPath(path: string, options: IngestAddOptions = {}): Promise<IngestAddResult> {
+    const body: Record<string, unknown> = { path, remove_source: false };
+    if (options.nodeId !== undefined) body.node_id = options.nodeId;
+    const response = await this.request<{ id: string; node_id?: unknown }>('/api/v1/ingest/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, remove_source: false }),
+      body: JSON.stringify(body),
     });
-    return response.id;
+    const nodeId = typeof response.node_id === 'string' ? response.node_id : null;
+    // A receiving node before 0.91.1 ignores `node_id` and runs the job
+    // itself, on its own filesystem, and says nothing; only the 202 shows it.
+    const ignored = options.nodeId !== undefined && nodeId !== options.nodeId;
+    return { id: response.id, nodeId, ...(ignored ? { placementIgnored: true as const } : {}) };
+  }
+
+  ingestJob(id: string): Promise<IngestJobDetail> {
+    return this.getJson(`/api/v1/ingest/jobs/${encodeURIComponent(id)}`);
   }
 
   async submitMagnet(magnet: string, options: TorrentAddOptions = {}): Promise<TorrentAddResult> {

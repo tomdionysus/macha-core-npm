@@ -437,3 +437,12 @@ describe('a provider refusing the node (server 0.90.19)', () => {
   });
 });
 
+describe('a refusal relayed about another node', () => {
+  it("charges no node for a node_unreachable it relays about another (server 0.91.1)", async () => {
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const router = new ClusterEndpointRouter(registry);
+    const relayed = new MachaApiError('node could not be asked', 503, 'node_unreachable');
+    await expect(router.mutation(async () => { throw relayed; })).rejects.toThrow();
+    expect(registry.snapshot().map(({ health }) => health.consecutiveFailures)).toEqual([0, 0]);
+  });
+});

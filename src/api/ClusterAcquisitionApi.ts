@@ -1,4 +1,4 @@
-import type { AcquisitionApi, AcquisitionSnapshot, IngestJob, TorrentAddOptions, TorrentAddResult, TorrentJob, TorrentJobUpdate, TorrentNodes } from './AcquisitionApi.js';
+import type { AcquisitionApi, AcquisitionSnapshot, IngestAddOptions, IngestAddResult, IngestJob, IngestJobDetail, TorrentAddOptions, TorrentAddResult, TorrentJob, TorrentJobUpdate, TorrentNodes } from './AcquisitionApi.js';
 import type { MachaEndpoint } from '../cluster/EndpointRegistry.js';
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { MachaAcquisitionApi } from './MachaAcquisitionApi.js';
@@ -9,7 +9,8 @@ export class ClusterAcquisitionApi implements AcquisitionApi {
   constructor(private readonly router: ClusterEndpointRouter, private readonly auth: AuthenticatedFetch = NO_AUTH) {}
 
   snapshot(): Promise<AcquisitionSnapshot> { return this.read((api) => api.snapshot()); }
-  submitPath(path: string): Promise<string> { return this.write((api) => api.submitPath(path)); }
+  submitPath(path: string, options?: IngestAddOptions): Promise<IngestAddResult> { return this.write((api) => api.submitPath(path, options)); }
+  ingestJob(id: string): Promise<IngestJobDetail> { return this.read((api) => api.ingestJob(id)); }
   submitMagnet(magnet: string, options?: TorrentAddOptions): Promise<TorrentAddResult> { return this.write((api) => api.submitMagnet(magnet, options)); }
   pauseIngest(id: string): Promise<IngestJob> { return this.write((api) => api.pauseIngest(id)); }
   resumeIngest(id: string): Promise<IngestJob> { return this.write((api) => api.resumeIngest(id)); }

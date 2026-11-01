@@ -72,7 +72,7 @@ describe('MachaAcquisitionApi', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const api = new MachaAcquisitionApi('');
-    await expect(api.submitPath('/media/usb/Movies')).resolves.toBe('ingest-1');
+    await expect(api.submitPath('/media/usb/Movies')).resolves.toEqual({ id: 'ingest-1', nodeId: null });
 
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/ingest/jobs', expect.objectContaining({
       method: 'POST',
@@ -273,6 +273,60 @@ describe('a torrent job\'s ingest node and swarm (server 0.90.20)', () => {
     expect(snapshot.torrentJobs[0]).toMatchObject({ ingest_node_id: 'gbni-1', swarm });
     expect(snapshot.torrentJobs[1]?.ingest_node_id).toBeUndefined();
     expect(snapshot.torrentJobs[1]?.swarm).toBeUndefined();
+  });
+});
+
+describe('an ingest job on the node it names (server 0.91.1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const fi1 = 'a3c95e0f7d2b41e8b6c4d0f19e7a2b58';
+
+  it('sends node_id and answers the running node', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', id: 'ingest-2', node_id: fi1 }, 202));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(new MachaAcquisitionApi('').submitPath('/mnt/import/Film', { nodeId: fi1 })).resolves.toEqual({ id: 'ingest-2', nodeId: fi1 });
+    expect(JSON.parse((fetchMock.mock.calls[0]?.[1] as RequestInit).body as string)).toEqual({ path: '/mnt/import/Film', remove_source: false, node_id: fi1 });
+  });
+
+  it('says when a receiving node before 0.91.1 ran the job itself instead', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ id: 'ingest-3' }, 202)));
+    await expect(new MachaAcquisitionApi('').submitPath('/mnt/import/Film', { nodeId: fi1 }))
+      .resolves.toEqual({ id: 'ingest-3', nodeId: null, placementIgnored: true });
+  });
+
+  it('carries each placement refusal as a code, through the cluster wrapping', async () => {
+    const refusals = [
+      [409, { status: 'placement_failed', error: { code: 'placement_failed', reason: 'node_not_ingest_capable', message: 'node runs a release before 0.91.1' } }],
+      [503, { status: 'node_unreachable', error: { code: 'node_unreachable', message: 'node could not be asked' } }],
+      [400, { status: 'bad_request', error: { code: 'bad_request', message: 'path is outside ingest.source_roots' } }],
+    ] as const;
+    const seen = [];
+    for (const [status, body] of refusals) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body, status)));
+      const caught = await new MachaAcquisitionApi('http://node.test').submitPath('/x', { nodeId: fi1 }).catch((e: unknown) => e);
+      const error = acquisitionError(endpointFailure('fi-1', 'http://node.test', caught));
+      seen.push([error?.status, error?.code, error?.reason, error?.detail]);
+    }
+    expect(seen).toEqual([
+      [409, 'placement_failed', 'node_not_ingest_capable', 'node runs a release before 0.91.1'],
+      [503, 'node_unreachable', undefined, 'node could not be asked'],
+      [400, 'bad_request', undefined, 'path is outside ingest.source_roots'],
+    ]);
+  });
+
+  it('reads one job, with its files and catalogue items, as its owner answers it', async () => {
+    const job = {
+      status: 'ok', id: 'ingest-2', node_id: fi1, state: 'cataloguing',
+      files: [{ source_path: '/mnt/import/Film/f.mkv', destination_path: '/Movies/Film/f.mkv', size: 10, copied: 10, completed: true, skipped: false, catalogue_candidate: true }],
+      catalogue: { total: 1, pending: 1, catalogued: 0, no_match: 0, failed: 0, state: 'processing', items: [] },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(job));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const detail = await new MachaAcquisitionApi('').ingestJob('ingest-2');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/ingest/jobs/ingest-2');
+    expect(detail).toMatchObject({ node_id: fi1, files: [{ destination_path: '/Movies/Film/f.mkv' }], catalogue: { state: 'processing', items: [] } });
   });
 });
 
