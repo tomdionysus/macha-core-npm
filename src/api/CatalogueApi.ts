@@ -72,7 +72,7 @@ export interface CatalogueItem {
   /** BCP 47, from the file or the provider (0.92.0). */
   language?: string | null;
   publisher?: string | null;
-  /** The date as the file or provider gives it, ISO in form but not always a full date (0.92.0). */
+  /** The date as given: a plain date from a file, or free text from a provider ("September 2005"). Never parse it as ISO. */
   published?: string | null;
 }
 

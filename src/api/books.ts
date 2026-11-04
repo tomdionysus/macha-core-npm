@@ -37,7 +37,7 @@ export function isConversionFormat(value: string): value is ConversionFormat {
 }
 
 /**
- * The file extensions server 0.92.1 converts from, lower case and without the
+ * The file extensions the server converts from, lower case and without the
  * dot: the MOBI family. An EPUB is refused `400 same_format`; PDF, FB2, CBZ
  * and anything else fail at once with `unsupported_source`.
  */
@@ -57,12 +57,9 @@ export function isConvertibleSource(fileNameOrExtension: string): boolean {
 }
 
 /**
- * The content types server 0.92.1 serves a convertible file as (its
- * `book_facts`): `application/x-mobipocket-ebook` for `.mobi`,
- * `application/vnd.amazon.ebook` for `.azw3`. In 0.92.1 the server does not
- * catalogue `.azw` or `.prc` files as books at all. The server has proposed
- * serving both as `application/x-mobipocket-ebook`, which this already
- * accepts; that waits on Tom.
+ * The content types the server serves a convertible file as (its
+ * `book_facts`, server 0.92.2): `application/x-mobipocket-ebook` for `.mobi`,
+ * `.azw` and `.prc`, `application/vnd.amazon.ebook` for `.azw3`.
  */
 export const CONVERSION_SOURCE_CONTENT_TYPES: readonly string[] = ['application/x-mobipocket-ebook', 'application/vnd.amazon.ebook'];
 
@@ -176,21 +173,28 @@ export function orderBooksInSeries<T extends Pick<MediaSummary, 'id' | 'title' |
   });
 }
 
+/** What a `published` value sorts by: its leading ISO date, else a year named in it, else nothing. */
+function publicationKey(published: string | undefined): string | undefined {
+  if (!published) return undefined;
+  return /^\d{4}(?:-\d{2}(?:-\d{2})?)?/.exec(published)?.[0] ?? /\b\d{4}\b/.exec(published)?.[0];
+}
+
 /**
- * An author's books, oldest first: by `published` where both have one (an
- * ISO date compares as text), else by year, undated after dated, then title.
- * Returns a new array.
+ * An author's books, oldest first, undated after dated, then by title.
+ * `published` is the date as given, a plain date from a file or free text
+ * from a provider ("September 2005"), so it is never parsed: a leading ISO
+ * date is used as it stands, otherwise the year named in the text, otherwise
+ * the item's `year`. Returns a new array.
  */
 export function orderBooksByPublication<T extends Pick<MediaSummary, 'id' | 'title' | 'year' | 'bookContext'>>(books: readonly T[]): T[] {
-  const date = (book: T) => book.bookContext?.published ?? (book.year !== undefined ? String(book.year).padStart(4, '0') : undefined);
+  const date = (book: T) => publicationKey(book.bookContext?.published) ?? (book.year !== undefined ? String(book.year).padStart(4, '0') : undefined);
   return [...books].sort((left, right) => {
     const a = date(left);
     const b = date(right);
     if (a !== b) {
       if (a === undefined) return 1;
       if (b === undefined) return -1;
-      const order = a.localeCompare(b);
-      if (order !== 0) return order;
+      return a < b ? -1 : 1;
     }
     return compareIndexedTitles(left.title, right.title) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   });

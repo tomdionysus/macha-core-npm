@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { awaitConversion, isBookKind, isConversionFormat, isConvertibleContentType, isConvertibleSource, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
+import { awaitConversion, isBookKind, isConversionFormat, isConvertibleContentType, isConvertibleSource, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksByPublication, orderBooksInSeries } from './books.js';
 import type { CatalogueConversion } from './CatalogueApi.js';
 import { MachaPlaybackResolver } from '../playback/MachaPlaybackResolver.js';
 import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js';
@@ -119,5 +119,30 @@ describe('awaitConversion', () => {
   it('knows which files convert: the MOBI family, by name, path or extension', () => {
     for (const name of ['Mort.mobi', '/Books/Mort.AZW3', 'mort.azw', 'prc', ' Mort.Prc ']) expect(isConvertibleSource(name)).toBe(true);
     for (const name of ['Mort.epub', 'Mort.pdf', 'Mort.fb2', 'Comic.cbz', '/Books.mobi/Mort', '', 'mobi.txt']) expect(isConvertibleSource(name)).toBe(false);
+  });
+});
+
+describe('orderBooksByPublication', () => {
+  const book = (id: string, published?: string, year?: number) => ({
+    id, title: id, ...(year !== undefined ? { year } : {}),
+    bookContext: { authors: [], series: [], ...(published !== undefined ? { published } : {}) },
+  });
+
+  it('places a free-text date by the year in it, since a provider may give one', () => {
+    const ordered = orderBooksByPublication([
+      book('free', 'September 2005'),
+      book('later', '2010-01-02'),
+      book('earlier', '2001-06'),
+    ]);
+    expect(ordered.map((entry) => entry.id)).toEqual(['earlier', 'free', 'later']);
+  });
+
+  it('falls back to the year when the text names none, and puts undated last', () => {
+    const ordered = orderBooksByPublication([
+      book('undated', 'unknown'),
+      book('by-year', 'Spring', 1999),
+      book('dated', '2003-01-01'),
+    ]);
+    expect(ordered.map((entry) => entry.id)).toEqual(['by-year', 'dated', 'undated']);
   });
 });

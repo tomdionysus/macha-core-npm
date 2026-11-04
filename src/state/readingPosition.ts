@@ -15,7 +15,11 @@ import { readValidatedJson, writeJson, type StorageLike } from './storage.js';
 export interface ReadingPosition {
   /** The file: a `macha:` media id. */
   mediaId: string;
-  /** The book's catalogue item, for a row that names it. */
+  /**
+   * The book's catalogue item, for a row that names it. Item ids can change when
+   * the scanner re-reads a book (media ids do not), so a stored one may name an
+   * item that is gone, while `mediaId` stays good.
+   */
   itemId?: string;
   /**
    * The reader's own place, opaque to core: an EPUB CFI, a page number, a

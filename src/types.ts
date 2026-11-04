@@ -92,7 +92,7 @@ export interface BookContext {
   /** BCP 47. */
   language?: string;
   publisher?: string;
-  /** As the file or provider gives it: ISO in form, not always a full date. */
+  /** As given: a plain date from a file, or free text from a provider ("September 2005"). Never parse it as ISO. */
   published?: string;
   /** From `external_ids.isbn13`. */
   isbn13?: string;
