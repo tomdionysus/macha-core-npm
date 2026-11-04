@@ -6,6 +6,9 @@ import type {
   ArtistDetails,
   Artwork,
   ArtworkRef,
+  AuthorDetails,
+  BookContext,
+  BookSeriesDetails,
   Episode,
   LibraryHome,
   MediaDetails,
@@ -21,15 +24,10 @@ import { abortError } from '../errors.js';
 import { DEFAULT_SEARCH_CATEGORIES, SEARCH_CATEGORIES } from '../searchCategories.js';
 import type { MediaSearchOptions } from './MediaApi.js';
 import { isSearchable, searchTerms } from '../searchTerms.js';
+import { orderBooksByPublication, orderBooksInSeries } from './books.js';
 
 /** How many hits a search returns. */
 const SEARCH_PAGE_SIZE = 50;
-/**
- * How many to ask the catalogue for when a category filter will discard some.
- * A guess: enough that one kind rarely runs short, well under the server's
- * cap of 1000. Moves to the server if it ever takes a kind.
- */
-const SEARCH_FILTERED_FETCH_LIMIT = 200;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError('Artwork consumer cancelled.');
@@ -106,6 +104,12 @@ function expiredCapability(url: string): boolean {
   return expiry !== null && Number(expiry[1]) <= Date.now();
 }
 
+/** Every author and series the books reference. */
+function bookReferences(items: readonly CatalogueItem[]): string[] {
+  return items.filter((item) => item.kind === 'book')
+    .flatMap((item) => [...(item.author_ids ?? []), ...(item.series ?? []).map((entry) => entry.series_id)]);
+}
+
 function optionalNumber(value: number | null): number | undefined {
   return value ?? undefined;
 }
@@ -180,6 +184,31 @@ export class MachaMediaApi implements MediaApi {
     return tracks.map((item) => this.track(item, known));
   }
 
+  /**
+   * Every book, each with its `bookContext`. Two more list reads, authors
+   * and series, rather than a read per book; if either fails, the books
+   * still come back, naming what they reference by id alone.
+   */
+  async books(signal?: AbortSignal): Promise<MediaSummary[]> {
+    const [books, authors, series] = await Promise.all([
+      this.catalogue.list('book', undefined, signal),
+      this.catalogue.list('author', undefined, signal).catch(() => [] as CatalogueItem[]),
+      this.catalogue.list('series', undefined, signal).catch(() => [] as CatalogueItem[]),
+    ]);
+    if (signal?.aborted) throw abortReason(signal);
+    const known = new Map([...authors, ...series].map((item) => [item.id, item]));
+    return books.map((item) => this.book(item, known));
+  }
+
+  async authors(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('author', undefined, signal)).map((item) => this.media(item));
+  }
+
+  /** Every book series (kind `series`; a TV series is a `show`). */
+  async bookSeries(signal?: AbortSignal): Promise<MediaSummary[]> {
+    return (await this.catalogue.list('series', undefined, signal)).map((item) => this.media(item));
+  }
+
   async details(id: string, signal?: AbortSignal): Promise<MediaDetails> {
     const item = await this.catalogue.get(id, signal);
 
@@ -244,6 +273,24 @@ export class MachaMediaApi implements MediaApi {
       } as AlbumDetails;
     }
 
+    if (item.kind === 'book') {
+      const known = new Map<string, CatalogueItem>();
+      await this.loadAncestors(known, bookReferences([item]), signal);
+      return this.book(item, known);
+    }
+
+    if (item.kind === 'author' || item.kind === 'series') {
+      const filter = item.kind === 'author' ? { author: item.id } : { series: item.id };
+      const bookItems = await this.catalogue.list('book', undefined, signal, filter);
+      const known = new Map<string, CatalogueItem>([[item.id, item]]);
+      await this.loadAncestors(known, bookReferences(bookItems), signal);
+      const books = bookItems.map((book) => this.book(book, known));
+      if (item.kind === 'author') {
+        return { ...this.media(item), kind: 'author', books: orderBooksByPublication(books) } as AuthorDetails;
+      }
+      return { ...this.media(item), kind: 'series', books: orderBooksInSeries(books, item.id) } as BookSeriesDetails;
+    }
+
     return this.media(item);
   }
 
@@ -256,7 +303,8 @@ export class MachaMediaApi implements MediaApi {
    * - an episode gets `playbackContext` (series and season);
    * - a season gets `showId` and `playbackContext` (its series, and itself);
    * - a track gets `musicContext` (album and artist);
-   * - an album gets `musicContext` (itself and its artist).
+   * - an album gets `musicContext` (itself and its artist);
+   * - a book gets `bookContext` (its authors and series, by name).
    * Data only: how a hit is worded is the client's.
    *
    * Each distinct parent is fetched once, in parallel, and a hit that is
@@ -273,13 +321,11 @@ export class MachaMediaApi implements MediaApi {
     const kinds = new Set(SEARCH_CATEGORIES.filter((category) => categories.includes(category.key)).flatMap((category) => category.kinds));
     // Nothing selected finds nothing, and asks nobody.
     if (kinds.size === 0) return [];
-    // The catalogue search takes no kind, so a filter is applied to what comes
-    // back. Asking for more when anything is filtered out keeps a page of
-    // SEARCH_PAGE_SIZE from quietly shrinking to the few hits of one kind that
-    // made the unfiltered cut. Filtered before the ancestry, so no parent is
-    // fetched for a hit that is then thrown away.
-    const narrowed = kinds.size < SEARCH_CATEGORIES.reduce((count, category) => count + category.kinds.length, 0);
-    const found = await this.catalogue.search(searchTerms(query), narrowed ? SEARCH_FILTERED_FETCH_LIMIT : SEARCH_PAGE_SIZE, signal);
+    // The server narrows by kind before its limit (`kind=`, server 0.67.0),
+    // so a page of one kind is a full page. The filter below stays as a
+    // backstop for a node that ignores it, and runs before the ancestry, so
+    // no parent is fetched for a hit that is then thrown away.
+    const found = await this.catalogue.search(searchTerms(query), SEARCH_PAGE_SIZE, signal, { kinds: [...kinds] });
     const hits = found.filter((item) => kinds.has(item.kind)).slice(0, SEARCH_PAGE_SIZE);
     const known = new Map(hits.map((item) => [item.id, item]));
     const withAncestry = hits.filter((item) => item.kind === 'episode' || item.kind === 'season' || item.kind === 'track' || item.kind === 'album');
@@ -288,7 +334,7 @@ export class MachaMediaApi implements MediaApi {
     const grandparents = withAncestry
       .filter((item) => item.kind === 'episode' || item.kind === 'track')
       .map((item) => (item.parent_id ? known.get(item.parent_id)?.parent_id : undefined));
-    await this.loadAncestors(known, grandparents, signal);
+    await this.loadAncestors(known, [...grandparents, ...bookReferences(hits)], signal);
     return hits.map((item) => this.searchHit(item, known));
   }
 
@@ -432,7 +478,34 @@ export class MachaMediaApi implements MediaApi {
     }
     if (item.kind === 'album') return this.album(item, known);
     if (item.kind === 'track') return this.track(item, known);
+    if (item.kind === 'book') return this.book(item, known);
     return this.media(item);
+  }
+
+  /** A book with its `bookContext`, naming each author and series `known` holds. */
+  private book(item: CatalogueItem, known: ReadonlyMap<string, CatalogueItem>): MediaSummary {
+    const name = (id: string, kind: 'author' | 'series') => {
+      const found = known.get(id);
+      return found?.kind === kind ? { title: found.title } : {};
+    };
+    const text = (value: string | null | undefined) => (value ? { value } : undefined);
+    const language = text(item.language);
+    const publisher = text(item.publisher);
+    const published = text(item.published);
+    const isbn13 = text(item.external_ids.isbn13);
+    const bookContext: BookContext = {
+      authors: (item.author_ids ?? []).map((id) => ({ id, ...name(id, 'author') })),
+      series: (item.series ?? []).map((entry) => ({
+        id: entry.series_id,
+        ...name(entry.series_id, 'series'),
+        index: typeof entry.index === 'number' && Number.isFinite(entry.index) ? entry.index : null,
+      })),
+      ...(language ? { language: language.value } : {}),
+      ...(publisher ? { publisher: publisher.value } : {}),
+      ...(published ? { published: published.value } : {}),
+      ...(isbn13 ? { isbn13: isbn13.value } : {}),
+    };
+    return { ...this.media(item), bookContext };
   }
 
   /** An album naming its artist, where the artist is known. */

@@ -4,14 +4,18 @@ import { parseErrorEnvelope } from './errorEnvelope.js';
 import { isGatewayConnectionFailure, serverUnreachable } from './serverConnection.js';
 import type {
   ArtworkSource,
+  ContentRange,
   CatalogueApi,
   CatalogueArtwork,
+  CatalogueContent,
   CatalogueItem,
+  CatalogueReferenceFilter,
   CatalogueKind,
   CatalogueMediaProfile,
   CatalogueItemPatch,
   CatalogueSearchFilter,
   CatalogueStatus,
+  ContentUrlOptions,
   KeyframeIndex,
   KeyframeStream,
 } from './CatalogueApi.js';
@@ -76,6 +80,13 @@ function keyframeIndexFrom(wire: Record<string, unknown> | undefined, mediaId: s
   };
 }
 
+/** `Content-Range: bytes <start>-<end>/<total|*>`, or undefined when it does not parse. */
+function contentRange(header: string | null): { start: number; end: number; total?: number } | undefined {
+  const match = header ? /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(header.trim()) : null;
+  if (!match) return undefined;
+  return { start: Number(match[1]), end: Number(match[2]), ...(match[3] !== '*' ? { total: Number(match[3]) } : {}) };
+}
+
 export class MachaCatalogueApi implements CatalogueApi {
   private readonly baseUrl: string;
 
@@ -90,8 +101,8 @@ export class MachaCatalogueApi implements CatalogueApi {
     return this.getJson('/api/v1/catalogue/status', signal);
   }
 
-  async list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]> {
-    const query = queryString([['type', kind], ['parent', parent]]);
+  async list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal, filter: CatalogueReferenceFilter = {}): Promise<CatalogueItem[]> {
+    const query = queryString([['type', kind], ['parent', parent], ['author', filter.author], ['series', filter.series]]);
     const suffix = query ? `?${query}` : '';
     const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/items${suffix}`, signal);
     return this.items(response).map((item) => this.withAbsoluteArtworkUrls(item));
@@ -190,6 +201,39 @@ export class MachaCatalogueApi implements CatalogueApi {
     });
   }
 
+  /**
+   * This node's copy of a file's bytes; see `CatalogueApi.content`. A
+   * `404 not_found` means this node cannot read it, which another may.
+   */
+  async content(mediaId: string, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+    const { range, signal } = options;
+    const headers: Record<string, string> = range ? { Range: `bytes=${range.start}-${range.end ?? ''}` } : {};
+    const init: RequestInit = { method: 'GET', headers, ...(signal ? { signal } : {}) };
+    const response = await this.fetch(this.contentPath(mediaId), '*/*', init);
+    if (!response.ok) await this.throwResponseError(response);
+    const body = await response.blob();
+    const contentType = response.headers.get('Content-Type') || body.type || 'application/octet-stream';
+    const served = response.status === 206 ? contentRange(response.headers.get('Content-Range')) : undefined;
+    const length = Number(response.headers.get('Content-Length'));
+    const totalBytes = served?.total ?? (response.status === 200 ? (Number.isFinite(length) && length > 0 ? length : body.size) : undefined);
+    return {
+      mediaId,
+      body,
+      contentType,
+      ...(totalBytes !== undefined ? { totalBytes } : {}),
+      ...(served ? { range: { start: served.start, end: served.end } } : {}),
+    };
+  }
+
+  /** This node's content URL. One entry: a node API speaks for one node. */
+  contentUrls(mediaId: string, options: ContentUrlOptions = {}): ArtworkSource[] {
+    return [{ url: `${this.baseUrl}${this.contentPath(mediaId, options)}`, requiresAuthorization: true }];
+  }
+
+  private contentPath(mediaId: string, options: ContentUrlOptions = {}): string {
+    return `/api/v1/catalogue/media/${encodeURIComponent(mediaId)}/content${options.download ? '?download=1' : ''}`;
+  }
+
   /** This node's URL for the artwork. One entry: a node API speaks for one node. */
   artworkUrls(id: string): ArtworkSource[] {
     return [{ url: `${this.baseUrl}/api/v1/catalogue/artwork/${encodeURIComponent(id)}`, requiresAuthorization: true }];
@@ -200,6 +244,8 @@ export class MachaCatalogueApi implements CatalogueApi {
       ['q', query], ['limit', String(limit)],
       ...(filter.kinds ?? []).map((kind): [string, string] => ['kind', kind]),
       ['parent', filter.parent],
+      ['author', filter.author],
+      ['series', filter.series],
     ]);
     const response = await this.getJson<ItemEnvelope>(`/api/v1/catalogue/search?${params}`, signal);
     return this.items(response).map((item) => this.withAbsoluteArtworkUrls(item));

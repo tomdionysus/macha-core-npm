@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { CatalogueApi, CatalogueArtwork, CatalogueItem, CatalogueKind, CatalogueStatus } from './CatalogueApi.js';
+import type { CatalogueApi, CatalogueArtwork, CatalogueItem, CatalogueKind, CatalogueSearchFilter, CatalogueStatus } from './CatalogueApi.js';
 import { MachaMediaApi } from './MachaMediaApi.js';
 import { ArtworkHostPreference } from '../state/artworkHost.js';
+import type { AuthorDetails, BookSeriesDetails } from '../types.js';
 
 function catalogueItem(id: string, kind: CatalogueKind, partial: Partial<CatalogueItem> = {}): CatalogueItem {
   return {
@@ -42,6 +43,8 @@ class FakeCatalogue implements CatalogueApi {
 
   mediaProfile(): Promise<undefined> { return Promise.resolve(undefined); }
   keyframes(): Promise<undefined> { return Promise.resolve(undefined); }
+  content(): Promise<never> { return Promise.reject(new Error('not used')); }
+  contentUrls(): [] { return []; }
   patch(): Promise<never> { return Promise.reject(new Error('not used')); }
   status(): Promise<CatalogueStatus> { throw new Error('not used'); }
   update(item: CatalogueItem): Promise<CatalogueItem> { return Promise.resolve(item); }
@@ -382,6 +385,8 @@ describe('keeping an artwork URL byte-identical across an endpoint swap', () => 
     })),
     mediaProfile: async () => undefined,
     keyframes: async () => undefined,
+    content: async () => { throw new Error('not used'); },
+    contentUrls: () => [],
     patch: async () => { throw new Error('not used'); },
   });
 
@@ -509,7 +514,12 @@ describe('search hits and their ancestry', () => {
   describe('narrowed to categories', () => {
     class Limited extends SearchCatalogue {
       readonly limits: number[] = [];
-      override search(_query?: string, limit?: number): Promise<CatalogueItem[]> { this.limits.push(limit ?? -1); return super.search(); }
+      readonly kinds: Array<readonly string[] | undefined> = [];
+      override search(_query?: string, limit?: number, _signal?: AbortSignal, filter?: CatalogueSearchFilter): Promise<CatalogueItem[]> {
+        this.limits.push(limit ?? -1);
+        this.kinds.push(filter?.kinds);
+        return super.search();
+      }
     }
     const MOVIE = catalogueItem('movie-1', 'movie', { title: 'Film' });
     const ALBUM = catalogueItem('album-9', 'album', { title: 'Record' });
@@ -527,13 +537,19 @@ describe('search hits and their ancestry', () => {
       expect(catalogue.limits).toEqual([]);
     });
 
-    it('asks for more when a filter will discard some, and still returns a page of at most 50', async () => {
+    it('asks the server for the kinds, a page of 50, and leaves books out unless asked', async () => {
       const many = Array.from({ length: 120 }, (_, i) => catalogueItem(`m${i}`, 'movie'));
       const catalogue = new Limited(many);
       const api = new MachaMediaApi(catalogue);
       await api.search('xx');
       const narrowed = await api.search('xx', undefined, { categories: ['movies'] });
-      expect(catalogue.limits).toEqual([50, 200]);
+      await api.search('xx', undefined, { categories: ['books'] });
+      expect(catalogue.limits).toEqual([50, 50, 50]);
+      expect(catalogue.kinds).toEqual([
+        ['movie', 'show', 'season', 'episode', 'artist', 'album', 'track'],
+        ['movie'],
+        ['book', 'author', 'series'],
+      ]);
       expect(narrowed).toHaveLength(50);
     });
 
@@ -647,6 +663,8 @@ describe('choosing the artwork host by what it costs this viewer', () => {
       })),
       mediaProfile: async () => undefined,
       keyframes: async () => undefined,
+      content: async () => { throw new Error('not used'); },
+      contentUrls: () => [],
       patch: async () => { throw new Error('not used'); },
     };
   }
@@ -828,3 +846,82 @@ describe('availability on the media model (server 0.83.0)', () => {
   });
 });
 
+
+describe('books (server 0.92.0)', () => {
+  const PRATCHETT = catalogueItem('author:terry-pratchett', 'author', { title: 'Terry Pratchett' });
+  const GAIMAN = catalogueItem('author:neil-gaiman', 'author', { title: 'Neil Gaiman' });
+  const DISCWORLD = catalogueItem('series:discworld', 'series', { title: 'Discworld' });
+  const book = (id: string, title: string, index: number | null, partial: Partial<CatalogueItem> = {}) => catalogueItem(id, 'book', {
+    title, author_ids: [PRATCHETT.id], series: [{ series_id: DISCWORLD.id, index }], media_ids: [`macha:${id}`], ...partial,
+  });
+  const MORT = book('book:mort', 'Mort', 4, { published: '1987-11-12', language: 'en', publisher: 'Gollancz', external_ids: { isbn13: '9780575041714' } });
+  const NOVELLA = book('book:novella', 'Troll Bridge', 4.5, { published: '1991' });
+  const COLOUR = book('book:colour', 'The Colour of Magic', 1, { published: '1983' });
+  const UNNUMBERED = book('book:companion', 'A Companion', null);
+  const OMENS = book('book:omens', 'Good Omens', null, { author_ids: [PRATCHETT.id, GAIMAN.id], series: [], published: '1990-05-01' });
+  const BOOKS = [MORT, NOVELLA, COLOUR, UNNUMBERED, OMENS];
+
+  class Library extends FakeCatalogue {
+    readonly filters: Array<{ kind?: CatalogueKind; author?: string; series?: string }> = [];
+    override get(id: string): Promise<CatalogueItem> {
+      const found = [PRATCHETT, GAIMAN, DISCWORLD, ...BOOKS].find((item) => item.id === id);
+      return found ? Promise.resolve(found) : Promise.reject(new Error('not found'));
+    }
+    override list(kind?: CatalogueKind, _parent?: string, _signal?: AbortSignal, filter: { author?: string; series?: string } = {}): Promise<CatalogueItem[]> {
+      this.filters.push({ kind, ...filter });
+      if (kind === 'author') return Promise.resolve([PRATCHETT, GAIMAN]);
+      if (kind === 'series') return Promise.resolve([DISCWORLD]);
+      if (kind !== 'book') return Promise.resolve([]);
+      return Promise.resolve(BOOKS.filter((item) => (!filter.author || item.author_ids?.includes(filter.author))
+        && (!filter.series || item.series?.some((entry) => entry.series_id === filter.series))));
+    }
+    override search(): Promise<CatalogueItem[]> { return Promise.resolve([OMENS, PRATCHETT]); }
+  }
+
+  it('lists books naming their authors and series, with the book\'s own facts', async () => {
+    const books = await new MachaMediaApi(new Library()).books();
+    expect(books.find((item) => item.id === MORT.id)?.bookContext).toEqual({
+      authors: [{ id: PRATCHETT.id, title: 'Terry Pratchett' }],
+      series: [{ id: DISCWORLD.id, title: 'Discworld', index: 4 }],
+      language: 'en', publisher: 'Gollancz', published: '1987-11-12', isbn13: '9780575041714',
+    });
+    expect(books.find((item) => item.id === OMENS.id)?.bookContext?.authors.map((author) => author.title)).toEqual(['Terry Pratchett', 'Neil Gaiman']);
+  });
+
+  it('still lists the books by id when the authors cannot be read', async () => {
+    class NoAuthors extends Library {
+      override list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal, filter?: { author?: string; series?: string }) {
+        return kind === 'author' ? Promise.reject(new Error('down')) : super.list(kind, parent, signal, filter);
+      }
+    }
+    const books = await new MachaMediaApi(new NoAuthors()).books();
+    expect(books.find((item) => item.id === MORT.id)?.bookContext?.authors).toEqual([{ id: PRATCHETT.id }]);
+  });
+
+  it('orders a series by place, a novella between its neighbours and the unnumbered last', async () => {
+    const catalogue = new Library();
+    const details = await new MachaMediaApi(catalogue).details(DISCWORLD.id) as BookSeriesDetails;
+    expect(details.kind).toBe('series');
+    expect(details.books.map((item) => item.title)).toEqual(['The Colour of Magic', 'Mort', 'Troll Bridge', 'A Companion']);
+    expect(catalogue.filters).toContainEqual({ kind: 'book', series: DISCWORLD.id });
+  });
+
+  it('lists an author\'s books oldest first', async () => {
+    const details = await new MachaMediaApi(new Library()).details(PRATCHETT.id) as AuthorDetails;
+    expect(details.kind).toBe('author');
+    expect(details.books.map((item) => item.title)).toEqual(['The Colour of Magic', 'Mort', 'Good Omens', 'Troll Bridge', 'A Companion']);
+  });
+
+  it('gives a book\'s page and a book hit in search their context', async () => {
+    const api = new MachaMediaApi(new Library());
+    expect((await api.details(MORT.id)).bookContext?.series).toEqual([{ id: DISCWORLD.id, title: 'Discworld', index: 4 }]);
+    const hits = await api.search('good omens', undefined, { categories: ['books'] });
+    expect(hits.map((hit) => hit.id)).toEqual([OMENS.id, PRATCHETT.id]);
+    expect(hits[0].bookContext?.authors.map((author) => author.title)).toEqual(['Terry Pratchett', 'Neil Gaiman']);
+    expect(hits[1].bookContext).toBeUndefined();
+  });
+
+  it('leaves books out of a search not asked for them', async () => {
+    expect(await new MachaMediaApi(new Library()).search('good omens')).toEqual([]);
+  });
+});

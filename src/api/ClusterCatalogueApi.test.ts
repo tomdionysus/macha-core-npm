@@ -345,3 +345,40 @@ describe('keyframe indexes (server 0.68.0)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('file content (server 0.92.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('asks the next node when one cannot read the file, without charging it', async () => {
+    const fetchMock = vi.fn(async (url: string) => (url.startsWith('http://a')
+      ? response({ error: { code: 'not_found', message: 'cannot read' } }, 404)
+      : new Response('book', { status: 200, headers: { 'Content-Type': 'application/epub+zip' } })));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+    const content = await new ClusterCatalogueApi(registry).content('macha:book');
+    expect(await content.body.text()).toBe('book');
+    expect(registry.candidates().find((candidate) => candidate.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+  });
+
+  it('stops at a refusal every node would repeat', async () => {
+    const fetchMock = vi.fn(async () => response({ error: { code: 'bad_range', message: 'no' } }, 416));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    await expect(api.content('macha:book', { range: { start: 1e9 } })).rejects.toMatchObject({ code: 'bad_range' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('says not_found when no node can read it', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response({ error: { code: 'not_found', message: 'cannot read' } }, 404)));
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    await expect(api.content('macha:book')).rejects.toMatchObject({ status: 404, code: 'not_found' });
+  });
+
+  it('names the content URL on every candidate node', () => {
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    expect(api.contentUrls('macha:book').map((source) => [source.url, source.requiresAuthorization])).toEqual([
+      ['http://a/api/v1/catalogue/media/macha%3Abook/content', true],
+      ['http://b/api/v1/catalogue/media/macha%3Abook/content', true],
+    ]);
+  });
+});

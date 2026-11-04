@@ -3,7 +3,8 @@ import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import type {
   IdentityAssociationResetRequest, IdentityAssociationResetResult, MachaDfsDirectory,
   ManageApi, ManageCatalogueMatch, ManualMetadata, ManualMetadataResult, MatchSearchResult, ProviderArtworkOption, ProviderArtworkRole, ProviderReleaseTrack, FileContentDeletion, TitleFileRemoval, TitleFileUnmatch,
-  ProviderMatchRef, ProviderSearchKind, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
+  ProviderMatchRef, ProviderSearchKind,
+  ProviderSearchOptions, ProviderSearchResult, UnmatchedDetail, UnmatchedFile,
 } from './ManageApi.js';
 import { MachaManageApi } from './MachaManageApi.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
@@ -19,7 +20,7 @@ export class ClusterManageApi implements ManageApi {
   match(id: string, catalogueItemId: string): Promise<void> { return this.write((api) => api.match(id, catalogueItemId)); }
   manual(id: string, metadata: ManualMetadata): Promise<ManualMetadataResult> { return this.write((api) => api.manual(id, metadata)); }
   matchProvider(id: string, target: ProviderMatchRef): Promise<ManualMetadataResult> { return this.write((api) => api.matchProvider(id, target)); }
-  providerSearch(query: string, kind: ProviderSearchKind, options?: { year?: number; artist?: string; limit?: number }): Promise<ProviderSearchResult[]> {
+  providerSearch(query: string, kind: ProviderSearchKind, options?: ProviderSearchOptions): Promise<ProviderSearchResult[]> {
     return this.read((api) => api.providerSearch(query, kind, options));
   }
   providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]> {

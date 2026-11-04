@@ -1,8 +1,12 @@
 import type {
   ArtworkSource,
+  ContentRange,
   CatalogueApi,
   CatalogueArtwork,
+  CatalogueContent,
   CatalogueItem,
+  CatalogueReferenceFilter,
+  ContentUrlOptions,
   CatalogueKind,
   CatalogueMediaProfile,
   CatalogueStatus,
@@ -71,8 +75,8 @@ export class ClusterCatalogueApi implements CatalogueApi {
     }, signal);
   }
 
-  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]> {
-    return this.read((api) => api.list(kind, parent, signal), signal);
+  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal, filter?: CatalogueReferenceFilter): Promise<CatalogueItem[]> {
+    return this.read((api) => api.list(kind, parent, signal, filter), signal);
   }
 
   get(id: string, signal?: AbortSignal): Promise<CatalogueItem> {
@@ -125,6 +129,39 @@ export class ClusterCatalogueApi implements CatalogueApi {
 
   artwork(id: string, signal?: AbortSignal): Promise<Blob> {
     return this.readArtwork(id, signal);
+  }
+
+  /**
+   * A file's bytes from the first node that can read it. A node answering
+   * `404 not_found` cannot read this file, which says nothing about its
+   * health, so the walk passes to the next without charging it, as an
+   * artwork miss does. Any other refusal (`bad_media_id`, `bad_range`) is the
+   * same answer from every node and ends the walk.
+   */
+  async content(mediaId: string, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+    let lastMissing: MachaApiError | undefined;
+    const content = await this.router.find(async (endpoint) => {
+      try {
+        return await this.api(endpoint).content(mediaId, options);
+      } catch (error) {
+        if (error instanceof MachaApiError && error.status === 404) {
+          lastMissing = error;
+          return undefined;
+        }
+        throw error;
+      }
+    }, options.signal);
+    if (content) return content;
+    throw lastMissing ?? new MachaApiError(`No node can read ${mediaId}.`, 404, 'not_found');
+  }
+
+  /** One URL per candidate endpoint, ranked as `artworkUrls` ranks them; see `CatalogueApi.contentUrls`. */
+  contentUrls(mediaId: string, options?: ContentUrlOptions): ArtworkSource[] {
+    return this.router.registry.candidates().flatMap(({ endpoint, health, ready: retryable, latencyMs }) => {
+      const ready = retryable && health.consecutiveFailures === 0;
+      return this.api(endpoint).contentUrls(mediaId, options)
+        .map((source) => (ready && latencyMs !== undefined ? { ...source, ready, latencyMs } : { ...source, ready }));
+    });
   }
 
   /**

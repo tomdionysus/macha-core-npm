@@ -33,8 +33,9 @@ export type IdentificationResult =
  * A candidate the server can catalogue as it stands, or undefined when it is
  * missing what the manual route requires: a movie needs a title; an episode
  * a series and its season and episode numbers; a track an artist, an album
- * and a title. A client offers only the candidates this accepts, and routes
- * the rest to manual entry pre-filled from the probe.
+ * and a title; a book a title, since a manual book may have no author. A
+ * client offers only the candidates this accepts, and routes the rest to
+ * manual entry pre-filled from the probe.
  *
  * For an episode, the probe's year becomes the series year. That is how
  * filenames carry it (`Show (2005) S01E02`), and it tells two series of one
@@ -58,6 +59,19 @@ export function manualFromCandidate(probe: MediaProbeCandidate): ManualMetadata 
       kind: 'episode', series, season_number: season, episode_number: episode,
       ...(year !== undefined ? { series_year: year } : {}),
       ...(title ? { title } : {}),
+    };
+  }
+  if (probe.kind === 'book') {
+    if (!title) return undefined;
+    const authors = (probe.authors ?? []).map(text).filter((name): name is string => name !== undefined);
+    const author = text(probe.author);
+    const series = text(probe.series_name);
+    const index = number(probe.series_index);
+    return {
+      kind: 'book', title,
+      ...(authors.length > 0 ? { authors } : author ? { authors: [author] } : {}),
+      ...(year !== undefined ? { year } : {}),
+      ...(series ? { series, ...(index !== undefined ? { series_index: index } : {}) } : {}),
     };
   }
   const artist = text(probe.artist);

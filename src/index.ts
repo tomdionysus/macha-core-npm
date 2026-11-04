@@ -53,6 +53,7 @@ export * from './types.js';
 // -------------------------------------------------------------------- api
 export * from './api/AcquisitionApi.js';
 export * from './api/availability.js';
+export * from './api/books.js';
 export * from './api/ingestNodes.js';
 export * from './api/CatalogueApi.js';
 export * from './api/ClusterAcquisitionApi.js';
@@ -117,6 +118,7 @@ export * from './state/playlist.js';
 export * from './state/savedTitle.js';
 export * from './state/artworkHedge.js';
 export * from './state/qualityPreference.js';
+export * from './state/readingPosition.js';
 export * from './state/playbackQueue.js';
 export * from './state/progressWrite.js';
 export * from './state/storage.js';

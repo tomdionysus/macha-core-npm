@@ -407,3 +407,61 @@ describe('catalogue edits and filtered search (server 0.67.0)', () => {
     expect(url.searchParams.get('q')).toBe('plan');
   });
 });
+
+describe('books (server 0.92.0)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lists and searches by a book\'s author or series', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => jsonResponse({ items: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaCatalogueApi('http://node.test');
+
+    await api.list('book', undefined, undefined, { author: 'author:terry-pratchett' });
+    await api.search('mort', 10, undefined, { kinds: ['book'], series: 'series:discworld' });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://node.test/api/v1/catalogue/items?type=book&author=author%3Aterry-pratchett');
+    const search = new URL(fetchMock.mock.calls[1][0] as string);
+    expect(search.searchParams.getAll('kind')).toEqual(['book']);
+    expect(search.searchParams.get('series')).toBe('series:discworld');
+    expect(search.searchParams.has('author')).toBe(false);
+  });
+
+  it('reads one range of a file, with what the server said of its size', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('PK', {
+      status: 206,
+      headers: { 'Content-Type': 'application/epub+zip', 'Content-Range': 'bytes 0-1/5000', 'Content-Length': '2' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaCatalogueApi('http://node.test');
+
+    const content = await api.content('macha:book', { range: { start: 0, end: 1 } });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://node.test/api/v1/catalogue/media/macha%3Abook/content');
+    expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).get('Range')).toBe('bytes=0-1');
+    expect(content).toMatchObject({ mediaId: 'macha:book', contentType: 'application/epub+zip', totalBytes: 5000, range: { start: 0, end: 1 } });
+    expect(await content.body.text()).toBe('PK');
+  });
+
+  it('reads a whole file without a Range, and sizes it from the response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('%PDF-1.7', { status: 200, headers: { 'Content-Type': 'application/pdf' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const content = await new MachaCatalogueApi('http://node.test').content('macha:pdf');
+
+    expect(new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers).has('Range')).toBe(false);
+    expect(content.range).toBeUndefined();
+    expect(content.totalBytes).toBe(8);
+  });
+
+  it('keeps the server\'s code on a refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'bad_range', message: 'no' } }, { status: 416 })));
+    await expect(new MachaCatalogueApi('http://node.test').content('macha:x', { range: { start: 9_000 } }))
+      .rejects.toMatchObject({ status: 416, code: 'bad_range' });
+  });
+
+  it('names the content URL, as an attachment when asked, needing the token', () => {
+    expect(new MachaCatalogueApi('http://node.test').contentUrls('macha:book', { download: true })).toEqual([
+      { url: 'http://node.test/api/v1/catalogue/media/macha%3Abook/content?download=1', requiresAuthorization: true },
+    ]);
+  });
+});

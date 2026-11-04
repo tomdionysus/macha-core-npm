@@ -10,12 +10,13 @@ export interface MediaSearchOptions {
 /**
  * UI-facing catalogue facade. It contains no playback or per-client state.
  *
- * **Order.** `home`, `movies`, `shows`, `artists`, `albums` and `tracks`
- * answer in the server's order, which from server 0.90.18 is catalogue id,
- * not title. A host that shows one sorts it, with `orderMedia` and the sorts
- * in `mediaSort`. `details` orders its children itself: seasons and episodes
- * by number, albums by year then title, tracks by disc then track. `search`
- * keeps the server's relevance ranking.
+ * **Order.** `home`, `movies`, `shows`, `artists`, `albums`, `tracks`,
+ * `books`, `authors` and `bookSeries` answer in the server's order, which
+ * from server 0.90.18 is catalogue id, not title. A host that shows one sorts
+ * it, with `orderMedia` and the sorts in `mediaSort`. `details` orders its
+ * children itself: seasons and episodes by number, albums by year then title,
+ * tracks by disc then track, an author's books by publication, a series'
+ * books by their place in it. `search` keeps the server's relevance ranking.
  */
 export interface MediaApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
@@ -25,6 +26,11 @@ export interface MediaApi {
   artists(signal?: AbortSignal): Promise<MediaSummary[]>;
   albums(signal?: AbortSignal): Promise<MediaSummary[]>;
   tracks(signal?: AbortSignal): Promise<MediaSummary[]>;
+  /** Every book, each with its `bookContext` (server 0.92.0). */
+  books(signal?: AbortSignal): Promise<MediaSummary[]>;
+  authors(signal?: AbortSignal): Promise<MediaSummary[]>;
+  /** Every book series: kind `series`, not to be confused with a TV `show`. */
+  bookSeries(signal?: AbortSignal): Promise<MediaSummary[]>;
   details(id: string, signal?: AbortSignal): Promise<MediaDetails>;
   /**
    * Titles matching the words of `query` that a search keys on (see

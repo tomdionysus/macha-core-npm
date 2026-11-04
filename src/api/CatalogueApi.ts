@@ -6,7 +6,22 @@ export type CatalogueKind =
   | 'episode'
   | 'artist'
   | 'album'
-  | 'track';
+  | 'track'
+  /** Server 0.92.0. A book names its authors and series by reference; none of the three has a parent. */
+  | 'book'
+  | 'author'
+  | 'series';
+
+/** A book's place in one series (server 0.92.0). */
+export interface CatalogueSeriesRef {
+  series_id: string;
+  /**
+   * The book's position in the series: a whole number (`8`), a fraction for a
+   * novella between two numbered books (`8.5`), or null when unknown. The
+   * server does not sort by it; `orderBooksInSeries` does.
+   */
+  index: number | null;
+}
 
 export interface CatalogueArtwork {
   role: string;
@@ -46,6 +61,19 @@ export interface CatalogueItem {
   availability?: Availability;
   /** A set's members by availability (0.83.0); null for an item that is not a set. */
   availability_members?: AvailabilityMembers | null;
+  /**
+   * Server 0.92.0, on every item, empty or null for any kind but a book.
+   * Absent from an older node. A book's authors in credited order, as
+   * `author` item ids; empty for an unmatched manual book.
+   */
+  author_ids?: string[];
+  /** The series a book belongs to, by reference (0.92.0). */
+  series?: CatalogueSeriesRef[];
+  /** BCP 47, from the file or the provider (0.92.0). */
+  language?: string | null;
+  publisher?: string | null;
+  /** The date as the file or provider gives it, ISO in form but not always a full date (0.92.0). */
+  published?: string | null;
 }
 
 export interface CatalogueStatus {
@@ -174,15 +202,48 @@ export type CatalogueItemPatch = {
   [K in keyof CatalogueItem as K extends 'id' | 'kind' | 'revision' | 'updated_ns' ? never : K]?: CatalogueItem[K] | null;
 } & { lock?: boolean };
 
+/** Lists narrowed by a book's references (server 0.92.0); see `CatalogueApi.list`. */
+export interface CatalogueReferenceFilter {
+  /** Only books crediting this author item. */
+  author?: string;
+  /** Only books in this series item. */
+  series?: string;
+}
+
 /** Where a search looks; see `CatalogueApi.search`. */
-export interface CatalogueSearchFilter {
+export interface CatalogueSearchFilter extends CatalogueReferenceFilter {
   kinds?: readonly CatalogueKind[];
   parent?: string;
 }
 
+/** One byte range of a file, inclusive at both ends as HTTP's `Range` is; `end` absent reads to the end. */
+export interface ContentRange {
+  start: number;
+  end?: number;
+}
+
+/** What `CatalogueApi.content` read (server 0.92.0). */
+export interface CatalogueContent {
+  mediaId: string;
+  body: Blob;
+  /** From the file's name on the server, `application/octet-stream` when it knows no better. */
+  contentType: string;
+  /** The file's whole size, where the response said (`Content-Range`, or the length of a whole read). */
+  totalBytes?: number;
+  /** The range served, when the server honoured a `Range`; absent for the whole file. */
+  range?: { start: number; end: number };
+}
+
+/** Where a file's bytes can be fetched from; see `CatalogueApi.contentUrls`. */
+export interface ContentUrlOptions {
+  /** Ask for `Content-Disposition: attachment` with the file's own name (`?download=1`). */
+  download?: boolean;
+}
+
 export interface CatalogueApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
-  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal): Promise<CatalogueItem[]>;
+  /** `filter` narrows to a book's references (server 0.92.0), as `parent` narrows to children. */
+  list(kind?: CatalogueKind, parent?: string, signal?: AbortSignal, filter?: CatalogueReferenceFilter): Promise<CatalogueItem[]>;
   get(id: string, signal?: AbortSignal): Promise<CatalogueItem>;
   /**
    * Replace an item's descriptive fields (PUT). From server 0.67.0 its files
@@ -210,7 +271,8 @@ export interface CatalogueApi {
   /**
    * `filter` narrows the search on the server, before `limit` (server
    * 0.67.0, proposal F): `kinds` to those kinds, `parent` to one item's
-   * children. An older node ignores it.
+   * children, and from 0.92.0 `author` and `series` to the books naming
+   * them. An older node ignores it.
    */
   search(query: string, limit?: number, signal?: AbortSignal, filter?: CatalogueSearchFilter): Promise<CatalogueItem[]>;
   putArtwork(itemId: string, role: string, mimeType: string, data: Blob): Promise<CatalogueArtwork>;
@@ -244,6 +306,25 @@ export interface CatalogueApi {
    * read, or a node older than the route. Immutable per media id.
    */
   keyframes(mediaId: string, signal?: AbortSignal): Promise<KeyframeIndex | undefined>;
+  /**
+   * A file's bytes as stored (server 0.92.0,
+   * `GET /api/v1/catalogue/media/{id}/content`): any media id, though it is
+   * how a book is read, since a book has no playback. One `range` at most; a
+   * node that cannot read the file answers `404 not_found` and the cluster
+   * asks the next. Other refusals: `400 bad_media_id` (not a `macha:` id),
+   * `416 bad_range`. Nothing is staged, so a large file streams; the whole of
+   * it still lands in one `Blob` here, so a reader that wants pieces asks for
+   * ranges.
+   */
+  content(mediaId: string, options?: { range?: ContentRange; signal?: AbortSignal }): Promise<CatalogueContent>;
+  /**
+   * The content route on each candidate node, preferred first, for a host
+   * whose reader or downloader fetches by URL. **Every entry needs the
+   * bearer token** (`requiresAuthorization: true`): the server signs no
+   * capability for content as it does for artwork, so a loader that cannot
+   * set headers cannot use these, and reads through `content` instead.
+   */
+  contentUrls(mediaId: string, options?: ContentUrlOptions): ArtworkSource[];
 }
 
 /** One stream's entries in a `KeyframeIndex`. */

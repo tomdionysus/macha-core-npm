@@ -77,6 +77,27 @@ export interface MusicHierarchyContext {
   artwork?: ArtworkRef;
 }
 
+/**
+ * A book's authors and series, resolved to names by the media API, with the
+ * book's own publication facts (server 0.92.0). The wire item names its
+ * authors and series by id only; resolving them once here spares every
+ * client a walk. Data only: how a client words a credit or a position is
+ * its own.
+ */
+export interface BookContext {
+  /** In credited order. `title` is absent when that author could not be read. */
+  authors: Array<{ id: string; title?: string }>;
+  /** `index` is the book's place in that series, fractional for a novella, null when unknown. */
+  series: Array<{ id: string; title?: string; index: number | null }>;
+  /** BCP 47. */
+  language?: string;
+  publisher?: string;
+  /** As the file or provider gives it: ISO in form, not always a full date. */
+  published?: string;
+  /** From `external_ids.isbn13`. */
+  isbn13?: string;
+}
+
 export interface MediaSummary {
   id: string;
   kind: MediaKind;
@@ -95,6 +116,9 @@ export interface MediaSummary {
 
   /** Album/artist ancestry for a track. Resolved by the media API, never by callers. */
   musicContext?: MusicHierarchyContext;
+
+  /** A book's authors, series and publication facts; on a `book` only. Resolved by the media API. */
+  bookContext?: BookContext;
 
   /** Catalogue `updated_ns`, currently the server's only chronology signal for Home recency ordering. */
   catalogueUpdatedNs?: number;
@@ -148,7 +172,19 @@ export interface MovieDetails extends MediaSummary {
   kind: 'movie';
 }
 
-export type MediaDetails = ShowDetails | SeasonDetails | ArtistDetails | AlbumDetails | MediaSummary;
+/** An author's page: their books, oldest first by publication, each with its `bookContext`. */
+export interface AuthorDetails extends MediaSummary {
+  kind: 'author';
+  books: MediaSummary[];
+}
+
+/** A book series' page: its books in series order (see `orderBooksInSeries`), each with its `bookContext`. */
+export interface BookSeriesDetails extends MediaSummary {
+  kind: 'series';
+  books: MediaSummary[];
+}
+
+export type MediaDetails = ShowDetails | SeasonDetails | ArtistDetails | AlbumDetails | AuthorDetails | BookSeriesDetails | MediaSummary;
 
 export interface LibraryHome {
   movies: MediaSummary[];

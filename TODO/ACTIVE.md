@@ -111,6 +111,20 @@ Tom held server API changes during the experiment. Raise these when it ends.
 - **A scope on `catalogue_unavailable`.** The server raises it for any catalogue exception, unscoped, so core now walks past it without charging (`83c53e9`). With a scope, core could stop walking when the condition is cluster-wide.
 - **Identity resets become a resource**: `POST /api/v1/manage/identity-resets`, answering 202 and an id, and `GET .../{id}` for the state. This is the server's decided plan; it is not built yet. When it lands, core replaces `resetIdentityAssociation` and `resetNodeIdentityAssociation`. The web's Status node card is the only caller.
 
+## Ebooks, server 0.92.0 (contract announced 2026-11-04, not live)
+
+The server sent the contract on 2026-11-04. It is on its `feature/ebooks` branch, is not deployed, and the server will message on any change. Later that day the server reported 0.92.0 built on that branch, with the laptop suites green; it is still not deployed. The docs on that branch: the new "Books" section of `docs/catalogue.md`, `docs/management.md` and `docs/files.md`. Two details since the contract:
+- the `books` scan provider is off by default, and the operator enables it per node, so books may appear well after the deploy;
+- `series[].index` is a JSON number, `8` or `8.5`, or null; PUT and PATCH accept either form.
+The content route also answers HEAD. Tom asked the server for a Books tab on the web and on the phone. Tom said on 2026-11-04 to deploy and have the clients start. Core's part is built on develop and is unreleased: kinds and fields; list and search filters; `content` and `contentUrls`; `books`, `authors`, `bookSeries` and `bookContext`; author and series pages; `orderBooksInSeries`; the playback refusal (`not_playable_kind`); book manage types; `ReadingPositionStore`; book routes; the `books` search category, opt-in. Open Library is configurable per node in the server's config (Tom asked; the server confirmed). The server has 0.92.0 packaged on both nodes, but its install was refused by that session's permission check, so the install waits on Tom. What the contract said:
+- **Kinds.** `book`, `author` and `series` join `CatalogueKind`. Each has `parent_id` null. On every item: `author_ids`, `series` (`{series_id, index|null}`, where index may be fractional), `language`, `publisher`, `published`, plus the external ids `isbn13` and `openlibrary_*`. PUT/PATCH return `400 reference_not_found` and `bad_reference_kind`. Core already skips unknown kinds: lists go by named kind, search keeps only its categories' kinds, and `pathForMedia` falls back to `routes.item`.
+- **Listing and search.** Lists filter by `author=` and `series=`, as they do by `parent`. Search adds the `kind=book|author|series` filter and the same reference filters. Order within a series comes from `index`, and core sorts it.
+- **Bytes.** `GET /api/v1/catalogue/media/{id}/content` with the bearer token. It honours one range and returns `?download=1` as an attachment. Errors: `400 bad_media_id`, `404 not_found` (this node cannot read the file, so walk by availability), `416 bad_range`. It works for any media id, not only books.
+- **No playback.** A profile request answers `422 profile_not_applicable` with `kind: "book"`. Never open a session for a book; the reader is the client's.
+- **Manage.** The probe gains `kind: "book"` (authors, series_name, series_index, isbn, language). Provider search takes `kind=book`, with refs `openlibrary:edition|work:<OLID>`. Manual metadata takes `{kind: "book", title, authors, series?, series_index?, year?, author_id?, series_id?}`. A book's only artwork role is `cover`.
+- **Reading position.** Local storage only, until the server's per-user media state (`/api/v1/users/me/media/{id}`) lands.
+- **Phone.** No phone client session was running on 2026-11-04, so the contract still has to reach it.
+
 ## Core to build or settle
 
 - **Continue Watching is not per account.** The Android TV client measured that `signOut` clears only the session key, so the next account sees the last one's history. The fix is in core's storage. Not yet looked at here.

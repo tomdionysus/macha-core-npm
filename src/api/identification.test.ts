@@ -19,6 +19,16 @@ function manage() {
 }
 
 describe('manualFromCandidate', () => {
+  it('turns a book probe into a manual book, its authors and series kept', () => {
+    expect(manualFromCandidate(probe({
+      kind: 'book', title: ' Mort ', year: 1987, authors: ['Terry Pratchett', ' '], author: 'Terry Pratchett', series_name: 'Discworld', series_index: 4,
+    }))).toEqual({ kind: 'book', title: 'Mort', authors: ['Terry Pratchett'], year: 1987, series: 'Discworld', series_index: 4 });
+    expect(manualFromCandidate(probe({ kind: 'book', title: 'Anonymous' }))).toEqual({ kind: 'book', title: 'Anonymous' });
+    expect(manualFromCandidate(probe({ kind: 'book', title: 'Solo', author: 'One Author' })))
+      .toEqual({ kind: 'book', title: 'Solo', authors: ['One Author'] });
+    expect(manualFromCandidate(probe({ kind: 'book', title: '', authors: ['Someone'] }))).toBeUndefined();
+  });
+
   it('turns each kind into what the manual route takes', () => {
     expect(manualFromCandidate(probe({ kind: 'movie', title: 'Alien', year: 1979 }))).toEqual({ kind: 'movie', title: 'Alien', year: 1979 });
     expect(manualFromCandidate(probe({ kind: 'episode', series: 'Doctor Who', year: 2005, season_number: 1, episode_number: 2, title: 'The End of the World' })))

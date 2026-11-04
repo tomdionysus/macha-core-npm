@@ -26,7 +26,7 @@ export interface UnmatchedFile {
 }
 
 export interface MediaProbeCandidate {
-  kind: 'movie' | 'episode' | 'track';
+  kind: 'movie' | 'episode' | 'track' | 'book';
   score: number;
   generator: string;
   title: string;
@@ -39,6 +39,16 @@ export interface MediaProbeCandidate {
   disc_number: number | null;
   track_number: number | null;
   evidence: string[];
+  /**
+   * A book's probe (server 0.92.0), from the EPUB's own record or the path;
+   * absent on other kinds. `authors` in credited order, `author` the first.
+   */
+  authors?: string[];
+  author?: string;
+  series_name?: string;
+  series_index?: number | null;
+  isbn?: string;
+  language?: string;
 }
 
 export interface ManageCatalogueMatch {
@@ -90,12 +100,27 @@ export type ManualMetadata =
   | {
     kind: 'track'; title: string; year?: number; disc_number?: number; track_number?: number; synopsis?: string; lock?: boolean;
     artist?: string; album?: string; artist_id?: string; album_id?: string;
+  }
+  /**
+   * A book (server 0.92.0): its authors by name in credited order
+   * (`authors`, or `author` for one) or an existing author by `author_id`;
+   * a series by name (`series`, with `series_index`) or an existing one by
+   * `series_id`. Authors and series named by title are created, or joined
+   * where one of that name exists.
+   */
+  | {
+    kind: 'book'; title: string; year?: number; synopsis?: string; lock?: boolean;
+    authors?: string[]; author?: string; author_id?: string;
+    series?: string; series_index?: number; series_id?: string;
   };
 
 /**
  * A provider record to match an unmatched file to (server 0.67.0, proposal
- * C): `tmdb:movie:<id>`; `tmdb:tv:<id>` with season and episode numbers; or
- * `musicbrainz:release:<mbid>` with a track number (and disc, where needed).
+ * C): `tmdb:movie:<id>`; `tmdb:tv:<id>` with season and episode numbers;
+ * `musicbrainz:release:<mbid>` with a track number (and disc, where needed);
+ * or, from 0.92.0, a book's record as `providerSearch` gives it
+ * (`openlibrary:edition:<id>` or `openlibrary:work:<id>` today), with no
+ * numbers. Core reads none of these forms: a ref is the server's string.
  * The server fetches the record, builds its hierarchy (reusing items already
  * catalogued under the same ids), stages its default artwork and binds the
  * file, as a scan match does.
@@ -111,20 +136,32 @@ export interface ProviderMatchRef {
 /** A provider search result (proposal A); `ref` is what `matchProvider` takes. */
 export interface ProviderSearchResult {
   ref: string;
-  provider: 'tmdb' | 'musicbrainz' | (string & {});
-  kind: 'movie' | 'show' | 'album';
+  provider: 'tmdb' | 'musicbrainz' | 'openlibrary' | (string & {});
+  kind: ProviderSearchKind;
   title: string;
   year: number | null;
   overview?: string;
   /** An album's artist. */
   artist?: string;
+  /** A book's author (server 0.92.0). */
+  author?: string;
   /** Present when the catalogue already holds the item a match would write. */
   catalogue_item_id?: string;
 }
 
-export type ProviderSearchKind = 'movie' | 'show' | 'album';
+/** What narrows a provider search. */
+export interface ProviderSearchOptions {
+  year?: number;
+  /** An album's artist. */
+  artist?: string;
+  /** A book's author (server 0.92.0); sent as the server's `artist` parameter, which it reads as the author for a book. */
+  author?: string;
+  limit?: number;
+}
 
-/** Which artwork a provider reference offers: posters and backdrops for a movie or show, a season's poster, an episode's still, an album's cover. */
+export type ProviderSearchKind = 'movie' | 'show' | 'album' | 'book';
+
+/** Which artwork a provider reference offers: posters and backdrops for a movie or show, a season's poster, an episode's still, an album's or a book's cover. */
 export type ProviderArtworkRole = 'poster' | 'backdrop' | 'still' | 'cover';
 
 /** One image a provider offers for a role (proposal E); `preview_url` is the provider's own small image, to show directly. */
@@ -237,9 +274,11 @@ export interface ManageApi {
   matchProvider(id: string, target: ProviderMatchRef): Promise<ManualMetadataResult>;
   /**
    * Search the metadata provider for a kind (server 0.67.0): TMDB for a movie
-   * or show, MusicBrainz releases for an album. Needs the manager role.
+   * or show, MusicBrainz releases for an album, and from 0.92.0 the books
+   * provider (Open Library today) for a book. `artist` narrows an album,
+   * `author` a book. Needs the manager role.
    */
-  providerSearch(query: string, kind: ProviderSearchKind, options?: { year?: number; artist?: string; limit?: number }): Promise<ProviderSearchResult[]>;
+  providerSearch(query: string, kind: ProviderSearchKind, options?: ProviderSearchOptions): Promise<ProviderSearchResult[]>;
   /** The images a provider has for one role of a reference (server 0.67.0). */
   providerArtwork(ref: string, role: ProviderArtworkRole, numbers?: { season_number?: number; episode_number?: number }): Promise<ProviderArtworkOption[]>;
   /**

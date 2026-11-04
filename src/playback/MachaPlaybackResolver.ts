@@ -20,6 +20,7 @@ import type {
   PlaybackUpdate,
 } from './PlaybackResolver.js';
 import { machaHost } from '../runtime/host.js';
+import { isPlayableKind, NOT_PLAYABLE_KIND_CODE } from '../api/books.js';
 
 interface WireStream {
   index: number;
@@ -264,6 +265,16 @@ function startFailure(start: WireStart): MachaPlaybackError {
     error.reason,
     message,
   );
+}
+
+/**
+ * Refuse a title that is read, not played (a book, author or series, server
+ * 0.92.0), before any request: no node would open a session for it. Status
+ * 422, `NOT_PLAYABLE_KIND_CODE`, which ends a cluster walk at the first node.
+ */
+export function refuseUnplayableKind(media: Pick<MediaSummary, 'id' | 'kind'>): void {
+  if (isPlayableKind(media.kind)) return;
+  throw new MachaPlaybackError(`Macha ${media.kind} ${media.id} is read, not played.`, 422, NOT_PLAYABLE_KIND_CODE);
 }
 
 export class MachaPlaybackError extends Error {
@@ -608,6 +619,7 @@ export class MachaPlaybackResolver implements PlaybackResolver {
     preferences?: PlaybackPreferencesUpdate,
     options: PlaybackRequestOptions = {},
   ): Promise<PlaybackSession> {
+    refuseUnplayableKind(media);
     const signal = options.signal;
     const idempotencyKey = options.idempotencyKey ?? newPlaybackIdempotencyKey();
     this.log.info('session-create', {

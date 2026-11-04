@@ -325,6 +325,15 @@ describe('the metadata editor (server 0.67.0)', () => {
     expect(results).toEqual([result]);
   });
 
+  it('searches the books provider with the author in the server\'s one narrowing parameter', async () => {
+    const result = { ref: 'openlibrary:work:OL1W', provider: 'openlibrary', kind: 'book', title: 'Mort', year: 1987, author: 'Terry Pratchett' };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', results: [result] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await new MachaManageApi('http://n').providerSearch('mort', 'book', { author: 'Terry Pratchett' });
+    expect(paramsOf(new URL(calls(fetchMock)[0]![0]))).toEqual({ q: 'mort', kind: 'book', artist: 'Terry Pratchett' });
+    expect(results).toEqual([result]);
+  });
+
   it("lists a release's tracks from its reference, by the release's own path", async () => {
     const track = { disc_number: 1, track_number: 4, title: 'Kid A', length_ms: 284000, recording_id: 'rec' };
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'ok', tracks: [track, { ...track, track_number: null, length_ms: null, recording_id: null }] }));

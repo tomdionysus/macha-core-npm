@@ -19,6 +19,7 @@ import type {
   TitleFileUnmatch,
   ProviderMatchRef,
   ProviderSearchKind,
+  ProviderSearchOptions,
   ProviderSearchResult,
   UnmatchedDetail,
   UnmatchedFile,
@@ -133,11 +134,12 @@ export class MachaManageApi implements ManageApi {
     });
   }
 
-  async providerSearch(query: string, kind: ProviderSearchKind, options: { year?: number; artist?: string; limit?: number } = {}): Promise<ProviderSearchResult[]> {
+  async providerSearch(query: string, kind: ProviderSearchKind, options: ProviderSearchOptions = {}): Promise<ProviderSearchResult[]> {
     const params = queryString([
       ['q', query], ['kind', kind],
       ['year', options.year !== undefined ? String(options.year) : undefined],
-      ['artist', options.artist],
+      // One parameter on the wire: the artist for an album, the author for a book.
+      ['artist', kind === 'book' ? (options.author ?? options.artist) : options.artist],
       ['limit', options.limit !== undefined ? String(options.limit) : undefined],
     ]);
     const response = await this.request<{ results?: ProviderSearchResult[] }>(`/api/v1/manage/providers/search?${params}`, { method: 'GET' });

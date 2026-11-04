@@ -25,6 +25,16 @@ export const routes = {
   artist: (id: string) => `/music/artists/${segment(id)}`,
   album: (id: string) => `/music/albums/${segment(id)}`,
   track: (id: string) => `/music/tracks/${segment(id)}`,
+  // Books (server 0.92.0), laid out as music is: a section with a list per kind.
+  books: '/books',
+  bookTitles: '/books/titles',
+  bookAuthors: '/books/authors',
+  bookSeriesList: '/books/series',
+  book: (id: string) => `/books/titles/${segment(id)}`,
+  bookAuthor: (id: string) => `/books/authors/${segment(id)}`,
+  bookSeries: (id: string) => `/books/series/${segment(id)}`,
+  /** The reader, as `player` is for what plays. */
+  reader: (id: string) => `/read/${segment(id)}`,
   player: (id: string) => `/play/${segment(id)}`,
   playerFromStart: (id: string) => `/play/${segment(id)}?start=0`,
   item: (id: string) => `/items/${segment(id)}`,
@@ -70,6 +80,12 @@ export function pathForMedia(item: MediaSummary): string {
       return routes.album(item.id);
     case 'track':
       return routes.track(item.id);
+    case 'book':
+      return routes.book(item.id);
+    case 'author':
+      return routes.bookAuthor(item.id);
+    case 'series':
+      return routes.bookSeries(item.id);
     default:
       return routes.item(item.id);
   }
