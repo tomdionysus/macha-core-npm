@@ -56,6 +56,28 @@ export function isConvertibleSource(fileNameOrExtension: string): boolean {
   return !extension.includes('/') && CONVERSION_SOURCE_EXTENSIONS.includes(extension);
 }
 
+/**
+ * The content types server 0.92.1 serves a convertible file as (its
+ * `book_facts`): `application/x-mobipocket-ebook` for `.mobi`,
+ * `application/vnd.amazon.ebook` for `.azw3`. In 0.92.1 the server does not
+ * catalogue `.azw` or `.prc` files as books at all. The server has proposed
+ * serving both as `application/x-mobipocket-ebook`, which this already
+ * accepts; that waits on Tom.
+ */
+export const CONVERSION_SOURCE_CONTENT_TYPES: readonly string[] = ['application/x-mobipocket-ebook', 'application/vnd.amazon.ebook'];
+
+/**
+ * Whether a book's file can be converted, by the content type it is served
+ * with (`CatalogueContent.contentType`, or a content response's header);
+ * parameters such as `; charset=` and case are ignored. For a host that knows
+ * a file by its type rather than its name; `isConvertibleSource` is the same
+ * question by name.
+ */
+export function isConvertibleContentType(contentType: string): boolean {
+  const type = contentType.split(';')[0]!.trim().toLowerCase();
+  return CONVERSION_SOURCE_CONTENT_TYPES.includes(type);
+}
+
 /** Why a conversion failed, as server 0.92.1 says: `CatalogueConversion.errorCode`, and a failed content read's code. */
 export const CONVERSION_FAILURE_CODES: readonly ConversionFailureCode[] = [
   'unsupported_source', 'encrypted', 'conversion_failed', 'conversion_timed_out', 'source_unreadable', 'source_too_large',

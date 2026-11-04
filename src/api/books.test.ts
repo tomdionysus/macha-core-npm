@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { awaitConversion, isBookKind, isConversionFormat, isConvertibleSource, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
+import { awaitConversion, isBookKind, isConversionFormat, isConvertibleContentType, isConvertibleSource, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
 import type { CatalogueConversion } from './CatalogueApi.js';
 import { MachaPlaybackResolver } from '../playback/MachaPlaybackResolver.js';
 import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js';
@@ -106,6 +106,14 @@ describe('awaitConversion', () => {
   it('knows the one format, EPUB', () => {
     expect(isConversionFormat('epub')).toBe(true);
     expect(isConversionFormat('azw3')).toBe(false);
+  });
+
+  it('knows which files convert by the type they are served with', () => {
+    expect(isConvertibleContentType('application/x-mobipocket-ebook')).toBe(true);
+    expect(isConvertibleContentType('Application/Vnd.Amazon.Ebook; charset=binary')).toBe(true);
+    for (const type of ['application/epub+zip', 'application/pdf', 'application/x-fictionbook+xml', 'application/vnd.comicbook+zip', 'application/octet-stream', '']) {
+      expect(isConvertibleContentType(type)).toBe(false);
+    }
   });
 
   it('knows which files convert: the MOBI family, by name, path or extension', () => {
