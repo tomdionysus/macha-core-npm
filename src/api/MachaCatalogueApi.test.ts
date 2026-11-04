@@ -487,9 +487,9 @@ describe('book conversion (server 0.92.1)', () => {
   });
 
   it('answers a conversion that failed at once as a failed conversion, not an error', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(wire('failed', { error_code: 'source_too_large' }), { status: 422 })));
-    await expect(new MachaCatalogueApi('http://node.test').convert('macha:book', 'epub'))
-      .resolves.toMatchObject({ status: 'failed', errorCode: 'source_too_large' });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(wire('failed', { error_code: 'unsupported_source' }), { status: 422 })));
+    await expect(new MachaCatalogueApi('http://node.test').convert('macha:pdf', 'epub'))
+      .resolves.toMatchObject({ status: 'failed', errorCode: 'unsupported_source' });
   });
 
   it('throws any other 422 with its code', async () => {
@@ -528,7 +528,7 @@ describe('book conversion (server 0.92.1)', () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(jsonResponse({ error: { code: 'not_found', message: 'none' } }, { status: 404 })));
     const api = new MachaCatalogueApi('http://node.test');
-    const ref = { mediaId: 'macha:book', format: 'pdf' as const };
+    const ref = { mediaId: 'macha:book', format: 'epub' as const };
     expect(await api.dropConversion(ref)).toBe(true);
     expect(await api.dropConversion(ref)).toBe(false);
   });

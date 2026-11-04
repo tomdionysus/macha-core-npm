@@ -28,22 +28,47 @@ export const NOT_PLAYABLE_KIND_CODE = 'not_playable_kind';
 /** The code the server answers a book's profile with (server 0.92.0). */
 export const PROFILE_NOT_APPLICABLE_CODE = 'profile_not_applicable';
 
-/** The formats a book's file converts to (server 0.92.1), in the server's order. */
-export const CONVERSION_FORMATS: readonly ConversionFormat[] = ['epub', 'azw3', 'mobi', 'pdf', 'fb2'];
+/** The formats a book's file converts to (server 0.92.1): EPUB only. */
+export const CONVERSION_FORMATS: readonly ConversionFormat[] = ['epub'];
 
 /** Whether a string names a conversion format. */
 export function isConversionFormat(value: string): value is ConversionFormat {
   return (CONVERSION_FORMATS as readonly string[]).includes(value);
 }
 
+/**
+ * The file extensions server 0.92.1 converts from, lower case and without the
+ * dot: the MOBI family. An EPUB is refused `400 same_format`; PDF, FB2, CBZ
+ * and anything else fail at once with `unsupported_source`.
+ */
+export const CONVERSION_SOURCE_EXTENSIONS: readonly string[] = ['mobi', 'azw3', 'azw', 'prc'];
+
+/**
+ * Whether a book's file can be converted, by its name, path or bare
+ * extension (`Mort.azw3`, `/Books/Mort.MOBI`, `prc`), for a host offering
+ * conversion only where it can succeed. The server stays the authority: it
+ * may still refuse one (`encrypted`, `source_too_large`).
+ */
+export function isConvertibleSource(fileNameOrExtension: string): boolean {
+  const name = fileNameOrExtension.trim().toLowerCase();
+  const dot = name.lastIndexOf('.');
+  const extension = dot >= 0 ? name.slice(dot + 1) : name;
+  return !extension.includes('/') && CONVERSION_SOURCE_EXTENSIONS.includes(extension);
+}
+
 /** Why a conversion failed, as server 0.92.1 says: `CatalogueConversion.errorCode`, and a failed content read's code. */
 export const CONVERSION_FAILURE_CODES: readonly ConversionFailureCode[] = [
-  'conversion_failed', 'conversion_timed_out', 'source_unreadable', 'source_too_large',
+  'unsupported_source', 'encrypted', 'conversion_failed', 'conversion_timed_out', 'source_unreadable', 'source_too_large',
 ];
 
-/** `400`: not one of `CONVERSION_FORMATS`. */
+/** Failed: the source is not one the server converts (not MOBI-family). Asking again cannot help. */
+export const UNSUPPORTED_SOURCE_CODE = 'unsupported_source';
+/** Failed: the book is under DRM, which is never converted. Asking again cannot help. */
+export const ENCRYPTED_CODE = 'encrypted';
+
+/** `400`: not `epub`. */
 export const BAD_FORMAT_CODE = 'bad_format';
-/** `400`: the book's file is already that format; read it through `content`. */
+/** `400`: the book's file is already EPUB; read it through `content`. */
 export const SAME_FORMAT_CODE = 'same_format';
 /** `422`: the media is not a book's file. */
 export const NOT_A_BOOK_CODE = 'not_a_book';

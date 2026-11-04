@@ -240,13 +240,19 @@ export interface ContentUrlOptions {
   download?: boolean;
 }
 
-/** A format a book's file converts to (server 0.92.1); `CONVERSION_FORMATS` lists them. */
-export type ConversionFormat = 'epub' | 'azw3' | 'mobi' | 'pdf' | 'fb2';
+/**
+ * A format a book's file converts to (server 0.92.1): EPUB alone, from a
+ * MOBI-family source (`CONVERSION_SOURCE_EXTENSIONS`). `CONVERSION_FORMATS`
+ * lists it.
+ */
+export type ConversionFormat = 'epub';
 
 export type ConversionStatus = 'converting' | 'ready' | 'failed';
 
 /** Why a conversion failed; `CONVERSION_FAILURE_CODES` lists the ones server 0.92.1 sends. */
 export type ConversionFailureCode =
+  | 'unsupported_source'
+  | 'encrypted'
   | 'conversion_failed'
   | 'conversion_timed_out'
   | 'source_unreadable'
@@ -365,7 +371,10 @@ export interface CatalogueApi {
    * Start converting a book's file to `format`, join the conversion already
    * running, or find it ready (server 0.92.1, `PUT .../conversions/{format}`).
    * A conversion that failed comes back as one with `status: 'failed'`, not
-   * as an error, and asking again retries it. It takes seconds to minutes;
+   * as an error, and asking again retries it; one that failed at once
+   * (`unsupported_source`, `source_too_large`) answers 422 with the
+   * conversion and comes back the same way. Only MOBI-family files convert
+   * (`isConvertibleSource`); an EPUB is refused `400 same_format`. It takes seconds to minutes;
    * `awaitConversion` polls it to an end.
    *
    * The cluster asks the nodes in order and passes over one that has no

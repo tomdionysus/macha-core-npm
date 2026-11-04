@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { awaitConversion, isBookKind, isConversionFormat, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
+import { awaitConversion, isBookKind, isConversionFormat, isConvertibleSource, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
 import type { CatalogueConversion } from './CatalogueApi.js';
 import { MachaPlaybackResolver } from '../playback/MachaPlaybackResolver.js';
 import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js';
@@ -103,8 +103,13 @@ describe('awaitConversion', () => {
     await expect(done).rejects.toThrow('gone');
   });
 
-  it('knows the formats', () => {
-    expect(isConversionFormat('azw3')).toBe(true);
-    expect(isConversionFormat('docx')).toBe(false);
+  it('knows the one format, EPUB', () => {
+    expect(isConversionFormat('epub')).toBe(true);
+    expect(isConversionFormat('azw3')).toBe(false);
+  });
+
+  it('knows which files convert: the MOBI family, by name, path or extension', () => {
+    for (const name of ['Mort.mobi', '/Books/Mort.AZW3', 'mort.azw', 'prc', ' Mort.Prc ']) expect(isConvertibleSource(name)).toBe(true);
+    for (const name of ['Mort.epub', 'Mort.pdf', 'Mort.fb2', 'Comic.cbz', '/Books.mobi/Mort', '', 'mobi.txt']) expect(isConvertibleSource(name)).toBe(false);
   });
 });
