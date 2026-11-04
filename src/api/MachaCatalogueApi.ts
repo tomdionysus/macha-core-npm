@@ -8,8 +8,12 @@ import type {
   CatalogueApi,
   CatalogueArtwork,
   CatalogueContent,
+  CatalogueConversion,
   CatalogueItem,
   CatalogueReferenceFilter,
+  ConversionFormat,
+  ConversionRef,
+  ConversionStatus,
   CatalogueKind,
   CatalogueMediaProfile,
   CatalogueItemPatch,
@@ -85,6 +89,31 @@ function contentRange(header: string | null): { start: number; end: number; tota
   const match = header ? /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(header.trim()) : null;
   if (!match) return undefined;
   return { start: Number(match[1]), end: Number(match[2]), ...(match[3] !== '*' ? { total: Number(match[3]) } : {}) };
+}
+
+const CONVERSION_STATUSES: readonly ConversionStatus[] = ['converting', 'ready', 'failed'];
+
+/**
+ * A conversion's wire body (`{status, media_id, format, size, mime_type,
+ * error_code}`), or undefined when the body is not one; `Retry-After` while
+ * it runs, in seconds on the wire.
+ */
+function conversionFrom(body: unknown, response: Response): CatalogueConversion | undefined {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const wire = body as Record<string, unknown>;
+  const status = wire.status;
+  if (typeof status !== 'string' || !CONVERSION_STATUSES.includes(status as ConversionStatus)) return undefined;
+  if (typeof wire.media_id !== 'string' || typeof wire.format !== 'string') return undefined;
+  const retryAfter = Number(response.headers.get('Retry-After') ?? Number.NaN);
+  return {
+    mediaId: wire.media_id,
+    format: wire.format as ConversionFormat,
+    status: status as ConversionStatus,
+    size: typeof wire.size === 'number' && Number.isFinite(wire.size) ? wire.size : null,
+    mimeType: typeof wire.mime_type === 'string' && wire.mime_type ? wire.mime_type : null,
+    errorCode: typeof wire.error_code === 'string' && wire.error_code ? wire.error_code : null,
+    ...(status === 'converting' && Number.isFinite(retryAfter) && retryAfter >= 0 ? { retryAfterMs: retryAfter * 1000 } : {}),
+  };
 }
 
 export class MachaCatalogueApi implements CatalogueApi {
@@ -205,11 +234,61 @@ export class MachaCatalogueApi implements CatalogueApi {
    * This node's copy of a file's bytes; see `CatalogueApi.content`. A
    * `404 not_found` means this node cannot read it, which another may.
    */
-  async content(mediaId: string, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+  content(mediaId: string, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+    return this.readContent(this.contentPath(mediaId), mediaId, options);
+  }
+
+  /** This node's conversion; see `CatalogueApi.convert`. `endpointId` is the cluster's to set. */
+  async convert(mediaId: string, format: ConversionFormat, signal?: AbortSignal): Promise<CatalogueConversion> {
+    const response = await this.fetch(this.conversionPath(mediaId, format), 'application/json', { method: 'PUT', ...(signal ? { signal } : {}) });
+    // A conversion that failed at once answers 422 with the conversion itself,
+    // where every other 422 (`not_a_book`) carries an error envelope.
+    if (!response.ok && response.status !== 422) await this.throwResponseError(response);
+    const { body, wasJson } = await readResponseBody(response);
+    const conversion = conversionFrom(body, response);
+    if (conversion) return conversion;
+    if (response.ok) throw new MachaApiError('Macha catalogue answered a conversion with a body that is not one.', 502, 'invalid_response');
+    if (isGatewayConnectionFailure(response, wasJson)) throw serverUnreachable();
+    const parsed = parseErrorEnvelope(body, `${response.status} ${response.statusText}`);
+    throw new MachaApiError(`Macha catalogue request failed: ${parsed.message}`, response.status, parsed.code, parsed.detail);
+  }
+
+  async conversion(ref: ConversionRef, signal?: AbortSignal): Promise<CatalogueConversion> {
+    const response = await this.fetch(this.conversionPath(ref.mediaId, ref.format), 'application/json', { method: 'GET', ...(signal ? { signal } : {}) });
+    if (!response.ok) await this.throwResponseError(response);
+    const conversion = conversionFrom((await readResponseBody(response)).body, response);
+    if (!conversion) throw new MachaApiError('Macha catalogue answered a conversion with a body that is not one.', 502, 'invalid_response');
+    return conversion;
+  }
+
+  conversionContent(ref: ConversionRef, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+    return this.readContent(`${this.conversionPath(ref.mediaId, ref.format)}/content`, ref.mediaId, options);
+  }
+
+  conversionContentUrls(ref: ConversionRef, options: ContentUrlOptions = {}): ArtworkSource[] {
+    const path = `${this.conversionPath(ref.mediaId, ref.format)}/content${options.download ? '?download=1' : ''}`;
+    return [{ url: `${this.baseUrl}${path}`, requiresAuthorization: true }];
+  }
+
+  async dropConversion(ref: ConversionRef, signal?: AbortSignal): Promise<boolean> {
+    try {
+      await this.request<void>(this.conversionPath(ref.mediaId, ref.format), { method: 'DELETE', ...(signal ? { signal } : {}) });
+      return true;
+    } catch (error) {
+      if (error instanceof MachaApiError && error.status === 404) return false;
+      throw error;
+    }
+  }
+
+  private conversionPath(mediaId: string, format: ConversionFormat): string {
+    return `/api/v1/catalogue/media/${encodeURIComponent(mediaId)}/conversions/${encodeURIComponent(format)}`;
+  }
+
+  private async readContent(path: string, mediaId: string, options: { range?: ContentRange; signal?: AbortSignal }): Promise<CatalogueContent> {
     const { range, signal } = options;
     const headers: Record<string, string> = range ? { Range: `bytes=${range.start}-${range.end ?? ''}` } : {};
     const init: RequestInit = { method: 'GET', headers, ...(signal ? { signal } : {}) };
-    const response = await this.fetch(this.contentPath(mediaId), '*/*', init);
+    const response = await this.fetch(path, '*/*', init);
     if (!response.ok) await this.throwResponseError(response);
     const body = await response.blob();
     const contentType = response.headers.get('Content-Type') || body.type || 'application/octet-stream';

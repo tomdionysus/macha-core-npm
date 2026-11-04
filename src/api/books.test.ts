@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { isBookKind, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
+import { awaitConversion, isBookKind, isConversionFormat, isPlayableKind, NOT_PLAYABLE_KIND_CODE, orderBooksInSeries } from './books.js';
+import type { CatalogueConversion } from './CatalogueApi.js';
 import { MachaPlaybackResolver } from '../playback/MachaPlaybackResolver.js';
 import { ClusterPlaybackResolver } from '../playback/ClusterPlaybackResolver.js';
 import { bootstrapEndpoints, EndpointRegistry } from '../cluster/EndpointRegistry.js';
@@ -58,5 +59,52 @@ describe('orderBooksInSeries', () => {
     const input = [inSeries('two', 2), inSeries('one', 1)];
     orderBooksInSeries(input, 'series:s');
     expect(input.map((book) => book.id)).toEqual(['two', 'one']);
+  });
+});
+
+describe('awaitConversion', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const state = (status: CatalogueConversion['status'], extra: Partial<CatalogueConversion> = {}): CatalogueConversion => ({
+    mediaId: 'macha:book', format: 'epub', status, size: null, mimeType: null, errorCode: null, ...extra,
+  });
+
+  it('polls at the wait the server asks, on the node that started it, to the end', async () => {
+    vi.useFakeTimers();
+    const answers = [state('converting', { retryAfterMs: 5_000 }), state('ready', { size: 10 })];
+    const conversion = vi.fn(async () => answers.shift()!);
+    const seen: string[] = [];
+
+    const done = awaitConversion({ conversion }, state('converting', { endpointId: 'http://b', retryAfterMs: 2_000 }), {
+      onState: (current) => seen.push(current.status),
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(conversion).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(conversion).toHaveBeenCalledTimes(1);
+    expect(conversion.mock.calls[0]).toEqual([expect.objectContaining({ endpointId: 'http://b' }), undefined]);
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(await done).toMatchObject({ status: 'ready', endpointId: 'http://b' });
+    expect(seen).toEqual(['converting', 'converting', 'ready']);
+  });
+
+  it('resolves a failed conversion rather than throwing', async () => {
+    const conversion = vi.fn();
+    await expect(awaitConversion({ conversion }, state('failed', { errorCode: 'conversion_timed_out' })))
+      .resolves.toMatchObject({ status: 'failed', errorCode: 'conversion_timed_out' });
+    expect(conversion).not.toHaveBeenCalled();
+  });
+
+  it('stops on abort', async () => {
+    const controller = new AbortController();
+    const done = awaitConversion({ conversion: vi.fn() }, state('converting'), { signal: controller.signal });
+    controller.abort(new Error('gone'));
+    await expect(done).rejects.toThrow('gone');
+  });
+
+  it('knows the formats', () => {
+    expect(isConversionFormat('azw3')).toBe(true);
+    expect(isConversionFormat('docx')).toBe(false);
   });
 });

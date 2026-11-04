@@ -240,6 +240,42 @@ export interface ContentUrlOptions {
   download?: boolean;
 }
 
+/** A format a book's file converts to (server 0.92.1); `CONVERSION_FORMATS` lists them. */
+export type ConversionFormat = 'epub' | 'azw3' | 'mobi' | 'pdf' | 'fb2';
+
+export type ConversionStatus = 'converting' | 'ready' | 'failed';
+
+/** Why a conversion failed; `CONVERSION_FAILURE_CODES` lists the ones server 0.92.1 sends. */
+export type ConversionFailureCode =
+  | 'conversion_failed'
+  | 'conversion_timed_out'
+  | 'source_unreadable'
+  | 'source_too_large'
+  | (string & {});
+
+/**
+ * Names one conversion. Conversions are kept on the node that made them, and
+ * another node converts again, so every call after `convert` goes to the node
+ * named here: `endpointId` is set by the cluster API and ignored by a node API.
+ */
+export interface ConversionRef {
+  mediaId: string;
+  format: ConversionFormat;
+  endpointId?: string;
+}
+
+/** A conversion's state (server 0.92.1, `/api/v1/catalogue/media/{id}/conversions/{format}`). */
+export interface CatalogueConversion extends ConversionRef {
+  status: ConversionStatus;
+  /** The converted file's bytes when ready, else null. */
+  size: number | null;
+  mimeType: string | null;
+  /** Set when failed. */
+  errorCode: ConversionFailureCode | null;
+  /** While converting: how long the server asked to wait before asking again (`Retry-After`). */
+  retryAfterMs?: number;
+}
+
 export interface CatalogueApi {
   status(signal?: AbortSignal): Promise<CatalogueStatus>;
   /** `filter` narrows to a book's references (server 0.92.0), as `parent` narrows to children. */
@@ -325,6 +361,37 @@ export interface CatalogueApi {
    * set headers cannot use these, and reads through `content` instead.
    */
   contentUrls(mediaId: string, options?: ContentUrlOptions): ArtworkSource[];
+  /**
+   * Start converting a book's file to `format`, join the conversion already
+   * running, or find it ready (server 0.92.1, `PUT .../conversions/{format}`).
+   * A conversion that failed comes back as one with `status: 'failed'`, not
+   * as an error, and asking again retries it. It takes seconds to minutes;
+   * `awaitConversion` polls it to an end.
+   *
+   * The cluster asks the nodes in order and passes over one that has no
+   * conversion (`503 conversion_unavailable`, enabled per node) or cannot
+   * read the source (`404 not_found`); the result names the node that took
+   * it. Refusals every node gives alike end the walk: `400 bad_format`,
+   * `400 same_format` (the file is already that format), `400 bad_media_id`,
+   * `422 not_a_book`.
+   */
+  convert(mediaId: string, format: ConversionFormat, signal?: AbortSignal): Promise<CatalogueConversion>;
+  /** Its state, from the node that holds it. `404 not_found` when that node has none (never asked, dropped or evicted). */
+  conversion(ref: ConversionRef, signal?: AbortSignal): Promise<CatalogueConversion>;
+  /**
+   * The converted file, from the node that made it, as `content` reads a
+   * file. `409 not_ready` while it runs; `422` with the failure's code
+   * (`CatalogueConversion.errorCode`) when it failed.
+   */
+  conversionContent(ref: ConversionRef, options?: { range?: ContentRange; signal?: AbortSignal }): Promise<CatalogueContent>;
+  /**
+   * The converted file's URL on the node that made it: one entry, needing the
+   * bearer token as `contentUrls` does. `download` names the attachment after
+   * the book, with the new extension.
+   */
+  conversionContentUrls(ref: ConversionRef, options?: ContentUrlOptions): ArtworkSource[];
+  /** Drop it on its node. False when there was nothing finished to drop (`404`). */
+  dropConversion(ref: ConversionRef, signal?: AbortSignal): Promise<boolean>;
 }
 
 /** One stream's entries in a `KeyframeIndex`. */

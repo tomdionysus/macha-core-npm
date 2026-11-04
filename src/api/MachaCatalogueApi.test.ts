@@ -465,3 +465,71 @@ describe('books (server 0.92.0)', () => {
     ]);
   });
 });
+
+describe('book conversion (server 0.92.1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const wire = (status: string, extra: Record<string, unknown> = {}) => ({
+    status, media_id: 'macha:book', format: 'epub', size: null, mime_type: null, error_code: null, ...extra,
+  });
+
+  it('starts one with a PUT, and reads the wait the server asks for', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(wire('converting'), { status: 202, headers: { 'Content-Type': 'application/json', 'Retry-After': '2' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const conversion = await new MachaCatalogueApi('http://node.test').convert('macha:book', 'epub');
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://node.test/api/v1/catalogue/media/macha%3Abook/conversions/epub');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('PUT');
+    expect(conversion).toEqual({
+      mediaId: 'macha:book', format: 'epub', status: 'converting', size: null, mimeType: null, errorCode: null, retryAfterMs: 2000,
+    });
+  });
+
+  it('answers a conversion that failed at once as a failed conversion, not an error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(wire('failed', { error_code: 'source_too_large' }), { status: 422 })));
+    await expect(new MachaCatalogueApi('http://node.test').convert('macha:book', 'epub'))
+      .resolves.toMatchObject({ status: 'failed', errorCode: 'source_too_large' });
+  });
+
+  it('throws any other 422 with its code', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ error: { code: 'not_a_book', message: 'no' } }, { status: 422 })));
+    await expect(new MachaCatalogueApi('http://node.test').convert('macha:film', 'epub'))
+      .rejects.toMatchObject({ status: 422, code: 'not_a_book' });
+  });
+
+  it('reads a ready one\'s size and type', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(wire('ready', { size: 4096, mime_type: 'application/epub+zip' }))));
+    const conversion = await new MachaCatalogueApi('http://node.test').conversion({ mediaId: 'macha:book', format: 'epub' });
+    expect(conversion).toMatchObject({ status: 'ready', size: 4096, mimeType: 'application/epub+zip' });
+    expect(conversion.retryAfterMs).toBeUndefined();
+  });
+
+  it('reads the converted file from its own route, and keeps not_ready', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'not_ready', message: 'running' } }, { status: 409 }))
+      .mockResolvedValueOnce(new Response('PK', { status: 200, headers: { 'Content-Type': 'application/epub+zip' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new MachaCatalogueApi('http://node.test');
+    const ref = { mediaId: 'macha:book', format: 'epub' as const };
+
+    await expect(api.conversionContent(ref)).rejects.toMatchObject({ status: 409, code: 'not_ready' });
+    const content = await api.conversionContent(ref);
+
+    expect(fetchMock.mock.calls[1][0]).toBe('http://node.test/api/v1/catalogue/media/macha%3Abook/conversions/epub/content');
+    expect(await content.body.text()).toBe('PK');
+    expect(api.conversionContentUrls(ref, { download: true })).toEqual([
+      { url: 'http://node.test/api/v1/catalogue/media/macha%3Abook/conversions/epub/content?download=1', requiresAuthorization: true },
+    ]);
+  });
+
+  it('drops one, and says false when there was none', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'not_found', message: 'none' } }, { status: 404 })));
+    const api = new MachaCatalogueApi('http://node.test');
+    const ref = { mediaId: 'macha:book', format: 'pdf' as const };
+    expect(await api.dropConversion(ref)).toBe(true);
+    expect(await api.dropConversion(ref)).toBe(false);
+  });
+});

@@ -382,3 +382,70 @@ describe('file content (server 0.92.0)', () => {
     ]);
   });
 });
+
+describe('ClusterCatalogueApi book conversion (server 0.92.1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const converting = { status: 'converting', media_id: 'macha:book', format: 'epub', size: null, mime_type: null, error_code: null };
+  const ready = { ...converting, status: 'ready', size: 10, mime_type: 'application/epub+zip' };
+  const unavailable = () => response({ error: { code: 'conversion_unavailable', message: 'off', scope: 'node' } }, 503);
+
+  it('starts on the first node that converts, without charging one that has none, and names the node', async () => {
+    const fetchMock = vi.fn(async (url: string) => (url.startsWith('http://a') ? unavailable() : response(converting, 202)));
+    vi.stubGlobal('fetch', fetchMock);
+    const registry = new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b']));
+
+    const conversion = await new ClusterCatalogueApi(registry).convert('macha:book', 'epub');
+
+    expect(conversion).toMatchObject({ status: 'converting', endpointId: 'http://b' });
+    expect(registry.candidates().find((candidate) => candidate.endpoint.id === 'http://a')?.health.consecutiveFailures).toBe(0);
+  });
+
+  it('says conversion_unavailable when no node converts', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => unavailable()));
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    await expect(api.convert('macha:book', 'epub')).rejects.toMatchObject({ status: 503, code: 'conversion_unavailable' });
+  });
+
+  it('stops at a refusal every node would repeat', async () => {
+    const fetchMock = vi.fn(async () => response({ error: { code: 'same_format', message: 'already' } }, 400));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    await expect(api.convert('macha:book', 'epub')).rejects.toMatchObject({ code: 'same_format' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls, reads and drops on the node that started it, not the preferred one', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('http://a')) throw new Error('must not ask a');
+      if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+      if (url.endsWith('/content')) return new Response('PK', { status: 200 });
+      return response(ready);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    const ref = { mediaId: 'macha:book', format: 'epub' as const, endpointId: 'http://b' };
+
+    expect(await api.conversion(ref)).toMatchObject({ status: 'ready', endpointId: 'http://b' });
+    expect(await (await api.conversionContent(ref)).body.text()).toBe('PK');
+    expect(api.conversionContentUrls(ref).map((source) => source.url)).toEqual([
+      'http://b/api/v1/catalogue/media/macha%3Abook/conversions/epub/content',
+    ]);
+    expect(await api.dropConversion(ref)).toBe(true);
+  });
+
+  it('says not_found for a node no longer configured', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => response(ready)));
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a'])));
+    await expect(api.conversion({ mediaId: 'macha:book', format: 'epub', endpointId: 'http://gone' }))
+      .rejects.toMatchObject({ status: 404, code: 'not_found' });
+  });
+
+  it('finds the node holding one when the ref names none', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.startsWith('http://a')
+      ? response({ error: { code: 'not_found', message: 'none here' } }, 404)
+      : response(ready))));
+    const api = new ClusterCatalogueApi(new EndpointRegistry(bootstrapEndpoints(['http://a', 'http://b'])));
+    expect(await api.conversion({ mediaId: 'macha:book', format: 'epub' })).toMatchObject({ endpointId: 'http://b' });
+  });
+});

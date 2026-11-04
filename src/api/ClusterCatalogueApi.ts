@@ -4,8 +4,11 @@ import type {
   CatalogueApi,
   CatalogueArtwork,
   CatalogueContent,
+  CatalogueConversion,
   CatalogueItem,
   CatalogueReferenceFilter,
+  ConversionFormat,
+  ConversionRef,
   ContentUrlOptions,
   CatalogueKind,
   CatalogueMediaProfile,
@@ -19,6 +22,7 @@ import type { EndpointRegistry, MachaEndpoint } from '../cluster/EndpointRegistr
 import { ClusterEndpointRouter } from '../cluster/endpointRouting.js';
 import { NO_AUTH, type AuthenticatedFetch } from './SessionManager.js';
 import { abortError } from '../errors.js';
+import { CONVERSION_UNAVAILABLE_CODE } from './books.js';
 import { createClientLogger } from '../diagnostics/ClientLog.js';
 
 const log = createClientLogger('catalogue.cluster');
@@ -38,6 +42,12 @@ export const ARTWORK_ENDPOINT_TIMEOUT_MS = 8_000;
 
 function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? abortError();
+}
+
+/** A refusal that says only that this node cannot convert this file: the walk passes on. */
+function passesConversion(error: unknown): error is MachaApiError {
+  return error instanceof MachaApiError
+    && (error.status === 404 || (error.status === 503 && error.code === CONVERSION_UNAVAILABLE_CODE));
 }
 
 /** Safe catalogue reads fail over; mutations deliberately execute once. */
@@ -162,6 +172,103 @@ export class ClusterCatalogueApi implements CatalogueApi {
       return this.api(endpoint).contentUrls(mediaId, options)
         .map((source) => (ready && latencyMs !== undefined ? { ...source, ready, latencyMs } : { ...source, ready }));
     });
+  }
+
+  /**
+   * Start or join a conversion on the first node that can make it; see
+   * `CatalogueApi.convert`. A node with no conversion (`503
+   * conversion_unavailable`) or that cannot read the source (`404`) is passed
+   * over without being charged: both are facts about this request, not the
+   * node's health. The result carries the node's `endpointId`.
+   */
+  async convert(mediaId: string, format: ConversionFormat, signal?: AbortSignal): Promise<CatalogueConversion> {
+    let lastPassed: MachaApiError | undefined;
+    const conversion = await this.router.find(async (endpoint) => {
+      try {
+        return { ...await this.api(endpoint).convert(mediaId, format, signal), endpointId: endpoint.id };
+      } catch (error) {
+        if (passesConversion(error)) {
+          lastPassed = error;
+          return undefined;
+        }
+        throw error;
+      }
+    }, signal);
+    if (conversion) return conversion;
+    throw lastPassed ?? new MachaApiError(`No node can convert ${mediaId} to ${format}.`, 503, CONVERSION_UNAVAILABLE_CODE);
+  }
+
+  /**
+   * From the node in `ref.endpointId`. Without one (a ref kept across a
+   * reload, say), the nodes are asked in turn and the one holding it is named
+   * in the result.
+   */
+  conversion(ref: ConversionRef, signal?: AbortSignal): Promise<CatalogueConversion> {
+    return this.onConversionNode(ref, signal, async (api, endpoint) => ({ ...await api.conversion(ref, signal), endpointId: endpoint.id }));
+  }
+
+  conversionContent(ref: ConversionRef, options: { range?: ContentRange; signal?: AbortSignal } = {}): Promise<CatalogueContent> {
+    return this.onConversionNode(ref, options.signal, (api) => api.conversionContent(ref, options));
+  }
+
+  /** The named node's URL; without `endpointId`, every candidate's, preferred first. */
+  conversionContentUrls(ref: ConversionRef, options?: ContentUrlOptions): ArtworkSource[] {
+    if (ref.endpointId !== undefined) {
+      const endpoint = this.conversionEndpoint(ref.endpointId);
+      return endpoint ? this.api(endpoint).conversionContentUrls(ref, options) : [];
+    }
+    return this.router.registry.candidates().flatMap(({ endpoint, health, ready: retryable, latencyMs }) => {
+      const ready = retryable && health.consecutiveFailures === 0;
+      return this.api(endpoint).conversionContentUrls(ref, options)
+        .map((source) => (ready && latencyMs !== undefined ? { ...source, ready, latencyMs } : { ...source, ready }));
+    });
+  }
+
+  async dropConversion(ref: ConversionRef, signal?: AbortSignal): Promise<boolean> {
+    if (ref.endpointId === undefined) {
+      // Without a node, the first that had one to drop.
+      const dropped = await this.router.find(async (endpoint) => ((await this.api(endpoint).dropConversion(ref, signal)) ? true : undefined), signal);
+      return dropped ?? false;
+    }
+    const endpoint = this.conversionEndpoint(ref.endpointId);
+    if (!endpoint) return false;
+    return this.router.pinned(endpoint, (target) => this.api(target).dropConversion(ref, signal));
+  }
+
+  /**
+   * Run `operation` on the conversion's node, pinned: another node holds a
+   * different conversion or none. A node no longer configured has lost it,
+   * which is `404 not_found` as an eviction is. Without a node, walk, passing
+   * over the nodes that answer `404`.
+   */
+  private async onConversionNode<T>(
+    ref: ConversionRef,
+    signal: AbortSignal | undefined,
+    operation: (api: MachaCatalogueApi, endpoint: MachaEndpoint) => Promise<T>,
+  ): Promise<T> {
+    if (ref.endpointId !== undefined) {
+      const endpoint = this.conversionEndpoint(ref.endpointId);
+      if (!endpoint) throw new MachaApiError(`The node that converted ${ref.mediaId} is no longer configured.`, 404, 'not_found');
+      return this.router.pinned(endpoint, (target) => operation(this.api(target), target));
+    }
+    let lastMissing: MachaApiError | undefined;
+    const found = await this.router.find(async (endpoint) => {
+      try {
+        return { value: await operation(this.api(endpoint), endpoint) };
+      } catch (error) {
+        if (error instanceof MachaApiError && error.status === 404) {
+          lastMissing = error;
+          return undefined;
+        }
+        throw error;
+      }
+    }, signal);
+    if (found) return found.value;
+    throw lastMissing ?? new MachaApiError(`No node holds a ${ref.format} conversion of ${ref.mediaId}.`, 404, 'not_found');
+  }
+
+  private conversionEndpoint(endpointId: string): MachaEndpoint | undefined {
+    return this.router.registry.snapshot().find((candidate) => candidate.endpoint.id === endpointId)?.endpoint;
   }
 
   /**

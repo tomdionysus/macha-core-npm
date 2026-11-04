@@ -45,6 +45,11 @@ class FakeCatalogue implements CatalogueApi {
   keyframes(): Promise<undefined> { return Promise.resolve(undefined); }
   content(): Promise<never> { return Promise.reject(new Error('not used')); }
   contentUrls(): [] { return []; }
+  convert(): Promise<never> { return Promise.reject(new Error('not used')); }
+  conversion(): Promise<never> { return Promise.reject(new Error('not used')); }
+  conversionContent(): Promise<never> { return Promise.reject(new Error('not used')); }
+  conversionContentUrls(): [] { return []; }
+  dropConversion(): Promise<never> { return Promise.reject(new Error('not used')); }
   patch(): Promise<never> { return Promise.reject(new Error('not used')); }
   status(): Promise<CatalogueStatus> { throw new Error('not used'); }
   update(item: CatalogueItem): Promise<CatalogueItem> { return Promise.resolve(item); }
@@ -387,6 +392,11 @@ describe('keeping an artwork URL byte-identical across an endpoint swap', () => 
     keyframes: async () => undefined,
     content: async () => { throw new Error('not used'); },
     contentUrls: () => [],
+    convert: async () => { throw new Error('not used'); },
+    conversion: async () => { throw new Error('not used'); },
+    conversionContent: async () => { throw new Error('not used'); },
+    conversionContentUrls: () => [],
+    dropConversion: async () => { throw new Error('not used'); },
     patch: async () => { throw new Error('not used'); },
   });
 
@@ -665,6 +675,11 @@ describe('choosing the artwork host by what it costs this viewer', () => {
       keyframes: async () => undefined,
       content: async () => { throw new Error('not used'); },
       contentUrls: () => [],
+      convert: async () => { throw new Error('not used'); },
+      conversion: async () => { throw new Error('not used'); },
+      conversionContent: async () => { throw new Error('not used'); },
+      conversionContentUrls: () => [],
+      dropConversion: async () => { throw new Error('not used'); },
       patch: async () => { throw new Error('not used'); },
     };
   }
